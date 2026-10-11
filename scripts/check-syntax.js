@@ -9,7 +9,7 @@ async function collect(directory) {
     for (const entry of await readdir(directory, { withFileTypes: true })) {
         if (entry.isDirectory()) {
             if (!ignoredDirectories.has(entry.name)) await collect(join(directory, entry.name));
-        } else if (entry.isFile() && entry.name.endsWith('.js')) {
+        } else if (entry.isFile() && /\.(?:c?js)$/.test(entry.name)) {
             files.push(join(directory, entry.name));
         }
     }

@@ -24,7 +24,8 @@ try {
 const readline  = require("readline");
 const fs        = require("fs");
 const path      = require("path");
-const { readyProductSales } = require("./corporation-policy.cjs");
+const { readyProductSales, shouldBuyTea, compareSnapshots } = require("./corporation-policy.cjs");
+const { scoreTarget, distribute } = require("./hacking-policy.cjs");
 
 // Record this controller's PID only after its WebSocket port is bound so
 // Stop.bat can safely target this instance without terminating other Node apps.
@@ -666,7 +667,8 @@ export async function main(ns) {
     }
 
     // Heartbleed is gated by charisma; crack is not
-    if (ns.getPlayer().charisma >= reqCha) {
+    const playerCharisma = Number(ns.getPlayer().skills?.charisma) || 0;
+    if (playerCharisma >= reqCha) {
       for (let pass = 0; pass < 2; pass++) {
         let logs = [];
         try {
@@ -1062,7 +1064,12 @@ async function getServers() {
     const out = [];
     for (const h of seen) {
       if (h === "home" || h === "darkweb") continue;
-      out.push(ns.getServer(h));
+      const server = ns.getServer(h);
+      let hackTime = 0, weakenTime = 0, hackChance = 0;
+      try { hackTime = ns.getHackTime(h); } catch {}
+      try { weakenTime = ns.getWeakenTime(h); } catch {}
+      try { hackChance = ns.hackAnalyzeChance(h); } catch {}
+      out.push({ ...server, hackTime, weakenTime, hackChance });
     }
     return out;
   `);
@@ -1100,7 +1107,7 @@ async function getActiveHackTargets(hosts) {
       try { processes = ns.ps(host); } catch { continue; }
       for (const process of processes) {
         const name = String(process.filename || "").replace(/\\\\/g, "/").toLowerCase();
-        if (!/(?:^|\\/)(?:hack|grow|weak|weaken)(?:-target)?\\.js$/.test(name)) continue;
+        if (!/(?:^|\\/)(?:hack|grow|weak|weaken|manualhack)(?:-target)?\\.js$/.test(name)) continue;
         const target = process.args?.[0];
         if (typeof target === "string" && target) active.add(target);
       }
@@ -1150,6 +1157,10 @@ async function exec(script, host, threads, args = []) {
     `return ns.exec(${JSON.stringify(script)}, ${JSON.stringify(host)}, ${threads}, ...${JSON.stringify(args)});`,
     { threads: 1 }
   );
+}
+
+async function killProcess(pid, host) {
+  return run(`return ns.kill(${Number(pid)}, ${JSON.stringify(host)});`, { threads: 1 });
 }
 
 async function scpFile(file, host) {
@@ -1316,65 +1327,11 @@ function pruneInflight() {
   while (inflight.length && inflight[0].endsAt <= now) inflight.shift();
 }
 
-function inflightUsage(scriptRam) {
-  const used = {};
-  for (const b of inflight) {
-    for (const p of b.placements) {
-      used[p.host] = (used[p.host] ?? 0) + p.threads * (scriptRam[p.script] ?? 0);
-    }
-  }
-  return used;
-}
-
 // ---------------------------------------------------------------------------
 // RAM distribution
 // ---------------------------------------------------------------------------
-function distribute(actions, hostRams, scriptRam, hostCores = {}) {
-  const placements = [];
-  const usedThisBatch = {};
-  for (const h of Object.keys(hostRams)) usedThisBatch[h] = 0;
-
-  const inflightUsed = inflightUsage(scriptRam);
-
-  const hosts = Object.keys(hostRams)
-    .filter((h) => (hostCores[h] ?? 1) >= CONFIG.minWorkerCores)
-    .sort((a, b) => {
-      const fa = hostRams[a].max - hostRams[a].used;
-      const fb = hostRams[b].max - hostRams[b].used;
-      return fb - fa;
-    });
-
-  if (!hosts.length) return null;
-
-  for (const action of actions) {
-    let remaining = action.threads;
-    const perThread = scriptRam[action.script];
-    if (!perThread || perThread <= 0) return null;
-
-    for (const host of hosts) {
-      if (remaining <= 0) break;
-      const info = hostRams[host];
-
-      const reserve = host === "home"
-        ? Math.min(CONFIG.homeReserveGb, Math.floor(info.max * 0.25))
-        : 0;
-
-      const free = info.max
-        - info.used
-        - usedThisBatch[host]
-        - (inflightUsed[host] ?? 0)
-        - reserve;
-      const canFit = Math.floor(Math.max(0, free) / perThread);
-      const take = Math.min(canFit, remaining);
-      if (take > 0) {
-        placements.push({ ...action, host, threads: take });
-        usedThisBatch[host] += take * perThread;
-        remaining -= take;
-      }
-    }
-    if (remaining > 0) return null;
-  }
-  return placements;
+function planDistribution(actions, hostRams, scriptRam, hostCores = {}) {
+  return distribute(actions, hostRams, scriptRam, hostCores, CONFIG);
 }
 
 // ---------------------------------------------------------------------------
@@ -1417,22 +1374,6 @@ async function manageServers() {
 // ---------------------------------------------------------------------------
 // Target selection
 // ---------------------------------------------------------------------------
-function scoreTarget(s, hacking) {
-  if (!s.hasAdminRights) return -1;
-  if (s.requiredHackingLevel > hacking) return -1;
-  if (s.moneyMax <= 0) return -1;
-
-  const chance = s.hackChance ?? 1;
-  const perHack = s.moneyMax * 0.5 * chance;
-  const income = perHack / ((s.hackTime ?? 1000) / 1000);
-
-  const secGap     = Math.max(0, (s.hackDifficulty ?? 0) - (s.minDifficulty ?? 0));
-  const moneyRatio = Math.min(1, (s.moneyAvailable ?? 0) / Math.max(1, s.moneyMax));
-  const prepPenalty = (1 / (1 + secGap)) * (0.1 + 0.9 * moneyRatio);
-
-  return income * prepPenalty;
-}
-
 // ---------------------------------------------------------------------------
 // Scheduler tick
 // ---------------------------------------------------------------------------
@@ -1499,7 +1440,7 @@ async function autopilotTick() {
     const batch = await planBatch(target);
     if (!batch) continue;
 
-    const placements = distribute(batch.actions, hostRams, sRam, hostCores);
+    const placements = planDistribution(batch.actions, hostRams, sRam, hostCores);
     if (!placements) {
       console.log(`   skip ${target}: batch needs ${batch.totalThreads} threads`);
       continue;
@@ -1509,18 +1450,31 @@ async function autopilotTick() {
       batch.actions.map((a) => `${a.script[0].toUpperCase()}${a.threads}`).join("/"));
 
     const launched = [];
+    let launchFailed = false;
     for (const pl of placements) {
       try {
         const pid = await exec(pl.script, pl.host, pl.threads, [pl.arg, pl.delay]);
         if (pid > 0) {
-          launched.push(pl);
+          launched.push({ ...pl, pid });
           console.log(`   ${pl.script} x${pl.threads} @ ${pl.host} (pid ${pid})`);
         } else {
           console.log(`   ⚠️ exec 0: ${pl.script} x${pl.threads} @ ${pl.host}`);
+          launchFailed = true;
         }
       } catch (e) {
         console.log(`   exec ${pl.host} failed: ${e.message}`);
+        launchFailed = true;
       }
+    }
+
+    if (launchFailed || launched.length !== placements.length) {
+      for (const process of launched) {
+        try { await killProcess(process.pid, process.host); }
+        catch (error) { console.log(`   rollback failed for pid ${process.pid} @ ${process.host}: ${error.message}`); }
+      }
+      console.log(`   rolled back incomplete batch on ${target}`);
+      coolDown(target);
+      continue;
     }
 
     if (launched.length > 0) {
@@ -1550,7 +1504,7 @@ async function autopilotTick() {
     const prep = await planPrep(s);
     if (!prep) continue;
 
-    const placements = distribute(prep.actions, hostRams, sRam, hostCores);
+    const placements = planDistribution(prep.actions, hostRams, sRam, hostCores);
     if (!placements) {
       console.log(`   skip prep ${target}: needs ${prep.totalThreads} threads`);
       continue;
@@ -1560,16 +1514,28 @@ async function autopilotTick() {
       prep.actions.map((a) => `${a.script[0].toUpperCase()}${a.threads}`).join("/"));
 
     const launched = [];
+    let launchFailed = false;
     for (const pl of placements) {
       try {
         const pid = await exec(pl.script, pl.host, pl.threads, [pl.arg, pl.delay]);
         if (pid > 0) {
-          launched.push(pl);
+          launched.push({ ...pl, pid });
           console.log(`   ${pl.script} x${pl.threads} @ ${pl.host} (pid ${pid})`);
-        }
+        } else launchFailed = true;
       } catch (e) {
         console.log(`   exec ${pl.host} failed: ${e.message}`);
+        launchFailed = true;
       }
+    }
+
+    if (launchFailed || launched.length !== placements.length) {
+      for (const process of launched) {
+        try { await killProcess(process.pid, process.host); }
+        catch (error) { console.log(`   rollback failed for pid ${process.pid} @ ${process.host}: ${error.message}`); }
+      }
+      console.log(`   rolled back incomplete prep on ${target}`);
+      coolDown(target);
+      continue;
     }
 
     if (launched.length > 0) {
@@ -2283,6 +2249,29 @@ async function getCorporationSnapshot() {
   `, { host: "home", threads: 1 });
 }
 
+async function verifyCorporationDiagnostic() {
+  const report = await run(`
+    const raw = ns.read("tasks/corp-diagnostic.json");
+    try { return raw ? JSON.parse(raw) : null; } catch { return null; }
+  `, { host: "home", threads: 1 });
+  if (!report) {
+    console.log("🏢 No readable in-game diagnostic report. Run Tasks/corporation-diagnostic.js in Bitburner first.");
+    return;
+  }
+  const ageMs = Date.now() - Number(report.checkedAt || 0);
+  const current = await getCorporationSnapshot();
+  const mismatches = compareSnapshots(report, current);
+  if (ageMs > 120_000) console.log(`🏢 Warning: in-game report is ${Math.round(ageMs / 1000)}s old; rerun the diagnostic for a fresh comparison.`);
+  if (!mismatches.length) {
+    console.log(`🏢 Game and PC snapshots match on stable fields (${Object.keys(report.divisions || {}).length} divisions).`);
+    return;
+  }
+  console.log(`🏢 ${mismatches.length} corporation snapshot mismatch(es):`);
+  for (const mismatch of mismatches.slice(0, 30))
+    console.log(`  ${mismatch.path}: game=${JSON.stringify(mismatch.game)} · pc=${JSON.stringify(mismatch.pc)}`);
+  if (mismatches.length > 30) console.log(`  … ${mismatches.length - 30} more`);
+}
+
 function buildCorporationPlan(s) {
   const actions = [];
   const reserve = CONFIG.corpReserve;
@@ -2335,7 +2324,7 @@ function buildCorporationPlan(s) {
             for (let i = 0; remainder > 0; i = (i + 1) % counts.length, remainder--) counts[i]++;
             add("assignOffice", [name, city, jobs, counts]);
           }
-          add("buyTea", [name, city]);
+          if (shouldBuyTea(office)) add("buyTea", [name, city]);
         }
       }
       if (!unlock("Warehouse API")) continue;
@@ -2421,7 +2410,8 @@ async function applyCorporationPlan(actions) {
 }
 
 async function corporationAutoTick() {
-  await setCorporationLease(true);
+  const leaseWritten = await setCorporationLease(true);
+  if (leaseWritten !== true) throw new Error("could not confirm corporation ownership lease; skipping actions to avoid conflicting managers");
   const s = await getCorporationSnapshot();
   corpLastSnapshot = s;
   const plan = buildCorporationPlan(s);
@@ -3048,7 +3038,7 @@ rl.on("line", async (line) => {
   status · player · level · money · scan · servers · pserv
   auto                ← START/STOP PC-side hacking and server management (also starts on boot)
   corp-auto           ← START/STOP PC-side corporation management
-  corp-status · corp-stop
+  corp-status · corp-verify · corp-stop
   all-auto            ← START/STOP the full PC-managed automation suite
   game-suite          ← ensure the PC-managed in-game helper suite is running
   nuke <host> · scp <file> <host> · exec <script> <host> <threads> [arg]
@@ -3096,6 +3086,7 @@ rl.on("line", async (line) => {
         break;
       case "corp-stop": corpAutoRunning = false; console.log("stopping PC corporation manager…"); break;
       case "corp-status": console.log(JSON.stringify(await getCorporationSnapshot(), null, 2)); break;
+      case "corp-verify": await verifyCorporationDiagnostic(); break;
       case "all-auto":
         if (fullAutomationRunning) await stopAllAutomation();
         else await startAllAutomation();

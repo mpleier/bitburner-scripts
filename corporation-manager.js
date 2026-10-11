@@ -10,7 +10,9 @@ export async function main(ns) {
   const pcOwnerFile = "tasks/__pc_corp_owner.json";
   const agri = "Agri";
   const restaurant = "Dining";
-  const reserve = 5e9;
+  // Cash kept back from spending. Scales down while the corporation is small so a
+  // fixed $5b floor can't freeze a corporation that only has a billion or so.
+  let reserve = 5e9;
   const officeJobs = ["Operations", "Engineer", "Business", "Management", "Research & Development"];
 
   ns.disableLog("sleep");
@@ -80,11 +82,15 @@ export async function main(ns) {
     if (Number.isFinite(cost) && funds() > cost + reserve)
       attempt(`Buy ${unlock}`, () => c.purchaseUnlock(unlock));
   };
+  // True once the division actually has an office in this city. Cities are
+  // expanded as funds allow, so the rest must be skipped until then.
+  const inCity = (division, city) =>
+    safe(`Read division ${division}`, () => c.getDivision(division))?.cities?.includes(city) === true;
   const runOffice = (division, city, production) => {
     if (!hasUnlock("Office API")) return;
     let office = safe(`Read office ${division}/${city}`, () => c.getOffice(division, city));
     if (!office) return;
-    const target = funds() > 1e13 ? 30 : funds() > 1e12 ? 15 : funds() > 2e11 ? 9 : 3;
+    const target = funds() > 1e13 ? 30 : funds() > 1e12 ? 15 : funds() > 1e11 ? 9 : 3;
     if (office.size < target) {
       const add = target - office.size;
       const cost = safe("Get office size cost", () => c.getOfficeSizeUpgradeCost(division, city, add));
@@ -99,26 +105,67 @@ export async function main(ns) {
     office = safe("Refresh employees", () => c.getOffice(division, city)) ?? office;
     const employees = office.numEmployees ?? 0;
     if (employees > 0) {
-      const ratios = production ? [0.25, 0.25, 0.10, 0.10, 0.30] : [0.20, 0.20, 0.10, 0.10, 0.40];
-      const counts = ratios.map(r => Math.floor(employees * r));
-      let remainder = employees - counts.reduce((a, b) => a + b, 0);
-      for (let i = 0; remainder > 0; i = (i + 1) % counts.length, remainder--) counts[i]++;
-      for (const job of officeJobs) attempt(`Assign ${job}`, () => c.setJobAssignment(division, city, job, 0));
-      for (let i = 0; i < officeJobs.length; i++)
-        if (counts[i]) attempt(`Assign ${officeJobs[i]}`, () => c.setJobAssignment(division, city, officeJobs[i], counts[i]));
+      let counts;
+      if (employees <= 5) {
+        // Tiny offices: the ratio split rounds Business down to zero, which leaves
+        // sales effectivity near nothing. Hand out one job at a time in a fixed
+        // order of importance: Operations, Business, Engineer, Management, R&D.
+        counts = officeJobs.map(() => 0);
+        [0, 2, 1, 3, 4].slice(0, employees).forEach(i => counts[i]++);
+      } else {
+        const ratios = production ? [0.25, 0.25, 0.10, 0.10, 0.30] : [0.20, 0.20, 0.10, 0.10, 0.40];
+        counts = ratios.map(r => Math.floor(employees * r));
+        let remainder = employees - counts.reduce((a, b) => a + b, 0);
+        for (let i = 0; remainder > 0; i = (i + 1) % counts.length, remainder--) counts[i]++;
+      }
+      // Only touch assignments when they differ from the target; resetting every
+      // job to zero on every update needlessly unassigns the whole office.
+      const jobs = office.employeeJobs;
+      const aligned = jobs && officeJobs.every((job, i) => Number(jobs[job] ?? -1) === counts[i]);
+      if (!aligned) {
+        for (const job of officeJobs) attempt(`Clear ${job}`, () => c.setJobAssignment(division, city, job, 0));
+        for (let i = 0; i < officeJobs.length; i++)
+          if (counts[i]) attempt(`Assign ${officeJobs[i]}`, () => c.setJobAssignment(division, city, officeJobs[i], counts[i]));
+      }
     }
-    attempt("Buy employee tea", () => c.buyTea(division, city));
+    // Tea only helps when energy has dropped, so don't pay for it every update.
+    if (office.avgEnergy === undefined || office.avgEnergy < (office.maxEnergy ?? 100) - 1)
+      attempt("Buy employee tea", () => c.buyTea(division, city));
   };
+  // Agriculture inputs: 0.5 Water + 0.2 Chemicals per Plant/Food produced. Buying
+  // them blindly at a fixed rate fills the warehouse and blocks the output.
+  const manageInputs = (city) => {
+    const set = (material, rate) =>
+      attempt(`Set ${material} buy rate`, () => c.buyMaterial(agri, city, material, rate));
+    if (hasUnlock("Smart Supply")) { set("Water", 0); set("Chemicals", 0); return; }
+    const wh = safe("Read warehouse", () => c.getWarehouse(agri, city));
+    const full = wh ? wh.sizeUsed / Math.max(1, wh.size) > 0.9 : false;
+    const plants = safe("Read Plants", () => c.getMaterial(agri, city, "Plants"));
+    const produced = Math.max(Number(plants?.productionAmount) || 0, 1);
+    for (const [material, per] of [["Water", 0.5], ["Chemicals", 0.2]]) {
+      const item = safe(`Read ${material}`, () => c.getMaterial(agri, city, material));
+      const need = per * produced;
+      // Stop buying when the warehouse is full or ~30s of stock is already on hand.
+      set(material, full || Number(item?.stored) > need * 30 ? 0 : need);
+    }
+  };
+  let storagePressure = false;
   const runWarehouse = (division, city, products = false) => {
     if (!hasUnlock("Warehouse API")) return;
     if (!safe("Check warehouse", () => c.hasWarehouse(division, city)) && funds() > reserve + 5e9)
       attempt("Purchase warehouse", () => c.purchaseWarehouse(division, city));
     if (!safe("Check warehouse", () => c.hasWarehouse(division, city))) return;
     const wh = safe("Read warehouse", () => c.getWarehouse(division, city));
-    if (wh && wh.sizeUsed / Math.max(1, wh.size) > 0.8) {
+    // Storage management: upgrade early (70% full) and catch up in a burst of up
+    // to 5 levels, so production doesn't stall against a full warehouse.
+    let used = wh ? wh.sizeUsed / Math.max(1, wh.size) : 0;
+    if (used > 0.8) storagePressure = true;
+    for (let level = 0; level < 5 && used > 0.7; level++) {
       const cost = safe("Get warehouse upgrade cost", () => c.getUpgradeWarehouseCost(division, city));
-      if (Number.isFinite(cost) && funds() > cost + reserve)
-        attempt("Upgrade warehouse", () => c.upgradeWarehouse(division, city));
+      if (!Number.isFinite(cost) || funds() <= cost + reserve) break;
+      if (!attempt("Upgrade warehouse", () => c.upgradeWarehouse(division, city))) break;
+      const next = safe("Refresh warehouse", () => c.getWarehouse(division, city));
+      used = next ? next.sizeUsed / Math.max(1, next.size) : 0;
     }
     if (hasUnlock("Smart Supply")) attempt("Enable Smart Supply", () => c.setSmartSupply(division, city, true));
     if (products) {
@@ -151,24 +198,31 @@ export async function main(ns) {
       if (offer?.funds > 0 && offer.round <= 3 && offer.funds > Math.max(1e9, funds() * 0.1))
         attempt("Accept investment offer", () => c.acceptInvestmentOffer());
 
+      storagePressure = false;
+      reserve = Math.min(5e9, funds() * 0.1);
       createDivision("Agriculture", agri);
       buyUnlock("Warehouse API");
       buyUnlock("Office API");
       buyUnlock("Smart Supply");
       const allCities = cityNames();
-      const cityCount = funds() > 5e12 ? 6 : funds() > 1e12 ? 3 : 1;
+      // Every expansion/warehouse/office purchase is already gated on available
+      // funds, so work all six cities rather than staying in one until 1t.
+      const cityCount = allCities.length;
       if (hasDivision(agri)) {
         for (const city of allCities.slice(0, cityCount)) {
           expand(agri, city);
+          if (!inCity(agri, city)) continue;
           runOffice(agri, city, false);
           runWarehouse(agri, city, false);
           if (hasUnlock("Warehouse API") && safe("Check agricultural warehouse", () => c.hasWarehouse(agri, city))) {
-            if (hasUnlock("Smart Supply")) {
-              for (const material of ["Water", "Chemicals"])
-                attempt(`Stop buying ${material}`, () => c.buyMaterial(agri, city, material, 0));
-            }
+            manageInputs(city);
           }
         }
+        // Advertising multiplier starts near zero and drives sales; hire AdVert
+        // whenever it is a small slice of funds.
+        const adCost = safe("Get AdVert cost", () => c.getHireAdVertCost(agri));
+        if (Number.isFinite(adCost) && adCost <= funds() * 0.25 && funds() > adCost + reserve)
+          attempt("Hire AdVert", () => c.hireAdVert(agri));
       }
 
       // Restaurant is the second, product-based division from the supplied strategy.
@@ -177,6 +231,7 @@ export async function main(ns) {
         const d = safe("Read Restaurant division", () => c.getDivision(restaurant));
         for (const city of allCities.slice(0, Math.min(cityCount, 6))) {
           expand(restaurant, city);
+          if (!inCity(restaurant, city)) continue;
           runOffice(restaurant, city, true);
           runWarehouse(restaurant, city, true);
         }
@@ -197,9 +252,15 @@ export async function main(ns) {
 
       // Limit recurring upgrade spending while preserving cash for expansion.
       if (Date.now() - lastUpgrade >= 60_000) {
-        for (const upgrade of ["Smart Factories", "Smart Storage", "Wilson Analytics"]) {
+        // Smart Storage raises capacity in every warehouse, so it goes first
+        // (with a looser spending cap) whenever any warehouse is nearly full.
+        const order = storagePressure
+          ? ["Smart Storage", "Smart Factories", "Wilson Analytics"]
+          : ["Smart Factories", "Smart Storage", "Wilson Analytics"];
+        for (const upgrade of order) {
           const cost = safe(`Get ${upgrade} upgrade cost`, () => c.getUpgradeLevelCost(upgrade));
-          if (Number.isFinite(cost) && cost <= funds() * 0.01 && funds() > cost + reserve) {
+          const cap = storagePressure && upgrade === "Smart Storage" ? 0.05 : 0.01;
+          if (Number.isFinite(cost) && cost <= funds() * cap && funds() > cost + reserve) {
             if (attempt(`Level ${upgrade}`, () => c.levelUpgrade(upgrade))) lastUpgrade = Date.now();
             break;
           }

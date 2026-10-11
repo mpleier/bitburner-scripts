@@ -65,33 +65,54 @@ export async function main(ns) {
     }
   };
 
+  // Result codes are numeric (DarknetResponseCodeType): 401 = wrong password,
+  // 408 = request timed out (password may or may not have been right).
+  const AUTH_FAILURE = 401;
+  const TIMED_OUT = 408;
+  const RETRY_AFTER_MS = 10 * 60_000;
+
+  const tryPassword = async (host, password) => {
+    let result;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      result = await ns.dnet.authenticate(host, password);
+      if (result.success || Number(result.code) !== TIMED_OUT) break;
+    }
+    return result;
+  };
+
   const authenticate = async (host, details, saved, candidates) => {
     if (details.hasSession) return true;
     const signature = `${saved || ""}\0${candidates.join("\0")}`;
-    if (attemptedInputs.get(host) === signature) return false;
-    attemptedInputs.set(host, signature);
+    const previous = attemptedInputs.get(host);
+    if (previous && previous.signature === signature && Date.now() - previous.at < RETRY_AFTER_MS) return false;
     if (saved) {
-      const result = await ns.dnet.authenticate(host, saved);
+      const result = await tryPassword(host, saved);
       if (result.success) return true;
-      ns.print(`${host}: saved password failed (${result.code}); trying candidates.`);
+      if (Number(result.code) !== AUTH_FAILURE) {
+        ns.print(`${host}: saved password check stopped (${result.code}: ${result.message}); will retry.`);
+        return false;
+      }
+      ns.print(`${host}: saved password rejected; trying candidates.`);
     }
     for (let i = 0; i < candidates.length; i++) {
       const password = candidates[i];
       if (password === saved) continue;
-      const result = await ns.dnet.authenticate(host, password);
+      const result = await tryPassword(host, password);
       if (result.success) {
         const reportFile = `darknet-passwords-${host.replace(/[^a-z0-9_-]/gi, "_")}.txt`;
         await ns.write(reportFile, `${host}=${password}\n`, "w");
         ns.print(`${host}: candidate matched (${i + 1}/${candidates.length}); saved to ${reportFile}.`);
         return true;
       }
-      if (result.code !== "AuthFailure") {
-        ns.print(`${host}: candidate check stopped (${result.code}); will retry after rediscovery.`);
-        attemptedInputs.delete(host);
+      if (Number(result.code) !== AUTH_FAILURE) {
+        // Not a wrong-password answer (offline, moved, not adjacent...). Don't
+        // mark the host as tried, so the next pass starts again.
+        ns.print(`${host}: candidate check stopped (${result.code}: ${result.message}); will retry.`);
         return false;
       }
     }
-    ns.print(`${host}: no match in ${candidates.length} candidates; this host will not be retried until this manager restarts.`);
+    attemptedInputs.set(host, { signature, at: Date.now() });
+    ns.print(`${host}: no match in ${candidates.length} candidates; retrying in ${RETRY_AFTER_MS / 60_000} min or when inputs change.`);
     return false;
   };
 
@@ -127,7 +148,8 @@ export async function main(ns) {
               heartbleedAt.set(host, Date.now());
               try {
                 const result = await ns.dnet.heartbleed(host, { peek: true, logsToCapture: 8 });
-                if (result?.data) ns.print(`${host}: heartbleed log clue: ${JSON.stringify(result.data)}`);
+                // heartbleed returns { success, code, message, logs: string[] }.
+                if (result?.logs?.length) ns.print(`${host}: heartbleed log clue: ${JSON.stringify(result.logs)}`);
               } catch (error) {
                 ns.print(`${host}: heartbleed unavailable: ${String(error)}`);
               }
@@ -135,7 +157,12 @@ export async function main(ns) {
             continue;
           }
 
-          await ns.dnet.memoryReallocation(host);
+          // Only reallocate while the owner still blocks RAM; it is slow, and
+          // fails with NoBlockRAM once there is nothing left to free.
+          if (details.blockedRam > 0) {
+            try { await ns.dnet.memoryReallocation(host); }
+            catch (error) { ns.print(`${host}: memory reallocation failed: ${String(error)}`); }
+          }
 
           if (ns.fileExists(nodeFile, "home")) {
             // Only scp files that actually exist on home to avoid warnings.

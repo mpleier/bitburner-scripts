@@ -8,17 +8,36 @@ export async function main(ns) {
 
   const parsePasswords = () => {
     const result = new Map();
-    for (const line of ns.read(passwordFile).split(/\r?\n/)) {
-      const row = line.trim();
-      if (!row || row.startsWith("#")) continue;
-      const i = row.indexOf("=");
-      if (i > 0) result.set(row.slice(0, i).trim(), row.slice(i + 1).trim());
+    const files = [passwordFile, ...ns.ls("home", "darknet-passwords-")];
+    for (const file of files) {
+      for (const line of ns.read(file).split(/\r?\n/)) {
+        const row = line.trim();
+        if (!row || row.startsWith("#")) continue;
+        const i = row.indexOf("=");
+        if (i > 0) result.set(row.slice(0, i).trim(), row.slice(i + 1).trim());
+      }
     }
     return result;
   };
   const parseCandidates = () => [...new Set(ns.read(candidateFile).split(/\r?\n/).map(x => x.trim()).filter(x => x && !x.startsWith("#")))];
+  const candidatesFor = (details, words) => {
+    const matches = value => {
+      if (typeof details.passwordLength === "number" && value.length !== details.passwordLength) return false;
+      switch (details.passwordFormat) {
+        case "numeric": return /^\d+$/.test(value);
+        case "alphabetic": return /^[a-z]+$/i.test(value);
+        case "alphanumeric": return /^[a-z0-9]+$/i.test(value);
+        case "ASCII": return /^[\x20-\x7e]+$/.test(value);
+        default: return true;
+      }
+    };
+    const clue = typeof details.data === "string" ? details.data.trim() : "";
+    return [...new Set([...(clue && matches(clue) ? [clue] : []), ...words.filter(matches)])];
+  };
   const reportedHints = new Map();
-  const attemptedHosts = new Set();
+  // Cache complete attempt inputs so failed saved credentials are not retried every poll.
+  const attemptedInputs = new Map();
+  const heartbleedAt = new Map();
   const ensureDarknetUnlock = () => {
     if (!ns.hasTorRouter()) {
       try { ns.singularity.purchaseTor(); } catch { /* Singularity may not be unlocked. */ }
@@ -29,25 +48,27 @@ export async function main(ns) {
   };
   const authenticate = async (host, details, saved, candidates) => {
     if (details.hasSession) return true;
+    const signature = `${saved || ""}\0${candidates.join("\0")}`;
+    if (attemptedInputs.get(host) === signature) return false;
+    attemptedInputs.set(host, signature);
     if (saved) {
       const result = await ns.dnet.authenticate(host, saved);
       if (result.success) return true;
       ns.print(`${host}: saved password failed (${result.code}); trying candidates.`);
     }
-    if (attemptedHosts.has(host)) return false;
-    attemptedHosts.add(host);
     for (let i = 0; i < candidates.length; i++) {
       const password = candidates[i];
       if (password === saved) continue;
       const result = await ns.dnet.authenticate(host, password);
       if (result.success) {
-        await ns.write(passwordFile, `${host}=${password}` + "\n", "a");
-        ns.print(`${host}: candidate matched (${i + 1}/${candidates.length}); saved to ${passwordFile}.`);
+          const reportFile = `darknet-passwords-${host.replace(/[^a-z0-9_-]/gi, "_")}.txt`;
+          await ns.write(reportFile, `${host}=${password}\n`, "w");
+          ns.print(`${host}: candidate matched (${i + 1}/${candidates.length}); saved to ${reportFile}.`);
         return true;
       }
       if (result.code !== "AuthFailure") {
         ns.print(`${host}: candidate check stopped (${result.code}); will retry after rediscovery.`);
-        attemptedHosts.delete(host);
+        attemptedInputs.delete(host);
         return false;
       }
     }
@@ -62,20 +83,35 @@ export async function main(ns) {
       const passwords = parsePasswords();
       const candidates = parseCandidates();
       for (const host of ns.dnet.probe()) {
+        try {
         const details = ns.dnet.getServerDetails(host);
         if (!details.isOnline) continue;
-        if (!passwords.has(host) && !attemptedHosts.has(host)) {
-          const hint = details.passwordHint || "none";
+        if (!passwords.has(host)) {
+          const hint = `${details.passwordHint || "none"} (format ${details.passwordFormat || "unknown"}, length ${details.passwordLength ?? "?"})`;
           if (reportedHints.get(host) !== hint) {
             ns.print(`${host} (depth ${details.depth}) discovered; trying candidate words. Hint: ${hint}`);
             reportedHints.set(host, hint);
           }
         }
-        const authenticated = await authenticate(host, details, passwords.get(host), candidates);
-        if (!authenticated) continue;
+        const hostCandidates = candidatesFor(details, candidates);
+        const authenticated = await authenticate(host, details, passwords.get(host), hostCandidates);
+        if (!authenticated) {
+          // Peek at recent server logs for useful clues without consuming them.
+          const charisma = ns.getPlayer().skills.charisma;
+          const required = ns.dnet.getServerRequiredCharismaLevel(host);
+          const lastPeek = heartbleedAt.get(host) || 0;
+          if (charisma >= required && Date.now() - lastPeek > 10 * 60_000) {
+            heartbleedAt.set(host, Date.now());
+            try {
+              const result = await ns.dnet.heartbleed(host, { peek: true, logsToCapture: 8 });
+              if (result?.data) ns.print(`${host}: heartbleed log clue: ${JSON.stringify(result.data)}`);
+            } catch (error) { ns.print(`${host}: heartbleed unavailable: ${String(error)}`); }
+          }
+          continue;
+        }
         await ns.dnet.memoryReallocation(host);
         if (ns.fileExists(nodeFile, "home")) {
-          await ns.scp([nodeFile, passwordFile, candidateFile], host, "home");
+          await ns.scp([nodeFile, passwordFile, candidateFile, ...ns.ls("home", "darknet-passwords-")], host, "home");
           const running = ns.ps(host).some(p => p.filename === nodeFile);
           if (!running) {
             const ram = ns.getScriptRam(nodeFile, host);
@@ -88,6 +124,7 @@ export async function main(ns) {
             } else ns.print(`${host}: scout needs ${ns.formatRam(ram)} free RAM; ${ns.formatRam(free)} available.`);
           }
         }
+        } catch (error) { ns.print(`${host}: skipped after a server/network error: ${String(error)}`); }
       }
       await ns.sleep(30_000);
     } catch (error) {

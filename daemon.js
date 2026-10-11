@@ -412,7 +412,15 @@ export async function main(ns) {
             {   // Periodically look to purchase new servers, but note that these are often not a great use of our money (hack income isn't everything) so we may hold-back.
                 interval: 32000, name: "host-manager.js", minRamReq: 6.55,
                 // Restrict spending on new servers (i.e. temporary RAM for the current augmentation only) to be a % of total earned hack income.
-                shouldRun: () => shouldImproveHacking() && getHostManagerBudget() > 0,
+                shouldRun: () => {
+                    // The PC controller owns purchased-server decisions while
+                    // its hacking/server lease is live.
+                    try {
+                        const pcOwner = JSON.parse(ns.read("tasks/__pc_hack_owner.json"));
+                        if (pcOwner?.owner === "pc-controller" && Number(pcOwner.expiresAt) > Date.now()) return false;
+                    } catch { /* No PC lease: leave server management to the game helper. */ }
+                    return shouldImproveHacking() && getHostManagerBudget() > 0;
+                },
                 args: () => ['--budget', getHostManagerBudget(), '--absolute-reserve', reservedMoney(ns),
                     // Mechanic to reserve more of our money the longer we've been in the BN. Starts at 0%, after 24h we should be reserving 92%.
                     '--reserve-by-time', true, '--reserve-by-time-decay-factor', 0.1, '--reserve-percent', 0,
@@ -727,6 +735,17 @@ export async function main(ns) {
                     allHelpersRunning = await runStartupScripts(ns);
                 // Run some auxilliary processes that ease the ram burden of this daemon and add additional functionality (like managing hacknet or buying servers)
                 await runPeriodicScripts(ns);
+                // The PC controller can own target scheduling while this daemon
+                // continues managing helper scripts and periodic game systems.
+                // Its lease expires automatically if the PC process disconnects.
+                try {
+                    const pcOwner = JSON.parse(ns.read("tasks/__pc_hack_owner.json"));
+                    if (pcOwner?.owner === "pc-controller" && Number(pcOwner.expiresAt) > Date.now()) {
+                        if (loops % 60 === 0)
+                            log(ns, "PC controller owns hacking; game daemon is leaving target scheduling to it.");
+                        continue;
+                    }
+                } catch { /* no live PC lease: keep the game-side scheduler active */ }
                 if (stockMode) await updateStockPositions(ns); // In stock market manipulation mode, get our current position in all stocks, as it affects targetting order
                 // For early players, change behaviour slightly
                 const homeRam = homeServer.totalRam(true);

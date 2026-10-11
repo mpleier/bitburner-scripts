@@ -7,6 +7,7 @@ export async function main(ns) {
   const c = ns.corporation;
   const cities = ["Sector-12", "Aevum", "Volhaven", "Chongqing", "New Tokyo", "Ishima"];
   const name = "Apex Holdings";
+  const pcOwnerFile = "tasks/__pc_corp_owner.json";
   const agri = "Agri";
   const restaurant = "Dining";
   const reserve = 5e9;
@@ -25,6 +26,12 @@ export async function main(ns) {
   const hasDivision = (division) => divisions().includes(division);
   const hasUnlock = (unlock) => safe(`hasUnlock ${unlock}`, () => c.hasUnlock(unlock)) === true;
   const attempt = (label, fn) => safe(label, () => { fn(); return true; }) === true;
+  const pcOwnsCorporation = () => {
+    try {
+      const lease = JSON.parse(ns.read(pcOwnerFile));
+      return lease?.owner === "pc-controller" && Number(lease.expiresAt) > Date.now();
+    } catch { return false; }
+  };
   // Corporation access is available in BN3 or with active Source-File 3.
   const resetInfo = safe("Read reset information", () => ns.getResetInfo());
   const sourceFiles = resetInfo?.ownedSF;
@@ -36,6 +43,10 @@ export async function main(ns) {
   }
 
   while (!safe("Check corporation API", () => c.hasCorporation())) {
+    if (pcOwnsCorporation()) {
+      await ns.sleep(5_000);
+      continue;
+    }
     const eligible = safe("Check corporation eligibility", () => c.canCreateCorporation(true));
     if (eligible !== "Success") {
       ns.print(`Waiting for corporation creation eligibility (${String(eligible)}).`);
@@ -124,6 +135,10 @@ export async function main(ns) {
   let lastUpgrade = 0;
   while (true) {
     try {
+      if (pcOwnsCorporation()) {
+        await ns.sleep(5_000);
+        continue;
+      }
       const info = corporation();
       if (!info) { await ns.sleep(30_000); continue; }
 

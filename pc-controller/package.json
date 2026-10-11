@@ -1,0 +1,13 @@
+{
+  "name": "bitburner-pc-controller",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Optional local PC companion for the Bitburner automation scripts",
+  "main": "pc.js",
+  "scripts": {
+    "start": "node pc.js"
+  },
+  "dependencies": {
+    "ws": "^8.22.0"
+  }
+}

@@ -1,4 +1,5 @@
 
 *.txt
+!darknet-candidates.txt
 .vscode/*.*
 *.ts

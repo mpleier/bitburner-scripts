@@ -1,0 +1,4 @@
+node_modules/
+darknet_pw.json
+dnet_rewards.json
+.pc-controller.pid

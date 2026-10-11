@@ -123,8 +123,11 @@ export async function main(ns) {
     if (hasUnlock("Smart Supply")) attempt("Enable Smart Supply", () => c.setSmartSupply(division, city, true));
     if (products) {
       const d = safe("Read product division", () => c.getDivision(division));
-      for (const product of d?.products ?? [])
-        attempt(`Sell ${product}`, () => c.sellProduct(division, city, product, "MAX", "MP", true));
+      for (const product of d?.products ?? []) {
+        const item = safe(`Read product ${product}`, () => c.getProduct(division, city, product));
+        if (item?.developmentProgress >= 100)
+          attempt(`Sell ${product}`, () => c.sellProduct(division, city, product, "MAX", "MP", true));
+      }
       return;
     }
     for (const material of ["Plants", "Food"])

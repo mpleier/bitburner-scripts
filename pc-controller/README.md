@@ -23,6 +23,8 @@ The controller does not launch `autopilot.js`. That script has its own augmentat
 - `sync` — sync repository scripts through the Remote API.
 - `help` — list the other controller commands.
 
+The corporation manager keeps the Agriculture-to-Restaurant growth plan, reserves cash before purchases, and places product sale orders only after product development reaches 100% and only in cities where the division operates. The same completion check is used by the game-side fallback manager.
+
 `Stop.bat` stops the PC controller. Its leases expire automatically; the game daemon can then resume the game-side hacking, corporation, and darknet managers. Long-running worker processes already launched by the game may finish their current work.
 
 The controller binds only to `127.0.0.1:12525`; stop another local bridge using that port before starting it. `darknet_pw.json` and `dnet_rewards.json` are local play data and remain ignored by Git. Ollama integration is optional.

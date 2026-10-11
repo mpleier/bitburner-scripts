@@ -24,6 +24,7 @@ try {
 const readline  = require("readline");
 const fs        = require("fs");
 const path      = require("path");
+const { readyProductSales } = require("./corporation-policy.cjs");
 
 // Record this controller's PID only after its WebSocket port is bound so
 // Stop.bat can safely target this instance without terminating other Node apps.
@@ -2347,7 +2348,7 @@ function buildCorporationPlan(s) {
       }
       if (unlock("Smart Supply")) add("setSmartSupply", [name, city, true]);
       if (productDivision) {
-        for (const product of d.products || []) add("sellProduct", [name, city, product, "MAX", "MP", true]);
+        for (const args of readyProductSales(d, allCities)) add("sellProduct", args);
       } else {
         for (const material of ["Plants", "Food"]) add("sellMaterial", [name, city, material, "MAX", "MP"]);
         if (unlock("Smart Supply")) for (const material of ["Water", "Chemicals"]) add("buyMaterial", [name, city, material, 0]);

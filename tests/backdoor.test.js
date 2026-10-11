@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { getBackdoorCandidates } from '../Tasks/backdoor-all-servers.js';
 import { main as backdoorOne } from '../Tasks/backdoor-all-servers.js.backdoor-one.js';
+import corporationPolicy from '../pc-controller/corporation-policy.cjs';
 
 test('backdoor candidate filter excludes home, player-owned, hacknet, and daemon servers', () => {
     const servers = [
@@ -46,4 +47,21 @@ test('backdoor worker handles install failure without throwing', async () => {
     await assert.doesNotReject(backdoorOne(ns));
     assert.match(printed[0], /Could not backdoor pserv-owned/);
     assert.deepEqual(toasts, [['Could not backdoor pserv-owned; will retry later.', 'warning']]);
+});
+
+test('corporation controller only sells completed products in active cities', () => {
+    const division = {
+        name: 'Dining',
+        cities: ['Sector-12', 'Aevum'],
+        products: ['Apex Dining 1', 'Apex Dining 2'],
+        productInfo: {
+            'Apex Dining 1': { developmentProgress: 100 },
+            'Apex Dining 2': { developmentProgress: 74 },
+        },
+    };
+
+    assert.deepEqual(corporationPolicy.readyProductSales(division, ['Sector-12', 'Aevum', 'Volhaven']), [
+        ['Dining', 'Sector-12', 'Apex Dining 1', 'MAX', 'MP', true],
+        ['Dining', 'Aevum', 'Apex Dining 1', 'MAX', 'MP', true],
+    ]);
 });

@@ -79,7 +79,7 @@ export function rewriteFileForSubfolder(ns, path) {
 /** @param {NS} ns
  * Gets a list of files to download, either from the github repository (if supported), or using a local directory listing **/
 async function repositoryListing(ns, folder = '') {
-    // Note: Limit of 60 free API requests per day, don't over-do it
+    // Note: Unauthenticated GitHub API requests are rate-limited; keep recursive listings infrequent.
     const listUrl = `https://api.github.com/repos/${options.github}/${options.repository}/contents/${folder}?ref=${options.branch}`
     let response = null;
     try {
@@ -100,7 +100,7 @@ async function repositoryListing(ns, folder = '') {
         ns.tprint(`WARNING: Failed to get a repository listing (GitHub API request limit of 60 reached?): ${listUrl}` +
             `\nResponse Contents (if available): ${JSON.stringify(response ?? '(N/A)')}\nError: ${String(error)}`);
         // Fallback, assume the user already has a copy of all files in the repo, and use it as a directory listing
-        return ns.ls('home').filter(name => options.extension.some(ext => f.endsWith(ext)) &&
+        return ns.ls('home').filter(name => options.extension.some(ext => name.endsWith(ext)) &&
             !options['omit-folder'].some(dir => name.startsWith(dir)));
     }
 }

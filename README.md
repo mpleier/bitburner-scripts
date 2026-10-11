@@ -7,9 +7,9 @@ If you manually `nano git-pull.js` from the terminal and copy the [contents of t
 
 # Running scripts
 
-If you `run autopilot.js` from the terminal, it will start several other scripts.
+For this repository's PC-controlled setup, follow [README-AUTOMATION.md](README-AUTOMATION.md): start `pc-controller/Start.bat`, connect Bitburner's Remote API, and run `agent.js` once. The PC controller then starts its own hacking, corporation, and darknet managers and supervises `daemon.js` for the remaining helper scripts.
 
-You can think of this as the "master orchestrator" script. It will kick off `daemon.js` (your primary hacking script), which in turn kicks off several other helper-scripts. It will monitor your progress throughout the game, and take special actions when it can. I don't want to spoil too much for those new to the game, but it's worth mentioning that `SF4` is not required, but is highly-recommended to get the full benefit of this script.
+`autopilot.js` is still available as a separate in-game orchestrator. It can install augmentations and advance BitNodes automatically, so the PC-controlled setup does not start it for you.
 
 Most scripts can also be run on their own, but are primarily designed to be orchestrated by `autopilot.js` or `daemon.js`.
 

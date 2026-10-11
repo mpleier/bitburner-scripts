@@ -1,15 +1,28 @@
-# Optional PC controller
+# PC-controlled Bitburner automation
 
-This folder contains the Node.js companion that handles PC-side hacking/server planning and corporation decisions, supports PC-side darknet automation, and coordinates game actions through `agent.js`.
+`pc.js` is the top-level automation controller. It makes the hacking, server, corporation, and darknet decisions on the PC, and starts `daemon.js` to manage the game's other helper systems as they unlock. The game scripts are workers because Bitburner exposes Netscript actions through its in-game runtime; the Remote API only syncs files.
 
-## Setup
+## Start once
 
-1. Install Node.js, then launch `Start.bat`. It installs the locked dependencies on first run and starts the controller.
-2. Alternatively, run `npm ci` once in this folder, then use `npm start`.
-3. Run `Stop.bat` to stop the controller started from this folder.
-4. In Bitburner, open Options → Remote API and connect to `127.0.0.1:12525`. The controller syncs the repository's game JavaScript files and `darknet-candidates.txt` to home when the Remote API connects. The API does not start scripts, so run `run agent.js` once in the Bitburner terminal to enable PC-controlled actions.
-5. Keep the controller running while playing. Hacking/server management and corporation automation start on controller boot by default; `auto` and `corp-auto` toggle those loops. While PC hacking is active, it renews a game-side lease so `daemon.js` skips only its own target scheduling and purchased-server helper, while continuing other helpers and periodic managers. The game daemon resumes target scheduling and its server helper automatically if the PC controller disconnects or stops renewing its lease. Corporation ownership uses a separate lease in the same way. The game darknet manager remains part of daemon automation; use `dnet-auto` to additionally enable PC-side darknet management.
+1. Run `Start.bat` from this folder. It installs the locked Node.js dependency if needed and starts `pc.js`.
+2. In Bitburner, open **Options → Remote API** and connect to `127.0.0.1:12525`. The controller syncs game scripts to `home`.
+3. In the Bitburner terminal, run `run agent.js` once. This small bridge lets `pc.js` issue Netscript actions. It reconnects automatically after a PC controller restart while the agent remains running.
 
-The controller binds only to `127.0.0.1:12525`. Stop any other local Bitburner bridge that uses this port before starting it. It reads the repository-root `darknet-candidates.txt`; edit that shared list to add exact candidate words for both the in-game and PC-side managers.
+After the agent connects, `pc.js` automatically starts hacking/server management, corporation management, darknet automation, and the game-side `daemon.js` helper suite. The game daemon defers hacking, corporation, and darknet ownership to the PC while their renewable leases are active, so those systems are not managed twice. The PC controller checks `daemon.js` periodically and starts it again if it exits.
 
-`darknet_pw.json` and `dnet_rewards.json` are created locally as needed and ignored by Git because they can contain credentials or play-specific data. Ollama integration is optional.
+The controller does not launch `autopilot.js`. That script has its own augmentation installation and BitNode-reset workflow. Start it separately only when you explicitly want that progression behavior.
+
+## Controller commands
+
+- `status` — show Remote API and agent connectivity plus the automation loop states.
+- `all-auto` — start or stop the full PC-managed suite, including the game-side manager processes.
+- `auto` — toggle PC hacking/server management.
+- `corp-auto` / `corp-stop` — start or stop PC corporation management.
+- `dnet-auto` — toggle PC darknet management.
+- `game-suite` — ensure `daemon.js` is running under PC supervision.
+- `sync` — sync repository scripts through the Remote API.
+- `help` — list the other controller commands.
+
+`Stop.bat` stops the PC controller. Its leases expire automatically; the game daemon can then resume the game-side hacking, corporation, and darknet managers. Long-running worker processes already launched by the game may finish their current work.
+
+The controller binds only to `127.0.0.1:12525`; stop another local bridge using that port before starting it. `darknet_pw.json` and `dnet_rewards.json` are local play data and remain ignored by Git. Ollama integration is optional.

@@ -1,5 +1,5 @@
 /**
- * pc.js — Bitburner PC controller (v20)
+ * pc.js — Bitburner PC controller (v21)
  *
  * Run:  node pc.js
  * Requires: Bitburner Remote API enabled for file sync; agent.js running in-game for actions; Ollama optional.
@@ -57,9 +57,12 @@ const CONFIG = {
   pushWorkersOnBoot:    true,
   pushWorkersEveryMs:   60000,
   hackingAutoStartOnBoot: true,
+  gameDaemonAutoStartOnBoot: true,
+  gameDaemonCheckMs:    30000,
 
   // Darknet
   dnetAutoIntervalMs:    90000,
+  dnetAutoStartOnBoot:   true,
   dnetSessionRefreshMs:  120000,
   dnetCrackThreads:      8,
   dnetReallocThreads:    4,
@@ -1395,13 +1398,16 @@ async function manageServers() {
     }
   }
 
+  // Home RAM upgrades are part of the Singularity API in current Bitburner.
+  // Skip cleanly when Source-File 4 (or the API) is unavailable.
   let cost = 0;
-  try { cost = await run(`return ns.getUpgradeHomeRamCost();`); }
-  catch (e) { console.log("home RAM cost query failed:", e.message); }
+  try {
+    cost = await run(`return typeof ns.singularity?.getUpgradeHomeRamCost === "function" ? ns.singularity.getUpgradeHomeRamCost() : 0;`);
+  } catch (e) { console.log("home RAM cost query failed:", e.message); }
 
   if (cost > 0 && player.money > cost * 5) {
     try {
-      const ok = await run(`return ns.upgradeHomeRam();`);
+      const ok = await run(`return typeof ns.singularity?.upgradeHomeRam === "function" && ns.singularity.upgradeHomeRam();`);
       if (ok) console.log(`⬆️ home RAM upgraded (next cost $${cost.toExponential(2)})`);
     } catch {}
   }
@@ -2251,7 +2257,7 @@ async function getCorporationSnapshot() {
     for (const divisionName of corp?.divisions || []) {
       const d = safe(() => c.getDivision(divisionName), null);
       if (!d) continue;
-      const info = { name: divisionName, type: d.type, cities: d.cities || [], products: d.products || [], offices: {}, warehouses: {}, productInfo: {} };
+      const info = { name: divisionName, industry: d.industry, cities: d.cities || [], products: d.products || [], offices: {}, warehouses: {}, productInfo: {} };
       for (const city of info.cities) {
         if (result.unlocks["Office API"]) {
           info.offices[city] = safe(() => c.getOffice(divisionName, city), null);
@@ -2453,21 +2459,41 @@ async function corporationAutoLoop() {
   }
 }
 
+const DNET_OWNER_FILE = "tasks/__pc_dnet_owner.json";
+async function setDarknetLease(active) {
+  if (!agent) return false;
+  const source = active
+    ? `await ns.write(${JSON.stringify(DNET_OWNER_FILE)}, JSON.stringify({ owner: "pc-controller", expiresAt: ${Date.now() + 180_000} }), "w"); return true;`
+    : `return ns.rm(${JSON.stringify(DNET_OWNER_FILE)}, "home");`;
+  return run(source, { host: "home", threads: 1 });
+}
+
 async function dnetAutoLoop() {
   if (dnetAutoRunning) { console.log("darknet auto already running"); return; }
   dnetAutoRunning = true;
   dnetStats.started = Date.now();
   console.log("🌐 darknet auto-pilot STARTED — type 'dnet-auto' again to stop");
 
-  const pf = await preflightDarknet();
+  let pf;
+  try {
+    await setDarknetLease(true);
+    pf = await preflightDarknet();
+  } catch (error) {
+    dnetAutoRunning = false;
+    try { await setDarknetLease(false); } catch {}
+    console.log(`🌐 auto-pilot preflight failed: ${error.message}`);
+    return;
+  }
 
   if (CONFIG.dnetRequireTor && !pf.tor) {
     dnetAutoRunning = false;
+    try { await setDarknetLease(false); } catch {}
     console.log("🌐 auto-pilot STOPPED — TOR router required. Run: buy tor");
     return;
   }
   if (!pf.dnetApi) {
     dnetAutoRunning = false;
+    try { await setDarknetLease(false); } catch {}
     console.log("🌐 auto-pilot STOPPED — ns.dnet API not available. Run: buy darkscape");
     return;
   }
@@ -2486,6 +2512,7 @@ async function dnetAutoLoop() {
     const cycleStart = Date.now();
     try {
       if (!agent) { await sleep(2000); continue; }
+      await setDarknetLease(true);
 
       if (pf.directExec) {
         try {
@@ -2601,6 +2628,8 @@ async function dnetAutoLoop() {
     while (dnetAutoRunning && Date.now() < sleepEnd) await sleep(1000);
   }
 
+  try { await setDarknetLease(false); }
+  catch (error) { console.log("could not release darknet ownership lease:", error.message); }
   console.log("🌐 darknet auto-pilot STOPPED");
 }
 
@@ -2649,6 +2678,128 @@ async function autopilotLoop() {
     catch (error) { console.log("could not release hacking ownership lease:", error.message); }
     console.log("🤖 PC hacking/server autopilot stopped");
   }
+}
+
+// The PC controller owns the top-level automation lifecycle. daemon.js remains
+// the in-game worker manager for game systems that need long-running scripts.
+let gameDaemonSupervisorRunning = false;
+let lastGameDaemonWarningAt = 0;
+let fullAutomationRunning = false;
+async function ensureGameDaemon() {
+  if (!agent) return false;
+  const state = await run(`
+    if (!ns.fileExists("daemon.js", "home")) return { missing: true };
+    const current = ns.ps("home").find(p => p.filename === "daemon.js");
+    if (current) return { running: true, pid: current.pid };
+    let pid = 0;
+    try { pid = ns.exec("daemon.js", "home", { threads: 1 }, "--no-tail-windows"); }
+    catch (error) { return { error: error.message }; }
+    return { started: pid > 0, pid };
+  `, { host: "home", threads: 1 });
+
+  if (state?.missing) {
+    if (Date.now() - lastGameDaemonWarningAt > 300_000) {
+      lastGameDaemonWarningAt = Date.now();
+      console.log("🎛️ game automation files are not on home yet; connect Remote API or sync the scripts and pc.js will retry.");
+    }
+    return false;
+  }
+  if (state?.error) {
+    console.log(`🎛️ could not start daemon.js: ${state.error}`);
+    return false;
+  }
+  if (state?.started) console.log(`🎛️ PC started game automation manager (daemon.js, pid ${state.pid}).`);
+  return state?.running === true || state?.started === true;
+}
+
+async function gameDaemonSupervisorLoop() {
+  if (gameDaemonSupervisorRunning) return;
+  gameDaemonSupervisorRunning = true;
+  try {
+    while (gameDaemonSupervisorRunning) {
+      try {
+        if (agent) await ensureGameDaemon();
+      } catch (error) {
+        console.log(`🎛️ game automation supervision recovered: ${error.message}`);
+      }
+      const until = Date.now() + CONFIG.gameDaemonCheckMs;
+      while (gameDaemonSupervisorRunning && Date.now() < until) await sleep(500);
+    }
+  } finally {
+    gameDaemonSupervisorRunning = false;
+  }
+}
+
+const GAME_AUTOMATION_PROCESS_NAMES = [
+  "daemon.js", "stats.js", "darknet-manager.js", "corporation-manager.js", "go.js",
+  "stockmaster.js", "hacknet-upgrade-manager.js", "spend-hacknet-hashes.js", "sleeve.js",
+  "gangs.js", "work-for-factions.js", "bladeburner.js", "tor-manager.js",
+  "program-manager.js", "contractor.js", "ram-manager.js", "faction-manager.js",
+  "host-manager.js", "backdoor-all-servers.js", "darknet-worm.js", "darknet-harvest.js",
+  "darknet-realloc.js", "hack.js", "grow.js", "weaken.js", "hack-target.js",
+  "grow-target.js", "weak-target.js", "manualhack-target.js", "share.js",
+];
+
+async function stopGameAutomation() {
+  return run(`
+    const managed = new Set(${JSON.stringify(GAME_AUTOMATION_PROCESS_NAMES)});
+    const queue = ["home"], seen = new Set(queue);
+    for (let i = 0; i < queue.length; i++) {
+      try { for (const next of ns.scan(queue[i])) if (!seen.has(next)) { seen.add(next); queue.push(next); } } catch {}
+    }
+    let stopped = 0;
+    for (const host of seen) {
+      try {
+        if (!ns.hasRootAccess(host)) continue;
+        for (const process of ns.ps(host)) {
+          const name = String(process.filename).split("/").pop();
+          if (managed.has(name) && ns.kill(process.pid, host)) stopped++;
+        }
+      } catch {}
+    }
+    return stopped;
+  `, { host: "home", threads: 1 });
+}
+
+async function startAllAutomation() {
+  if (fullAutomationRunning) return;
+  if (!agent) {
+    console.log("cannot start full automation until agent.js is connected in Bitburner.");
+    return;
+  }
+  fullAutomationRunning = true;
+  if (CONFIG.hackingAutoStartOnBoot) {
+    try { await setHackingLease(true); } catch (error) { console.log(`hacking lease failed: ${error.message}`); }
+    void autopilotLoop();
+  }
+  if (CONFIG.corpAutoStartOnBoot) {
+    try { await setCorporationLease(true); } catch (error) { console.log(`corporation lease failed: ${error.message}`); }
+    corporationAutoLoop();
+  }
+  if (CONFIG.dnetAutoStartOnBoot) {
+    try { await setDarknetLease(true); } catch (error) { console.log(`darknet lease failed: ${error.message}`); }
+    void dnetAutoLoop();
+  }
+  if (CONFIG.gameDaemonAutoStartOnBoot) {
+    try { await ensureGameDaemon(); } catch (error) { console.log(`game suite startup failed: ${error.message}`); }
+    void gameDaemonSupervisorLoop();
+  }
+  console.log("🎛️ full automation is under PC control.");
+}
+
+async function stopAllAutomation() {
+  fullAutomationRunning = false;
+  autopilotRunning = false;
+  corpAutoRunning = false;
+  gameDaemonSupervisorRunning = false;
+  dnetAutoStop();
+  let stopped = 0;
+  try { stopped = await stopGameAutomation(); }
+  catch (error) { console.log(`could not stop all game managers: ${error.message}`); }
+  for (const release of [setHackingLease(false), setCorporationLease(false), setDarknetLease(false)]) {
+    try { await release; } catch {}
+  }
+  console.log(`⏹️ full automation stopped; terminated ${stopped} game manager/worker process(es).`);
 }
 
 // ---------------------------------------------------------------------------
@@ -2897,6 +3048,8 @@ rl.on("line", async (line) => {
   auto                ← START/STOP PC-side hacking and server management (also starts on boot)
   corp-auto           ← START/STOP PC-side corporation management
   corp-status · corp-stop
+  all-auto            ← START/STOP the full PC-managed automation suite
+  game-suite          ← ensure the PC-managed in-game helper suite is running
   nuke <host> · scp <file> <host> · exec <script> <host> <threads> [arg]
   push · plan <target> · tick · manage · buy
   dnet-auto           ← START/STOP the full autonomous darknet loop
@@ -2917,7 +3070,9 @@ rl.on("line", async (line) => {
       case "status": {
         console.log(`  agent:    ${agent ? "✅" : "❌"}`);
         console.log(`  remote:   ${remoteApi ? "✅ Bitburner Remote API connected" : "❌ not connected"}`);
+        console.log(`  all-auto: ${fullAutomationRunning ? "▶ running" : "⏹ stopped"}`);
         console.log(`  auto:     ${autopilotRunning ? "▶ running" : "⏹ stopped"}`);
+        console.log(`  game suite: ${gameDaemonSupervisorRunning ? "▶ supervised" : "⏹ stopped"}`);
         console.log(`  inflight: ${inflight.length}`);
         for (const b of inflight) {
           const s = Math.max(0, (b.endsAt - Date.now()) / 1000).toFixed(1);
@@ -2940,6 +3095,15 @@ rl.on("line", async (line) => {
         break;
       case "corp-stop": corpAutoRunning = false; console.log("stopping PC corporation manager…"); break;
       case "corp-status": console.log(JSON.stringify(await getCorporationSnapshot(), null, 2)); break;
+      case "all-auto":
+        if (fullAutomationRunning) await stopAllAutomation();
+        else await startAllAutomation();
+        break;
+      case "game-suite": {
+        const running = await ensureGameDaemon();
+        console.log(running ? "🎛️ daemon.js is running under PC supervision." : "🎛️ game suite is not ready; check that daemon.js is synced and home has free RAM.");
+        break;
+      }
       case "nuke":   console.log(await run(`return ns.nuke(${JSON.stringify(rest[0])});`)); break;
       case "scp":    console.log(await scpFile(rest[0], rest[1])); break;
 
@@ -3159,15 +3323,16 @@ rl.on("line", async (line) => {
 // ---------------------------------------------------------------------------
 // Boot
 // ---------------------------------------------------------------------------
-console.log("=== Bitburner PC controller v20 ===");
+console.log("=== Bitburner PC controller v21 ===");
 console.log(`WebSocket ws://127.0.0.1:${CONFIG.port}`);
 console.log(`Auto-push workers: ${CONFIG.pushWorkersOnBoot ? "on" : "off"} · every ${CONFIG.pushWorkersEveryMs/1000}s`);
 console.log(`PC hacking/server autopilot: auto-start=${CONFIG.hackingAutoStartOnBoot ? "on" : "off"}`);
+console.log(`Game automation suite: daemon.js auto-start=${CONFIG.gameDaemonAutoStartOnBoot ? "on" : "off"} · check=${CONFIG.gameDaemonCheckMs/1000}s`);
 console.log(`Darknet: every ${CONFIG.dnetAutoIntervalMs/1000}s · entry=${CONFIG.dnetEntryHost}`);
 console.log(`Corporation: PC-managed · auto-start=${CONFIG.corpAutoStartOnBoot ? "on" : "off"} · interval=${CONFIG.corpAutoIntervalMs/1000}s`);
 console.log(`Worm-driven: cracking/spreading/harvesting run in the worm; PC observes`);
 console.log(`Ollama: ${CONFIG.ollamaHost} (${CONFIG.ollamaModel})`);
-console.log("\n💡 Hacking/server management starts automatically. Use 'auto' to toggle it; type 'dnet-auto' for PC darknet control. Run 'dnet-preflight' first if darknet startup fails.\n");
+console.log("\n💡 PC.js starts and supervises the full automation suite. Its controller owns hacking, corporation, and darknet; daemon.js starts the remaining game managers.\n");
 console.log("In Bitburner, open Options → Remote API and connect to 127.0.0.1:12525 for script sync.");
 console.log("After the first sync, run 'run agent.js' once in Bitburner to enable PC-controlled actions.\n");
 
@@ -3190,8 +3355,7 @@ console.log("After the first sync, run 'run agent.js' once in Bitburner to enabl
   if (CONFIG.pushWorkersOnBoot) {
     try { await pushWorkers(); } catch (e) { console.log("push failed:", e.message); }
   }
-  if (CONFIG.corpAutoStartOnBoot) corporationAutoLoop();
-  if (CONFIG.hackingAutoStartOnBoot) void autopilotLoop();
+  await startAllAutomation();
   setInterval(ollamaPreflight, CONFIG.preflightEveryMs);
 })();
 

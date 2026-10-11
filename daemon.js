@@ -349,6 +349,12 @@ export async function main(ns) {
 
         // Helper to determine whether we meed a given home RAM requirement (To avoid wasting precious early-BN RAM, many scripts don't launch unless we have more than a certain amount)
         const reqRam = (ram) => homeServer.totalRam(/*ignoreReservedRam:*/true) >= ram;
+        const pcOwnsAutomation = (file) => {
+            try {
+                const lease = JSON.parse(ns.read(file));
+                return lease?.owner === "pc-controller" && Number(lease.expiresAt) > Date.now();
+            } catch { return false; }
+        };
         // Helper to decide whether we should launch one of the hacknet upgrade manager scripts.
         const shouldUpgradeHacknet = () =>
             bitNodeMults.HacknetNodeMoney > 0 && // Ensure hacknet is not disabled in this BN
@@ -359,8 +365,8 @@ export async function main(ns) {
         // Set up "asynchronous helpers" - standalone scripts to manage certain aspacts of the game. daemon.js launches each of these once when ready (but not again if they are shut down)
         asynchronousHelpers = [
             { name: "stats.js", shouldRun: () => reqRam(64), shouldTail: false }, // Adds stats not usually in the HUD (nice to have)
-            { name: "darknet-manager.js", shouldRun: () => reqRam(64), shouldTail: false }, // Scout the unstable darknet when its APIs and tools are available
-            { name: "corporation-manager.js", shouldRun: () => reqRam(256) && (resetInfo.currentNode == 3 || 3 in dictSourceFiles), shouldTail: true }, // Manage a corporation in BN3 or after earning SF3
+            { name: "darknet-manager.js", shouldRun: () => reqRam(64) && !pcOwnsAutomation("tasks/__pc_dnet_owner.json"), shouldTail: false }, // PC owns darknet while its lease is live
+            { name: "corporation-manager.js", shouldRun: () => reqRam(256) && !pcOwnsAutomation("tasks/__pc_corp_owner.json") && (resetInfo.currentNode == 3 || 3 in dictSourceFiles), shouldTail: true }, // PC owns corporation while its lease is live
             { name: "go.js", shouldRun: () => reqRam(64), minRamReq: 20.2 }, // Play go.js (various multipliers, but large dynamic ram requirements)
             { name: "stockmaster.js", shouldRun: () => reqRam(64), args: openTailWindows ? ["--show-market-summary"] : [] }, // Start our stockmaster
             { name: "hacknet-upgrade-manager.js", shouldRun: () => shouldUpgradeHacknet(), args: ["-c", "--max-payoff-time", "1h", "--interval", "0"], shouldTail: false }, // One-time kickstart of hash income by buying everything with up to 1h payoff time immediately

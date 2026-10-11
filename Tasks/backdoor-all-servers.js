@@ -5,6 +5,14 @@ const argsSchema = [
     ['reserved-home-ram', 22], // Don't spawn additional backdoor scripts if home free ram dips below this amount (each parallel backdoor consumes 3.6 GB)
 ];
 
+/** Return only network servers that support player backdoors. */
+export function getBackdoorCandidates(servers, purchasedServers = []) {
+    const purchased = new Set(purchasedServers);
+    return servers.filter(server => server !== "home" &&
+        !purchased.has(server) && !server.startsWith("pserv-") &&
+        !server.startsWith("hacknet-") && !server.includes("daemon"));
+}
+
 export function autocomplete(data, args) {
     data.flags(argsSchema);
     return [];
@@ -34,7 +42,10 @@ export async function main(ns) {
                 if (!servers.includes(j)) servers.push(j), routes[j] = routes[servers[i]].slice(), routes[j].push(j);
 
         // Filter out servers that cannot or should not be hacked / backdoored
-        const hackableServers = servers.filter(s => s != "home" && !s.includes("hacknet-") && !s.includes("daemon")) /*or whatever you name your purchased servers*/
+        // Backdoors can only be installed on faction/company servers, not servers
+        // owned by the player (including purchased servers and hacknet servers).
+        const purchasedServers = await getNsDataThroughFile(ns, 'ns.getPurchasedServers()');
+        const hackableServers = getBackdoorCandidates(servers, purchasedServers);
 
         // Get the required hacking level of each server
         const dictRequiredHackingLevels = await getNsDataThroughFile(ns,

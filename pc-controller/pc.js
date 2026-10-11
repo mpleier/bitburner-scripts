@@ -881,7 +881,7 @@ function requestRemoteApi(method, params = {}, ws = remoteApi, timeoutMs = 15000
 
 function listGameScripts(directory, root, output = []) {
   for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
-    if (entry.name.startsWith(".") || ["pc-controller", "node_modules", "vendor", "docs", "sources"].includes(entry.name)) continue;
+    if (entry.name.startsWith(".") || ["pc-controller", "node_modules", "vendor", "docs", "sources", "scripts", "tests"].includes(entry.name)) continue;
     const absolute = path.join(directory, entry.name);
     if (entry.isDirectory()) listGameScripts(absolute, root, output);
     else if (entry.isFile() && entry.name.endsWith(".js")) {

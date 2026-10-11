@@ -6,7 +6,10 @@ export async function main(ns) {
         ns.toast(`Backdoored ${target}`, 'success');
     }
     catch (err) {
-        ns.tprint(`Error while running backdoor (intended for ${target}): ${String(err)}`);
-        throw (err);
+        // A target can become ineligible between the manager scan and this
+        // script running (for example, after a server purchase/reset). Report
+        // the failure without throwing an error modal or killing the manager.
+        ns.print(`WARN: Could not backdoor ${target}: ${String(err)}`);
+        ns.toast(`Could not backdoor ${target}; will retry later.`, 'warning');
     }
 }

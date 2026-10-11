@@ -1,0 +1,9 @@
+{
+  "name": "bitburner-scripts",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test",
+    "check": "node scripts/check-syntax.js"
+  }
+}

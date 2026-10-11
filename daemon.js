@@ -632,6 +632,18 @@ export async function main(ns) {
         // If all criteria pass, launch the script on home, or wherever we have space for it.
         const args = funcResultOrValue(tool.args) || []; // Support either a static args array, or a function returning the args.
         const lowHomeRam = homeServer.totalRam(true) < 32; // Special-case. In early BN1.1, when home RAM is <32 GB, allow certain scripts to be run on any host
+        if (!lowHomeRam) {
+            const targetServer = getServerByName(daemonHost);
+            const availableRam = targetServer.ramAvailable(/*ignoreReservedRam:*/true);
+            if (availableRam < tool.cost) {
+                if (!tool.ramWaitLogged) {
+                    log(ns, `INFO: Delaying ${tool.name} until enough RAM is free (needs ${formatRam(tool.cost)}, has ${formatRam(availableRam)}).`);
+                    tool.ramWaitLogged = true;
+                }
+                return false;
+            }
+            tool.ramWaitLogged = false;
+        }
         const runResult = lowHomeRam ?
             (await arbitraryExecution(ns, tool, 1, args, getServerByName(backupServerName).hasRoot() ? backupServerName : daemonHost)) :
             (await exec(ns, tool.name, daemonHost, tool.runOptions, ...args));

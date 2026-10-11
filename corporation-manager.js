@@ -25,6 +25,15 @@ export async function main(ns) {
   const hasDivision = (division) => divisions().includes(division);
   const hasUnlock = (unlock) => safe(`hasUnlock ${unlock}`, () => c.hasUnlock(unlock)) === true;
   const attempt = (label, fn) => safe(label, () => { fn(); return true; }) === true;
+  // Corporation access is available in BN3 or with active Source-File 3.
+  const resetInfo = safe("Read reset information", () => ns.getResetInfo());
+  const sourceFiles = resetInfo?.ownedSF;
+  const sourceFile3Level = typeof sourceFiles?.get === "function" ? sourceFiles.get(3) : sourceFiles?.[3];
+  const hasSourceFile3 = Number(sourceFile3Level) > 0;
+  if (!resetInfo || (resetInfo.currentNode !== 3 && !hasSourceFile3)) {
+    ns.tprint("Corporation manager stopped: requires BitNode 3 or Source-File 3 access.");
+    return;
+  }
 
   while (!safe("Check corporation API", () => c.hasCorporation())) {
     const eligible = safe("Check corporation eligibility", () => c.canCreateCorporation(true));
@@ -170,7 +179,7 @@ export async function main(ns) {
 
       // Limit recurring upgrade spending while preserving cash for expansion.
       if (Date.now() - lastUpgrade >= 60_000) {
-        for (const upgrade of ["Smart Factories", "Smart Storage", "DreamSense", "Wilson Analytics"]) {
+        for (const upgrade of ["Smart Factories", "Smart Storage", "Wilson Analytics"]) {
           const cost = safe(`Get ${upgrade} upgrade cost`, () => c.getUpgradeLevelCost(upgrade));
           if (Number.isFinite(cost) && cost <= funds() * 0.01 && funds() > cost + reserve) {
             if (attempt(`Level ${upgrade}`, () => c.levelUpgrade(upgrade))) lastUpgrade = Date.now();
@@ -182,7 +191,7 @@ export async function main(ns) {
       const now = Date.now();
       if (now - lastInvestmentCycle > 60_000) {
         lastInvestmentCycle = now;
-        ns.print(`${info.name}: $${ns.formatNumber(funds())}; divisions: ${divisions().join(", ") || "none"}.`);
+        ns.print(`${info.name}: $${ns.format.number(funds())}; divisions: ${divisions().join(", ") || "none"}.`);
       }
       await c.nextUpdate();
     } catch (error) {

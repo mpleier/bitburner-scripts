@@ -3,8 +3,33 @@ export async function main(ns) {
   const passwordFile = "darknet-passwords.txt";
   const candidateFile = "darknet-candidates.txt";
   const nodeFile = "darknet-node.js";
-  ns.disableLog("sleep");
-  ns.disableLog("scan");
+  // Helper scripts are split out of the scout so each stays small enough for
+  // low-RAM darknet servers (darkweb has 16 GB): the scout only cracks and
+  // spreads; darknet-loot.js phishes and opens caches; darknet-stasis.js is a
+  // one-shot that applies a stasis link.
+  const lootFile = "darknet-loot.js";
+  const stasisFile = "darknet-stasis.js";
+  const codeFiles = [nodeFile, lootFile, stasisFile];
+  // Every ns call is logged by default (scp, probe, getServerMaxRam...), which
+  // buried the useful lines. Keep only what this script prints itself.
+  ns.disableLog("ALL");
+
+  const hashText = (text) => {
+    let h = 5381;
+    for (let i = 0; i < text.length; i++) h = ((h << 5) + h + text.charCodeAt(i)) | 0;
+    return `${text.length}:${h}`;
+  };
+  // Last state copied to each host, so files are only re-sent when they change
+  // or the host was wiped/restarted, not on every poll.
+  const deployed = new Map();
+  const deployedCode = new Map();
+  // Only print a status line when it changes.
+  const lastNote = new Map();
+  const note = (key, message) => {
+    if (lastNote.get(key) === message) return;
+    lastNote.set(key, message);
+    ns.print(message);
+  };
 
   // v3 renamed ns.formatRam -> ns.format.ram. Use whichever exists.
   const fmtRam = (v) => {
@@ -166,21 +191,35 @@ export async function main(ns) {
 
           if (ns.fileExists(nodeFile, "home")) {
             // Only scp files that actually exist on home to avoid warnings.
-            const files = [nodeFile, candidateFile, ...ns.ls("home", "darknet-passwords-")];
+            const files = [...codeFiles, candidateFile, ...ns.ls("home", "darknet-passwords-")]
+              .filter((f) => ns.fileExists(f, "home"));
             if (ns.fileExists(passwordFile, "home")) files.push(passwordFile);
-            await ns.scp(files, host, "home");
+            const signature = files.map((f) => `${f}:${hashText(ns.read(f))}`).join("|");
+            const codeSignature = codeFiles.filter((f) => files.includes(f)).map((f) => hashText(ns.read(f))).join("|");
+
+            if (deployed.get(host) !== signature || !ns.fileExists(nodeFile, host)) {
+              // Running copies keep their old code, so stop them when the scripts
+              // changed; the launch step below starts the new version.
+              const oldCode = deployedCode.get(host);
+              if (oldCode !== undefined && oldCode !== codeSignature) {
+                for (const p of ns.ps(host)) if (codeFiles.includes(p.filename)) ns.kill(p.pid);
+              }
+              await ns.scp(files, host, "home");
+              deployed.set(host, signature);
+              deployedCode.set(host, codeSignature);
+            }
 
             const running = ns.ps(host).some((p) => p.filename === nodeFile);
             if (!running) {
               const ram = ns.getScriptRam(nodeFile, host);
               const free = ns.getServerMaxRam(host) - ns.getServerUsedRam(host);
               if (ram > 0 && free >= ram) {
-                const threads = Math.floor(free / ram);
-                const pid = ns.exec(nodeFile, host, threads);
-                if (!pid) ns.print(`${host}: scout launch failed; ${fmtRam(free)} free, ${fmtRam(ram)} required.`);
-                else ns.print(`${host}: scout started (${threads} threads).`);
+                // One thread: the scout launches the loot helper with the remaining RAM.
+                const pid = ns.exec(nodeFile, host, 1);
+                if (!pid) note(`${host}:scout`, `${host}: scout launch failed; ${fmtRam(free)} free, ${fmtRam(ram)} required.`);
+                else note(`${host}:scout`, `${host}: scout started (${fmtRam(ram)}).`);
               } else {
-                ns.print(`${host}: scout needs ${fmtRam(ram)} free RAM; ${fmtRam(free)} available.`);
+                note(`${host}:scout`, `${host}: scout needs ${fmtRam(ram)} free RAM; ${fmtRam(free)} available.`);
               }
             }
           }

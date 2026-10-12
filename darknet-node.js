@@ -3,13 +3,32 @@ export async function main(ns) {
   const passwordFile = "darknet-passwords.txt";
   const candidateFile = "darknet-candidates.txt";
   const nodeFile = "darknet-node.js";
+  // Heavy calls live in helpers so this scout fits low-RAM servers (darkweb has
+  // 16 GB): loot = openCache + phishingAttack, stasis = one-shot setStasisLink.
+  const lootFile = "darknet-loot.js";
+  const stasisFile = "darknet-stasis.js";
+  const codeFiles = [nodeFile, lootFile, stasisFile];
   const reportedHints = new Map();
   // Retry when the shared credential or candidate files change, not on every mutation.
   const attemptedInputs = new Map();
   const heartbleedAt = new Map();
-  ns.disableLog("sleep");
-  ns.disableLog("scp");
-  ns.disableLog("scan");
+  // Every ns call is logged by default; keep only what this script prints.
+  ns.disableLog("ALL");
+
+  const hashText = (text) => {
+    let h = 5381;
+    for (let i = 0; i < text.length; i++) h = ((h << 5) + h + text.charCodeAt(i)) | 0;
+    return `${text.length}:${h}`;
+  };
+  // Last state copied to each neighbour, so files are only re-sent when they change.
+  const deployed = new Map();
+  // Only print a status line when it changes.
+  const lastNote = new Map();
+  const note = (key, message) => {
+    if (lastNote.get(key) === message) return;
+    lastNote.set(key, message);
+    ns.print(message);
+  };
 
   const readMap = () => {
     const map = new Map();
@@ -37,14 +56,6 @@ export async function main(ns) {
     };
     const clue = typeof info.data === "string" ? info.data.trim() : "";
     return [...new Set([...(clue && matches(clue) ? [clue] : []), ...words.filter(matches)])];
-  };
-  const openCaches = () => {
-    for (const file of ns.ls(ns.getHostname(), ".cache")) {
-      try {
-        const result = ns.dnet.openCache(file, true);
-        if (result.success) ns.print(`Opened ${file}: ${result.message}`);
-      } catch (error) { ns.print(`Could not open ${file}: ${String(error)}`); }
-    }
   };
   // v3 renamed ns.formatRam -> ns.format.ram; use whichever exists.
   const fmtRam = (v) => {
@@ -105,22 +116,24 @@ export async function main(ns) {
 
   while (true) {
     try {
-      openCaches();
-      try {
-        const result = await ns.dnet.phishingAttack();
-        if (result?.success) ns.print(`Phishing succeeded: ${JSON.stringify(result.data ?? result.message ?? "reward received")}`);
-      } catch { /* some servers restrict this */ }
-      // Deep servers are valuable exploration anchors. Respect the global link cap.
+      // Run the helpers on this server with whatever RAM the scout leaves free.
       const self = ns.getHostname();
-      const selfDepth = ns.dnet.getDepth(self);
+      const freeRam = () => ns.getServerMaxRam(self) - ns.getServerUsedRam(self);
+      const isRunning = (file) => ns.ps(self).some((p) => p.filename === file);
       const linked = ns.dnet.getStasisLinkedServers();
-      const linkLimit = ns.dnet.getStasisLinkLimit();
-      if (selfDepth >= 2 && !linked.includes(self) && linked.length < linkLimit) {
-        try {
-          await ns.dnet.setStasisLink(true);
-          const linkedAfter = ns.dnet.getStasisLinkedServers();
-          if (linkedAfter.includes(self)) ns.print(`${self}: stasis link set (${linkedAfter.length}/${linkLimit}); keeping this deep scout reachable.`);
-        } catch (error) { ns.print(`${self}: could not set stasis link: ${String(error)}`); }
+      let stasisStarted = false;
+      // Deep servers are valuable exploration anchors. Respect the global link cap.
+      if (ns.dnet.getServerDetails(self).depth >= 2 && !linked.includes(self) && linked.length < ns.dnet.getStasisLinkLimit()
+          && ns.fileExists(stasisFile, self) && !isRunning(stasisFile)) {
+        const ram = ns.getScriptRam(stasisFile, self);
+        if (ram > 0 && freeRam() >= ram) stasisStarted = ns.exec(stasisFile, self, 1) > 0;
+      }
+      // The stasis one-shot needs its RAM first; loot is sized on the next pass.
+      if (!stasisStarted && ns.fileExists(lootFile, self) && !isRunning(lootFile)) {
+        const ram = ns.getScriptRam(lootFile, self);
+        const threads = ram > 0 ? Math.floor(freeRam() / ram) : 0;
+        if (threads >= 1) ns.exec(lootFile, self, threads);
+        else note(`${self}:loot`, `${self}: not enough free RAM for the loot helper (${fmtRam(ram)} per thread, ${fmtRam(freeRam())} free).`);
       }
       const known = readMap();
       const candidates = readCandidates();
@@ -156,15 +169,25 @@ export async function main(ns) {
           try { await ns.dnet.memoryReallocation(host); }
           catch (error) { ns.print(`${host}: memory reallocation failed: ${String(error)}`); }
         }
-        const syncFiles = [nodeFile, passwordFile, candidateFile, ...ns.ls(ns.getHostname(), "darknet-passwords-")];
-        await ns.scp(syncFiles, host, ns.getHostname());
+        // Re-send files only when they changed or the neighbour was wiped. Running
+        // scripts are never killed here: neighbours also deploy back to us, and
+        // killing each other's scouts on a version change would loop.
+        const syncFiles = [...codeFiles, passwordFile, candidateFile, ...ns.ls(self, "darknet-passwords-")]
+          .filter((f) => ns.fileExists(f, self));
+        const signature = syncFiles.map((f) => `${f}:${hashText(ns.read(f))}`).join("|");
+        if (deployed.get(host) !== signature || !ns.fileExists(nodeFile, host)) {
+          await ns.scp(syncFiles, host, self);
+          deployed.set(host, signature);
+        }
         if (!ns.ps(host).some(p => p.filename === nodeFile)) {
           const ram = ns.getScriptRam(nodeFile, host);
           const free = ns.getServerMaxRam(host) - ns.getServerUsedRam(host);
           if (ram > 0 && free >= ram) {
-            const pid = ns.exec(nodeFile, host, Math.floor(free / ram));
-            if (!pid) ns.print(`${host}: scout launch failed (${fmtRam(free)} free, ${fmtRam(ram)} required).`);
-          } else ns.print(`${host}: scout needs ${fmtRam(ram)} free RAM; ${fmtRam(free)} available.`);
+            // One thread: the scout on that server starts its own loot helper.
+            const pid = ns.exec(nodeFile, host, 1);
+            if (!pid) note(`${host}:scout`, `${host}: scout launch failed (${fmtRam(free)} free, ${fmtRam(ram)} required).`);
+            else note(`${host}:scout`, `${host}: scout started (${fmtRam(ram)}).`);
+          } else note(`${host}:scout`, `${host}: scout needs ${fmtRam(ram)} free RAM; ${fmtRam(free)} available.`);
         }
         } catch (error) { ns.print(`${host}: skipped after a server/network error: ${String(error)}`); }
       }

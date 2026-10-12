@@ -98,7 +98,7 @@ export async function main(ns) {
 
   const tryPassword = async (host, password) => {
     let result;
-    for (let attempt = 0; attempt < 3; attempt++) {
+    for (let tries = 0; tries < 3; tries++) {
       result = await ns.dnet.authenticate(host, password);
       if (result.success || Number(result.code) !== TIMED_OUT) break;
     }

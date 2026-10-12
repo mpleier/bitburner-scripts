@@ -70,7 +70,7 @@ export async function main(ns) {
   const RETRY_AFTER_MS = 10 * 60_000;
   const tryPassword = async (host, password) => {
     let result;
-    for (let attempt = 0; attempt < 3; attempt++) {
+    for (let tries = 0; tries < 3; tries++) {
       result = await ns.dnet.authenticate(host, password);
       if (result.success || Number(result.code) !== TIMED_OUT) break;
     }
@@ -119,17 +119,17 @@ export async function main(ns) {
       // Run the helpers on this server with whatever RAM the scout leaves free.
       const self = ns.getHostname();
       const freeRam = () => ns.getServerMaxRam(self) - ns.getServerUsedRam(self);
-      const isRunning = (file) => ns.ps(self).some((p) => p.filename === file);
+      const procRunning = (file) => ns.ps(self).some((p) => p.filename === file);
       const linked = ns.dnet.getStasisLinkedServers();
       let stasisStarted = false;
       // Deep servers are valuable exploration anchors. Respect the global link cap.
       if (ns.dnet.getServerDetails(self).depth >= 2 && !linked.includes(self) && linked.length < ns.dnet.getStasisLinkLimit()
-          && ns.fileExists(stasisFile, self) && !isRunning(stasisFile)) {
+          && ns.fileExists(stasisFile, self) && !procRunning(stasisFile)) {
         const ram = ns.getScriptRam(stasisFile, self);
         if (ram > 0 && freeRam() >= ram) stasisStarted = ns.exec(stasisFile, self, 1) > 0;
       }
       // The stasis one-shot needs its RAM first; loot is sized on the next pass.
-      if (!stasisStarted && ns.fileExists(lootFile, self) && !isRunning(lootFile)) {
+      if (!stasisStarted && ns.fileExists(lootFile, self) && !procRunning(lootFile)) {
         const ram = ns.getScriptRam(lootFile, self);
         const threads = ram > 0 ? Math.floor(freeRam() / ram) : 0;
         if (threads >= 1) ns.exec(lootFile, self, threads);

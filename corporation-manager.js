@@ -313,7 +313,8 @@ export async function main(ns) {
           "Smart Factories", "Smart Storage",
           // Employee stat upgrades, then sales/marketing.
           "Nuoptimal Nootropic Injector Implants", "Speech Processor Implants", "Neural Accelerators", "FocusWires",
-          "ABC SalesBots", "Project Insight", "DreamSense", "Wilson Analytics",
+          // DreamSense is not a levelable upgrade in 3.x, so it must not be listed.
+          "ABC SalesBots", "Project Insight", "Wilson Analytics",
         ];
         let bought = 0;
         for (const upgrade of [...new Set(order)]) {

@@ -71,7 +71,10 @@ export async function main(ns) {
   };
   const createDivision = (industry, division) => {
     if (hasDivision(division)) return true;
-    const start = safe(`Get ${industry} starting cost`, () => c.getIndustryData(industry).startingCost);
+    // IndustryData exposes the price as `cost`; `startingCost` is undefined, which
+    // made this check fail and left the division uncreated.
+    const data = safe(`Get ${industry} data`, () => c.getIndustryData(industry));
+    const start = data?.cost ?? data?.startingCost;
     if (Number.isFinite(start) && funds() > start + reserve * 2)
       return attempt(`Create ${industry} division`, () => c.expandIndustry(industry, division));
     return false;
@@ -149,6 +152,50 @@ export async function main(ns) {
       set(material, full || Number(item?.stored) > need * 30 ? 0 : need);
     }
   };
+  // Agriculture production boosters: stored Real Estate, Hardware, Robots and AI
+  // Cores multiply output (factors are the game's Agriculture constants; size is
+  // storage per unit and is read from the game when available). Space is split
+  // in proportion to each factor, up to 40% of the warehouse.
+  const boosts = [
+    { name: "Real Estate", factor: 0.72, size: 0.005 },
+    { name: "Hardware", factor: 0.2, size: 0.06 },
+    { name: "Robots", factor: 0.3, size: 0.5 },
+    { name: "AI Cores", factor: 0.3, size: 0.1 },
+  ];
+  const manageBoosts = (city) => {
+    const wh = safe("Read warehouse", () => c.getWarehouse(agri, city));
+    if (!wh) return;
+    const full = wh.sizeUsed / Math.max(1, wh.size) > 0.9;
+    const factorSum = boosts.reduce((a, b) => a + b.factor, 0);
+    const plan = boosts.map((b) => {
+      const item = safe(`Read ${b.name}`, () => c.getMaterial(agri, city, b.name));
+      const size = Number(safe(`Read ${b.name} size`, () => c.getMaterialData(b.name))?.size) || b.size;
+      const target = (wh.size * 0.4 * (b.factor / factorSum)) / size;
+      const price = Number(item?.marketPrice) || 0;
+      const need = full || price <= 0 ? 0 : Math.max(0, target - (Number(item?.stored) || 0));
+      return { name: b.name, need, cost: need * price };
+    });
+    // Spend at most a fifth of funds per update so boosts never starve expansion.
+    const total = plan.reduce((a, p) => a + p.cost, 0);
+    const spend = Math.max(0, Math.min(funds() * 0.2, funds() - reserve));
+    const scale = total > spend ? spend / total : 1;
+    // buyMaterial takes units per second; a cycle is ~10s, so this fills the gap
+    // within one update and is recomputed (and drops to 0) on the next.
+    for (const p of plan)
+      attempt(`Set ${p.name} buy rate`, () => c.buyMaterial(agri, city, p.name, (p.need * scale) / 10));
+  };
+  // Research Hi-Tech R&D Lab, then Market-TA.I and .II (automatic optimal pricing).
+  const runResearch = (division) => {
+    const points = safe(`Read ${division}`, () => c.getDivision(division))?.researchPoints ?? 0;
+    for (const name of ["Hi-Tech R&D Laboratory", "Market-TA.I", "Market-TA.II"]) {
+      if (safe(`Check ${name}`, () => c.hasResearched(division, name)) === true) continue;
+      const cost = safe(`Get ${name} cost`, () => c.getResearchCost(division, name));
+      // Keep a buffer: research points also feed product quality.
+      if (Number.isFinite(cost) && points >= cost * 1.5) attempt(`Research ${name}`, () => c.research(division, name));
+      break; // strictly in order, one at a time
+    }
+  };
+  const hasTA2 = (division) => safe(`Check TA.II ${division}`, () => c.hasResearched(division, "Market-TA.II")) === true;
   let storagePressure = false;
   const runWarehouse = (division, city, products = false) => {
     if (!hasUnlock("Warehouse API")) return;
@@ -172,13 +219,17 @@ export async function main(ns) {
       const d = safe("Read product division", () => c.getDivision(division));
       for (const product of d?.products ?? []) {
         const item = safe(`Read product ${product}`, () => c.getProduct(division, city, product));
-        if (item?.developmentProgress >= 100)
+        if (item?.developmentProgress >= 100) {
           attempt(`Sell ${product}`, () => c.sellProduct(division, city, product, "MAX", "MP", true));
+          if (hasTA2(division)) attempt(`Market-TA.II ${product}`, () => c.setProductMarketTA2(division, product, true));
+        }
       }
       return;
     }
-    for (const material of ["Plants", "Food"])
+    for (const material of ["Plants", "Food"]) {
       attempt(`Sell ${material}`, () => c.sellMaterial(division, city, material, "MAX", "MP"));
+      if (hasTA2(division)) attempt(`Market-TA.II ${material}`, () => c.setMaterialMarketTA2(division, city, material, true));
+    }
   };
 
   let lastInvestmentCycle = 0;
@@ -216,8 +267,10 @@ export async function main(ns) {
           runWarehouse(agri, city, false);
           if (hasUnlock("Warehouse API") && safe("Check agricultural warehouse", () => c.hasWarehouse(agri, city))) {
             manageInputs(city);
+            manageBoosts(city);
           }
         }
+        runResearch(agri);
         // Advertising multiplier starts near zero and drives sales; hire AdVert
         // whenever it is a small slice of funds.
         const adCost = safe("Get AdVert cost", () => c.getHireAdVertCost(agri));
@@ -228,6 +281,7 @@ export async function main(ns) {
       // Restaurant is the second, product-based division from the supplied strategy.
       if (hasDivision(agri) && funds() > 1e12) createDivision("Restaurant", restaurant);
       if (hasDivision(restaurant)) {
+        runResearch(restaurant);
         const d = safe("Read Restaurant division", () => c.getDivision(restaurant));
         for (const city of allCities.slice(0, Math.min(cityCount, 6))) {
           expand(restaurant, city);
@@ -251,18 +305,23 @@ export async function main(ns) {
       }
 
       // Limit recurring upgrade spending while preserving cash for expansion.
-      if (Date.now() - lastUpgrade >= 60_000) {
+      if (Date.now() - lastUpgrade >= 30_000) {
         // Smart Storage raises capacity in every warehouse, so it goes first
         // (with a looser spending cap) whenever any warehouse is nearly full.
-        const order = storagePressure
-          ? ["Smart Storage", "Smart Factories", "Wilson Analytics"]
-          : ["Smart Factories", "Smart Storage", "Wilson Analytics"];
-        for (const upgrade of order) {
+        const order = [
+          ...(storagePressure ? ["Smart Storage"] : []),
+          "Smart Factories", "Smart Storage",
+          // Employee stat upgrades, then sales/marketing.
+          "Nuoptimal Nootropic Injector Implants", "Speech Processor Implants", "Neural Accelerators", "FocusWires",
+          "ABC SalesBots", "Project Insight", "DreamSense", "Wilson Analytics",
+        ];
+        let bought = 0;
+        for (const upgrade of [...new Set(order)]) {
           const cost = safe(`Get ${upgrade} upgrade cost`, () => c.getUpgradeLevelCost(upgrade));
           const cap = storagePressure && upgrade === "Smart Storage" ? 0.05 : 0.01;
           if (Number.isFinite(cost) && cost <= funds() * cap && funds() > cost + reserve) {
-            if (attempt(`Level ${upgrade}`, () => c.levelUpgrade(upgrade))) lastUpgrade = Date.now();
-            break;
+            if (attempt(`Level ${upgrade}`, () => c.levelUpgrade(upgrade))) { lastUpgrade = Date.now(); bought++; }
+            if (bought >= 2) break; // spread spending across updates
           }
         }
       }

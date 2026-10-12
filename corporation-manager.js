@@ -1,7 +1,25 @@
 /**
  * Corporation automation for the Bitburner 3.x Corporation API.
- * Starts an Agriculture division, expands it steadily, and adds a Restaurant
- * product division once the corporation can comfortably afford it.
+ *
+ * Strategy:
+ *   - Agriculture, expanded to all six cities; sells Plants and Food with Market-TA.II.
+ *   - Restaurant, added once Agriculture is stable; develops Apex Dining products.
+ *   - Late game: IPO, buy shares back toward the ownership target, then pay the
+ *     player a tiered dividend on corporation profit. Buybacks and dividends are
+ *     decoupled: buybacks run whenever they can afford to, and the dividend rate
+ *     is set from the current tier regardless of ownership. The actual payout is
+ *     scaled automatically by how much of the corporation the player owns, so a
+ *     diluted player still receives a proportional slice rather than nothing.
+ *
+ * Source-verified against bitburner-src/dev/src/Corporation:
+ *   - getIndustryData(...).startingCost is the purchase price (no `cost` field).
+ *   - Division.maxProducts grows with uPgrade: Capacity.I / .II, starting at 3.
+ *   - sellProduct / sellMaterial with `all=true` write per-city state in one call.
+ *   - Market-TA.II is a division-wide flag, not per-city.
+ *   - issueDividends takes a fraction in [0, dividendMaxRate] and requires a
+ *     public corporation (goPublic).
+ *   - CorporationInfo exposes `numShares`, `sharePrice`, `shareSaleCooldown`,
+ *     `public`, `valuation`. Player-owned shares live at `ns.getPlayer().shares`.
  */
 export async function main(ns) {
   const c = ns.corporation;
@@ -10,24 +28,61 @@ export async function main(ns) {
   const pcOwnerFile = "tasks/__pc_corp_owner.json";
   const agri = "Agri";
   const restaurant = "Dining";
-  // Cash kept back from spending. Scales down while the corporation is small so a
-  // fixed $5b floor can't freeze a corporation that only has a billion or so.
+  const CITY_EXPAND_BUFFER = 5e9;
+  const WAREHOUSE_BUFFER = 5e9;
   let reserve = 5e9;
   const officeJobs = ["Operations", "Engineer", "Business", "Management", "Research & Development"];
 
-  ns.disableLog("sleep");
-  ns.disableLog("corporation.nextUpdate");
+  // ---- Dividend strategy ------------------------------------------------
+  // issueDividends takes a *fraction* in [0, dividendMaxRate]. During the
+  // growth phase the rate is 0; every dollar retained compounds. As the corp
+  // matures, a growing slice of profit is paid out.
+  const DIVIDEND_TIERS = [
+    [1e21, 0.20], // mature
+    [1e18, 0.10],
+    [1e15, 0.05],
+    [1e13, 0.02],
+    [0,    0.00], // growth phase: reinvest everything
+  ];
+  const DIVIDEND_MAX = (() => {
+    try {
+      const v = c.getConstants().dividendMaxRate;
+      return Number.isFinite(v) ? v : 1;
+    } catch { return 1; }
+  })();
+  const dividendRateFor = (cash) => {
+    for (const [threshold, rate] of DIVIDEND_TIERS)
+      if (cash >= threshold) return Math.min(rate, DIVIDEND_MAX);
+    return 0;
+  };
+  // Dividends require a public corporation. The IPO hands ~25% of shares to
+  // the public, so buyBackShares() is used afterwards to restore ownership.
+  const PAY_DIVIDENDS = true;
+  const IPO_VALUATION = 1e12;
+  // Buybacks run whenever possible, but ownership is never required to reach
+  // this before dividends start; the payout is scaled by the actual share.
+  const OWNERSHIP_TARGET = 0.90;
+  const BUYBACK_SPEND_FRACTION = 0.10;
+  // Early investment rounds inject capital but permanently dilute the player's
+  // share of every future dividend. Flip to false for a pure dividend play.
+  const ACCEPT_INVESTMENT = true;
+  let lastDividendRate = -1;
+
+  const safeDisableLog = (label) => { try { ns.disableLog(label); } catch {} };
+  safeDisableLog("sleep");
+  safeDisableLog("corporation.nextUpdate");
 
   const safe = (label, fn) => {
     try { return fn(); }
     catch (error) { ns.print(`${label}: ${String(error)}`); return undefined; }
   };
-  const corporation = () => safe("getCorporation", () => c.getCorporation());
-  const funds = () => corporation()?.funds ?? 0;
-  const divisions = () => corporation()?.divisions ?? [];
+  const corp = () => safe("getCorporation", () => c.getCorporation());
+  const funds = () => corp()?.funds ?? 0;
+  const divisions = () => corp()?.divisions ?? [];
   const hasDivision = (division) => divisions().includes(division);
   const hasUnlock = (unlock) => safe(`hasUnlock ${unlock}`, () => c.hasUnlock(unlock)) === true;
-  const attempt = (label, fn) => safe(label, () => { fn(); return true; }) === true;
+  // A `false` return is treated the same as a throw: the call did not succeed.
+  const attempt = (label, fn) => safe(label, () => fn() !== false) === true;
   const pcOwnsCorporation = () => {
     try {
       const lease = JSON.parse(ns.read(pcOwnerFile));
@@ -63,18 +118,17 @@ export async function main(ns) {
     await ns.sleep(60_000);
   }
 
-  const cityNames = () => cities;
   const expand = (division, city) => {
     const d = safe(`Read division ${division}`, () => c.getDivision(division));
-    if (d && !d.cities.includes(city) && funds() > reserve + 5e9)
+    if (d && !d.cities.includes(city) && funds() > reserve + CITY_EXPAND_BUFFER)
       attempt(`Expand ${division} to ${city}`, () => c.expandCity(division, city));
   };
   const createDivision = (industry, division) => {
     if (hasDivision(division)) return true;
-    // IndustryData exposes the price as `cost`; `startingCost` is undefined, which
-    // made this check fail and left the division uncreated.
+    // getIndustryData() returns the industry definition. Its purchase price is
+    // `startingCost`; there is no `cost` field on this shape in 3.x.
     const data = safe(`Get ${industry} data`, () => c.getIndustryData(industry));
-    const start = data?.cost ?? data?.startingCost;
+    const start = data?.startingCost;
     if (Number.isFinite(start) && funds() > start + reserve * 2)
       return attempt(`Create ${industry} division`, () => c.expandIndustry(industry, division));
     return false;
@@ -85,6 +139,71 @@ export async function main(ns) {
     if (Number.isFinite(cost) && funds() > cost + reserve)
       attempt(`Buy ${unlock}`, () => c.purchaseUnlock(unlock));
   };
+
+  // ---- IPO / shares / dividends -----------------------------------------
+  // Player-owned shares live on Player, not CorporationInfo. 3.x stores them
+  // as a map keyed by corporation name.
+  const ownedShares = () => {
+    try { return Number(ns.getPlayer()?.shares?.[name]) || 0; }
+    catch { return 0; }
+  };
+  const ownershipOf = (info) => {
+    const owned = ownedShares();
+    const total = Math.max(1, Number(info?.numShares) || 1);
+    return { owned, total, fraction: owned / total };
+  };
+
+  const manageIPO = () => {
+    if (!PAY_DIVIDENDS) return;
+    const info = corp();
+    if (!info || info.public) return;
+    const valuation = Number(info.valuation) || 0;
+    if (valuation < IPO_VALUATION) return;
+    // goPublic accepts an optional numShares; 0 lets the game pick the IPO size.
+    if (attempt("Go public", () => c.goPublic(0))) {
+      const after = corp();
+      const { fraction } = ownershipOf(after);
+      ns.print(
+        `IPO at $${ns.format.number(valuation)} valuation; ` +
+        `own ${(fraction * 100).toFixed(1)}% of shares.`
+      );
+    }
+  };
+
+  const manageSharesAndDividends = () => {
+    if (!PAY_DIVIDENDS) return;
+    const info = corp();
+    if (!info?.public) return;
+
+    const { total, fraction } = ownershipOf(info);
+
+    // Buybacks run whenever the player is below target and the market is open.
+    // They are not a prerequisite for dividends; the payout is scaled by the
+    // actual ownership fraction, so a diluted player still receives a slice.
+    if (fraction < OWNERSHIP_TARGET) {
+      const onCooldown = (Number(info.shareSaleCooldown) || 0) > 0;
+      if (!onCooldown) {
+        const perShare = Number(info.sharePrice) || 0;
+        if (perShare > 0) {
+          const budget = Math.max(0, Math.min(funds() * BUYBACK_SPEND_FRACTION, funds() - reserve));
+          const sharesWanted = Math.ceil((OWNERSHIP_TARGET - fraction) * total);
+          const sharesAffordable = Math.floor(budget / perShare);
+          const sharesToBuy = Math.min(sharesWanted, sharesAffordable);
+          if (sharesToBuy > 0)
+            attempt(`Buy back ${ns.format.number(sharesToBuy)} shares`, () => c.buyBackShares(sharesToBuy));
+        }
+      }
+    }
+
+    // Set the rate on the current tier regardless of ownership. The game
+    // applies the payout to the player's actual holding, so this is safe.
+    const rate = dividendRateFor(funds());
+    if (rate === lastDividendRate) return;
+    if (attempt(`Set dividend rate ${(rate * 100).toFixed(0)}%`, () => c.issueDividends(rate)))
+      lastDividendRate = rate;
+  };
+
+  // ---- Per-city office management ---------------------------------------
   // True once the division actually has an office in this city. Cities are
   // expanded as funds allow, so the rest must be skipped until then.
   const inCity = (division, city) =>
@@ -93,7 +212,16 @@ export async function main(ns) {
     if (!hasUnlock("Office API")) return;
     let office = safe(`Read office ${division}/${city}`, () => c.getOffice(division, city));
     if (!office) return;
-    const target = funds() > 1e13 ? 30 : funds() > 1e12 ? 15 : funds() > 1e11 ? 9 : 3;
+    // Office size ladder. The old ladder stayed at 3 employees/city until the
+    // corp had $100b+, which starved revenue during the early game; this one
+    // grows headcount alongside the cash balance.
+    const target =
+      funds() > 1e13 ? 60 :
+      funds() > 5e12 ? 45 :
+      funds() > 1e12 ? 30 :
+      funds() > 1e11 ? 20 :
+      funds() > 1e10 ? 15 :
+      funds() > 1e9  ? 9  : 3;
     if (office.size < target) {
       const add = target - office.size;
       const cost = safe("Get office size cost", () => c.getOfficeSizeUpgradeCost(division, city, add));
@@ -130,21 +258,28 @@ export async function main(ns) {
         for (let i = 0; i < officeJobs.length; i++)
           if (counts[i]) attempt(`Assign ${officeJobs[i]}`, () => c.setJobAssignment(division, city, officeJobs[i], counts[i]));
       }
+      // Tea only helps when energy has dropped, so don't pay for it on a full office.
+      if (office.avgEnergy < (office.maxEnergy ?? 100) - 1)
+        attempt("Buy employee tea", () => c.buyTea(division, city));
     }
-    // Tea only helps when energy has dropped, so don't pay for it every update.
-    if (office.avgEnergy === undefined || office.avgEnergy < (office.maxEnergy ?? 100) - 1)
-      attempt("Buy employee tea", () => c.buyTea(division, city));
   };
-  // Agriculture inputs: 0.5 Water + 0.2 Chemicals per Plant/Food produced. Buying
-  // them blindly at a fixed rate fills the warehouse and blocks the output.
+
+  // ---- Agriculture inputs and boosts ------------------------------------
+  // Agriculture inputs: 0.5 Water + 0.2 Chemicals per unit of output. Both Plants
+  // and Food are produced, so both count when sizing the buy rate. Buying them
+  // blindly at a fixed rate fills the warehouse and blocks the output.
   const manageInputs = (city) => {
     const set = (material, rate) =>
       attempt(`Set ${material} buy rate`, () => c.buyMaterial(agri, city, material, rate));
     if (hasUnlock("Smart Supply")) { set("Water", 0); set("Chemicals", 0); return; }
     const wh = safe("Read warehouse", () => c.getWarehouse(agri, city));
     const full = wh ? wh.sizeUsed / Math.max(1, wh.size) > 0.9 : false;
-    const plants = safe("Read Plants", () => c.getMaterial(agri, city, "Plants"));
-    const produced = Math.max(Number(plants?.productionAmount) || 0, 1);
+    let produced = 0;
+    for (const output of ["Plants", "Food"]) {
+      const item = safe(`Read ${output}`, () => c.getMaterial(agri, city, output));
+      produced += Number(item?.productionAmount) || 0;
+    }
+    produced = Math.max(produced, 1);
     for (const [material, per] of [["Water", 0.5], ["Chemicals", 0.2]]) {
       const item = safe(`Read ${material}`, () => c.getMaterial(agri, city, material));
       const need = per * produced;
@@ -184,6 +319,8 @@ export async function main(ns) {
     for (const p of plan)
       attempt(`Set ${p.name} buy rate`, () => c.buyMaterial(agri, city, p.name, (p.need * scale) / 10));
   };
+
+  // ---- Research ---------------------------------------------------------
   // Research Hi-Tech R&D Lab, then Market-TA.I and .II (automatic optimal pricing).
   const runResearch = (division) => {
     const points = safe(`Read ${division}`, () => c.getDivision(division))?.researchPoints ?? 0;
@@ -196,12 +333,15 @@ export async function main(ns) {
     }
   };
   const hasTA2 = (division) => safe(`Check TA.II ${division}`, () => c.hasResearched(division, "Market-TA.II")) === true;
+
+  // ---- Warehouse management (no selling here) ---------------------------
   let storagePressure = false;
-  const runWarehouse = (division, city, products = false) => {
+  const runWarehouse = (division, city) => {
     if (!hasUnlock("Warehouse API")) return;
-    if (!safe("Check warehouse", () => c.hasWarehouse(division, city)) && funds() > reserve + 5e9)
-      attempt("Purchase warehouse", () => c.purchaseWarehouse(division, city));
-    if (!safe("Check warehouse", () => c.hasWarehouse(division, city))) return;
+    let has = safe("Check warehouse", () => c.hasWarehouse(division, city)) === true;
+    if (!has && funds() > reserve + WAREHOUSE_BUFFER)
+      has = attempt("Purchase warehouse", () => c.purchaseWarehouse(division, city));
+    if (!has) return;
     const wh = safe("Read warehouse", () => c.getWarehouse(division, city));
     // Storage management: upgrade early (70% full) and catch up in a burst of up
     // to 5 levels, so production doesn't stall against a full warehouse.
@@ -215,23 +355,62 @@ export async function main(ns) {
       used = next ? next.sizeUsed / Math.max(1, next.size) : 0;
     }
     if (hasUnlock("Smart Supply")) attempt("Enable Smart Supply", () => c.setSmartSupply(division, city, true));
-    if (products) {
-      const d = safe("Read product division", () => c.getDivision(division));
-      for (const product of d?.products ?? []) {
-        const item = safe(`Read product ${product}`, () => c.getProduct(division, city, product));
-        if (item?.developmentProgress >= 100) {
-          attempt(`Sell ${product}`, () => c.sellProduct(division, city, product, "MAX", "MP", true));
-          if (hasTA2(division)) attempt(`Market-TA.II ${product}`, () => c.setProductMarketTA2(division, product, true));
-        }
+  };
+
+  // ---- Selling ----------------------------------------------------------
+  // Material sales are inherently per-city (stored, salesVolume, etc. are per
+  // city). Market-TA.II is a division-wide flag, so check it once.
+  const sellMaterials = (division) => {
+    const d = safe(`Read division ${division}`, () => c.getDivision(division));
+    if (!d || d.makesProducts) return; // product divisions have no output materials
+    const ta2 = hasTA2(division);
+    for (const city of d.cities ?? []) {
+      for (const material of ["Plants", "Food"]) {
+        attempt(`Sell ${material}`, () => c.sellMaterial(division, city, material, "MAX", "MP"));
+        if (ta2)
+          attempt(`Market-TA.II ${material}`, () => c.setMaterialMarketTA2(division, city, material, true));
       }
-      return;
-    }
-    for (const material of ["Plants", "Food"]) {
-      attempt(`Sell ${material}`, () => c.sellMaterial(division, city, material, "MAX", "MP"));
-      if (hasTA2(division)) attempt(`Market-TA.II ${material}`, () => c.setMaterialMarketTA2(division, city, material, true));
     }
   };
 
+  // Product sales: sellProduct with all=true writes desiredSell* for every city
+  // in one call. Fire once per product, only after every active city has
+  // finished developing it. Market-TA.II is a division-wide flag.
+  const sellProducts = (division) => {
+    const d = safe(`Read division ${division}`, () => c.getDivision(division));
+    if (!d) return;
+    const activeCities = d.cities ?? [];
+    if (!activeCities.length) return;
+    const ta2 = hasTA2(division);
+    for (const product of d.products ?? []) {
+      const ready = activeCities.every((city) => {
+        const item = safe(`Read ${product} in ${city}`, () => c.getProduct(division, city, product));
+        return item?.developmentProgress >= 100;
+      });
+      if (!ready) continue;
+      // The city argument is arbitrary when `all=true`; pass the first one.
+      attempt(`Sell ${product}`, () => c.sellProduct(division, activeCities[0], product, "MAX", "MP", true));
+      if (ta2)
+        attempt(`Market-TA.II ${product}`, () => c.setProductMarketTA2(division, product, true));
+    }
+  };
+
+  // Product helpers, used by the Restaurant block.
+  const productComplete = (division, product, cityList) =>
+    cityList.every((city) => {
+      const item = safe(`Read ${product} in ${city}`, () => c.getProduct(division, city, product));
+      return item?.developmentProgress >= 100;
+    });
+  // A product can only be developed in a city that has a warehouse there;
+  // otherwise the division-level sell flag has nothing to sell from.
+  const startProduct = (division, cityList, productName, investment) => {
+    for (const city of cityList) {
+      if (!safe(`Check warehouse ${city}`, () => c.hasWarehouse(division, city))) continue;
+      attempt(`Start ${productName} in ${city}`, () => c.makeProduct(division, city, productName, investment, investment));
+    }
+  };
+
+  // ---- Main loop --------------------------------------------------------
   let lastInvestmentCycle = 0;
   let lastUpgrade = 0;
   while (true) {
@@ -240,14 +419,16 @@ export async function main(ns) {
         await ns.sleep(5_000);
         continue;
       }
-      const info = corporation();
+      const info = corp();
       if (!info) { await ns.sleep(30_000); continue; }
 
-      // Keep early investment rounds going; leave late offers alone rather than
-      // accepting a low offer after the share price has already grown.
-      const offer = safe("Read investment offer", () => c.getInvestmentOffer());
-      if (offer?.funds > 0 && offer.round <= 3 && offer.funds > Math.max(1e9, funds() * 0.1))
-        attempt("Accept investment offer", () => c.acceptInvestmentOffer());
+      // Keep early investment rounds going unless we're optimizing for an
+      // undiluted dividend stream. Leave late offers alone either way.
+      if (ACCEPT_INVESTMENT) {
+        const offer = safe("Read investment offer", () => c.getInvestmentOffer());
+        if (offer?.funds > 0 && offer.round <= 3 && offer.funds > Math.max(1e9, funds() * 0.1))
+          attempt("Accept investment offer", () => c.acceptInvestmentOffer());
+      }
 
       storagePressure = false;
       reserve = Math.min(5e9, funds() * 0.1);
@@ -255,53 +436,58 @@ export async function main(ns) {
       buyUnlock("Warehouse API");
       buyUnlock("Office API");
       buyUnlock("Smart Supply");
-      const allCities = cityNames();
-      // Every expansion/warehouse/office purchase is already gated on available
-      // funds, so work all six cities rather than staying in one until 1t.
-      const cityCount = allCities.length;
+      const allCities = cities;
       if (hasDivision(agri)) {
-        for (const city of allCities.slice(0, cityCount)) {
+        for (const city of allCities) {
           expand(agri, city);
           if (!inCity(agri, city)) continue;
           runOffice(agri, city, false);
-          runWarehouse(agri, city, false);
+          runWarehouse(agri, city);
           if (hasUnlock("Warehouse API") && safe("Check agricultural warehouse", () => c.hasWarehouse(agri, city))) {
             manageInputs(city);
             manageBoosts(city);
           }
         }
+        sellMaterials(agri);
         runResearch(agri);
         // Advertising multiplier starts near zero and drives sales; hire AdVert
         // whenever it is a small slice of funds.
-        const adCost = safe("Get AdVert cost", () => c.getHireAdVertCost(agri));
+        const adCost = safe("Get AdVert cost (Agri)", () => c.getHireAdVertCost(agri));
         if (Number.isFinite(adCost) && adCost <= funds() * 0.25 && funds() > adCost + reserve)
-          attempt("Hire AdVert", () => c.hireAdVert(agri));
+          attempt("Hire AdVert (Agri)", () => c.hireAdVert(agri));
       }
 
       // Restaurant is the second, product-based division from the supplied strategy.
       if (hasDivision(agri) && funds() > 1e12) createDivision("Restaurant", restaurant);
       if (hasDivision(restaurant)) {
         runResearch(restaurant);
-        const d = safe("Read Restaurant division", () => c.getDivision(restaurant));
-        for (const city of allCities.slice(0, Math.min(cityCount, 6))) {
+        for (const city of allCities) {
           expand(restaurant, city);
           if (!inCity(restaurant, city)) continue;
           runOffice(restaurant, city, true);
-          runWarehouse(restaurant, city, true);
+          runWarehouse(restaurant, city);
         }
+        // Selling happens once per product, after every active city is done.
+        sellProducts(restaurant);
+        // Re-read after the expansion loop so newly added cities are visible.
+        const d = safe("Read Restaurant division", () => c.getDivision(restaurant));
         const activeCities = d?.cities ?? [];
-        if (activeCities.length && hasUnlock("Warehouse API")) {
-          const products = d?.products ?? [];
-          const complete = products.every(p => {
-            const item = safe(`Read product ${p}`, () => c.getProduct(restaurant, activeCities[0], p));
-            return item?.developmentProgress >= 100;
-          });
-          if (products.length < 3 && complete && funds() > 2e12) {
+        const products = d?.products ?? [];
+        // maxProducts grows to 5 once uPgrade: Capacity.I / .II finish.
+        const maxProducts = d?.maxProducts ?? 3;
+        if (activeCities.length && hasUnlock("Warehouse API") && products.length < maxProducts && funds() > 2e12) {
+          const allComplete = products.every(p => productComplete(restaurant, p, activeCities));
+          if (allComplete) {
             const investment = Math.min(10e9, Math.max(1e9, funds() * 0.005));
-            if (funds() > 2 * investment + reserve)
-              attempt("Develop Restaurant product", () => c.makeProduct(restaurant, activeCities[0], `Apex Dining ${products.length + 1}`, investment, investment));
+            // Each active city needs its own copy of the product.
+            if (funds() > 2 * investment * activeCities.length + reserve)
+              startProduct(restaurant, activeCities, `Apex Dining ${products.length + 1}`, investment);
           }
         }
+        // AdVert also multiplies product sales; hire it when it's a small slice.
+        const adCost = safe("Get AdVert cost (Restaurant)", () => c.getHireAdVertCost(restaurant));
+        if (Number.isFinite(adCost) && adCost <= funds() * 0.25 && funds() > adCost + reserve)
+          attempt("Hire AdVert (Restaurant)", () => c.hireAdVert(restaurant));
       }
 
       // Limit recurring upgrade spending while preserving cash for expansion.
@@ -316,21 +502,43 @@ export async function main(ns) {
           // DreamSense is not a levelable upgrade in 3.x, so it must not be listed.
           "ABC SalesBots", "Project Insight", "Wilson Analytics",
         ];
+        // Cache funds once so the inner loop doesn't re-query every iteration.
+        const cash = funds();
         let bought = 0;
         for (const upgrade of [...new Set(order)]) {
           const cost = safe(`Get ${upgrade} upgrade cost`, () => c.getUpgradeLevelCost(upgrade));
-          const cap = storagePressure && upgrade === "Smart Storage" ? 0.05 : 0.01;
-          if (Number.isFinite(cost) && cost <= funds() * cap && funds() > cost + reserve) {
+          // The old cap was 1% of funds (0.05 for Smart Storage under storage
+          // pressure). At $20b funds that's a $200m ceiling, and level 1 of
+          // every upgrade costs more than that, so nothing was ever bought.
+          // 20% (35% for Smart Storage under pressure) unblocks leveling while
+          // the funds() > cost + reserve check still keeps reserve untouched.
+          const cap = storagePressure && upgrade === "Smart Storage" ? 0.35 : 0.20;
+          if (Number.isFinite(cost) && cost <= cash * cap && cash > cost + reserve) {
             if (attempt(`Level ${upgrade}`, () => c.levelUpgrade(upgrade))) { lastUpgrade = Date.now(); bought++; }
             if (bought >= 2) break; // spread spending across updates
           }
         }
       }
 
+      // Pay the player. IPO first, then buy shares back toward the ownership
+      // target, then set the dividend rate for the current tier. Buybacks and
+      // dividends are independent; the payout scales with the actual holding.
+      manageIPO();
+      manageSharesAndDividends();
+
       const now = Date.now();
       if (now - lastInvestmentCycle > 60_000) {
         lastInvestmentCycle = now;
-        ns.print(`${info.name}: $${ns.format.number(funds())}; divisions: ${divisions().join(", ") || "none"}.`);
+        const live = corp() ?? info;
+        const { fraction } = ownershipOf(live);
+        ns.print(
+          `${info.name}: $${ns.format.number(funds())}; ` +
+          `divisions: ${divisions().join(", ") || "none"}; ` +
+          `public: ${live?.public ? "yes" : "no"}; ` +
+          `shares: ${(fraction * 100).toFixed(1)}%; ` +
+          `dividends: ${(Math.max(0, lastDividendRate) * 100).toFixed(0)}%; ` +
+          `wallet: $${ns.format.number(ns.getPlayer().money)}.`
+        );
       }
       await c.nextUpdate();
     } catch (error) {

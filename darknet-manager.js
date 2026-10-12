@@ -9,7 +9,8 @@ export async function main(ns) {
   // one-shot that applies a stasis link.
   const lootFile = "darknet-loot.js";
   const stasisFile = "darknet-stasis.js";
-  const codeFiles = [nodeFile, lootFile, stasisFile];
+  const cacheFile = "darknet-cache.js";
+  const codeFiles = [nodeFile, lootFile, stasisFile, cacheFile];
   // Every ns call is logged by default (scp, probe, getServerMaxRam...), which
   // buried the useful lines. Keep only what this script prints itself.
   ns.disableLog("ALL");
@@ -72,8 +73,24 @@ export async function main(ns) {
         default: return true;
       }
     };
+    // Servers with no password (hint "There is no password", length 0, or the
+    // ZeroLogon model) accept the empty string. The length filter below would
+    // otherwise discard every candidate and leave nothing to try.
+    const noPassword = details.passwordLength === 0 || details.modelId === "ZeroLogon"
+      || /no password/i.test(String(details.passwordHint ?? ""));
+    if (noPassword) return [""];
     const clue = typeof details.data === "string" ? details.data.trim() : "";
-    return [...new Set([...(clue && matches(clue) ? [clue] : []), ...words.filter(matches)])];
+    // "Type the numbers to prove you are human": the clue is the password with
+    // other characters mixed in, so the password is the clue's digits alone.
+    // Tried first, even if the length differs, since it is a single guess.
+    const digitsOf = (text) => String(text ?? "").replace(/\D+/g, "");
+    const wantsDigits = details.passwordFormat === "numeric" || /number|digit/i.test(String(details.passwordHint ?? ""));
+    const derived = wantsDigits ? [digitsOf(details.data), digitsOf(details.passwordHint)].filter((x) => x.length > 0) : [];
+    // Very short numeric passwords are cheap to enumerate (at most 999 tries).
+    const counted = details.passwordFormat === "numeric" && details.passwordLength >= 1 && details.passwordLength <= 3
+      ? Array.from({ length: 10 ** details.passwordLength }, (_, n) => String(n).padStart(details.passwordLength, "0"))
+      : [];
+    return [...new Set([...derived, ...(clue && matches(clue) ? [clue] : []), ...words.filter(matches), ...counted])];
   };
 
   const reportedHints = new Map();

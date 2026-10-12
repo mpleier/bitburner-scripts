@@ -7,7 +7,8 @@ export async function main(ns) {
   // 16 GB): loot = openCache + phishingAttack, stasis = one-shot setStasisLink.
   const lootFile = "darknet-loot.js";
   const stasisFile = "darknet-stasis.js";
-  const codeFiles = [nodeFile, lootFile, stasisFile];
+  const cacheFile = "darknet-cache.js";
+  const codeFiles = [nodeFile, lootFile, stasisFile, cacheFile];
   const reportedHints = new Map();
   // Retry when the shared credential or candidate files change, not on every mutation.
   const attemptedInputs = new Map();
@@ -54,8 +55,24 @@ export async function main(ns) {
         default: return true;
       }
     };
+    // Servers with no password (hint "There is no password", length 0, or the
+    // ZeroLogon model) accept the empty string. The length filter below would
+    // otherwise discard every candidate and leave nothing to try.
+    const noPassword = info.passwordLength === 0 || info.modelId === "ZeroLogon"
+      || /no password/i.test(String(info.passwordHint ?? ""));
+    if (noPassword) return [""];
     const clue = typeof info.data === "string" ? info.data.trim() : "";
-    return [...new Set([...(clue && matches(clue) ? [clue] : []), ...words.filter(matches)])];
+    // "Type the numbers to prove you are human": the clue is the password with
+    // other characters mixed in, so the password is the clue's digits alone.
+    // Tried first, even if the length differs, since it is a single guess.
+    const digitsOf = (text) => String(text ?? "").replace(/\D+/g, "");
+    const wantsDigits = info.passwordFormat === "numeric" || /number|digit/i.test(String(info.passwordHint ?? ""));
+    const derived = wantsDigits ? [digitsOf(info.data), digitsOf(info.passwordHint)].filter((x) => x.length > 0) : [];
+    // Very short numeric passwords are cheap to enumerate (at most 999 tries).
+    const counted = info.passwordFormat === "numeric" && info.passwordLength >= 1 && info.passwordLength <= 3
+      ? Array.from({ length: 10 ** info.passwordLength }, (_, n) => String(n).padStart(info.passwordLength, "0"))
+      : [];
+    return [...new Set([...derived, ...(clue && matches(clue) ? [clue] : []), ...words.filter(matches), ...counted])];
   };
   // v3 renamed ns.formatRam -> ns.format.ram; use whichever exists.
   const fmtRam = (v) => {
@@ -128,8 +145,17 @@ export async function main(ns) {
         const ram = ns.getScriptRam(stasisFile, self);
         if (ram > 0 && freeRam() >= ram) stasisStarted = ns.exec(stasisFile, self, 1) > 0;
       }
-      // The stasis one-shot needs its RAM first; loot is sized on the next pass.
-      if (!stasisStarted && ns.fileExists(lootFile, self) && !procRunning(lootFile)) {
+      // Open any .cache file on this server. The loot helper does this too, so the
+      // one-shot is only needed when loot isn't running (e.g. not enough RAM yet).
+      let cacheStarted = false;
+      if (!stasisStarted && ns.ls(self, ".cache").length > 0 && ns.fileExists(cacheFile, self)
+          && !procRunning(cacheFile) && !procRunning(lootFile)) {
+        const ram = ns.getScriptRam(cacheFile, self);
+        if (ram > 0 && freeRam() >= ram) cacheStarted = ns.exec(cacheFile, self, 1) > 0;
+        else note(`${self}:cache`, `${self}: cache file waiting; needs ${fmtRam(ram)} free RAM, ${fmtRam(freeRam())} available.`);
+      }
+      // The stasis and cache one-shots need their RAM first; loot is sized on the next pass.
+      if (!stasisStarted && !cacheStarted && ns.fileExists(lootFile, self) && !procRunning(lootFile)) {
         const ram = ns.getScriptRam(lootFile, self);
         const threads = ram > 0 ? Math.floor(freeRam() / ram) : 0;
         if (threads >= 1) ns.exec(lootFile, self, threads);

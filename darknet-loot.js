@@ -13,8 +13,8 @@ export async function main(ns) {
       for (const file of ns.ls(self, ".cache")) {
         try {
           const result = ns.dnet.openCache(file, true);
-          ns.print(`Opened ${file}: ${JSON.stringify(result)}`);
-        } catch (error) { ns.print(`Could not open ${file}: ${String(error)}`); }
+          ns.tprint(`${self}: opened ${file}: ${JSON.stringify(result)}`);
+        } catch (error) { ns.tprint(`${self}: could not open ${file}: ${String(error)}`); }
       }
       // Most attempts fail (code 455); only report the ones that pay out.
       const result = await ns.dnet.phishingAttack();

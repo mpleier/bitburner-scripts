@@ -3,23 +3,34 @@
  *
  * Strategy:
  *   - Agriculture, expanded to all six cities; sells Plants and Food with Market-TA.II.
- *   - Restaurant, added once Agriculture is stable; develops Apex Dining products.
+ *   - Chemical division with a quality loop (Agri Plants -> Chem, Chem Chemicals
+ *     -> Agri). Gated on funds and on Hi-Tech R&D Lab.
+ *   - Restaurant, product-based; develops Apex Dining products. Fed by
+ *     Agriculture's Food export so its avgQlt isn't pinned at 1.
  *   - Late game: IPO, buy shares back toward the ownership target, then pay the
- *     player a tiered dividend on corporation profit. Buybacks and dividends are
- *     decoupled: buybacks run whenever they can afford to, and the dividend rate
- *     is set from the current tier regardless of ownership. The actual payout is
- *     scaled automatically by how much of the corporation the player owns, so a
- *     diluted player still receives a proportional slice rather than nothing.
+ *     player a tiered dividend.
+ *   - Hacknet: buy and level servers, spend hashes on a rotating plan.
  *
- * Source-verified against bitburner-src/dev/src/Corporation:
- *   - getIndustryData(...).startingCost is the purchase price (no `cost` field).
+ * Source-verified against bitburner-src/dev/src:
+ *   - getIndustryData(...).startingCost is the purchase price.
  *   - Division.maxProducts grows with uPgrade: Capacity.I / .II, starting at 3.
+ *   - Base research tree has Hi-Tech R&D Lab as root; AutoPartyManager and
+ *     AutoBrew automate morale/energy. Prereqs are enforced by the game.
+ *   - Production multiplier: (0.002*RE+1)^0.72 * (0.002*HW+1)^0.2 *
+ *     (0.002*RB+1)^0.3 * (0.002*AI+1)^0.3 per city, ^0.73, summed.
+ *   - Product effective rating caps at avgQlt * sqrt(rating); Restaurant
+ *     needs Agriculture's Food export to avoid quality-1 collapse.
+ *   - Warehouse size is linear in level; cost is 1.07^level.
+ *   - purchaseWarehouse / upgradeWarehouse / upgradeOfficeSize / hireAdVert
+ *     return void on insufficient funds. buyMaterial does NOT check funds and
+ *     can drive the corp balance negative if overspent.
  *   - sellProduct / sellMaterial with `all=true` write per-city state in one call.
- *   - Market-TA.II is a division-wide flag, not per-city.
- *   - issueDividends takes a fraction in [0, dividendMaxRate] and requires a
- *     public corporation (goPublic).
- *   - CorporationInfo exposes `numShares`, `sharePrice`, `shareSaleCooldown`,
- *     `public`, `valuation`. Player-owned shares live at `ns.getPlayer().shares`.
+ *   - issueDividends takes a fraction in [0, dividendMaxRate]; requires public.
+ *   - exportMaterial throws on duplicate route; cancelExportMaterial does not.
+ *   - Ownership is CorporationInfo.numShares / totalShares.
+ *   - hasHacknetServers() (BN9 or SF9) gates hashes entirely.
+ *   - purchaseNode returns -1 on failure, not false. Node count is the signal.
+ *   - throwParty returns a multiplier, not a boolean.
  */
 export async function main(ns) {
   const c = ns.corporation;
@@ -28,21 +39,26 @@ export async function main(ns) {
   const pcOwnerFile = "tasks/__pc_corp_owner.json";
   const agri = "Agri";
   const restaurant = "Dining";
+  const chem = "Chem";
   const CITY_EXPAND_BUFFER = 5e9;
   const WAREHOUSE_BUFFER = 5e9;
   let reserve = 5e9;
+  // Per-cycle budget for boost purchases. Shared across all cities and
+  // divisions so the sum of boost buying in one cycle can't exceed this
+  // fraction of funds. buyMaterial commits purchases without checking
+  // funds, so a per-city cap that each city calculates independently adds
+  // up (6 cities * 20% = 120%) and drives the balance negative.
+  let boostBudget = 0;
+  const BOOST_SPEND_FRACTION = 0.20;
   const officeJobs = ["Operations", "Engineer", "Business", "Management", "Research & Development"];
 
   // ---- Dividend strategy ------------------------------------------------
-  // issueDividends takes a *fraction* in [0, dividendMaxRate]. During the
-  // growth phase the rate is 0; every dollar retained compounds. As the corp
-  // matures, a growing slice of profit is paid out.
   const DIVIDEND_TIERS = [
-    [1e21, 0.20], // mature
+    [1e21, 0.20],
     [1e18, 0.10],
     [1e15, 0.05],
     [1e13, 0.02],
-    [0,    0.00], // growth phase: reinvest everything
+    [0,    0.00],
   ];
   const DIVIDEND_MAX = (() => {
     try {
@@ -55,18 +71,79 @@ export async function main(ns) {
       if (cash >= threshold) return Math.min(rate, DIVIDEND_MAX);
     return 0;
   };
-  // Dividends require a public corporation. The IPO hands ~25% of shares to
-  // the public, so buyBackShares() is used afterwards to restore ownership.
   const PAY_DIVIDENDS = true;
   const IPO_VALUATION = 1e12;
-  // Buybacks run whenever possible, but ownership is never required to reach
-  // this before dividends start; the payout is scaled by the actual share.
   const OWNERSHIP_TARGET = 0.90;
   const BUYBACK_SPEND_FRACTION = 0.10;
-  // Early investment rounds inject capital but permanently dilute the player's
-  // share of every future dividend. Flip to false for a pure dividend play.
   const ACCEPT_INVESTMENT = true;
   let lastDividendRate = -1;
+
+  // ---- Hash spend plan --------------------------------------------------
+  const HASH_SPEND_PLAN = [
+    "Sell for Corporation Funds",
+    "Exchange for Corporation Research",
+  ];
+  let hashSpendIndex = 0;
+  const SELL_HASHES_FOR_CORP = true;
+  const MAX_HASH_COST_PER_PURCHASE = 5000;
+
+  // ---- Hacknet server management ----------------------------------------
+  const BUY_HACKNET_SERVERS = true;
+  const HACKNET_SPEND_FRACTION = 0.05;
+  const HACKNET_MAX_SERVERS = 20;
+  const HACKNET_CACHE_TARGET = 4;
+
+  // ---- Wilson Analytics priority ----------------------------------------
+  const WILSON_TARGET_LEVEL = 17;
+
+  // ---- Chemical quality loop --------------------------------------------
+  const EXPORT_FORMULA = "(IPROD+IINV/10)*(-1)";
+  const CHEM_FUNDS_GATE = 2e11;
+
+  // ---- AdVert budget ----------------------------------------------------
+  const ADVERT_SPEND_FRACTION = 0.50;
+
+  // ---- Office upkeep ----------------------------------------------------
+  const PARTY_COST_PER_EMPLOYEE = 5e6;
+
+  // ---- Input buffer -----------------------------------------------------
+  const INPUT_BUY_HEADROOM = 1.10;
+  const INPUT_STOCK_CEILING = 30;
+
+  // ---- Boost target -----------------------------------------------------
+  const BOOST_WAREHOUSE_FRACTION = 0.60;
+
+  // ---- Research orders --------------------------------------------------
+  const MATERIAL_RESEARCH_ORDER = [
+    "Hi-Tech R&D Laboratory",
+    "AutoPartyManager",
+    "AutoBrew",
+    "Market-TA.I",
+    "Market-TA.II",
+    "Self-Correcting Assemblers",
+    "Drones",
+    "Drones - Assembly",
+    "Drones - Transport",
+    "Overclock",
+    "Sti.mu",
+  ];
+  const PRODUCT_RESEARCH_ORDER = [
+    "Hi-Tech R&D Laboratory",
+    "AutoPartyManager",
+    "AutoBrew",
+    "Market-TA.I",
+    "Market-TA.II",
+    "uPgrade: Fulcrum",
+    "uPgrade: Capacity.I",
+    "uPgrade: Capacity.II",
+    "uPgrade: Dashboard",
+    "Self-Correcting Assemblers",
+    "Drones",
+    "Drones - Assembly",
+    "Drones - Transport",
+    "Overclock",
+    "Sti.mu",
+  ];
 
   const safeDisableLog = (label) => { try { ns.disableLog(label); } catch {} };
   safeDisableLog("sleep");
@@ -81,7 +158,6 @@ export async function main(ns) {
   const divisions = () => corp()?.divisions ?? [];
   const hasDivision = (division) => divisions().includes(division);
   const hasUnlock = (unlock) => safe(`hasUnlock ${unlock}`, () => c.hasUnlock(unlock)) === true;
-  // A `false` return is treated the same as a throw: the call did not succeed.
   const attempt = (label, fn) => safe(label, () => fn() !== false) === true;
   const pcOwnsCorporation = () => {
     try {
@@ -89,21 +165,19 @@ export async function main(ns) {
       return lease?.owner === "pc-controller" && Number(lease.expiresAt) > Date.now();
     } catch { return false; }
   };
-  // Corporation access is available in BN3 or with active Source-File 3.
   const resetInfo = safe("Read reset information", () => ns.getResetInfo());
   const sourceFiles = resetInfo?.ownedSF;
-  const sourceFile3Level = typeof sourceFiles?.get === "function" ? sourceFiles.get(3) : sourceFiles?.[3];
-  const hasSourceFile3 = Number(sourceFile3Level) > 0;
+  const sf = (n) => typeof sourceFiles?.get === "function" ? sourceFiles.get(n) : sourceFiles?.[n];
+  const hasSourceFile3 = Number(sf(3)) > 0;
   if (!resetInfo || (resetInfo.currentNode !== 3 && !hasSourceFile3)) {
     ns.tprint("Corporation manager stopped: requires BitNode 3 or Source-File 3 access.");
     return;
   }
+  const hasHacknetServers = () =>
+    resetInfo.currentNode === 9 || Number(sf(9)) > 0;
 
   while (!safe("Check corporation API", () => c.hasCorporation())) {
-    if (pcOwnsCorporation()) {
-      await ns.sleep(5_000);
-      continue;
-    }
+    if (pcOwnsCorporation()) { await ns.sleep(5_000); continue; }
     const eligible = safe("Check corporation eligibility", () => c.canCreateCorporation(true));
     if (eligible !== "Success") {
       ns.print(`Waiting for corporation creation eligibility (${String(eligible)}).`);
@@ -111,10 +185,7 @@ export async function main(ns) {
       continue;
     }
     const created = safe("Create corporation", () => c.createCorporation(name, true));
-    if (created) {
-      ns.print(`Created ${name}.`);
-      break;
-    }
+    if (created) { ns.print(`Created ${name}.`); break; }
     await ns.sleep(60_000);
   }
 
@@ -125,8 +196,6 @@ export async function main(ns) {
   };
   const createDivision = (industry, division) => {
     if (hasDivision(division)) return true;
-    // getIndustryData() returns the industry definition. Its purchase price is
-    // `startingCost`; there is no `cost` field on this shape in 3.x.
     const data = safe(`Get ${industry} data`, () => c.getIndustryData(industry));
     const start = data?.startingCost;
     if (Number.isFinite(start) && funds() > start + reserve * 2)
@@ -139,17 +208,18 @@ export async function main(ns) {
     if (Number.isFinite(cost) && funds() > cost + reserve)
       attempt(`Buy ${unlock}`, () => c.purchaseUnlock(unlock));
   };
+  const hireAdVert = (division) => {
+    const adCost = safe(`Get AdVert cost (${division})`, () => c.getHireAdVertCost(division));
+    const cash = funds();
+    if (!Number.isFinite(adCost) || adCost > cash * ADVERT_SPEND_FRACTION || cash <= adCost + reserve)
+      return;
+    attempt(`Hire AdVert (${division})`, () => c.hireAdVert(division));
+  };
 
   // ---- IPO / shares / dividends -----------------------------------------
-  // Player-owned shares live on Player, not CorporationInfo. 3.x stores them
-  // as a map keyed by corporation name.
-  const ownedShares = () => {
-    try { return Number(ns.getPlayer()?.shares?.[name]) || 0; }
-    catch { return 0; }
-  };
   const ownershipOf = (info) => {
-    const owned = ownedShares();
-    const total = Math.max(1, Number(info?.numShares) || 1);
+    const owned = Math.max(0, Number(info?.numShares) || 0);
+    const total = Math.max(1, Number(info?.totalShares) || 1);
     return { owned, total, fraction: owned / total };
   };
 
@@ -159,7 +229,6 @@ export async function main(ns) {
     if (!info || info.public) return;
     const valuation = Number(info.valuation) || 0;
     if (valuation < IPO_VALUATION) return;
-    // goPublic accepts an optional numShares; 0 lets the game pick the IPO size.
     if (attempt("Go public", () => c.goPublic(0))) {
       const after = corp();
       const { fraction } = ownershipOf(after);
@@ -177,9 +246,6 @@ export async function main(ns) {
 
     const { total, fraction } = ownershipOf(info);
 
-    // Buybacks run whenever the player is below target and the market is open.
-    // They are not a prerequisite for dividends; the payout is scaled by the
-    // actual ownership fraction, so a diluted player still receives a slice.
     if (fraction < OWNERSHIP_TARGET) {
       const onCooldown = (Number(info.shareSaleCooldown) || 0) > 0;
       if (!onCooldown) {
@@ -195,33 +261,154 @@ export async function main(ns) {
       }
     }
 
-    // Set the rate on the current tier regardless of ownership. The game
-    // applies the payout to the player's actual holding, so this is safe.
     const rate = dividendRateFor(funds());
     if (rate === lastDividendRate) return;
     if (attempt(`Set dividend rate ${(rate * 100).toFixed(0)}%`, () => c.issueDividends(rate)))
       lastDividendRate = rate;
   };
 
+  // ---- Hash spends ------------------------------------------------------
+  const spendHashes = () => {
+    if (!SELL_HASHES_FOR_CORP || !hasHacknetServers()) return null;
+
+    let available = 0;
+    try { available = Number(ns.hacknet.numHashes()) || 0; }
+    catch { return null; }
+
+    for (let n = 0; n < HASH_SPEND_PLAN.length; n++) {
+      const idx = (hashSpendIndex + n) % HASH_SPEND_PLAN.length;
+      const target = HASH_SPEND_PLAN[idx];
+
+      let cost = 0;
+      try { cost = Number(ns.hacknet.hashCost(target)); }
+      catch { continue; }
+      if (!Number.isFinite(cost) || cost <= 0 || cost > MAX_HASH_COST_PER_PURCHASE) continue;
+      if (available < cost) continue;
+
+      if (attempt(`Spend hashes on ${target}`, () => ns.hacknet.spendHashes(target))) {
+        hashSpendIndex = (idx + 1) % HASH_SPEND_PLAN.length;
+        return target;
+      }
+    }
+    return null;
+  };
+
+  // ---- Hacknet server management ----------------------------------------
+  const manageHacknetServers = () => {
+    if (!BUY_HACKNET_SERVERS || !hasHacknetServers()) return;
+
+    let numNodes = 0;
+    try { numNodes = ns.hacknet.numNodes(); }
+    catch { return; }
+    const budget = ns.getPlayer().money * HACKNET_SPEND_FRACTION;
+    if (budget <= 0) return;
+
+    let bought = 0;
+    while (numNodes < HACKNET_MAX_SERVERS && bought < 3) {
+      let cost = Infinity;
+      try { cost = ns.hacknet.getPurchaseNodeCost(); }
+      catch { cost = Infinity; }
+      if (!Number.isFinite(cost) || cost > budget) break;
+      try { ns.hacknet.purchaseNode(); }
+      catch { break; }
+      const after = ns.hacknet.numNodes();
+      if (after <= numNodes) break;
+      numNodes = after;
+      bought++;
+    }
+
+    if (numNodes === 0) return;
+
+    const stats = [];
+    for (let i = 0; i < numNodes; i++) {
+      const s = safe(`Read hacknet node ${i}`, () => ns.hacknet.getNodeStats(i));
+      if (s) stats.push({ i, s });
+    }
+
+    const totalCapacity = stats.reduce((sum, { s }) => sum + (Number(s.hashCapacity) || 0), 0);
+    const currentHashes = Number(ns.hacknet.numHashes()) || 0;
+    const capacityTight = totalCapacity > 0 && currentHashes > totalCapacity * 0.5;
+
+    if (capacityTight) {
+      let bestCache = null;
+      for (const { i, s } of stats) {
+        if (s.cache === undefined || s.cache >= HACKNET_CACHE_TARGET) continue;
+        const cost = safe(`cache cost ${i}`, () => ns.hacknet.getCacheUpgradeCost(i, 1));
+        if (!Number.isFinite(cost) || cost <= 0 || cost > budget) continue;
+        if (!bestCache || cost < bestCache.cost) bestCache = { i, cost };
+      }
+      if (bestCache) {
+        attempt(`Upgrade cache on node ${bestCache.i}`, () => ns.hacknet.upgradeCache(bestCache.i, 1));
+        return;
+      }
+    }
+
+    let best = null;
+    for (const { i, s } of stats) {
+      const level = Math.max(1, Number(s.level) || 1);
+      const ram = Math.max(1, Number(s.ram) || 1);
+      const cores = Math.max(1, Number(s.cores) || 1);
+      const rateProxy = 0.001 * level * Math.pow(1.07, Math.log2(ram)) * (1 + (cores - 1) / 5);
+      if (!Number.isFinite(rateProxy) || rateProxy <= 0) continue;
+
+      const candidates = [
+        { type: "level", value: rateProxy / level,
+          cost: safe(`level cost ${i}`, () => ns.hacknet.getLevelUpgradeCost(i, 1)) },
+        { type: "ram", value: rateProxy * 0.07,
+          cost: safe(`ram cost ${i}`, () => ns.hacknet.getRamUpgradeCost(i, 1)) },
+        { type: "core", value: rateProxy / (cores + 4),
+          cost: safe(`core cost ${i}`, () => ns.hacknet.getCoreUpgradeCost(i, 1)) },
+      ];
+      for (const cand of candidates) {
+        if (!Number.isFinite(cand.cost) || cand.cost <= 0) continue;
+        if (cand.cost > budget) continue;
+        const ratio = cand.value / cand.cost;
+        if (!best || ratio > best.ratio) best = { ...cand, i, ratio };
+      }
+    }
+    if (!best) return;
+    const upgradeFns = {
+      level: () => ns.hacknet.upgradeLevel(best.i, 1),
+      ram:   () => ns.hacknet.upgradeRam(best.i, 1),
+      core:  () => ns.hacknet.upgradeCore(best.i, 1),
+    };
+    attempt(`Upgrade ${best.type} on node ${best.i}`, upgradeFns[best.type]);
+  };
+
+  // ---- Material export supply chain -------------------------------------
+  const exportRoutes = new Set();
+  const setupExportChain = (sourceDiv, sourceMat, targetDiv) => {
+    const d = safe(`Read ${sourceDiv}`, () => c.getDivision(sourceDiv));
+    if (!d?.cities?.length) return;
+    for (const city of d.cities) {
+      const key = `${sourceDiv}|${city}|${targetDiv}|${sourceMat}`;
+      if (exportRoutes.has(key)) continue;
+      if (attempt(`Export ${sourceMat} → ${targetDiv}`, () =>
+        c.exportMaterial(sourceDiv, city, targetDiv, city, sourceMat, EXPORT_FORMULA)))
+        exportRoutes.add(key);
+    }
+  };
+  const manageExports = () => {
+    if (!hasDivision(agri)) return;
+    if (hasDivision(chem)) {
+      setupExportChain(agri, "Plants", chem);
+      setupExportChain(chem, "Chemicals", agri);
+    }
+    if (hasDivision(restaurant)) {
+      setupExportChain(agri, "Food", restaurant);
+    }
+  };
+
   // ---- Per-city office management ---------------------------------------
-  // True once the division actually has an office in this city. Cities are
-  // expanded as funds allow, so the rest must be skipped until then.
   const inCity = (division, city) =>
     safe(`Read division ${division}`, () => c.getDivision(division))?.cities?.includes(city) === true;
-  const runOffice = (division, city, production) => {
+  const runOffice = (division, city, production, productDivision = false) => {
     if (!hasUnlock("Office API")) return;
     let office = safe(`Read office ${division}/${city}`, () => c.getOffice(division, city));
     if (!office) return;
-    // Office size ladder. The old ladder stayed at 3 employees/city until the
-    // corp had $100b+, which starved revenue during the early game; this one
-    // grows headcount alongside the cash balance.
-    const target =
-      funds() > 1e13 ? 60 :
-      funds() > 5e12 ? 45 :
-      funds() > 1e12 ? 30 :
-      funds() > 1e11 ? 20 :
-      funds() > 1e10 ? 15 :
-      funds() > 1e9  ? 9  : 3;
+    const target = productDivision
+      ? (funds() > 1e15 ? 120 : funds() > 1e14 ? 100 : funds() > 1e13 ? 80 : funds() > 1e12 ? 60 : 30)
+      : (funds() > 1e13 ? 60 : funds() > 5e12 ? 45 : funds() > 1e12 ? 30 : funds() > 1e11 ? 20 : funds() > 1e10 ? 15 : funds() > 1e9 ? 9 : 3);
     if (office.size < target) {
       const add = target - office.size;
       const cost = safe("Get office size cost", () => c.getOfficeSizeUpgradeCost(division, city, add));
@@ -238,9 +425,6 @@ export async function main(ns) {
     if (employees > 0) {
       let counts;
       if (employees <= 5) {
-        // Tiny offices: the ratio split rounds Business down to zero, which leaves
-        // sales effectivity near nothing. Hand out one job at a time in a fixed
-        // order of importance: Operations, Business, Engineer, Management, R&D.
         counts = officeJobs.map(() => 0);
         [0, 2, 1, 3, 4].slice(0, employees).forEach(i => counts[i]++);
       } else {
@@ -249,8 +433,6 @@ export async function main(ns) {
         let remainder = employees - counts.reduce((a, b) => a + b, 0);
         for (let i = 0; remainder > 0; i = (i + 1) % counts.length, remainder--) counts[i]++;
       }
-      // Only touch assignments when they differ from the target; resetting every
-      // job to zero on every update needlessly unassigns the whole office.
       const jobs = office.employeeJobs;
       const aligned = jobs && officeJobs.every((job, i) => Number(jobs[job] ?? -1) === counts[i]);
       if (!aligned) {
@@ -258,20 +440,19 @@ export async function main(ns) {
         for (let i = 0; i < officeJobs.length; i++)
           if (counts[i]) attempt(`Assign ${officeJobs[i]}`, () => c.setJobAssignment(division, city, officeJobs[i], counts[i]));
       }
-      // Tea only helps when energy has dropped, so don't pay for it on a full office.
       if (office.avgEnergy < (office.maxEnergy ?? 100) - 1)
         attempt("Buy employee tea", () => c.buyTea(division, city));
+      if (office.avgMorale < (office.maxMorale ?? 100) - 1)
+        attempt("Throw party", () => c.throwParty(division, city, PARTY_COST_PER_EMPLOYEE));
     }
   };
 
   // ---- Agriculture inputs and boosts ------------------------------------
-  // Agriculture inputs: 0.5 Water + 0.2 Chemicals per unit of output. Both Plants
-  // and Food are produced, so both count when sizing the buy rate. Buying them
-  // blindly at a fixed rate fills the warehouse and blocks the output.
   const manageInputs = (city) => {
     const set = (material, rate) =>
       attempt(`Set ${material} buy rate`, () => c.buyMaterial(agri, city, material, rate));
     if (hasUnlock("Smart Supply")) { set("Water", 0); set("Chemicals", 0); return; }
+    if (hasDivision(chem)) set("Chemicals", 0);
     const wh = safe("Read warehouse", () => c.getWarehouse(agri, city));
     const full = wh ? wh.sizeUsed / Math.max(1, wh.size) > 0.9 : false;
     let produced = 0;
@@ -280,71 +461,74 @@ export async function main(ns) {
       produced += Number(item?.productionAmount) || 0;
     }
     produced = Math.max(produced, 1);
-    for (const [material, per] of [["Water", 0.5], ["Chemicals", 0.2]]) {
+    const inputs = hasDivision(chem)
+      ? [["Water", 0.5]]
+      : [["Water", 0.5], ["Chemicals", 0.2]];
+    for (const [material, per] of inputs) {
       const item = safe(`Read ${material}`, () => c.getMaterial(agri, city, material));
       const need = per * produced;
-      // Stop buying when the warehouse is full or ~30s of stock is already on hand.
-      set(material, full || Number(item?.stored) > need * 30 ? 0 : need);
+      const overCeiling = full || Number(item?.stored) > need * INPUT_STOCK_CEILING;
+      set(material, overCeiling ? 0 : need * INPUT_BUY_HEADROOM);
     }
   };
-  // Agriculture production boosters: stored Real Estate, Hardware, Robots and AI
-  // Cores multiply output (factors are the game's Agriculture constants; size is
-  // storage per unit and is read from the game when available). Space is split
-  // in proportion to each factor, up to 40% of the warehouse.
   const boosts = [
     { name: "Real Estate", factor: 0.72, size: 0.005 },
     { name: "Hardware", factor: 0.2, size: 0.06 },
     { name: "Robots", factor: 0.3, size: 0.5 },
     { name: "AI Cores", factor: 0.3, size: 0.1 },
   ];
-  const manageBoosts = (city) => {
-    const wh = safe("Read warehouse", () => c.getWarehouse(agri, city));
+  // Boost purchases are drawn from a shared per-cycle budget (boostBudget)
+  // so the sum across cities never exceeds BOOST_SPEND_FRACTION of funds.
+  // buyMaterial commits the purchase without checking funds, so an
+  // unbounded per-city spend drives the corp balance negative.
+  const manageBoosts = (city, division = agri) => {
+    if (boostBudget <= 0) return;
+    const wh = safe("Read warehouse", () => c.getWarehouse(division, city));
     if (!wh) return;
     const full = wh.sizeUsed / Math.max(1, wh.size) > 0.9;
     const factorSum = boosts.reduce((a, b) => a + b.factor, 0);
     const plan = boosts.map((b) => {
-      const item = safe(`Read ${b.name}`, () => c.getMaterial(agri, city, b.name));
+      const item = safe(`Read ${b.name}`, () => c.getMaterial(division, city, b.name));
       const size = Number(safe(`Read ${b.name} size`, () => c.getMaterialData(b.name))?.size) || b.size;
-      const target = (wh.size * 0.4 * (b.factor / factorSum)) / size;
+      const target = (wh.size * BOOST_WAREHOUSE_FRACTION * (b.factor / factorSum)) / size;
       const price = Number(item?.marketPrice) || 0;
       const need = full || price <= 0 ? 0 : Math.max(0, target - (Number(item?.stored) || 0));
       return { name: b.name, need, cost: need * price };
     });
-    // Spend at most a fifth of funds per update so boosts never starve expansion.
     const total = plan.reduce((a, p) => a + p.cost, 0);
-    const spend = Math.max(0, Math.min(funds() * 0.2, funds() - reserve));
+    if (total <= 0) return;
+    // Cap this city's spend at whatever remains of the shared budget.
+    const spend = Math.min(boostBudget, total);
     const scale = total > spend ? spend / total : 1;
-    // buyMaterial takes units per second; a cycle is ~10s, so this fills the gap
-    // within one update and is recomputed (and drops to 0) on the next.
+    boostBudget -= total * scale;
     for (const p of plan)
-      attempt(`Set ${p.name} buy rate`, () => c.buyMaterial(agri, city, p.name, (p.need * scale) / 10));
+      attempt(`Set ${p.name} buy rate`, () => c.buyMaterial(division, city, p.name, (p.need * scale) / 10));
   };
 
   // ---- Research ---------------------------------------------------------
-  // Research Hi-Tech R&D Lab, then Market-TA.I and .II (automatic optimal pricing).
-  const runResearch = (division) => {
+  const runResearch = (division, order) => {
     const points = safe(`Read ${division}`, () => c.getDivision(division))?.researchPoints ?? 0;
-    for (const name of ["Hi-Tech R&D Laboratory", "Market-TA.I", "Market-TA.II"]) {
+    for (const name of order) {
       if (safe(`Check ${name}`, () => c.hasResearched(division, name)) === true) continue;
       const cost = safe(`Get ${name} cost`, () => c.getResearchCost(division, name));
-      // Keep a buffer: research points also feed product quality.
-      if (Number.isFinite(cost) && points >= cost * 1.5) attempt(`Research ${name}`, () => c.research(division, name));
-      break; // strictly in order, one at a time
+      if (Number.isFinite(cost) && points >= cost)
+        attempt(`Research ${name}`, () => c.research(division, name));
+      break;
     }
   };
   const hasTA2 = (division) => safe(`Check TA.II ${division}`, () => c.hasResearched(division, "Market-TA.II")) === true;
 
-  // ---- Warehouse management (no selling here) ---------------------------
+  // ---- Warehouse management ---------------------------------------------
   let storagePressure = false;
   const runWarehouse = (division, city) => {
     if (!hasUnlock("Warehouse API")) return;
     let has = safe("Check warehouse", () => c.hasWarehouse(division, city)) === true;
-    if (!has && funds() > reserve + WAREHOUSE_BUFFER)
-      has = attempt("Purchase warehouse", () => c.purchaseWarehouse(division, city));
+    if (!has && funds() > reserve + WAREHOUSE_BUFFER) {
+      attempt("Purchase warehouse", () => c.purchaseWarehouse(division, city));
+      has = safe("Check warehouse after purchase", () => c.hasWarehouse(division, city)) === true;
+    }
     if (!has) return;
     const wh = safe("Read warehouse", () => c.getWarehouse(division, city));
-    // Storage management: upgrade early (70% full) and catch up in a burst of up
-    // to 5 levels, so production doesn't stall against a full warehouse.
     let used = wh ? wh.sizeUsed / Math.max(1, wh.size) : 0;
     if (used > 0.8) storagePressure = true;
     for (let level = 0; level < 5 && used > 0.7; level++) {
@@ -358,14 +542,12 @@ export async function main(ns) {
   };
 
   // ---- Selling ----------------------------------------------------------
-  // Material sales are inherently per-city (stored, salesVolume, etc. are per
-  // city). Market-TA.II is a division-wide flag, so check it once.
-  const sellMaterials = (division) => {
+  const sellMaterials = (division, materials) => {
     const d = safe(`Read division ${division}`, () => c.getDivision(division));
-    if (!d || d.makesProducts) return; // product divisions have no output materials
+    if (!d || d.makesProducts) return;
     const ta2 = hasTA2(division);
     for (const city of d.cities ?? []) {
-      for (const material of ["Plants", "Food"]) {
+      for (const material of materials) {
         attempt(`Sell ${material}`, () => c.sellMaterial(division, city, material, "MAX", "MP"));
         if (ta2)
           attempt(`Market-TA.II ${material}`, () => c.setMaterialMarketTA2(division, city, material, true));
@@ -373,9 +555,6 @@ export async function main(ns) {
     }
   };
 
-  // Product sales: sellProduct with all=true writes desiredSell* for every city
-  // in one call. Fire once per product, only after every active city has
-  // finished developing it. Market-TA.II is a division-wide flag.
   const sellProducts = (division) => {
     const d = safe(`Read division ${division}`, () => c.getDivision(division));
     if (!d) return;
@@ -388,21 +567,17 @@ export async function main(ns) {
         return item?.developmentProgress >= 100;
       });
       if (!ready) continue;
-      // The city argument is arbitrary when `all=true`; pass the first one.
       attempt(`Sell ${product}`, () => c.sellProduct(division, activeCities[0], product, "MAX", "MP", true));
       if (ta2)
         attempt(`Market-TA.II ${product}`, () => c.setProductMarketTA2(division, product, true));
     }
   };
 
-  // Product helpers, used by the Restaurant block.
   const productComplete = (division, product, cityList) =>
     cityList.every((city) => {
       const item = safe(`Read ${product} in ${city}`, () => c.getProduct(division, city, product));
       return item?.developmentProgress >= 100;
     });
-  // A product can only be developed in a city that has a warehouse there;
-  // otherwise the division-level sell flag has nothing to sell from.
   const startProduct = (division, cityList, productName, investment) => {
     for (const city of cityList) {
       if (!safe(`Check warehouse ${city}`, () => c.hasWarehouse(division, city))) continue;
@@ -415,15 +590,10 @@ export async function main(ns) {
   let lastUpgrade = 0;
   while (true) {
     try {
-      if (pcOwnsCorporation()) {
-        await ns.sleep(5_000);
-        continue;
-      }
+      if (pcOwnsCorporation()) { await ns.sleep(5_000); continue; }
       const info = corp();
       if (!info) { await ns.sleep(30_000); continue; }
 
-      // Keep early investment rounds going unless we're optimizing for an
-      // undiluted dividend stream. Leave late offers alone either way.
       if (ACCEPT_INVESTMENT) {
         const offer = safe("Read investment offer", () => c.getInvestmentOffer());
         if (offer?.funds > 0 && offer.round <= 3 && offer.funds > Math.max(1e9, funds() * 0.1))
@@ -431,12 +601,21 @@ export async function main(ns) {
       }
 
       storagePressure = false;
-      reserve = Math.min(5e9, funds() * 0.1);
+      // Reserve floor keeps the corp from spending its last dollar on
+      // upgrades and leaving nothing for inputs. Without the floor, the
+      // 10% rule lets reserve approach zero as funds shrink, and a boost
+      // or upgrade purchase can drive the balance negative.
+      reserve = Math.max(1e9, Math.min(5e9, funds() * 0.1));
+      // Per-cycle boost budget. Shared across every city and division via
+      // manageBoosts, which decrements it as it spends.
+      boostBudget = Math.max(0, Math.min(funds() * BOOST_SPEND_FRACTION, funds() - reserve));
+
       createDivision("Agriculture", agri);
       buyUnlock("Warehouse API");
       buyUnlock("Office API");
       buyUnlock("Smart Supply");
       const allCities = cities;
+
       if (hasDivision(agri)) {
         for (const city of allCities) {
           expand(agri, city);
@@ -445,98 +624,123 @@ export async function main(ns) {
           runWarehouse(agri, city);
           if (hasUnlock("Warehouse API") && safe("Check agricultural warehouse", () => c.hasWarehouse(agri, city))) {
             manageInputs(city);
-            manageBoosts(city);
+            manageBoosts(city, agri);
           }
         }
-        sellMaterials(agri);
-        runResearch(agri);
-        // Advertising multiplier starts near zero and drives sales; hire AdVert
-        // whenever it is a small slice of funds.
-        const adCost = safe("Get AdVert cost (Agri)", () => c.getHireAdVertCost(agri));
-        if (Number.isFinite(adCost) && adCost <= funds() * 0.25 && funds() > adCost + reserve)
-          attempt("Hire AdVert (Agri)", () => c.hireAdVert(agri));
+        sellMaterials(agri, ["Plants", "Food"]);
+        runResearch(agri, MATERIAL_RESEARCH_ORDER);
+        hireAdVert(agri);
       }
 
-      // Restaurant is the second, product-based division from the supplied strategy.
+      if (hasDivision(agri) && !hasDivision(chem) && funds() > CHEM_FUNDS_GATE) {
+        const agriResearchDone = safe("Check Hi-Tech R&D (Agri)",
+          () => c.hasResearched(agri, "Hi-Tech R&D Laboratory")) === true;
+        if (agriResearchDone) createDivision("Chemical", chem);
+      }
+      if (hasDivision(chem)) {
+        for (const city of allCities) {
+          expand(chem, city);
+          if (!inCity(chem, city)) continue;
+          runOffice(chem, city, false);
+          runWarehouse(chem, city);
+          if (hasUnlock("Warehouse API") && safe("Check chemical warehouse", () => c.hasWarehouse(chem, city)))
+            manageBoosts(city, chem);
+        }
+        sellMaterials(chem, ["Chemicals"]);
+        runResearch(chem, MATERIAL_RESEARCH_ORDER);
+        manageExports();
+        hireAdVert(chem);
+      }
+
       if (hasDivision(agri) && funds() > 1e12) createDivision("Restaurant", restaurant);
       if (hasDivision(restaurant)) {
-        runResearch(restaurant);
+        manageExports();
+        runResearch(restaurant, PRODUCT_RESEARCH_ORDER);
         for (const city of allCities) {
           expand(restaurant, city);
           if (!inCity(restaurant, city)) continue;
-          runOffice(restaurant, city, true);
+          runOffice(restaurant, city, true, true);
           runWarehouse(restaurant, city);
         }
-        // Selling happens once per product, after every active city is done.
         sellProducts(restaurant);
-        // Re-read after the expansion loop so newly added cities are visible.
         const d = safe("Read Restaurant division", () => c.getDivision(restaurant));
         const activeCities = d?.cities ?? [];
         const products = d?.products ?? [];
-        // maxProducts grows to 5 once uPgrade: Capacity.I / .II finish.
         const maxProducts = d?.maxProducts ?? 3;
         if (activeCities.length && hasUnlock("Warehouse API") && products.length < maxProducts && funds() > 2e12) {
           const allComplete = products.every(p => productComplete(restaurant, p, activeCities));
           if (allComplete) {
             const investment = Math.min(10e9, Math.max(1e9, funds() * 0.005));
-            // Each active city needs its own copy of the product.
             if (funds() > 2 * investment * activeCities.length + reserve)
               startProduct(restaurant, activeCities, `Apex Dining ${products.length + 1}`, investment);
           }
         }
-        // AdVert also multiplies product sales; hire it when it's a small slice.
-        const adCost = safe("Get AdVert cost (Restaurant)", () => c.getHireAdVertCost(restaurant));
-        if (Number.isFinite(adCost) && adCost <= funds() * 0.25 && funds() > adCost + reserve)
-          attempt("Hire AdVert (Restaurant)", () => c.hireAdVert(restaurant));
+        hireAdVert(restaurant);
       }
 
-      // Limit recurring upgrade spending while preserving cash for expansion.
       if (Date.now() - lastUpgrade >= 30_000) {
-        // Smart Storage raises capacity in every warehouse, so it goes first
-        // (with a looser spending cap) whenever any warehouse is nearly full.
-        const order = [
-          ...(storagePressure ? ["Smart Storage"] : []),
-          "Smart Factories", "Smart Storage",
-          // Employee stat upgrades, then sales/marketing.
-          "Nuoptimal Nootropic Injector Implants", "Speech Processor Implants", "Neural Accelerators", "FocusWires",
-          // DreamSense is not a levelable upgrade in 3.x, so it must not be listed.
-          "ABC SalesBots", "Project Insight", "Wilson Analytics",
-        ];
-        // Cache funds once so the inner loop doesn't re-query every iteration.
         const cash = funds();
-        let bought = 0;
-        for (const upgrade of [...new Set(order)]) {
-          const cost = safe(`Get ${upgrade} upgrade cost`, () => c.getUpgradeLevelCost(upgrade));
-          // The old cap was 1% of funds (0.05 for Smart Storage under storage
-          // pressure). At $20b funds that's a $200m ceiling, and level 1 of
-          // every upgrade costs more than that, so nothing was ever bought.
-          // 20% (35% for Smart Storage under pressure) unblocks leveling while
-          // the funds() > cost + reserve check still keeps reserve untouched.
-          const cap = storagePressure && upgrade === "Smart Storage" ? 0.35 : 0.20;
-          if (Number.isFinite(cost) && cost <= cash * cap && cash > cost + reserve) {
-            if (attempt(`Level ${upgrade}`, () => c.levelUpgrade(upgrade))) { lastUpgrade = Date.now(); bought++; }
-            if (bought >= 2) break; // spread spending across updates
+        const wilsonLevel = safe("Wilson level", () => c.getUpgradeLevel("Wilson Analytics")) ?? 0;
+        if (wilsonLevel < WILSON_TARGET_LEVEL) {
+          const cost = safe("Wilson cost", () => c.getUpgradeLevelCost("Wilson Analytics"));
+          if (Number.isFinite(cost) && cost <= cash * 0.35 && cash > cost + reserve) {
+            if (attempt("Level Wilson Analytics", () => c.levelUpgrade("Wilson Analytics")))
+              lastUpgrade = Date.now();
+          }
+        } else {
+          const order = [
+            ...(storagePressure ? ["Smart Storage"] : []),
+            "Smart Factories", "Smart Storage",
+            "Nuoptimal Nootropic Injector Implants", "Speech Processor Implants",
+            "Neural Accelerators", "FocusWires",
+            "ABC SalesBots", "Project Insight",
+          ];
+          let bought = 0;
+          for (const upgrade of [...new Set(order)]) {
+            const cost = safe(`Get ${upgrade} cost`, () => c.getUpgradeLevelCost(upgrade));
+            const cap = storagePressure && upgrade === "Smart Storage" ? 0.35 : 0.20;
+            if (Number.isFinite(cost) && cost <= cash * cap && cash > cost + reserve) {
+              if (attempt(`Level ${upgrade}`, () => c.levelUpgrade(upgrade))) { lastUpgrade = Date.now(); bought++; }
+              if (bought >= 2) break;
+            }
           }
         }
       }
 
-      // Pay the player. IPO first, then buy shares back toward the ownership
-      // target, then set the dividend rate for the current tier. Buybacks and
-      // dividends are independent; the payout scales with the actual holding.
       manageIPO();
       manageSharesAndDividends();
+      manageHacknetServers();
+
+      const spentOn = spendHashes();
+      if (spentOn) {
+        const hashCount = (() => {
+          try { return Number(ns.hacknet.numHashes()) || 0; }
+          catch { return 0; }
+        })();
+        ns.print(`Spent hashes on "${spentOn}" (${ns.format.number(hashCount)} hashes remaining).`);
+      }
 
       const now = Date.now();
       if (now - lastInvestmentCycle > 60_000) {
         lastInvestmentCycle = now;
         const live = corp() ?? info;
-        const { fraction } = ownershipOf(live);
+        const { owned, total, fraction } = ownershipOf(live);
+        const hashes = (() => {
+          try { return Number(ns.hacknet.numHashes()) || 0; }
+          catch { return 0; }
+        })();
+        const serverCount = hasHacknetServers() ? (() => {
+          try { return ns.hacknet.numNodes(); }
+          catch { return 0; }
+        })() : 0;
         ns.print(
           `${info.name}: $${ns.format.number(funds())}; ` +
           `divisions: ${divisions().join(", ") || "none"}; ` +
           `public: ${live?.public ? "yes" : "no"}; ` +
-          `shares: ${(fraction * 100).toFixed(1)}%; ` +
+          `shares: ${(fraction * 100).toFixed(1)}% (${ns.format.number(owned)}/${ns.format.number(total)}); ` +
           `dividends: ${(Math.max(0, lastDividendRate) * 100).toFixed(0)}%; ` +
+          `hashes: ${ns.format.number(hashes)}; ` +
+          `servers: ${serverCount}; ` +
           `wallet: $${ns.format.number(ns.getPlayer().money)}.`
         );
       }

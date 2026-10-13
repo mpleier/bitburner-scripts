@@ -524,6 +524,16 @@ export async function main(ns) {
         // See if home ram has improved. We hold back on launching certain scripts if we are low on home RAM
         homeRam = await getNsDataThroughFile(ns, `ns.getServerMaxRam(ns.args[0])`, null, ["home"]);
 
+        // Maintain the Remote API mailbox after normal automation restarts.
+        if (!findScript('remote-api-agent.js')) {
+            const worker = getFilePath('remote-api-agent.js');
+            if (ns.fileExists(worker, 'home')) {
+                const required = ns.getScriptRam(worker, 'home');
+                const free = await getNsDataThroughFile(ns, 'ns.getServerMaxRam("home") - ns.getServerUsedRam("home")');
+                if (required > 0 && free >= required) launchScriptHelper(ns, 'remote-api-agent.js');
+            }
+        }
+
         // Launch the standalone manager; all corporation decisions stay in that script.
         if (!options['disable-corporation'] && (resetInfo.currentNode === 3 || Number(unlockedSFs[3]) > 0) &&
             !findScript('corporation-manager.js')) {

@@ -57,7 +57,6 @@ export async function main(ns) {
   const c = ns.corporation;
   const cities = ["Sector-12", "Aevum", "Volhaven", "Chongqing", "New Tokyo", "Ishima"];
   const name = "Apex Holdings";
-  const pcOwnerFile = "tasks/__pc_corp_owner.json";
   const agri = "Agri";
   const restaurant = "Dining";
   const chem = "Chem";
@@ -176,12 +175,6 @@ export async function main(ns) {
   const hasDivision = (division) => divisions().includes(division);
   const hasUnlock = (unlock) => safe(`hasUnlock ${unlock}`, () => c.hasUnlock(unlock)) === true;
   const attempt = (label, fn) => safe(label, () => fn() !== false) === true;
-  const pcOwnsCorporation = () => {
-    try {
-      const lease = JSON.parse(ns.read(pcOwnerFile));
-      return lease?.owner === "pc-controller" && Number(lease.expiresAt) > Date.now();
-    } catch { return false; }
-  };
   const resetInfo = safe("Read reset information", () => ns.getResetInfo());
   const sourceFiles = resetInfo?.ownedSF;
   const sf = (n) => typeof sourceFiles?.get === "function" ? sourceFiles.get(n) : sourceFiles?.[n];
@@ -204,7 +197,6 @@ export async function main(ns) {
   };
 
   while (!safe("Check corporation API", () => c.hasCorporation())) {
-    if (pcOwnsCorporation()) { await ns.sleep(5_000); continue; }
     const seed = attemptCreate(false);
     if (seed.ok) { ns.print(`Created ${name} with seed money.`); break; }
     const self = attemptCreate(true);
@@ -599,7 +591,6 @@ export async function main(ns) {
   let lastUpgrade = 0;
   while (true) {
     try {
-      if (pcOwnsCorporation()) { await ns.sleep(5_000); continue; }
       const info = corp();
       if (!info) { await ns.sleep(30_000); continue; }
 

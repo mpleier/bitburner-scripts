@@ -18,6 +18,7 @@ const argsSchema = [ // The set of all command line arguments
     ['high-hack-threshold', 8000], // Once hack level reaches this, we start daemon in high-performance hacking mode
     ['enable-bladeburner', null], // (Deprecated) Bladeburner is now always enabled if it's available. Use '--disable-bladeburner' to explicitly turn off
     ['disable-bladeburner', false], // This will instruct daemon.js not to run the bladeburner.js, even if bladeburner is available.
+    ['disable-corporation', false], // Prevent autopilot and its daemon from starting corporation-manager.js.
     ['wait-for-4s-threshold', 0.9], // Set to 0 to not reset until we have 4S. If money is above this ratio of the 4S Tix API cost, don't reset until we buy it.
     ['disable-wait-for-4s', false], // If true, will doesn't wait for the 4S Tix API to be acquired under any circumstantes
     ['disable-rush-gangs', false], // Set to true to disable focusing work-for-faction on Karma until gangs are unlocked
@@ -36,6 +37,24 @@ export function autocomplete(data, args) {
     if (["--on-completion-script"].includes(lastFlag))
         return data.scripts;
     return [];
+}
+
+/** Start or restart the corporation manager when access, ownership and RAM allow it.
+ * The manager itself waits for corporation creation eligibility and affordable upgrades.
+ * @param {NS} ns */
+export function superviseCorporationManager(ns, {
+    enabled = true, currentNode, sourceFile3 = 0, runningScripts = [],
+    scriptPath = 'corporation-manager.js',
+} = {}) {
+    if (!enabled) return { status: 'disabled' };
+    if (currentNode !== 3 && !(Number(sourceFile3) > 0)) return { status: 'unavailable' };
+    if (runningScripts.some(process => process.filename === scriptPath)) return { status: 'running' };
+    if (!ns.fileExists(scriptPath, 'home')) return { status: 'missing-script' };
+    const requiredRam = ns.getScriptRam(scriptPath, 'home');
+    const freeRam = ns.getServerMaxRam('home') - ns.getServerUsedRam('home');
+    if (!(requiredRam > 0) || freeRam < requiredRam) return { status: 'waiting-for-ram', requiredRam, freeRam };
+    const pid = ns.exec(scriptPath, 'home', { threads: 1, preventDuplicates: true });
+    return { status: pid > 0 ? 'started' : 'launch-failed', pid };
 }
 
 /** The entire program is now wrapped in the main functino to avoid objects in
@@ -122,7 +141,7 @@ export async function main(ns) {
 
         log(ns, "INFO: Auto-pilot engaged...", true, 'info');
         // The game does not allow boolean flags to be turned "off" via command line, only on. Since this gets saved, notify the user about how they can turn it off.
-        const flagsSet = ['disable-auto-destroy-bn', 'disable-bladeburner', 'disable-wait-for-4s', 'disable-rush-gangs'].filter(f => options[f]);
+        const flagsSet = ['disable-auto-destroy-bn', 'disable-bladeburner', 'disable-corporation', 'disable-wait-for-4s', 'disable-rush-gangs'].filter(f => options[f]);
         for (const flag of flagsSet)
             log(ns, `WARNING: You have previously enabled the flag "--${flag}". Because of the way this script saves its run settings, the ` +
                 `only way to now turn this back off will be to manually edit or delete the file ${ns.getScriptName()}.config.txt`, true);
@@ -154,6 +173,7 @@ export async function main(ns) {
         dictOwnedSourceFiles = await getActiveSourceFiles(ns, false);
         unlockedSFs = await getActiveSourceFiles(ns, true);
         homeRam = await getNsDataThroughFile(ns, `ns.getServerMaxRam(ns.args[0])`, null, ["home"]);
+
         try {
             if (!(4 in unlockedSFs)) {
                 log(ns, `WARNING: This script requires SF4 (singularity) functions to assess purchasable augmentations ascend automatically. ` +
@@ -517,6 +537,22 @@ export async function main(ns) {
         // See if home ram has improved. We hold back on launching certain scripts if we are low on home RAM
         homeRam = await getNsDataThroughFile(ns, `ns.getServerMaxRam(ns.args[0])`, null, ["home"]);
 
+        // Supervise corporation management independently of daemon's one-time
+        // helper startup and its 256 GB threshold. Check again after exits or resets.
+        const corporationManager = superviseCorporationManager(ns, {
+            enabled: !options['disable-corporation'],
+            currentNode: resetInfo.currentNode,
+            sourceFile3: unlockedSFs[3],
+            runningScripts,
+            scriptPath: getFilePath('corporation-manager.js'),
+        });
+        if (corporationManager.status === 'started') {
+            log(ns, `INFO: Autopilot started corporation-manager.js (pid: ${corporationManager.pid}).`, true);
+            if (!options['no-tail-windows']) tail(ns, corporationManager.pid);
+        } else if (corporationManager.status === 'missing-script') {
+            log_once(ns, 'WARNING: corporation-manager.js is missing from home; sync the project to enable corporation automation.', true, 'warning');
+        }
+
         // Launch stock-master in a way that emphasizes it as our main source of income early-on
         if (!findScript('stockmaster.js') && !disableStockmasterForDaedalus && homeRam >= 32)
             launchScriptHelper(ns, 'stockmaster.js', [
@@ -585,7 +621,7 @@ export async function main(ns) {
         // If daemon.js is already running in --looping-mode, we should not restart it, because
         // TODO: currently daemon.js has no ability to kill it's loops on shutdown (so the next instance will be stuck with no RAM available)
         if (existingDaemon?.args.includes("--looping-mode"))
-            daemonArgs = existingDaemon.args;
+            daemonArgs = [...existingDaemon.args];
         else {
             // Determine the arguments we want to run daemon.js with. We will either pass these directly, or through stanek.js if we're running it first.
             const hackThreshold = options['high-hack-threshold']; // If player.skills.hacking level is about 8000, tweak daemon to increase income rates
@@ -641,6 +677,12 @@ export async function main(ns) {
             if ((4 in unlockedSFs) && unlockedSFs[4] < 3)
                 daemonArgs.push('--reserved-ram', 32 * ((unlockedSFs[4] ?? 0) == 2 ? 4 : 16));
         }
+
+        // Autopilot supervises the corporation manager. Suppress daemon's competing
+        // launcher even when --disable-corporation is set or looping mode is active.
+        const corporationScript = getFilePath('corporation-manager.js');
+        if (!daemonArgs.some((arg, index) => arg === '--disable-script' && daemonArgs[index + 1] === corporationScript))
+            daemonArgs.push('--disable-script', corporationScript);
 
         // Once stanek's gift is accepted, launch it once per reset before we launch daemon (Note: stanek's gift is auto-purchased by faction-manager.js on your first install)
         let stanekRunning = (13 in unlockedSFs) && findScript('stanek.js') !== undefined;

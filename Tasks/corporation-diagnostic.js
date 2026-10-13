@@ -1,7 +1,7 @@
 /**
- * Read-only corporation API diagnostic for comparison with pc.js.
+ * Read-only corporation API diagnostic for inspecting the in-game manager's inputs.
  * Run: run Tasks/corporation-diagnostic.js
- * Then in the PC controller: corp-verify
+ * Read the report in the game terminal: cat tasks/corp-diagnostic.json
  * Writes a fresh snapshot to tasks/corp-diagnostic.json on home.
  * @param {NS} ns
  */
@@ -82,7 +82,7 @@ export async function main(ns) {
     await ns.write(outputFile, JSON.stringify(report, null, 2), "w");
     ns.tprint(`Corporation diagnostic saved to ${outputFile}`);
     ns.tprint(`Access=${report.available}; corporation=${report.hasCorporation}; divisions=${Object.keys(report.divisions).join(", ") || "none"}`);
-    ns.tprint(`Run corp-verify in pc.js to compare this report with a fresh Remote API snapshot.`);
+    ns.tprint(`Read the report with: cat ${outputFile}`);
   } catch (error) {
     ns.tprint(`Corporation diagnostic failed safely: ${String(error)}`);
   }

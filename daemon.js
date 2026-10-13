@@ -349,12 +349,6 @@ export async function main(ns) {
 
         // Helper to determine whether we meed a given home RAM requirement (To avoid wasting precious early-BN RAM, many scripts don't launch unless we have more than a certain amount)
         const reqRam = (ram) => homeServer.totalRam(/*ignoreReservedRam:*/true) >= ram;
-        const pcOwnsAutomation = (file) => {
-            try {
-                const lease = JSON.parse(ns.read(file));
-                return lease?.owner === "pc-controller" && Number(lease.expiresAt) > Date.now();
-            } catch { return false; }
-        };
         // Helper to decide whether we should launch one of the hacknet upgrade manager scripts.
         const shouldUpgradeHacknet = () =>
             bitNodeMults.HacknetNodeMoney > 0 && // Ensure hacknet is not disabled in this BN
@@ -365,8 +359,8 @@ export async function main(ns) {
         // Set up "asynchronous helpers" - standalone scripts to manage certain aspacts of the game. daemon.js launches each of these once when ready (but not again if they are shut down)
         asynchronousHelpers = [
             { name: "stats.js", shouldRun: () => reqRam(64), shouldTail: false }, // Adds stats not usually in the HUD (nice to have)
-            { name: "darknet-manager.js", shouldRun: () => reqRam(64) && !pcOwnsAutomation("tasks/__pc_dnet_owner.json"), shouldTail: false }, // PC owns darknet while its lease is live
-            { name: "corporation-manager.js", shouldRun: () => reqRam(256) && !pcOwnsAutomation("tasks/__pc_corp_owner.json") && (resetInfo.currentNode == 3 || 3 in dictSourceFiles), shouldTail: true }, // PC owns corporation while its lease is live
+            { name: "darknet-manager.js", shouldRun: () => reqRam(64), shouldTail: false },
+            { name: "corporation-manager.js", shouldRun: () => reqRam(256) && (resetInfo.currentNode == 3 || 3 in dictSourceFiles), shouldTail: true }, // Autopilot disables this helper when it supervises the manager itself.
             { name: "go.js", shouldRun: () => reqRam(64), minRamReq: 20.2 }, // Play go.js (various multipliers, but large dynamic ram requirements)
             { name: "stockmaster.js", shouldRun: () => reqRam(64), args: openTailWindows ? ["--show-market-summary"] : [] }, // Start our stockmaster
             { name: "hacknet-upgrade-manager.js", shouldRun: () => shouldUpgradeHacknet(), args: ["-c", "--max-payoff-time", "1h", "--interval", "0"], shouldTail: false }, // One-time kickstart of hash income by buying everything with up to 1h payoff time immediately
@@ -418,15 +412,7 @@ export async function main(ns) {
             {   // Periodically look to purchase new servers, but note that these are often not a great use of our money (hack income isn't everything) so we may hold-back.
                 interval: 32000, name: "host-manager.js", minRamReq: 6.55,
                 // Restrict spending on new servers (i.e. temporary RAM for the current augmentation only) to be a % of total earned hack income.
-                shouldRun: () => {
-                    // The PC controller owns purchased-server decisions while
-                    // its hacking/server lease is live.
-                    try {
-                        const pcOwner = JSON.parse(ns.read("tasks/__pc_hack_owner.json"));
-                        if (pcOwner?.owner === "pc-controller" && Number(pcOwner.expiresAt) > Date.now()) return false;
-                    } catch { /* No PC lease: leave server management to the game helper. */ }
-                    return shouldImproveHacking() && getHostManagerBudget() > 0;
-                },
+                shouldRun: () => shouldImproveHacking() && getHostManagerBudget() > 0,
                 args: () => ['--budget', getHostManagerBudget(), '--absolute-reserve', reservedMoney(ns),
                     // Mechanic to reserve more of our money the longer we've been in the BN. Starts at 0%, after 24h we should be reserving 92%.
                     '--reserve-by-time', true, '--reserve-by-time-decay-factor', 0.1, '--reserve-percent', 0,
@@ -741,17 +727,6 @@ export async function main(ns) {
                     allHelpersRunning = await runStartupScripts(ns);
                 // Run some auxilliary processes that ease the ram burden of this daemon and add additional functionality (like managing hacknet or buying servers)
                 await runPeriodicScripts(ns);
-                // The PC controller can own target scheduling while this daemon
-                // continues managing helper scripts and periodic game systems.
-                // Its lease expires automatically if the PC process disconnects.
-                try {
-                    const pcOwner = JSON.parse(ns.read("tasks/__pc_hack_owner.json"));
-                    if (pcOwner?.owner === "pc-controller" && Number(pcOwner.expiresAt) > Date.now()) {
-                        if (loops % 60 === 0)
-                            log(ns, "PC controller owns hacking; game daemon is leaving target scheduling to it.");
-                        continue;
-                    }
-                } catch { /* no live PC lease: keep the game-side scheduler active */ }
                 if (stockMode) await updateStockPositions(ns); // In stock market manipulation mode, get our current position in all stocks, as it affects targetting order
                 // For early players, change behaviour slightly
                 const homeRam = homeServer.totalRam(true);

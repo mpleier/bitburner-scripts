@@ -7,17 +7,23 @@
  *     -> Agri). Gated on funds and on Hi-Tech R&D Lab.
  *   - Restaurant, product-based; develops Apex Dining products. Fed by
  *     Agriculture's Food export so its avgQlt isn't pinned at 1.
- *   - Late game: IPO with no shares issued, keep 100% ownership, pay dividends.
+ *   - Round 1 investment only, when the cash meaningfully exceeds current funds.
+ *   - Late game: IPO with no shares issued, pay dividends on the tiered rate.
  *   - Hacknet: buy and level servers, spend hashes on a rotating plan.
  *
  * Source-verified against bitburner-src/dev/src:
- *   - Investment rounds dilute ownership irreversibly (investorShares cannot
- *     be bought back). ACCEPT_INVESTMENT = false preserves 100%.
- *   - goPublic(0) leaves issuedShares at 0, so buybackShares fails with
+ *   - getInvestmentOffer returns round: fundingRound + 1 (1-indexed). Round 1
+ *     pays 0.3x valuation for 10% of initialShares. Rounds 2-4 are much worse
+ *     (0.057-0.080 per 1% given vs 0.300 for round 1). Only round 1 is accepted.
+ *   - investorShares cannot be bought back — buybackShares sources only from
+ *     issuedShares. Ownership given to investors is permanent.
+ *   - goPublic(0) leaves issuedShares at 0; buybackShares then fails with
  *     "Not enough shares are available for buyback." The buyback branch is
  *     removed as dead code.
- *   - buyBackShares draws from Player.money, not corporation funds. Even if
- *     issuedShares were nonzero, the earlier budget source was wrong.
+ *   - buyBackShares draws from Player.money, not corporation funds.
+ *   - tributeModifier is reduced by 0.05 per ShadyAccounting and 0.1 per
+ *     GovernmentPartnership. Both are purchased, so the dividend payout is
+ *     full (dividends^1.0). Without them the payout would be dividends^0.85.
  *   - getIndustryData(...).startingCost is the purchase price.
  *   - Division.maxProducts grows with uPgrade: Capacity.I / .II, starting at 3.
  *   - Production multiplier: (0.002*RE+1)^0.72 * (0.002*HW+1)^0.2 *
@@ -81,10 +87,15 @@ export async function main(ns) {
   };
   const PAY_DIVIDENDS = true;
   const IPO_VALUATION = 1e12;
-  // Investment rounds are irreversible ownership dilution. Investors' shares
-  // cannot be bought back (buybackShares only sources from issuedShares).
-  // Set false to preserve 100% for the dividend stream.
-  const ACCEPT_INVESTMENT = false;
+  // Round 1 of the funding rounds is the only one worth taking: 0.3x valuation
+  // for 10% of initialShares, versus 0.057-0.080 per 1% given for rounds 2-4.
+  // The ownership cost is permanent — investorShares cannot be bought back.
+  // Accept only when the cash meaningfully exceeds current funds (a proxy for
+  // "the corp is cash-starved and this injection accelerates growth").
+  const ACCEPT_INVESTMENT = true;
+  const INVESTMENT_ROUND = 1;
+  const INVESTMENT_MIN_FUNDS_RATIO = 1.0;
+  const INVESTMENT_MIN_FUNDS = 1e9;
   let lastDividendRate = -1;
 
   // ---- Hash spend plan --------------------------------------------------
@@ -226,10 +237,10 @@ export async function main(ns) {
   };
 
   // ---- IPO / dividends --------------------------------------------------
-  // Dividend path: go public with no shares issued (goPublic(0) leaves
-  // issuedShares at 0 and keeps numShares whole), then set the tiered rate.
-  // Buyback is not attempted — it requires issuedShares > 0 to source from,
-  // and even then draws from Player.money rather than corporation funds.
+  // goPublic(0) leaves issuedShares at 0 and keeps numShares whole. The
+  // player retains 100% (minus any investor dilution from round 1) and
+  // receives the full tier rate as dividends. Buyback is not attempted —
+  // it requires issuedShares > 0 to source from.
   const manageIPO = () => {
     if (!PAY_DIVIDENDS) return;
     const info = corp();
@@ -460,6 +471,9 @@ export async function main(ns) {
     { name: "Robots", factor: 0.3, size: 0.5 },
     { name: "AI Cores", factor: 0.3, size: 0.1 },
   ];
+  // buyMaterial sets a rate the game charges every PURCHASE cycle until
+  // overwritten. Every early return in manageBoosts must zero the rate,
+  // otherwise a stale rate from a prior cycle keeps draining funds.
   const clearBoostRates = (division, city) => {
     for (const b of boosts)
       attempt(`Clear ${b.name} buy rate`, () => c.buyMaterial(division, city, b.name, 0));
@@ -501,6 +515,9 @@ export async function main(ns) {
   const hasTA2 = (division) => safe(`Check TA.II ${division}`, () => c.hasResearched(division, "Market-TA.II")) === true;
 
   // ---- Warehouse management ---------------------------------------------
+  // Warehouse upgrades are exempt from the reserve check: they're what
+  // restores production when the warehouse fills, and production is what
+  // generates the revenue that refills the reserve.
   let storagePressure = false;
   const runWarehouse = (division, city) => {
     if (!hasUnlock("Warehouse API")) return;
@@ -578,8 +595,17 @@ export async function main(ns) {
 
       if (ACCEPT_INVESTMENT) {
         const offer = safe("Read investment offer", () => c.getInvestmentOffer());
-        if (offer?.funds > 0 && offer.round <= 3 && offer.funds > Math.max(1e9, funds() * 0.1))
-          attempt("Accept investment offer", () => c.acceptInvestmentOffer());
+        if (offer?.round === INVESTMENT_ROUND && offer.funds > 0) {
+          // Only accept when the cash injection meaningfully exceeds current
+          // funds. The ownership cost (100M shares) is fixed regardless of
+          // when the offer is taken, so waiting for a higher valuation
+          // increases the cash for the same dilution. The ratio check
+          // accepts early when the corp is cash-starved and rejects once
+          // the corp no longer needs the injection.
+          const threshold = Math.max(INVESTMENT_MIN_FUNDS, funds() * INVESTMENT_MIN_FUNDS_RATIO);
+          if (offer.funds > threshold)
+            attempt(`Accept round ${INVESTMENT_ROUND} investment`, () => c.acceptInvestmentOffer());
+        }
       }
 
       storagePressure = false;

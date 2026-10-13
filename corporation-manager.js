@@ -12,6 +12,10 @@
  *   - Hacknet: buy and level servers, spend hashes on a rotating plan.
  *
  * Source-verified against bitburner-src/dev/src:
+ *   - Seed money is free in BN3 but disallowed outside BN3 (with SF3 you must
+ *     self-fund for $150B from the player's wallet). createCorporation returns
+ *     { success, message? } rather than a boolean — success is confirmed by
+ *     re-checking hasCorporation() after the call.
  *   - getInvestmentOffer returns round: fundingRound + 1 (1-indexed). Round 1
  *     pays 0.3x valuation for 10% of initialShares. Rounds 2-4 are much worse
  *     (0.057-0.080 per 1% given vs 0.300 for round 1). Only round 1 is accepted.
@@ -196,16 +200,28 @@ export async function main(ns) {
   const hasHacknetServers = () =>
     resetInfo.currentNode === 9 || Number(sf(9)) > 0;
 
+  // Try seed money first (free in BN3). Fall back to self-funding (costs
+  // $150B from the player's wallet, required outside BN3 with SF3). Both
+  // paths give the corp the same starting funds; the difference is who pays.
+  // createCorporation returns { success, message? } rather than a boolean,
+  // so success is confirmed by re-checking hasCorporation().
+  const attemptCreate = (selfFund) => {
+    const label = selfFund ? "self-fund" : "seed";
+    const eligible = safe(`Check ${label} eligibility`, () => c.canCreateCorporation(selfFund));
+    if (eligible !== "Success") return { ok: false, reason: `${label}: ${String(eligible)}` };
+    safe(`Create corporation (${label})`, () => c.createCorporation(name, selfFund));
+    if (safe("Confirm corporation", () => c.hasCorporation()) === true)
+      return { ok: true, label };
+    return { ok: false, reason: `${label}: creation rejected` };
+  };
+
   while (!safe("Check corporation API", () => c.hasCorporation())) {
     if (pcOwnsCorporation()) { await ns.sleep(5_000); continue; }
-    const eligible = safe("Check corporation eligibility", () => c.canCreateCorporation(true));
-    if (eligible !== "Success") {
-      ns.print(`Waiting for corporation creation eligibility (${String(eligible)}).`);
-      await ns.sleep(60_000);
-      continue;
-    }
-    const created = safe("Create corporation", () => c.createCorporation(name, true));
-    if (created) { ns.print(`Created ${name}.`); break; }
+    const seed = attemptCreate(false);
+    if (seed.ok) { ns.print(`Created ${name} with seed money.`); break; }
+    const self = attemptCreate(true);
+    if (self.ok) { ns.print(`Created ${name} with self-funding.`); break; }
+    ns.print(`Waiting for corporation creation eligibility (${seed.reason}; ${self.reason}).`);
     await ns.sleep(60_000);
   }
 
@@ -599,9 +615,7 @@ export async function main(ns) {
           // Only accept when the cash injection meaningfully exceeds current
           // funds. The ownership cost (100M shares) is fixed regardless of
           // when the offer is taken, so waiting for a higher valuation
-          // increases the cash for the same dilution. The ratio check
-          // accepts early when the corp is cash-starved and rejects once
-          // the corp no longer needs the injection.
+          // increases the cash for the same dilution.
           const threshold = Math.max(INVESTMENT_MIN_FUNDS, funds() * INVESTMENT_MIN_FUNDS_RATIO);
           if (offer.funds > threshold)
             attempt(`Accept round ${INVESTMENT_ROUND} investment`, () => c.acceptInvestmentOffer());

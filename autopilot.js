@@ -39,24 +39,6 @@ export function autocomplete(data, args) {
     return [];
 }
 
-/** Start or restart the corporation manager when access, ownership and RAM allow it.
- * The manager itself waits for corporation creation eligibility and affordable upgrades.
- * @param {NS} ns */
-export function superviseCorporationManager(ns, {
-    enabled = true, currentNode, sourceFile3 = 0, runningScripts = [],
-    scriptPath = 'corporation-manager.js',
-} = {}) {
-    if (!enabled) return { status: 'disabled' };
-    if (currentNode !== 3 && !(Number(sourceFile3) > 0)) return { status: 'unavailable' };
-    if (runningScripts.some(process => process.filename === scriptPath)) return { status: 'running' };
-    if (!ns.fileExists(scriptPath, 'home')) return { status: 'missing-script' };
-    const requiredRam = ns.getScriptRam(scriptPath, 'home');
-    const freeRam = ns.getServerMaxRam('home') - ns.getServerUsedRam('home');
-    if (!(requiredRam > 0) || freeRam < requiredRam) return { status: 'waiting-for-ram', requiredRam, freeRam };
-    const pid = ns.exec(scriptPath, 'home', { threads: 1, preventDuplicates: true });
-    return { status: pid > 0 ? 'started' : 'launch-failed', pid };
-}
-
 /** The entire program is now wrapped in the main functino to avoid objects in
  * global shared memory surviving between multiple invocations of this script.
  * @param {NS} ns **/
@@ -537,20 +519,17 @@ export async function main(ns) {
         // See if home ram has improved. We hold back on launching certain scripts if we are low on home RAM
         homeRam = await getNsDataThroughFile(ns, `ns.getServerMaxRam(ns.args[0])`, null, ["home"]);
 
-        // Supervise corporation management independently of daemon's one-time
-        // helper startup and its 256 GB threshold. Check again after exits or resets.
-        const corporationManager = superviseCorporationManager(ns, {
-            enabled: !options['disable-corporation'],
-            currentNode: resetInfo.currentNode,
-            sourceFile3: unlockedSFs[3],
-            runningScripts,
-            scriptPath: getFilePath('corporation-manager.js'),
-        });
-        if (corporationManager.status === 'started') {
-            log(ns, `INFO: Autopilot started corporation-manager.js (pid: ${corporationManager.pid}).`, true);
-            if (!options['no-tail-windows']) tail(ns, corporationManager.pid);
-        } else if (corporationManager.status === 'missing-script') {
-            log_once(ns, 'WARNING: corporation-manager.js is missing from home; sync the project to enable corporation automation.', true, 'warning');
+        // Launch the standalone manager; all corporation decisions stay in that script.
+        if (!options['disable-corporation'] && (resetInfo.currentNode === 3 || Number(unlockedSFs[3]) > 0) &&
+            !findScript('corporation-manager.js')) {
+            const script = getFilePath('corporation-manager.js');
+            if (!ns.fileExists(script, 'home'))
+                log_once(ns, 'WARNING: corporation-manager.js is missing from home; sync the project to enable corporation automation.', true, 'warning');
+            else {
+                const requiredRam = ns.getScriptRam(script, 'home');
+                if (requiredRam > 0 && homeRam - ns.getServerUsedRam('home') >= requiredRam)
+                    launchScriptHelper(ns, 'corporation-manager.js');
+            }
         }
 
         // Launch stock-master in a way that emphasizes it as our main source of income early-on
@@ -678,7 +657,7 @@ export async function main(ns) {
                 daemonArgs.push('--reserved-ram', 32 * ((unlockedSFs[4] ?? 0) == 2 ? 4 : 16));
         }
 
-        // Autopilot supervises the corporation manager. Suppress daemon's competing
+        // Autopilot launches the corporation manager. Suppress daemon's competing
         // launcher even when --disable-corporation is set or looping mode is active.
         const corporationScript = getFilePath('corporation-manager.js');
         if (!daemonArgs.some((arg, index) => arg === '--disable-script' && daemonArgs[index + 1] === corporationScript))

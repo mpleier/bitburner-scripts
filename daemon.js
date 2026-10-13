@@ -360,7 +360,7 @@ export async function main(ns) {
         asynchronousHelpers = [
             { name: "stats.js", shouldRun: () => reqRam(64), shouldTail: false }, // Adds stats not usually in the HUD (nice to have)
             { name: "darknet-manager.js", shouldRun: () => reqRam(64), shouldTail: false },
-            { name: "corporation-manager.js", shouldRun: () => reqRam(256) && (resetInfo.currentNode == 3 || 3 in dictSourceFiles), shouldTail: true }, // Autopilot disables this helper when it supervises the manager itself.
+            { name: "corporation-manager.js", shouldRun: () => reqRam(256) && (resetInfo.currentNode == 3 || 3 in dictSourceFiles), shouldTail: true }, // Autopilot disables this helper when it launches the manager itself.
             { name: "go.js", shouldRun: () => reqRam(64), minRamReq: 20.2 }, // Play go.js (various multipliers, but large dynamic ram requirements)
             { name: "stockmaster.js", shouldRun: () => reqRam(64), args: openTailWindows ? ["--show-market-summary"] : [] }, // Start our stockmaster
             { name: "hacknet-upgrade-manager.js", shouldRun: () => shouldUpgradeHacknet(), args: ["-c", "--max-payoff-time", "1h", "--interval", "0"], shouldTail: false }, // One-time kickstart of hash income by buying everything with up to 1h payoff time immediately

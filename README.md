@@ -7,7 +7,7 @@ If you manually `nano git-pull.js` from the terminal and copy the [contents of t
 
 # Running scripts
 
-Follow [README-AUTOMATION.md](README-AUTOMATION.md): sync the game scripts to home and run `autopilot.js`. Autopilot supervises corporation management and starts `daemon.js` for hacking, Darknet, and the remaining helper scripts.
+Follow [README-AUTOMATION.md](README-AUTOMATION.md): sync the game scripts to home and run `autopilot.js`. Autopilot launches the independent `corporation-manager.js` script and starts `daemon.js` for hacking, Darknet, and the remaining helper scripts.
 
 `autopilot.js` can install augmentations and advance BitNodes automatically. Review its options before running it unattended. All automation runs inside Bitburner.
 

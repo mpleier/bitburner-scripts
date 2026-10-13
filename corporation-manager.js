@@ -40,9 +40,13 @@
  *     return void on insufficient funds. buyMaterial does NOT check funds and
  *     the game keeps charging the last-set rate every PURCHASE cycle until
  *     it's overwritten. Every early-return path in manageBoosts must clear.
- *   - sellProduct / sellMaterial with `all=true` writes every city in one call.
+ *   - sellMaterial and exportMaterial both throw when the relevant warehouse
+ *     is missing from a city. sellMaterials and setupExportChain guard on
+ *     hasWarehouse before calling to avoid per-cycle log spam.
+ *   - sellProduct with all=true writes every city in one call and doesn't
+ *     require a warehouse lookup for the passed city.
  *   - issueDividends takes a fraction in [0, dividendMaxRate]; requires public.
- *   - exportMaterial throws on duplicate route; cancelExportMaterial does not.
+ *   - cancelExportMaterial does not throw on missing routes.
  *   - Ownership is CorporationInfo.numShares / totalShares.
  *   - hasHacknetServers() (BN9 or SF9) gates hashes entirely.
  *   - purchaseNode returns -1 on failure, not false. Node count is the signal.
@@ -60,12 +64,6 @@ export async function main(ns) {
   const CITY_EXPAND_BUFFER = 5e9;
   const WAREHOUSE_BUFFER = 5e9;
   let reserve = 5e9;
-  // Per-cycle budget for boost purchases. Shared across all cities and
-  // divisions so the sum of boost buying in one cycle can't exceed this
-  // fraction of funds. buyMaterial commits purchases without checking
-  // funds, and the game keeps charging the last-set rate every PURCHASE
-  // cycle until it's overwritten, so every early return in manageBoosts
-  // must also zero the rates.
   let boostBudget = 0;
   const BOOST_SPEND_FRACTION = 0.20;
   const officeJobs = ["Operations", "Engineer", "Business", "Management", "Research & Development"];
@@ -91,11 +89,6 @@ export async function main(ns) {
   };
   const PAY_DIVIDENDS = true;
   const IPO_VALUATION = 1e12;
-  // Round 1 of the funding rounds is the only one worth taking: 0.3x valuation
-  // for 10% of initialShares, versus 0.057-0.080 per 1% given for rounds 2-4.
-  // The ownership cost is permanent — investorShares cannot be bought back.
-  // Accept only when the cash meaningfully exceeds current funds (a proxy for
-  // "the corp is cash-starved and this injection accelerates growth").
   const ACCEPT_INVESTMENT = true;
   const INVESTMENT_ROUND = 1;
   const INVESTMENT_MIN_FUNDS_RATIO = 1.0;
@@ -200,11 +193,6 @@ export async function main(ns) {
   const hasHacknetServers = () =>
     resetInfo.currentNode === 9 || Number(sf(9)) > 0;
 
-  // Try seed money first (free in BN3). Fall back to self-funding (costs
-  // $150B from the player's wallet, required outside BN3 with SF3). Both
-  // paths give the corp the same starting funds; the difference is who pays.
-  // createCorporation returns { success, message? } rather than a boolean,
-  // so success is confirmed by re-checking hasCorporation().
   const attemptCreate = (selfFund) => {
     const label = selfFund ? "self-fund" : "seed";
     const eligible = safe(`Check ${label} eligibility`, () => c.canCreateCorporation(selfFund));
@@ -253,10 +241,6 @@ export async function main(ns) {
   };
 
   // ---- IPO / dividends --------------------------------------------------
-  // goPublic(0) leaves issuedShares at 0 and keeps numShares whole. The
-  // player retains 100% (minus any investor dilution from round 1) and
-  // receives the full tier rate as dividends. Buyback is not attempted —
-  // it requires issuedShares > 0 to source from.
   const manageIPO = () => {
     if (!PAY_DIVIDENDS) return;
     const info = corp();
@@ -386,6 +370,10 @@ export async function main(ns) {
   };
 
   // ---- Material export supply chain -------------------------------------
+  // exportMaterial throws when either the source or the target warehouse is
+  // missing. Both are gated on hasWarehouse so the call only fires when the
+  // route is legal. Routes are cached in exportRoutes so the attempt only
+  // happens once per (source, city, target, material) tuple per session.
   const exportRoutes = new Set();
   const setupExportChain = (sourceDiv, sourceMat, targetDiv) => {
     const d = safe(`Read ${sourceDiv}`, () => c.getDivision(sourceDiv));
@@ -393,6 +381,8 @@ export async function main(ns) {
     for (const city of d.cities) {
       const key = `${sourceDiv}|${city}|${targetDiv}|${sourceMat}`;
       if (exportRoutes.has(key)) continue;
+      if (!safe(`Check ${sourceDiv}/${city} wh`, () => c.hasWarehouse(sourceDiv, city))) continue;
+      if (!safe(`Check ${targetDiv}/${city} wh`, () => c.hasWarehouse(targetDiv, city))) continue;
       if (attempt(`Export ${sourceMat} → ${targetDiv}`, () =>
         c.exportMaterial(sourceDiv, city, targetDiv, city, sourceMat, EXPORT_FORMULA)))
         exportRoutes.add(key);
@@ -557,11 +547,15 @@ export async function main(ns) {
   };
 
   // ---- Selling ----------------------------------------------------------
+  // sellMaterial throws when the city has no warehouse. Cities are expanded
+  // as funds allow, and warehouses are gated separately on reserve + buffer,
+  // so a city can exist without a warehouse. Skip those.
   const sellMaterials = (division, materials) => {
     const d = safe(`Read division ${division}`, () => c.getDivision(division));
     if (!d || d.makesProducts) return;
     const ta2 = hasTA2(division);
     for (const city of d.cities ?? []) {
+      if (!safe(`Check ${division}/${city} warehouse`, () => c.hasWarehouse(division, city))) continue;
       for (const material of materials) {
         attempt(`Sell ${material}`, () => c.sellMaterial(division, city, material, "MAX", "MP"));
         if (ta2)
@@ -612,10 +606,6 @@ export async function main(ns) {
       if (ACCEPT_INVESTMENT) {
         const offer = safe("Read investment offer", () => c.getInvestmentOffer());
         if (offer?.round === INVESTMENT_ROUND && offer.funds > 0) {
-          // Only accept when the cash injection meaningfully exceeds current
-          // funds. The ownership cost (100M shares) is fixed regardless of
-          // when the offer is taken, so waiting for a higher valuation
-          // increases the cash for the same dilution.
           const threshold = Math.max(INVESTMENT_MIN_FUNDS, funds() * INVESTMENT_MIN_FUNDS_RATIO);
           if (offer.funds > threshold)
             attempt(`Accept round ${INVESTMENT_ROUND} investment`, () => c.acceptInvestmentOffer());

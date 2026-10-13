@@ -617,6 +617,19 @@ export async function main(ns) {
   let lastInvestmentCycle = 0;
   let lastUpgrade = 0;
   let lastProductAt = 0;
+  const productStateFile = 'tasks/corporation-product-cycle.json';
+  try {
+    const previous = JSON.parse(ns.read(productStateFile) || '{}');
+    if (previous.nodeReset === resetInfo.lastNodeReset && previous.corporation === corp()?.name)
+      lastProductAt = Number(previous.at) || 0;
+  } catch { /* First run: start with a fresh product cycle. */ }
+  if (typeof ns.atExit === 'function') ns.atExit(() => {
+    // Buy rates persist after a script exits. Stop this manager's boost orders.
+    for (const division of [agri, chem, restaurant]) for (const city of cities) {
+      try { if (c.hasWarehouse(division, city)) for (const material of boosts) c.buyMaterial(division, city, material.name, 0); }
+      catch { /* Division or warehouse may no longer exist. */ }
+    }
+  });
   while (true) {
     try {
       const info = corp();
@@ -711,7 +724,11 @@ export async function main(ns) {
               if (liveProducts.length < maxProducts) {
                 const name = `Apex Dining ${sequence}`;
                 startProduct(restaurant, activeCities, name, investment);
-                if (safe('Confirm new product', () => c.getDivision(restaurant))?.products?.includes(name)) lastProductAt = Date.now();
+                if (safe('Confirm new product', () => c.getDivision(restaurant))?.products?.includes(name)) {
+                  lastProductAt = Date.now();
+                  try { await ns.write(productStateFile, JSON.stringify({ at: lastProductAt, nodeReset: resetInfo.lastNodeReset, corporation: info.name }), 'w'); }
+                  catch { /* Product already exists; a report failure must not block production. */ }
+                }
               }
             }
           }

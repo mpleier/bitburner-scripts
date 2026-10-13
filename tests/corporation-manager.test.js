@@ -4,7 +4,7 @@ import { main } from '../corporation-manager.js';
 
 /** Run a real manager cycle against a minimal game API, then stop at nextUpdate. */
 async function cycle({ exportCost = 20e9, cash = 3e12, wallet = 100, nodeCost = 3,
-    products = [], upgradeCosts = {} } = {}) {
+    products = [], upgradeCosts = {}, lastProductAt = 0 } = {}) {
   const stop = new Error('test cycle complete');
   const calls = { exports: [], products: [], retired: [], nodes: 0, upgrades: [], logs: [], unlocks: [] };
   const unlocked = new Set(['Warehouse API', 'Smart Supply']);
@@ -56,7 +56,9 @@ async function cycle({ exportCost = 20e9, cash = 3e12, wallet = 100, nodeCost = 
   };
   const ns = {
     corporation: c,
-    getResetInfo: () => ({ currentNode: 3, ownedSF: new Map([[9, 1]]) }),
+    getResetInfo: () => ({ currentNode: 3, ownedSF: new Map([[9, 1]]), lastNodeReset: 1 }),
+    read: () => JSON.stringify({ at: lastProductAt, nodeReset: 1, corporation: 'Test Corp' }),
+    write: async () => {},
     getPlayer: () => ({ money }),
     format: { number: String },
     disableLog: () => {}, print: text => calls.logs.push(text), tprint: () => {},
@@ -120,6 +122,12 @@ test('at product capacity the manager replaces only the weakest completed manage
 
 test('full divisions with custom product names are left intact', async () => {
   const { calls } = await cycle({ products: ['Custom A', 'Custom B', 'Custom C'] });
+  assert.deepEqual(calls.retired, []);
+  assert.deepEqual(calls.products, []);
+});
+
+test('a saved product cooldown prevents immediate retirement after a manager restart', async () => {
+  const { calls } = await cycle({ products: ['Apex Dining 1', 'Apex Dining 2', 'Apex Dining 3'], lastProductAt: Date.now() });
   assert.deepEqual(calls.retired, []);
   assert.deepEqual(calls.products, []);
 });

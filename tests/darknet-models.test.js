@@ -45,6 +45,18 @@ test('timing model advances the confirmed prefix from mismatch indices', async (
   const f = simulation('2G_cellular', 'A9', (guess, password) => ({ message: `Found a mismatch while checking each character (${[...password].findIndex((char, i) => char !== guess[i])})` }), 'alphanumeric');
   const result = await solveFeedbackPassword(f.details, f.attempt, f.readLogs);
   assert.equal(result.password, 'A9');
+  assert.equal(new Set(f.guesses).size, f.guesses.length);
+});
+
+test('longer character searches resume after their bounded probe allowance', async () => {
+  const f = simulation('DeepGreen', '99999999', (guess, password) => ({ data: `${[...guess].filter((char, i) => char === password[i]).length},0` }));
+  const state = {};
+  const first = await solveFeedbackPassword(f.details, f.attempt, f.readLogs, state);
+  assert.equal(first.success, false);
+  assert.match(first.reason, /progress retained/);
+  const second = await solveFeedbackPassword(f.details, f.attempt, f.readLogs, state);
+  assert.equal(second.password, '99999999');
+  assert.equal(new Set(f.guesses).size, f.guesses.length);
 });
 
 test('modulo model reconstructs the password from coprime residues', async () => {

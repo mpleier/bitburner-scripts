@@ -30,7 +30,7 @@ function graftFixture(work = null) {
   const started = [], traveled = [];
   return { started, traveled, ns: {
     getResetInfo: () => ({ currentNode: 10, ownedSF: new Map([[4, 1]]) }),
-    read: () => '10000000', getPlayer: () => ({ money: 100e6, city: 'Sector-12' }),
+    ps: () => [], read: () => '10000000', getPlayer: () => ({ money: 100e6, city: 'Sector-12' }),
     singularity: {
       getCurrentWork: () => work,
       getOwnedAugmentations: purchased => purchased ? ['Base', 'Queued'] : ['Base'],
@@ -67,4 +67,33 @@ test('grafting waits for money and unavailable Source Files', () => {
   assert.equal(graftTick(f.ns, 0).status, 'waiting');
   assert.equal(f.started.length, 0);
   assert.equal(graftTick({ getResetInfo: () => ({ currentNode: 1, ownedSF: new Map() }) }).status, 'unavailable');
+});
+
+test('grafting preserves a running Black Op', () => {
+  const f = graftFixture();
+  f.ns.bladeburner = { inBladeburner: () => true, getCurrentAction: () => ({ type: 'BlackOps' }) };
+  assert.equal(graftTick(f.ns).status, 'busy');
+  assert.equal(f.started.length, 0);
+});
+
+test('grafting rechecks cash after travel', () => {
+  const f = graftFixture();
+  let money = 100e6;
+  f.ns.getPlayer = () => ({ money, city: 'Sector-12' });
+  f.ns.singularity.travelToCity = () => { money = 1; return true; };
+  assert.equal(graftTick(f.ns).status, 'waiting');
+  assert.equal(f.started.length, 0);
+});
+
+test('grafting waits while casino or ascend is running', () => {
+  for (const filename of ['casino.js', '/ascend.js']) {
+    const f = graftFixture(); f.ns.ps = () => [{ filename, pid: 42 }];
+    assert.equal(graftTick(f.ns).status, 'busy'); assert.equal(f.started.length, 0);
+  }
+});
+test('grafting honors a live transition owner but ignores stale locks', () => {
+  const f = graftFixture(); f.ns.ps = () => [{ filename: 'autopilot.js', pid: 42 }];
+  let ownerPid = 42; f.ns.read = file => file.endsWith('.json') ? JSON.stringify({ ownerPid, expiresAt: Date.now() + 60000 }) : '10000000';
+  assert.equal(graftTick(f.ns).status, 'busy'); ownerPid = 99;
+  assert.equal(graftTick(f.ns).status, 'started');
 });

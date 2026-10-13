@@ -1,3 +1,4 @@
+import { beginTransition, endTransition } from './progression-coordination.js';
 import {
     log, getFilePath, getConfiguration, instanceCount, getNsDataThroughFile, runCommand, waitForProcessToComplete,
     getActiveSourceFiles, tryGetBitNodeMultipliers, getStocksValue, unEscapeArrayArgs,
@@ -246,11 +247,12 @@ export async function main(ns) {
         let stocksValue = 0;
         try { stocksValue = await getStocksValue(ns); } catch { /* Assume if this fails (insufficient ram) we also have no stocks */ }
         manageReservedMoney(ns, player, stocksValue);
+        // Casino has priority over BitNode completion and other progression work.
+        await maybeDoCasino(ns, player);
         await checkOnDaedalusStatus(ns, player, stocksValue);
         await checkIfBnIsComplete(ns, player);
         await maybeAcceptStaneksGift(ns, player);
         await checkOnRunningScripts(ns, player);
-        await maybeDoCasino(ns, player);
         await maybeInstallAugmentations(ns, player);
         return shouldWeKeepRunning(ns); // Return false to shut down autopilot.js if we installed augs, or don't have enough home RAM
     }
@@ -413,6 +415,8 @@ export async function main(ns) {
             loggedBnCompletion = true; // Flag set to ensure that if we choose to stay in the BN, we only log the "BN completed" message once per reset.
         }
 
+        if (!await beginTransition(ns, 'BitNode completion', false)) return true;
+        try {
         // Run the --on-completion-script if specified
         if (options['on-completion-script']) {
             const pid = launchScriptHelper(ns, options['on-completion-script'], unEscapeArrayArgs(options['on-completion-script-args']), false);
@@ -471,6 +475,7 @@ export async function main(ns) {
         }
         persist_log(ns, log(ns, `ERROR: Tried destroy the bitnode (pid=${pid}), but we're still here...`, true, 'error'));
         //return bnCompletionSuppressed = true; // Don't suppress bn Completion, try again on our next loop.
+        } finally { endTransition(ns); }
     }
 
     /** Helper to get a list of all scripts running (on home)
@@ -809,13 +814,15 @@ export async function main(ns) {
         if (player.city != "Aevum" && player.money < 300000)
             return log_once(ns, `INFO: Waiting until we have ${formatMoney(300000)} to travel to Aevum and run casino.js`);
 
+        if (!await beginTransition(ns, 'casino automation', false)) return;
+        try {
         // Run casino.js (and expect this script to get killed in the process)
         // Make sure "work-for-factions.js" is dead first, lest it steal focus and break the casino script before it has a chance to kill all scripts.
         await killScript(ns, 'work-for-factions.js');
         await killScript(ns, 'daemon.js'); // We also have to kill daemon which can make us study.
         // Kill any action, in case we are studying or working out, as it might steal focus or funds before we can bet it at the casino.
         if (4 in unlockedSFs) // No big deal if we can't, casino.js has logic to find the stop button and click it.
-            _ = await getNsDataThroughFile(ns, `ns.singularity.stopAction()`);
+            await getNsDataThroughFile(ns, `ns.singularity.stopAction()`);
 
         const pid = launchScriptHelper(ns, 'casino.js', ['--kill-all-scripts', true, '--on-completion-script', ns.getScriptName()]);
         if (pid) {
@@ -824,6 +831,7 @@ export async function main(ns) {
             // Otherwise, something went wrong
             log(ns, `ERROR: Something went wrong. casino.js was run, but we haven't been killed. It must have run into a problem...`)
         }
+        } finally { endTransition(ns); }
     }
 
     /** Retrieves the last faction manager output file, parses, and provides type-hints for it.
@@ -972,6 +980,8 @@ export async function main(ns) {
         const resetLog = `  Invoking ascend.js at ${formatDuration(getTimeInAug()).padEnd(11)} since last aug to install: ${augSummary}`;
         persist_log(ns, log(ns, resetLog, true, 'info'));
 
+        if (!await beginTransition(ns, 'augmentation installation', true)) return;
+        try {
         // Kick off ascend.js
         let errLog;
         const ascendArgs = ['--install-augmentations', true, '--on-reset-script', ns.getScriptName()]
@@ -986,6 +996,7 @@ export async function main(ns) {
             errLog = `ERROR: Failed to launch ascend.js (pid == 0). Will try again later`;
         // If we got this far, something went wrong
         persist_log(ns, log(ns, errLog, true, 'error'));
+        } finally { endTransition(ns); }
     }
 
     /** Logic to detect if we are close to a milestone and should postpone installing augmentations until it is hit
@@ -1070,7 +1081,7 @@ export async function main(ns) {
         // Never interrupt grafting
         if (currentWork?.type == "GRAFTING") {
             if (!wasGrafting) // Only log the first time we detect we've started grafting
-                log(ns, "Grafting in progress. autopilot.js will make sure to not install augmentations or otherwise interrupt it.");
+                log(ns, "Grafting in progress. Augmentation installs will wait; casino automation and completed BitNodes take priority.");
             return wasGrafting = true;
         }
         else

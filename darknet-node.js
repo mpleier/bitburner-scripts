@@ -1,5 +1,5 @@
 /** Runs on authenticated darknet servers, scouts outward, and tries exact-match candidates. */
-import { solveFeedbackPassword, supportsFeedbackModel, modelCandidates, isStalledScout } from './darknet-solvers.js';
+import { solveFeedbackPassword, supportsFeedbackModel, modelCandidates, isStalledScout, dictionaryWords } from './darknet-solvers.js';
 export async function main(ns) {
   const passwordFile = "darknet-passwords.txt";
   const candidateFile = "darknet-candidates.txt";
@@ -210,7 +210,7 @@ export async function main(ns) {
         else note(`${self}:loot`, `${self}: not enough free RAM for the loot helper (${fmtRam(ram)} per thread, ${fmtRam(freeRam())} free).`);
       }
       const known = readMap();
-      const candidates = readCandidates();
+      const candidates = [...new Set([...readCandidates(), ...dictionaryWords(ns)])];
       for (const host of ns.dnet.probe()) {
         try {
         if (host === self) continue;

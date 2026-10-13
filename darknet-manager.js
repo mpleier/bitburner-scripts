@@ -1,5 +1,5 @@
 /** Darknet coordinator. Tries supplied exact-match candidates on discovered servers. */
-import { solveFeedbackPassword, supportsFeedbackModel, modelCandidates, isStalledScout } from './darknet-solvers.js';
+import { solveFeedbackPassword, supportsFeedbackModel, modelCandidates, isStalledScout, dictionaryWords } from './darknet-solvers.js';
 export async function main(ns) {
   const passwordFile = "darknet-passwords.txt";
   const candidateFile = "darknet-candidates.txt";
@@ -193,7 +193,7 @@ export async function main(ns) {
     try {
       ensureDarknetUnlock();
       const passwords = parsePasswords();
-      const candidates = parseCandidates();
+      const candidates = [...new Set([...parseCandidates(), ...dictionaryWords(ns)])];
 
       for (const host of ns.dnet.probe()) {
         try {

@@ -26,11 +26,22 @@ With Node.js installed, run `npm test` for the local unit tests and `npm run che
 - **Darknet:** Probes the current network, reports server depth and password hints, attempts to buy TOR and `DarkscapeNavigator.exe` when Singularity access permits, and deploys scouts after authentication. It uses each server's password length and character format to skip impossible supplied guesses, and tries direct hint data when it fits those constraints. Authenticated scouts open cache files, run phishing attempts, reclaim blocked memory, inspect recent logs with non-destructive heartbleed peeks when Charisma allows, and continue probing as the network changes. Scouts at depth 2 or greater claim an available stasis link to keep a deep foothold reachable; the global link limit is respected.
 - **Credentials:** The scripts try exact words from `darknet-candidates.txt` and known entries from `darknet-passwords.txt` (`hostname=password`). Successful matches are saved as individual `darknet-passwords-HOST.txt` reports, synchronized back to home by scouts, and propagated to new scouts so one discovery can help the whole network. Do not add credentials you do not want stored in your game save.
 
-The storm-seed executable is never launched. Passwords absent from the candidate list and clue-based variants may still require manual investigation.
+The storm-seed executable is never launched. Unrecognized puzzle models and passwords absent from supplied dictionaries may still require investigation.
 
 ## Included systems
 
 Darknet NIL servers are solved from Heartbleed authentication feedback. The coordinator and scouts preserve positions marked `yes`, replace positions marked `yesn't`, and authenticate the resulting password. Feedback is matched to the exact attempted password, confirmed progress survives temporary network failures, and solving waits for sufficient Charisma. The shared `darknet-solvers.js` module must be synced alongside the scouts.
+
+## Automatic progression additions
+
+- **Corporation products:** Completed `Apex Dining` products are replaced at capacity, weakest rating first. Development waits for cash, a warehouse, and all existing products to complete, with a 15-minute cooldown saved across restarts. Custom product names are preserved.
+- **Corporation production:** Boost targets use each industry's production factors and available warehouse space. Purchasing is budgeted after immediate expenses and shared across cities. Office jobs favor production while retaining research capacity. Before Market-TA.II, prices rise when stock clears and fall when stock builds. Upgrade selection uses estimated marginal benefit per dollar.
+- **Darknet puzzles:** Includes NIL, DeepGreen, AccountsManager, timing, Spice Level, Roman ranges, and modulo feedback solvers, plus binary, XOR, base conversion, arithmetic, prime factor, CAPTCHA, echo, and buffer-overflow candidates. Probe work is bounded per pass and resumes after temporary failures. Solving complex feedback models requires sufficient Charisma for Heartbleed.
+- **Darknet recovery:** Scouts publish heartbeat files and retry failed credential uploads. Adjacent managers restart scouts only after a matching PID's heartbeat is more than 30 minutes old. Failed deployments are retried, and missing workers are relaunched as RAM allows.
+- **Sleeve expansion:** `sleeve-expansion.js` buys sleeves and upgrades memory to 100 in BitNode 10, using a shared allowance of 10% of unreserved cash per minute. Existing `sleeve.js` continues task and augmentation management.
+- **Grafting:** `grafting-manager.js` chooses beneficial, affordable grafts, checks installed prerequisites, ignores queued augmentations, travels to New Tokyo, and protects existing grafts, program creation, and Black Ops. Its allowance is 25% of unreserved cash; weak upgrades are skipped to account for entropy. Singularity and Grafting access are required.
+
+Daemon starts the new progression workers automatically when their access and RAM requirements are met. All game scripts and their imports must be synced, including `automation-policy.js`, `darknet-solvers.js`, `sleeve-expansion.js`, `grafting-manager.js`, and `progression-coordination.js`. Individual workers can be disabled with daemon's `--disable-script` option.
 
 The upstream suite provides the main hacking daemon plus helpers for root access and server management, companies and factions, gangs, sleeves, Bladeburner, stocks, Hacknet, Stanek, Go, coding contracts, and augmentation/reset workflows. Mechanics locked behind Source Files, API access, money, or player progress remain idle until they become available.
 
@@ -38,10 +49,10 @@ The corporation manager is based on the supplied optimizer's Agriculture-first, 
 
 ## Manual or partial areas
 
-- **Darknet passwords:** The candidate list checks exact supplied words and may take time to exhaust, especially with low Charisma. NIL models use Heartbleed feedback to solve passwords automatically; other model feedback is still displayed for investigation. Stock promotion is not automatic because it requires TIX access and a deliberate stock selection. `STORM_SEED.exe` is intentionally never launched; it can catastrophically damage the darknet. The automation also avoids freezing servers because that removes their RAM and experience benefits.
-- **Corporations:** Automation is a conservative Agriculture and Restaurant strategy, not a full optimizer. It does not tune boost-material inventories, exports, research, every industry, or all share/dividend actions.
-- **Sleeves:** Sleeve tasks and augmentation purchases are managed, but this package does not buy additional sleeves or upgrade sleeve memory. The game API supports both in BN10, so this is an implementation gap.
-- **Grafting and infiltration:** The package protects ongoing grafting from resets but does not choose and start grafts. It has no infiltration automation.
+- **Darknet passwords:** Supported models are solved automatically. Unknown models and incomplete dictionaries remain partial. Stock promotion is not automatic because it requires TIX access and a deliberate stock selection. `STORM_SEED.exe` is never launched. The automation avoids freezing servers because that removes their RAM and experience benefits.
+- **Corporations:** Agriculture, Chemical, and Restaurant are managed. Upgrade returns are estimates, and arbitrary industries and all share-trading strategies are outside this plan.
+- **Sleeves:** Tasks and augmentations are managed with Sleeve access. Additional purchases and memory upgrades wait for BitNode 10 as required by the game.
+- **Grafting and infiltration:** Grafting is automated with access and sufficient unreserved cash. Infiltration minigames remain manual.
 - **Singularity-locked play:** Without Singularity access (BN4/SF4), faction work, augmentation purchases/installs, and BitNode progression need manual actions. Other managers can still run when their own unlocks are met.
 - **Setup and choices:** You still need to import the scripts, start `autopilot.js`, and review darknet candidate words. Review autopilot's automatic augmentation and BitNode reset options before running unattended.
 
@@ -53,3 +64,5 @@ The corporation manager is based on the supplied optimizer's Agriculture-first, 
 - `bitburner-src-dev.zip` was used only as an API reference and is not included in the output bundle.
 
 The supplied upstream collection is maintained at [alainbryden/bitburner-scripts](https://github.com/alainbryden/bitburner-scripts). Its original README and license are included.
+
+Casino automation has first priority in autopilot and may interrupt an active graft. BitNode completion also overrides grafts; augmentation installation waits for them to finish. Existing casino eligibility and disable settings still apply. Transition locks prevent the grafting worker from starting new grafts during casino or reset operations; stale locks are ignored when their owner is gone.

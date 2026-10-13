@@ -212,6 +212,20 @@ export function modelCandidates(details) {
   return value !== null && value !== '' && (typeof value !== 'number' || Number.isFinite(value)) ? [String(value)] : [];
 }
 
+export function dictionaryWords(ns) {
+  const words = new Set();
+  for (const file of ns.ls(ns.getHostname(), '.lit')) {
+    try {
+      const data = JSON.parse(ns.read(file));
+      if (Array.isArray(data)) for (const word of data) {
+        if (typeof word === 'string' && word.length <= 64) words.add(word);
+        if (words.size >= 10000) return [...words];
+      }
+    } catch { /* Narrative literature is not a password dictionary. */ }
+  }
+  return [...words];
+}
+
 export function supportsFeedbackModel(details) {
   return ['NIL', 'DeepGreen', 'AccountsManager_4.2', '2G_cellular', 'RateMyPix.Auth', 'BigMo%od'].includes(details.modelId) ||
     (details.modelId === 'BellaCuore' && String(details.data).includes(','));
@@ -296,7 +310,7 @@ export async function solveFeedbackPassword(details, authenticate, readLogs, sta
       if (details.modelId === '2G_cellular') {
         const mismatch = Number(String(result.feedback.message).match(/mismatch.*\((\d+)\)/i)?.[1]);
         if (!Number.isInteger(mismatch) || mismatch < position || mismatch >= length) return { success: false, reason: 'invalid timing feedback' };
-        if (mismatch > position) { state.prefix = guess.slice(0, mismatch); state.index = 0; }
+        if (mismatch > position) { state.prefix = guess.slice(0, mismatch); state.index = 1; }
         else state.index++;
       } else {
         if (details.modelId === 'RateMyPix.Auth' && !new RegExp(`^(?:0|(?:🌶️)+)/${length}$`, 'u').test(String(result.feedback.data)))

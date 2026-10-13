@@ -1,3 +1,4 @@
+import { beginTransition, endTransition } from './progression-coordination.js';
 import {
     log, getConfiguration, getFilePath, runCommand, waitForProcessToComplete, getNsDataThroughFile,
     getActiveSourceFiles, getStockSymbols
@@ -33,6 +34,8 @@ export async function main(ns) {
     let dictSourceFiles = await getActiveSourceFiles(ns); // Find out what source files the user has unlocked
     if (!(4 in dictSourceFiles))
         return log(ns, "ERROR: You cannot automate installing augmentations until you have unlocked singularity access (SF4).", true, 'error');
+    if (!await beginTransition(ns, 'augmentation installation', true)) return;
+    ns.atExit(() => endTransition(ns));
     ns.disableLog('sleep');
     if (options['prioritize-augmentations'])
         log(ns, "INFO: The --prioritize-augmentations flag is deprecated, as this is now the default behaviour. Use --prioritize-home-ram to get back the old behaviour.")

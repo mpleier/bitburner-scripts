@@ -1,3 +1,4 @@
+import { beginTransition, endTransition } from './progression-coordination.js';
 import {
     log, getConfiguration, getFilePath, waitForProcessToComplete,
     runCommand, getNsDataThroughFile, formatMoney, getErrorInfo, tail
@@ -34,6 +35,8 @@ export async function main(ns) {
     async function start() {
         options = getConfiguration(ns, argsSchema);
         if (!options) return; // Invalid options, or ran in --help mode.
+        if (!await beginTransition(ns, 'casino automation', false)) return;
+        ns.atExit(() => endTransition(ns));
         const saveSleepTime = options['save-sleep-time'];
         verbose = options['enable-logging'];
         if (verbose)

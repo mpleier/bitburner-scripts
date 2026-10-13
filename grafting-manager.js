@@ -1,3 +1,4 @@
+import { transitionActive, transitionFile } from './progression-coordination.js';
 import { graftScore } from './automation-policy.js';
 
 /** Choose useful, affordable grafts; do not interrupt grafting or program creation. */
@@ -5,6 +6,9 @@ export function graftTick(ns, fraction = 0.25) {
   const reset = ns.getResetInfo();
   const sf = number => Number(typeof reset.ownedSF?.get === 'function' ? reset.ownedSF.get(number) : reset.ownedSF?.[number]) || 0;
   if ((reset.currentNode !== 10 && !sf(10)) || (reset.currentNode !== 4 && !sf(4))) return { status: 'unavailable' };
+  let transition;
+  try { transition = JSON.parse(ns.read(transitionFile)); } catch { }
+  if (transitionActive(transition, ns.ps('home'))) return { status: 'busy' };
   const work = ns.singularity.getCurrentWork();
   if (['GRAFTING', 'CREATE_PROGRAM'].includes(work?.type)) return { status: 'busy' };
   try {

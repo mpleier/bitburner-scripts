@@ -19,7 +19,7 @@ const argsSchema = [
     // When stanek completes, it will run daemon.js again (which will terminate the initial ram-starved daemon that is running)
     ['on-completion-script', null], // Spawn this script when max-charges is reached
     ['on-completion-script-args', []], // Optional args to pass to the script when launched
-    ['no-tail', false], // By default, keeps a tail window open, because it's pretty important to know when this script is running (can't use home for anything else)
+    ['no-tail', true], // Keep tail windows closed; inspect logs manually when needed.
     ['reputation-threshold', 0.2], // By default, if we are this close to the rep needed for an unowned stanek upgrade (e.g. "Stanek's Gift - Serenity"), we will keep charging despite the 'max-charges' setting
 ];
 

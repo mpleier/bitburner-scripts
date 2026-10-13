@@ -1,4 +1,5 @@
 /** Runs on authenticated darknet servers, scouts outward, and tries exact-match candidates. */
+import { solveFeedbackPassword, supportsFeedbackModel, modelCandidates, isStalledScout } from './darknet-solvers.js';
 export async function main(ns) {
   const passwordFile = "darknet-passwords.txt";
   const candidateFile = "darknet-candidates.txt";
@@ -8,11 +9,12 @@ export async function main(ns) {
   const lootFile = "darknet-loot.js";
   const stasisFile = "darknet-stasis.js";
   const cacheFile = "darknet-cache.js";
-  const codeFiles = [nodeFile, lootFile, stasisFile, cacheFile];
+  const codeFiles = [nodeFile, lootFile, stasisFile, cacheFile, "darknet-solvers.js"];
   const reportedHints = new Map();
   // Retry when the shared credential or candidate files change, not on every mutation.
   const attemptedInputs = new Map();
   const heartbleedAt = new Map();
+  const nilProgress = new Map();
   // Every ns call is logged by default; keep only what this script prints.
   ns.disableLog("ALL");
 
@@ -29,6 +31,15 @@ export async function main(ns) {
     if (lastNote.get(key) === message) return;
     lastNote.set(key, message);
     ns.print(message);
+  };
+  const heartbeatFile = `tasks/dnet-${encodeURIComponent(ns.getHostname())}.json`;
+  let lastHeartbeat = 0;
+  const syncedReports = new Map();
+  const heartbeat = async () => {
+    if (Date.now() - lastHeartbeat < 30_000) return;
+    await ns.write(heartbeatFile, JSON.stringify({ host: ns.getHostname(), pid: ns.pid, at: Date.now() }), 'w');
+    try { await ns.scp(heartbeatFile, 'home', ns.getHostname()); } catch { /* local heartbeat still helps adjacent scouts */ }
+    lastHeartbeat = Date.now();
   };
 
   const readMap = () => {
@@ -72,7 +83,7 @@ export async function main(ns) {
     const counted = info.passwordFormat === "numeric" && info.passwordLength >= 1 && info.passwordLength <= 3
       ? Array.from({ length: 10 ** info.passwordLength }, (_, n) => String(n).padStart(info.passwordLength, "0"))
       : [];
-    return [...new Set([...derived, ...(clue && matches(clue) ? [clue] : []), ...words.filter(matches), ...counted])];
+    return [...new Set([...modelCandidates(info), ...derived, ...(clue && matches(clue) ? [clue] : []), ...words.filter(matches), ...counted])];
   };
   // v3 renamed ns.formatRam -> ns.format.ram; use whichever exists.
   const fmtRam = (v) => {
@@ -88,6 +99,7 @@ export async function main(ns) {
   const tryPassword = async (host, password) => {
     let result;
     for (let tries = 0; tries < 3; tries++) {
+      await heartbeat();
       result = await ns.dnet.authenticate(host, password);
       if (result.success || Number(result.code) !== TIMED_OUT) break;
     }
@@ -95,6 +107,34 @@ export async function main(ns) {
   };
   const authenticate = async (host, info, saved, candidates) => {
     if (info.hasSession) return true;
+    if (supportsFeedbackModel(info)) {
+      if (!nilProgress.has(host)) nilProgress.set(host, {});
+      const progress = nilProgress.get(host);
+      if (typeof saved === "string" && progress.rejectedSaved !== saved) {
+        const result = await tryPassword(host, saved);
+        if (result.success) { nilProgress.delete(host); return true; }
+        if (Number(result.code) !== AUTH_FAILURE) return false;
+        progress.rejectedSaved = saved;
+      }
+      if (ns.getPlayer().skills.charisma < info.requiredCharismaSkill) {
+        note(`${host}:nil`, `${host}: ${info.modelId} solving needs ${info.requiredCharismaSkill} Charisma for Heartbleed.`);
+        return false;
+      }
+      const solution = await solveFeedbackPassword(info,
+        password => tryPassword(host, password),
+        () => ns.dnet.heartbleed(host, { peek: true, logsToCapture: 20 }), progress);
+      if (!solution.success) {
+        note(`${host}:nil`, `${host}: ${info.modelId} waiting: ${solution.reason}${solution.code ? ` (${solution.code})` : ""}.`);
+        return false;
+      }
+      const reportFile = `darknet-passwords-${host.replace(/[^a-z0-9_-]/gi, "_")}.txt`;
+      await ns.write(reportFile, `${host}=${solution.password}\n`, "w");
+      try { await ns.scp(reportFile, "home", ns.getHostname()); }
+      catch (error) { ns.print(`${host}: could not sync credential report to home: ${String(error)}`); }
+      nilProgress.delete(host);
+      note(`${host}:nil`, `${host}: ${info.modelId} solved using feedback; saved to ${reportFile}.`);
+      return true;
+    }
     const signature = `${saved || ""}\0${candidates.join("\0")}`;
     const previous = attemptedInputs.get(host);
     if (previous && previous.signature === signature && Date.now() - previous.at < RETRY_AFTER_MS) return false;
@@ -135,6 +175,14 @@ export async function main(ns) {
     try {
       // Run the helpers on this server with whatever RAM the scout leaves free.
       const self = ns.getHostname();
+      await heartbeat();
+      // Retry credential delivery after temporary disconnections. Mark reports
+      // synchronized only after scp succeeds, so failed uploads are not lost.
+      for (const file of ns.ls(self, 'darknet-passwords-')) {
+        const signature = hashText(ns.read(file));
+        if (syncedReports.get(file) === signature) continue;
+        try { if (await ns.scp(file, 'home', self)) syncedReports.set(file, signature); } catch { /* retry next cycle */ }
+      }
       const freeRam = () => ns.getServerMaxRam(self) - ns.getServerUsedRam(self);
       const procRunning = (file) => ns.ps(self).some((p) => p.filename === file);
       const linked = ns.dnet.getStasisLinkedServers();
@@ -165,6 +213,7 @@ export async function main(ns) {
       const candidates = readCandidates();
       for (const host of ns.dnet.probe()) {
         try {
+        if (host === self) continue;
         const info = ns.dnet.getServerDetails(host);
         if (!info.isOnline) continue;
         if (!known.has(host)) {
@@ -202,9 +251,23 @@ export async function main(ns) {
           .filter((f) => ns.fileExists(f, self));
         const signature = syncFiles.map((f) => `${f}:${hashText(ns.read(f))}`).join("|");
         if (deployed.get(host) !== signature || !ns.fileExists(nodeFile, host)) {
-          await ns.scp(syncFiles, host, self);
+          if (!(await ns.scp(syncFiles, host, self))) {
+            note(`${host}:sync`, `${host}: deployment incomplete; will retry.`);
+            continue;
+          }
           deployed.set(host, signature);
         }
+        const scout = ns.ps(host).find(p => p.filename === nodeFile);
+        const statusFile = `tasks/dnet-${encodeURIComponent(host)}.json`;
+        try {
+          if (scout && ns.fileExists(statusFile, host) && await ns.scp(statusFile, self, host)) {
+            const status = JSON.parse(ns.read(statusFile));
+            if (isStalledScout(scout, status)) {
+              ns.kill(scout.pid);
+              note(`${host}:restart`, `${host}: restarting stalled scout.`);
+            }
+          }
+        } catch { /* only restart when a matching stale heartbeat is verified */ }
         if (!ns.ps(host).some(p => p.filename === nodeFile)) {
           const ram = ns.getScriptRam(nodeFile, host);
           const free = ns.getServerMaxRam(host) - ns.getServerUsedRam(host);
@@ -217,7 +280,7 @@ export async function main(ns) {
         }
         } catch (error) { ns.print(`${host}: skipped after a server/network error: ${String(error)}`); }
       }
-      await ns.dnet.nextMutation();
+      await ns.sleep(15_000);
     } catch (error) {
       ns.print(`Darknet scout recovered: ${String(error)}`);
       await ns.sleep(15_000);

@@ -923,12 +923,16 @@ export function unEscapeArrayArgs(args) {
 }
 
 /**
- * Custom tail function which also applies default resizes and tail window placement.
+ * Tail windows open only when explicitly requested with openWindow=true.
+ * Automatic callers leave windows closed; use Bitburner's terminal tail command
+ * to inspect logs manually. Explicit windows receive the layout below.
  * This algorithm is not perfect but for the most part should not generate overlaps of the window's title bar.
  * @param {NS} ns The nestcript instance passed to your script's main entry point
  * @param {number|undefined} processId The id of the process to tail, or null to use the current process id
+ * @param {boolean} openWindow Explicit opt-in to open a window (defaults to false).
  */
-export function tail(ns, processId = undefined) {
+export function tail(ns, processId = undefined, openWindow = false) {
+    if (!openWindow) return;
     checkNsInstance(ns, '"tail"');
     processId ??= ns.pid
     ns.ui.openTail(processId);

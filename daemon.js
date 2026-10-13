@@ -64,7 +64,7 @@ const argsSchema = [
 
     // Debugging flags
     ['silent-misfires', false], // Instruct remote scripts not to alert when they misfire
-    ['no-tail-windows', false], // Set to true to prevent the default behaviour of opening a tail window for certain launched scripts. (Doesn't affect scripts that open their own tail windows)
+    ['no-tail-windows', true], // Suppress automatic tail windows; open script logs manually from the terminal.
     ['h', false], // Do nothing but hack, no prepping (drains servers to 0 money, if you want to do that for some reason)
     ['hack-only', false], // Same as above
     ['v', false], // Detailed logs about batch scheduling / tuning
@@ -366,6 +366,8 @@ export async function main(ns) {
             { name: "hacknet-upgrade-manager.js", shouldRun: () => shouldUpgradeHacknet(), args: ["-c", "--max-payoff-time", "1h", "--interval", "0"], shouldTail: false }, // One-time kickstart of hash income by buying everything with up to 1h payoff time immediately
             { name: "spend-hacknet-hashes.js", shouldRun: () => reqRam(64) && 9 in dictSourceFiles, args: [], shouldTail: false }, // Always have this running to make sure hashes aren't wasted
             { name: "sleeve.js", shouldRun: () => reqRam(64) && 10 in dictSourceFiles }, // Script to create manage our sleeves for us
+            { name: "sleeve-expansion.js", shouldRun: () => reqRam(64) && resetInfo.currentNode === 10, shouldTail: false },
+            { name: "grafting-manager.js", shouldRun: () => reqRam(64) && 10 in dictSourceFiles && 4 in dictSourceFiles, shouldTail: false },
             { name: "gangs.js", shouldRun: () => reqRam(64) && 2 in dictSourceFiles }, // Script to create manage our gang for us
             {
                 name: "work-for-factions.js", args: ['--fast-crimes-only', '--no-coding-contracts'],  // Singularity script to manage how we use our "focus" work.
@@ -385,6 +387,8 @@ export async function main(ns) {
         asynchronousHelpers.forEach(helper => helper.ignoreReservedRam = true);
         if (openTailWindows) // Tools should be tailed unless they explicitly opted out in the config above
             asynchronousHelpers.forEach(helper => helper.shouldTail ??= true);
+        else
+            asynchronousHelpers.forEach(helper => helper.shouldTail = false);
 
         // PERIODIC SCRIPTS
         // These scripts are spawned periodically (at some interval) to do their checks, with an optional condition that limits when they should be spawned

@@ -28,7 +28,7 @@ const argsSchema = [ // The set of all command line arguments
     ['on-completion-script-args', []], // Optional args to pass to the script when we defeat the bitnode
     ['xp-mode-interval-minutes', 55], // Every time this many minutes has elapsed, toggle daemon.js to runing in --xp-only mode, which prioritizes earning hack-exp rather than money
     ['xp-mode-duration-minutes', 5], // The number of minutes to keep daemon.js in --xp-only mode before switching back to normal money-earning mode.
-    ['no-tail-windows', false], // Set to true to prevent the default behaviour of opening a tail window for certain launched scripts. (Doesn't affect scripts that open their own tail windows)
+    ['no-tail-windows', true], // Suppress automatic tail windows; open script logs manually from the terminal.
 ];
 
 export function autocomplete(data, args) {
@@ -54,7 +54,7 @@ export async function main(ns) {
         2.1,  // Easy.   Unlocks gangs, which reduces the need to grind faction and company rep for getting access to most augmentations, speeding up all BNs
 
         // 2nd Priority: More new features, from Harder BNs. Things will slow down for a while, but the new features should pay in dividends for all future BNs
-        10.1, // Hard.   Unlock Sleeves (which tremendously speed along gangs outside of BN2) and grafting (can speed up slow rep-gain BNs). // TODO: This script does not yet automate sleeve purchases or memory upgrades (available via the Sleeve API in BN10).
+        10.1, // Hard. Unlock sleeves and grafting; the helper suite manages purchases, memory, and useful grafts when API access allows.
         8.2,  // Hard.   8.1 immediately unlocks stocks, 8.2 doubles stock earning rate with shorts. Stocks are never nerfed in any BN (4S can be made too pricey though), and we have a good pre-4S stock script.
         13.1, // Hard.   Unlock Stanek's Gift. We've put a lot of effort into min/maxing the Tetris, so we should try to get it early, even though it's a hard BN. I might change my mind and push this down if it proves too slow.
         7.1,  // Hard.   Unlocks the bladeburner API (and bladeburner outside of BN 6/7). Many recommend it before BN9 since it ends up being a faster win condition in some of the tougher bitnodes ahead.
@@ -690,7 +690,7 @@ export async function main(ns) {
             let daemonPid = launchScriptHelper(ns, 'daemon.js', daemonArgs);
             daemonStartTime = Date.now();
             // Open the tail window if it's the start of a new BN. Especially useful to new players.
-            if (getTimeInBitnode() < 1000 * 60 * 5 || homeRam == 8) // First 5 minutes, or BN1.1 where we have 8GB ram
+            if (!options['no-tail-windows'] && daemonPid && (getTimeInBitnode() < 1000 * 60 * 5 || homeRam == 8))
                 tail(ns, daemonPid);
         }
 

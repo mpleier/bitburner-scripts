@@ -1,4 +1,5 @@
 /** Darknet coordinator. Tries supplied exact-match candidates on discovered servers. */
+import { solveFeedbackPassword, supportsFeedbackModel, modelCandidates, isStalledScout } from './darknet-solvers.js';
 export async function main(ns) {
   const passwordFile = "darknet-passwords.txt";
   const candidateFile = "darknet-candidates.txt";
@@ -10,7 +11,7 @@ export async function main(ns) {
   const lootFile = "darknet-loot.js";
   const stasisFile = "darknet-stasis.js";
   const cacheFile = "darknet-cache.js";
-  const codeFiles = [nodeFile, lootFile, stasisFile, cacheFile];
+  const codeFiles = [nodeFile, lootFile, stasisFile, cacheFile, "darknet-solvers.js"];
   // Every ns call is logged by default (scp, probe, getServerMaxRam...), which
   // buried the useful lines. Keep only what this script prints itself.
   ns.disableLog("ALL");
@@ -90,13 +91,14 @@ export async function main(ns) {
     const counted = details.passwordFormat === "numeric" && details.passwordLength >= 1 && details.passwordLength <= 3
       ? Array.from({ length: 10 ** details.passwordLength }, (_, n) => String(n).padStart(details.passwordLength, "0"))
       : [];
-    return [...new Set([...derived, ...(clue && matches(clue) ? [clue] : []), ...words.filter(matches), ...counted])];
+    return [...new Set([...modelCandidates(details), ...derived, ...(clue && matches(clue) ? [clue] : []), ...words.filter(matches), ...counted])];
   };
 
   const reportedHints = new Map();
   // Cache complete attempt inputs so failed saved credentials are not retried every poll.
   const attemptedInputs = new Map();
   const heartbleedAt = new Map();
+  const nilProgress = new Map();
 
   const ensureDarknetUnlock = () => {
     if (!ns.hasTorRouter()) {
@@ -124,6 +126,34 @@ export async function main(ns) {
 
   const authenticate = async (host, details, saved, candidates) => {
     if (details.hasSession) return true;
+    if (supportsFeedbackModel(details)) {
+      if (!nilProgress.has(host)) nilProgress.set(host, {});
+      const progress = nilProgress.get(host);
+      // Reuse a verified password without requiring Heartbleed after a restart.
+      // Remember rejected saved values so they are not retried every poll.
+      if (typeof saved === "string" && progress.rejectedSaved !== saved) {
+        const result = await tryPassword(host, saved);
+        if (result.success) { nilProgress.delete(host); return true; }
+        if (Number(result.code) !== AUTH_FAILURE) return false;
+        progress.rejectedSaved = saved;
+      }
+      if (ns.getPlayer().skills.charisma < details.requiredCharismaSkill) {
+        note(`${host}:nil`, `${host}: ${details.modelId} solving needs ${details.requiredCharismaSkill} Charisma for Heartbleed.`);
+        return false;
+      }
+      const solution = await solveFeedbackPassword(details,
+        password => tryPassword(host, password),
+        () => ns.dnet.heartbleed(host, { peek: true, logsToCapture: 20 }), progress);
+      if (!solution.success) {
+        note(`${host}:nil`, `${host}: ${details.modelId} waiting: ${solution.reason}${solution.code ? ` (${solution.code})` : ""}.`);
+        return false;
+      }
+      const reportFile = `darknet-passwords-${host.replace(/[^a-z0-9_-]/gi, "_")}.txt`;
+      await ns.write(reportFile, `${host}=${solution.password}\n`, "w");
+      nilProgress.delete(host);
+      note(`${host}:nil`, `${host}: ${details.modelId} solved using feedback; saved to ${reportFile}.`);
+      return true;
+    }
     const signature = `${saved || ""}\0${candidates.join("\0")}`;
     const previous = attemptedInputs.get(host);
     if (previous && previous.signature === signature && Date.now() - previous.at < RETRY_AFTER_MS) return false;
@@ -221,11 +251,22 @@ export async function main(ns) {
               if (oldCode !== undefined && oldCode !== codeSignature) {
                 for (const p of ns.ps(host)) if (codeFiles.includes(p.filename)) ns.kill(p.pid);
               }
-              await ns.scp(files, host, "home");
+              if (!(await ns.scp(files, host, "home"))) {
+                note(`${host}:sync`, `${host}: deployment incomplete; will retry.`);
+                continue;
+              }
               deployed.set(host, signature);
               deployedCode.set(host, codeSignature);
             }
 
+            const scout = ns.ps(host).find(p => p.filename === nodeFile);
+            try {
+              const status = JSON.parse(ns.read(`tasks/dnet-${encodeURIComponent(host)}.json`) || '{}');
+              if (isStalledScout(scout, status)) {
+                ns.kill(scout.pid);
+                note(`${host}:restart`, `${host}: restarting scout after 30 minutes without a heartbeat.`);
+              }
+            } catch { /* missing heartbeat: leave an existing scout running */ }
             const running = ns.ps(host).some((p) => p.filename === nodeFile);
             if (!running) {
               const ram = ns.getScriptRam(nodeFile, host);

@@ -16,6 +16,8 @@ Autopilot launches the standalone `corporation-manager.js` script in BitNode 3 o
 
 ## Local checks
 
+Scripts do not open tail windows automatically. Use the Bitburner terminal command `tail autopilot.js`, `tail daemon.js`, or `tail corporation-manager.js` to open logs when you want them.
+
 With Node.js installed, run `npm test` for the local unit tests and `npm run check` to syntax-check all JavaScript scripts. The tests use Node's built-in test runner and need no dependency installation. They cover selected logic with mocked Bitburner APIs; they do not replace testing in a live save.
 
 ## Added automation
@@ -28,13 +30,15 @@ The storm-seed executable is never launched. Passwords absent from the candidate
 
 ## Included systems
 
+Darknet NIL servers are solved from Heartbleed authentication feedback. The coordinator and scouts preserve positions marked `yes`, replace positions marked `yesn't`, and authenticate the resulting password. Feedback is matched to the exact attempted password, confirmed progress survives temporary network failures, and solving waits for sufficient Charisma. The shared `darknet-solvers.js` module must be synced alongside the scouts.
+
 The upstream suite provides the main hacking daemon plus helpers for root access and server management, companies and factions, gangs, sleeves, Bladeburner, stocks, Hacknet, Stanek, Go, coding contracts, and augmentation/reset workflows. Mechanics locked behind Source Files, API access, money, or player progress remain idle until they become available.
 
 The corporation manager is based on the supplied optimizer's Agriculture-first, Restaurant-second plan. The source used older method names; this version uses the current API (`purchaseUnlock`, `getUnlockCost`, and `canCreateCorporation(true)`). It has not been run inside a Bitburner save, so check the in-game log on first launch.
 
 ## Manual or partial areas
 
-- **Darknet passwords:** The candidate list checks exact supplied words and may take time to exhaust, especially with low Charisma. Heartbleed logs are displayed as clues but are not converted into guessed password variants, and arbitrary passwords are not synthesized. Stock promotion is not automatic because it requires TIX access and a deliberate stock selection. `STORM_SEED.exe` is intentionally never launched; it can catastrophically damage the darknet. The automation also avoids freezing servers because that removes their RAM and experience benefits.
+- **Darknet passwords:** The candidate list checks exact supplied words and may take time to exhaust, especially with low Charisma. NIL models use Heartbleed feedback to solve passwords automatically; other model feedback is still displayed for investigation. Stock promotion is not automatic because it requires TIX access and a deliberate stock selection. `STORM_SEED.exe` is intentionally never launched; it can catastrophically damage the darknet. The automation also avoids freezing servers because that removes their RAM and experience benefits.
 - **Corporations:** Automation is a conservative Agriculture and Restaurant strategy, not a full optimizer. It does not tune boost-material inventories, exports, research, every industry, or all share/dividend actions.
 - **Sleeves:** Sleeve tasks and augmentation purchases are managed, but this package does not buy additional sleeves or upgrade sleeve memory. The game API supports both in BN10, so this is an implementation gap.
 - **Grafting and infiltration:** The package protects ongoing grafting from resets but does not choose and start grafts. It has no infiltration automation.

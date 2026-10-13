@@ -7,30 +7,37 @@
  *     -> Agri). Gated on funds and on Hi-Tech R&D Lab.
  *   - Restaurant, product-based; develops Apex Dining products. Fed by
  *     Agriculture's Food export so its avgQlt isn't pinned at 1.
- *   - Late game: IPO, buy shares back toward the ownership target, then pay the
- *     player a tiered dividend.
+ *   - Late game: IPO with no shares issued, keep 100% ownership, pay dividends.
  *   - Hacknet: buy and level servers, spend hashes on a rotating plan.
  *
  * Source-verified against bitburner-src/dev/src:
+ *   - Investment rounds dilute ownership irreversibly (investorShares cannot
+ *     be bought back). ACCEPT_INVESTMENT = false preserves 100%.
+ *   - goPublic(0) leaves issuedShares at 0, so buybackShares fails with
+ *     "Not enough shares are available for buyback." The buyback branch is
+ *     removed as dead code.
+ *   - buyBackShares draws from Player.money, not corporation funds. Even if
+ *     issuedShares were nonzero, the earlier budget source was wrong.
  *   - getIndustryData(...).startingCost is the purchase price.
  *   - Division.maxProducts grows with uPgrade: Capacity.I / .II, starting at 3.
- *   - Base research tree has Hi-Tech R&D Lab as root; AutoPartyManager and
- *     AutoBrew automate morale/energy. Prereqs are enforced by the game.
  *   - Production multiplier: (0.002*RE+1)^0.72 * (0.002*HW+1)^0.2 *
  *     (0.002*RB+1)^0.3 * (0.002*AI+1)^0.3 per city, ^0.73, summed.
  *   - Product effective rating caps at avgQlt * sqrt(rating); Restaurant
  *     needs Agriculture's Food export to avoid quality-1 collapse.
- *   - Warehouse size is linear in level; cost is 1.07^level.
+ *   - Warehouse size is linear in level; cost is 1e9 * 1.07^level.
+ *     Warehouse upgrades are exempted from the reserve check.
  *   - purchaseWarehouse / upgradeWarehouse / upgradeOfficeSize / hireAdVert
  *     return void on insufficient funds. buyMaterial does NOT check funds and
- *     can drive the corp balance negative if overspent.
- *   - sellProduct / sellMaterial with `all=true` write per-city state in one call.
+ *     the game keeps charging the last-set rate every PURCHASE cycle until
+ *     it's overwritten. Every early-return path in manageBoosts must clear.
+ *   - sellProduct / sellMaterial with `all=true` writes every city in one call.
  *   - issueDividends takes a fraction in [0, dividendMaxRate]; requires public.
  *   - exportMaterial throws on duplicate route; cancelExportMaterial does not.
  *   - Ownership is CorporationInfo.numShares / totalShares.
  *   - hasHacknetServers() (BN9 or SF9) gates hashes entirely.
  *   - purchaseNode returns -1 on failure, not false. Node count is the signal.
  *   - throwParty returns a multiplier, not a boolean.
+ *   - Hacknet nodes/servers reset on augmentation install (unlike corp/gang).
  */
 export async function main(ns) {
   const c = ns.corporation;
@@ -46,8 +53,9 @@ export async function main(ns) {
   // Per-cycle budget for boost purchases. Shared across all cities and
   // divisions so the sum of boost buying in one cycle can't exceed this
   // fraction of funds. buyMaterial commits purchases without checking
-  // funds, so a per-city cap that each city calculates independently adds
-  // up (6 cities * 20% = 120%) and drives the balance negative.
+  // funds, and the game keeps charging the last-set rate every PURCHASE
+  // cycle until it's overwritten, so every early return in manageBoosts
+  // must also zero the rates.
   let boostBudget = 0;
   const BOOST_SPEND_FRACTION = 0.20;
   const officeJobs = ["Operations", "Engineer", "Business", "Management", "Research & Development"];
@@ -73,9 +81,10 @@ export async function main(ns) {
   };
   const PAY_DIVIDENDS = true;
   const IPO_VALUATION = 1e12;
-  const OWNERSHIP_TARGET = 0.90;
-  const BUYBACK_SPEND_FRACTION = 0.10;
-  const ACCEPT_INVESTMENT = true;
+  // Investment rounds are irreversible ownership dilution. Investors' shares
+  // cannot be bought back (buybackShares only sources from issuedShares).
+  // Set false to preserve 100% for the dividend stream.
+  const ACCEPT_INVESTMENT = false;
   let lastDividendRate = -1;
 
   // ---- Hash spend plan --------------------------------------------------
@@ -93,7 +102,7 @@ export async function main(ns) {
   const HACKNET_MAX_SERVERS = 20;
   const HACKNET_CACHE_TARGET = 4;
 
-  // ---- Wilson Analytics priority ----------------------------------------
+  // ---- Upgrade priority -------------------------------------------------
   const WILSON_TARGET_LEVEL = 17;
 
   // ---- Chemical quality loop --------------------------------------------
@@ -216,51 +225,25 @@ export async function main(ns) {
     attempt(`Hire AdVert (${division})`, () => c.hireAdVert(division));
   };
 
-  // ---- IPO / shares / dividends -----------------------------------------
-  const ownershipOf = (info) => {
-    const owned = Math.max(0, Number(info?.numShares) || 0);
-    const total = Math.max(1, Number(info?.totalShares) || 1);
-    return { owned, total, fraction: owned / total };
-  };
-
+  // ---- IPO / dividends --------------------------------------------------
+  // Dividend path: go public with no shares issued (goPublic(0) leaves
+  // issuedShares at 0 and keeps numShares whole), then set the tiered rate.
+  // Buyback is not attempted — it requires issuedShares > 0 to source from,
+  // and even then draws from Player.money rather than corporation funds.
   const manageIPO = () => {
     if (!PAY_DIVIDENDS) return;
     const info = corp();
     if (!info || info.public) return;
     const valuation = Number(info.valuation) || 0;
     if (valuation < IPO_VALUATION) return;
-    if (attempt("Go public", () => c.goPublic(0))) {
-      const after = corp();
-      const { fraction } = ownershipOf(after);
-      ns.print(
-        `IPO at $${ns.format.number(valuation)} valuation; ` +
-        `own ${(fraction * 100).toFixed(1)}% of shares.`
-      );
-    }
+    if (attempt("Go public", () => c.goPublic(0)))
+      ns.print(`IPO at $${ns.format.number(valuation)} valuation; issued 0 shares.`);
   };
 
-  const manageSharesAndDividends = () => {
+  const manageDividends = () => {
     if (!PAY_DIVIDENDS) return;
     const info = corp();
     if (!info?.public) return;
-
-    const { total, fraction } = ownershipOf(info);
-
-    if (fraction < OWNERSHIP_TARGET) {
-      const onCooldown = (Number(info.shareSaleCooldown) || 0) > 0;
-      if (!onCooldown) {
-        const perShare = Number(info.sharePrice) || 0;
-        if (perShare > 0) {
-          const budget = Math.max(0, Math.min(funds() * BUYBACK_SPEND_FRACTION, funds() - reserve));
-          const sharesWanted = Math.ceil((OWNERSHIP_TARGET - fraction) * total);
-          const sharesAffordable = Math.floor(budget / perShare);
-          const sharesToBuy = Math.min(sharesWanted, sharesAffordable);
-          if (sharesToBuy > 0)
-            attempt(`Buy back ${ns.format.number(sharesToBuy)} shares`, () => c.buyBackShares(sharesToBuy));
-        }
-      }
-    }
-
     const rate = dividendRateFor(funds());
     if (rate === lastDividendRate) return;
     if (attempt(`Set dividend rate ${(rate * 100).toFixed(0)}%`, () => c.issueDividends(rate)))
@@ -477,12 +460,12 @@ export async function main(ns) {
     { name: "Robots", factor: 0.3, size: 0.5 },
     { name: "AI Cores", factor: 0.3, size: 0.1 },
   ];
-  // Boost purchases are drawn from a shared per-cycle budget (boostBudget)
-  // so the sum across cities never exceeds BOOST_SPEND_FRACTION of funds.
-  // buyMaterial commits the purchase without checking funds, so an
-  // unbounded per-city spend drives the corp balance negative.
+  const clearBoostRates = (division, city) => {
+    for (const b of boosts)
+      attempt(`Clear ${b.name} buy rate`, () => c.buyMaterial(division, city, b.name, 0));
+  };
   const manageBoosts = (city, division = agri) => {
-    if (boostBudget <= 0) return;
+    if (boostBudget <= 0) { clearBoostRates(division, city); return; }
     const wh = safe("Read warehouse", () => c.getWarehouse(division, city));
     if (!wh) return;
     const full = wh.sizeUsed / Math.max(1, wh.size) > 0.9;
@@ -496,8 +479,7 @@ export async function main(ns) {
       return { name: b.name, need, cost: need * price };
     });
     const total = plan.reduce((a, p) => a + p.cost, 0);
-    if (total <= 0) return;
-    // Cap this city's spend at whatever remains of the shared budget.
+    if (total <= 0) { clearBoostRates(division, city); return; }
     const spend = Math.min(boostBudget, total);
     const scale = total > spend ? spend / total : 1;
     boostBudget -= total * scale;
@@ -533,7 +515,7 @@ export async function main(ns) {
     if (used > 0.8) storagePressure = true;
     for (let level = 0; level < 5 && used > 0.7; level++) {
       const cost = safe("Get warehouse upgrade cost", () => c.getUpgradeWarehouseCost(division, city));
-      if (!Number.isFinite(cost) || funds() <= cost + reserve) break;
+      if (!Number.isFinite(cost) || funds() <= cost) break;
       if (!attempt("Upgrade warehouse", () => c.upgradeWarehouse(division, city))) break;
       const next = safe("Refresh warehouse", () => c.getWarehouse(division, city));
       used = next ? next.sizeUsed / Math.max(1, next.size) : 0;
@@ -601,13 +583,7 @@ export async function main(ns) {
       }
 
       storagePressure = false;
-      // Reserve floor keeps the corp from spending its last dollar on
-      // upgrades and leaving nothing for inputs. Without the floor, the
-      // 10% rule lets reserve approach zero as funds shrink, and a boost
-      // or upgrade purchase can drive the balance negative.
-      reserve = Math.max(1e9, Math.min(5e9, funds() * 0.1));
-      // Per-cycle boost budget. Shared across every city and division via
-      // manageBoosts, which decrements it as it spends.
+      reserve = Math.max(1e7, Math.min(5e9, funds() * 0.1));
       boostBudget = Math.max(0, Math.min(funds() * BOOST_SPEND_FRACTION, funds() - reserve));
 
       createDivision("Agriculture", agri);
@@ -681,13 +657,19 @@ export async function main(ns) {
       if (Date.now() - lastUpgrade >= 30_000) {
         const cash = funds();
         const wilsonLevel = safe("Wilson level", () => c.getUpgradeLevel("Wilson Analytics")) ?? 0;
+        let bought = 0;
+
         if (wilsonLevel < WILSON_TARGET_LEVEL) {
           const cost = safe("Wilson cost", () => c.getUpgradeLevelCost("Wilson Analytics"));
           if (Number.isFinite(cost) && cost <= cash * 0.35 && cash > cost + reserve) {
-            if (attempt("Level Wilson Analytics", () => c.levelUpgrade("Wilson Analytics")))
+            if (attempt("Level Wilson Analytics", () => c.levelUpgrade("Wilson Analytics"))) {
               lastUpgrade = Date.now();
+              bought++;
+            }
           }
-        } else {
+        }
+
+        if (bought === 0) {
           const order = [
             ...(storagePressure ? ["Smart Storage"] : []),
             "Smart Factories", "Smart Storage",
@@ -695,12 +677,14 @@ export async function main(ns) {
             "Neural Accelerators", "FocusWires",
             "ABC SalesBots", "Project Insight",
           ];
-          let bought = 0;
           for (const upgrade of [...new Set(order)]) {
             const cost = safe(`Get ${upgrade} cost`, () => c.getUpgradeLevelCost(upgrade));
             const cap = storagePressure && upgrade === "Smart Storage" ? 0.35 : 0.20;
             if (Number.isFinite(cost) && cost <= cash * cap && cash > cost + reserve) {
-              if (attempt(`Level ${upgrade}`, () => c.levelUpgrade(upgrade))) { lastUpgrade = Date.now(); bought++; }
+              if (attempt(`Level ${upgrade}`, () => c.levelUpgrade(upgrade))) {
+                lastUpgrade = Date.now();
+                bought++;
+              }
               if (bought >= 2) break;
             }
           }
@@ -708,7 +692,7 @@ export async function main(ns) {
       }
 
       manageIPO();
-      manageSharesAndDividends();
+      manageDividends();
       manageHacknetServers();
 
       const spentOn = spendHashes();
@@ -724,7 +708,6 @@ export async function main(ns) {
       if (now - lastInvestmentCycle > 60_000) {
         lastInvestmentCycle = now;
         const live = corp() ?? info;
-        const { owned, total, fraction } = ownershipOf(live);
         const hashes = (() => {
           try { return Number(ns.hacknet.numHashes()) || 0; }
           catch { return 0; }
@@ -733,11 +716,13 @@ export async function main(ns) {
           try { return ns.hacknet.numNodes(); }
           catch { return 0; }
         })() : 0;
+        const owned = Math.max(0, Number(live?.numShares) || 0);
+        const total = Math.max(1, Number(live?.totalShares) || 1);
         ns.print(
           `${info.name}: $${ns.format.number(funds())}; ` +
           `divisions: ${divisions().join(", ") || "none"}; ` +
           `public: ${live?.public ? "yes" : "no"}; ` +
-          `shares: ${(fraction * 100).toFixed(1)}% (${ns.format.number(owned)}/${ns.format.number(total)}); ` +
+          `shares: ${(owned / total * 100).toFixed(1)}% (${ns.format.number(owned)}/${ns.format.number(total)}); ` +
           `dividends: ${(Math.max(0, lastDividendRate) * 100).toFixed(0)}%; ` +
           `hashes: ${ns.format.number(hashes)}; ` +
           `servers: ${serverCount}; ` +

@@ -42,6 +42,14 @@ export async function solveAdvancedPassword(details, probe, readLogs, state, rea
       } else { state.signature = null; return { success: false, reason: 'RMS confirmation failed; resetting progress' }; }
     } else if (details.modelId === 'Factori-Os') {
       state.factorIndex ??= 0; state.factorPower ??= 1n; state.factorProduct ??= 1n;
+      const product = String(state.factorProduct);
+      if (product.length === length && state.factorConfirmed !== product) {
+        const result = await probe(product);
+        if (!result.feedback) return result;
+        if (result.feedback.data !== 'true') { state.signature = null; return { success: false, reason: 'inconsistent factor feedback; resetting progress' }; }
+        state.factorConfirmed = product;
+        continue;
+      }
       const prime = factorPrimes[state.factorIndex];
       if (!prime) {
         const result = await probe(String(state.factorProduct));

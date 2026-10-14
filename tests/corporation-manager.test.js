@@ -4,7 +4,7 @@ import { main } from '../corporation-manager.js';
 
 /** Run a real manager cycle against a minimal game API, then stop at nextUpdate. */
 async function cycle({ exportCost = 20e9, cash = 3e12, wallet = 100, nodeCost = 3,
-    products = [], upgradeCosts = {}, lastProductAt = 0, playerReserve = 0, office = null, expenses = 0, phases = [], advertCost = Infinity, salePrice = 'MP' } = {}) {
+    products = [], upgradeCosts = {}, lastProductAt = 0, playerReserve = 0, office = null, expenses = 0, phases = [], advertCost = Infinity, salePrice = 'MP', extraDivision = null } = {}) {
   const stop = new Error('test cycle complete');
   const calls = { exports: [], products: [], retired: [], nodes: 0, upgrades: [], logs: [], unlocks: [], tea: [], parties: [], jobs: [], adverts: [], sales: [] };
   const unlocked = new Set(['Warehouse API', 'Smart Supply']);
@@ -15,12 +15,14 @@ async function cycle({ exportCost = 20e9, cash = 3e12, wallet = 100, nodeCost = 
     name, cities, products: name === 'Dining' ? [...products] : [], researchPoints: 0,
     makesProducts: name === 'Dining', maxProducts: 3,
   }]));
+  if (extraDivision) divisions[extraDivision.name] = { cities, products: [], researchPoints: 0, maxProducts: 3, ...extraDivision };
   let funds = cash, money = wallet;
   const c = {
     getConstants: () => ({ dividendMaxRate: 1 }),
     hasCorporation: () => true,
     getCorporation: () => ({ name: 'Test Corp', funds, divisions: Object.keys(divisions), valuation: 0, public: false, expenses, prevState: phases[phaseIndex] }),
     getDivision: name => ({ ...divisions[name], products: [...divisions[name].products] }),
+    getIndustryData: industry => ({ requiredMaterials: { Water: 0.2 }, producedMaterials: industry === 'Water Utilities' ? ['Water'] : [] }),
     hasUnlock: name => unlocked.has(name),
     getUnlockCost: name => name === 'Export' ? exportCost : Infinity,
     purchaseUnlock: name => {
@@ -163,4 +165,22 @@ test('discretionary corporation actions run once per full cycle, plus startup',a
 test('material pricing reuses the existing market multiplier after restart',async()=>{
  const {calls}=await cycle({salePrice:'MP*3'});
  assert.ok(calls.sales.length>0);assert.equal(calls.sales[0][4],'MP*2.5');
+});
+
+
+test('existing product divisions receive managed development while custom names stay intact', async () => {
+  const { calls } = await cycle({ extraDivision: { name: 'Other Products', industry: 'Tobacco', makesProducts: true } });
+  assert.equal(calls.products.filter(product => product.name === 'Other Products Auto 1').length, 1);
+});
+
+test('existing product divisions retire only their weakest managed product', async () => {
+  const { calls } = await cycle({ extraDivision: { name: 'Other Products', industry: 'Tobacco', makesProducts: true,
+    products: ['Custom Brand', 'Other Products Auto 5', 'Other Products Auto 7'] } });
+  assert.deepEqual(calls.retired, ['Other Products Auto 5']);
+  assert.ok(calls.products.some(product => product.name === 'Other Products Auto 8'));
+});
+
+test('existing material industries sell their industry-specific output', async () => {
+  const { calls } = await cycle({ extraDivision: { name: 'Water Works', industry: 'Water Utilities', makesProducts: false } });
+  assert.equal(calls.sales.filter(args => args[0] === 'Water Works' && args[2] === 'Water').length, 6);
 });

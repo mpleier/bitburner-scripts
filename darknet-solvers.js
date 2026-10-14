@@ -108,9 +108,11 @@ export const decodeBinary = (encoded) =>
     .join("");
 
 export const decodeXor = (data) => {
-  const [encrypted, masksStr] = String(data).split(";");
-  if (encrypted === undefined || masksStr === undefined) return null;
+  const text = String(data), separator = text.lastIndexOf(';');
+  if (separator < 0) return null;
+  const encrypted = text.slice(0, separator), masksStr = text.slice(separator + 1);
   const masks = masksStr.trim().split(/\s+/);
+  if (masks.length !== encrypted.length || masks.some(mask => !/^[01]{1,8}$/.test(mask))) return null;
   let out = "";
   for (let i = 0; i < encrypted.length; i++) {
     const mask = parseInt(masks[i] ?? "0", 2);

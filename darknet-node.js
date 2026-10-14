@@ -28,6 +28,7 @@ export async function main(ns) {
     for (let i = 0; i < text.length; i++) h = ((h << 5) + h + text.charCodeAt(i)) | 0;
     return `${text.length}:${h}`;
   };
+  const startupRevision = codeFiles.filter(file => ns.fileExists(file, ns.getHostname())).map(file => hashText(ns.read(file))).join('|');
   // Last state copied to each neighbour, so files are only re-sent when they change.
   const deployed = new Map();
   // Only print a status line when it changes.
@@ -44,7 +45,7 @@ export async function main(ns) {
     if (Date.now() - lastHeartbeat < 30_000) return;
     const info = ns.dnet.getServerDetails(ns.getHostname());
     await ns.write(heartbeatFile, JSON.stringify({ host: ns.getHostname(), pid: ns.pid, at: Date.now(), version: 3,
-      depth: info.depth, difficulty: info.difficulty }), 'w');
+      depth: info.depth, difficulty: info.difficulty, revision: startupRevision }), 'w');
     try { await ns.scp(heartbeatFile, 'home', ns.getHostname()); } catch { /* local heartbeat still helps adjacent scouts */ }
     lastHeartbeat = Date.now();
   };
@@ -282,7 +283,8 @@ export async function main(ns) {
         try {
           if (scout && ns.fileExists(statusFile, host) && await ns.scp(statusFile, self, host)) {
             const status = JSON.parse(ns.read(statusFile));
-            if (isStalledScout(scout, status) || (scout && status.pid === scout.pid && status.version !== 3)) {
+            const revision = codeFiles.filter(file => ns.fileExists(file, self)).map(file => hashText(ns.read(file))).join('|');
+            if (isStalledScout(scout, status) || (scout && status.pid === scout.pid && (status.version !== 3 || status.revision !== revision))) {
               ns.kill(scout.pid);
               for (const process of ns.ps(host)) if ([lootFile, stasisFile, cacheFile, promoteFile, migrateFile].includes(process.filename)) ns.kill(process.pid);
               note(`${host}:restart`, `${host}: restarting stalled scout.`);

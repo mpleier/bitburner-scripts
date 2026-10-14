@@ -1,14 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { infiltrationInput, chooseInfiltration, findInfiltrationState, selectRewardFaction } from '../infiltration-solvers.js';
+import { infiltrationInput, chooseInfiltration, findInfiltrationState, selectRewardFaction, enterInfiltration } from '../infiltration-solvers.js';
 import { playInfiltration } from '../infiltration-manager.js';
-import { activityBusy, claimActivity, releaseActivity, pendingRam } from '../activity-coordination.js';
+import { activityBusy, claimActivity, releaseActivity, pendingRam, markActivitySupport, compatibleFocusWorkers } from '../activity-coordination.js';
 import { needsHealing } from '../health-manager.js';
 import { stockPromotionSignals, chooseStockPromotion } from '../darknet-stock-policy.js';
 import { renderCommandJob } from '../remote-api-command.js';
 import { solveFeedbackPassword, modelCandidates } from '../darknet-solvers.js';
 import { packetCandidates } from '../darknet-advanced.js';
+import { chooseMigrationTarget } from '../darknet-migration-policy.js';
 
 const stage = data => ({ onKey() {}, ...data });
 test('all eight infiltration puzzle models produce valid incremental inputs', () => {
@@ -44,6 +45,14 @@ test('the UI adapter locates only a valid infiltration model and routes faction 
   const document={querySelectorAll:()=>[{'__reactFiber$x':{memoizedProps:{value:'none',onChange:event=>value=event.target.value}}}]};
   assert.equal(selectRewardFaction(document,'CyberSec'),true); assert.equal(value,'CyberSec');
 });
+test('infiltration entry calls only the enabled company-entry handler', () => {
+  let entered=false;
+  const button={textContent:'Infiltrate Company',disabled:false,'__reactProps$x':{onClick:event=>{if(event.isTrusted)entered=true;}}};
+  assert.equal(enterInfiltration(button),true);assert.equal(entered,true);
+  assert.equal(enterInfiltration({...button,disabled:true}),false);
+  assert.equal(enterInfiltration({...button,textContent:'Apply for job'}),false);
+  assert.equal(enterInfiltration({textContent:'Infiltrate Company'}),false);
+});
 test('the infiltration runner cancels an unknown model without dispatching keyboard events', async () => {
   let cancelled=false;
   const model={maxLevel:3,startInfiltration(){},cancel(){cancelled=true;},results:'',stage:stage({unknown:true})};
@@ -69,6 +78,22 @@ test('activity ownership expires and dead owners cannot block managers', async (
   files.set('tasks/automation-ram-reserve.json',JSON.stringify({ownerPid:1,expiresAt:200,ram:731}));
   assert.equal(pendingRam(ns,100),731); assert.equal(pendingRam(ns,200),0); alive=false; assert.equal(pendingRam(ns,100),0);
 });
+test('infiltration waits for running focus workers to support activity ownership', async () => {
+  const files=new Map(),processes=[{filename:'bladeburner.js',pid:5}];
+  const ns={pid:5,getScriptName:()=> 'bladeburner.js',read:file=>files.get(file)||'',write:async(file,data)=>files.set(file,data)};
+  assert.equal(compatibleFocusWorkers(ns,processes),false);
+  await markActivitySupport(ns); assert.equal(compatibleFocusWorkers(ns,processes),true);
+  assert.equal(compatibleFocusWorkers(ns,[{filename:'bladeburner.js',pid:6}]),false);
+  assert.equal(compatibleFocusWorkers(ns,[]),true);
+});
+test('UI ownership preserves the paused faction worker RAM allowance during refreshes', async () => {
+  const files=new Map();
+  const ns={pid:1,read:file=>files.get(file)||'',isRunning:()=>true,write:async(file,data)=>files.set(file,data),rm:file=>files.delete(file)};
+  await claimActivity(ns,'infiltration',60);
+  assert.equal(pendingRam(ns),68);
+  await claimActivity(ns,'infiltration'); assert.equal(pendingRam(ns),68);
+  releaseActivity(ns); assert.equal(pendingRam(ns),0);
+});
 test('stock promotions require fresh owned exposure and a reliable favorable forecast', () => {
   const stocks=[{sym:'LONG',prob:.8,sharesLong:100,sharesShort:0,price:10},{sym:'SHORT',prob:.2,sharesLong:0,sharesShort:200,price:10}];
   const signal=stockPromotionSignals(stocks,true,100);
@@ -78,6 +103,15 @@ test('stock promotions require fresh owned exposure and a reliable favorable for
   assert.equal(chooseStockPromotion(stockPromotionSignals([{...stocks[0],prob:.5}],true,100),101),null);
   assert.equal(chooseStockPromotion(stockPromotionSignals([{...stocks[0],sharesShort:100}],true,100),101),null);
 });
+test('air-gap migration uses populated frontier scouts and preserves stasis and story nodes', () => {
+  const frontier={depth:7,expiresAt:200};
+  const candidate={host:'bridge',depth:7,difficulty:7,scoutRunning:true,hasSession:true,isStationary:false,stasis:false};
+  assert.equal(chooseMigrationTarget([candidate],frontier,100),'bridge');
+  for(const change of [{stasis:true},{isStationary:true},{scoutRunning:false},{hasSession:false},{difficulty:3}])
+    assert.equal(chooseMigrationTarget([{...candidate,...change}],frontier,100),null);
+  assert.equal(chooseMigrationTarget([candidate],{depth:10,expiresAt:200},100),null);
+  assert.equal(chooseMigrationTarget([candidate],frontier,200),null);
+});
 test('supervision, RAM reservations and UI guards are integrated into the managers', async () => {
   const files=['autopilot.js','daemon.js','work-for-factions.js','bladeburner.js','grafting-manager.js'];
   for (const file of files) assert.match(await readFile(new URL('../'+file,import.meta.url),'utf8'),/activityBusy\(ns/,file);
@@ -85,6 +119,10 @@ test('supervision, RAM reservations and UI guards are integrated into the manage
   assert.match(daemon,/pendingRam\(this.ns\)/); assert.match(daemon,/lastHelperCheck >= 30000/);
   const autopilot=await readFile(new URL('../autopilot.js',import.meta.url),'utf8');
   assert.match(autopilot,/ramReserveFile/); assert.match(autopilot,/health-manager\.js/); assert.match(autopilot,/infiltration-manager\.js/);
+  const supervision=autopilot.indexOf('async function checkOnRunningScripts');
+  const status=autopilot.indexOf('const managerStatus');
+  const launch=autopilot.indexOf('managerStatus.find');
+  assert.ok(status>supervision && launch>status,'managerStatus must be declared in the process supervisor scope');
 });
 test('the remote worker reports fixed automation status without arbitrary file access', async () => {
   const request={id:'automation-status',method:'automation.status',args:[],expiresAt:Date.now()+60000};
@@ -139,6 +177,10 @@ test('all built-in dictionary models work without a supplied candidate file', ()
   assert.ok(modelCandidates({modelId:'EuroZone Free'}).includes('Republic of Cyprus'));
   assert.ok(modelCandidates({modelId:'TopPass'}).includes('matrix'));
 });
+test('XOR decoding preserves semicolons inside encrypted data and rejects malformed masks', () => {
+  assert.deepEqual(modelCandidates({modelId:'OrdoXenos',data:';A;01111010 00000000'}),['AA']);
+  assert.deepEqual(modelCandidates({modelId:'OrdoXenos',data:'AA;garbage 0'}),[]);
+});
 test('labyrinth DFS backtracks and saves the returned session token', async () => {
   const paths=new Map([['1,1',['east','south']],['3,1',['west']],['1,3',['north','east']],['3,3',['west','east']],['5,3',['west']]]);
   const offsets={north:[0,-2],east:[2,0],south:[0,2],west:[-2,0]};let position=[1,1];const guesses=[];
@@ -147,4 +189,18 @@ test('labyrinth DFS backtracks and saves the returned session token', async () =
     readLogs:async()=>assert.fail('maze feedback comes directly from authenticate'),
     attempt:async direction=>{guesses.push(direction);assert.ok(paths.get(position.join(',')).includes(direction));position=position.map((v,i)=>v+offsets[direction][i]);return position.join(',')==='5,3'?{success:true,code:200,data:'maze-token'}:{success:false,code:401,message:'Moved',data:''};}};
   assert.equal((await untilSolved(f)).password,'maze-token');assert.deepEqual(guesses,['east','west','south','east','east']);
+});
+
+
+test('divisibility solvers confirm a complete factor product without scanning unused primes', async () => {
+  for (const password of ['1', '8', '120']) {
+    const f=puzzle('Factori-Os',password,guess=>({data:String(Number(password)%Number(guess)===0)}));
+    assert.equal((await untilSolved(f)).password,password);
+    assert.ok(f.guesses.length<12);
+  }
+});
+
+test('infiltration combat cleanup converts the void API result into a readable receipt', async () => {
+  const source=await readFile(new URL('../infiltration-manager.js',import.meta.url),'utf8');
+  assert.match(source,/stopBladeburnerAction\(\), true/);
 });

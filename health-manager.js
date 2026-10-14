@@ -19,7 +19,7 @@ export async function main(ns) {
       try { transition = JSON.parse(ns.read(transitionFile)); } catch { }
       if (!activityBusy(ns) && !transitionActive(transition, ns.ps('home')) && needsHealing(ns.getPlayer())) {
         const healed = await getNsDataThroughFile(ns,
-          `(() => { const p=ns.getPlayer(), w=ns.singularity.getCurrentWork(); const reserve=Math.max(0,Number(ns.read("reserve.txt"))||0); const cost=Math.min(Math.max(0,p.money)*.1, (p.hp.max-p.hp.current)*100000); if(${activityGuard} || w?.type==="GRAFTING" || p.hp.current>=p.hp.max*.9 || p.money-reserve < cost) return false; ns.singularity.hospitalize(); return ns.getPlayer().hp.current===ns.getPlayer().hp.max; })()`,
+          `(() => { const p=ns.getPlayer(), w=ns.singularity.getCurrentWork(); const reserve=Math.max(0,Number(ns.read("reserve.txt"))||0); const cost=Math.min(Math.max(0,p.money)*.1, (p.hp.max-p.hp.current)*100000); if(${activityGuard} || w?.type==="GRAFTING" || p.hp.current>=p.hp.max*.9 || (cost > 0 && p.money-reserve < cost)) return false; ns.singularity.hospitalize(); return ns.getPlayer().hp.current===ns.getPlayer().hp.max; })()`,
           '/Temp/health-recovery.txt');
         if (healed) ns.print('Recovered health at the hospital.');
       }

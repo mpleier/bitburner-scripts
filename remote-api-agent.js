@@ -1,4 +1,4 @@
-import { commandFile, heartbeatFile, resultFile, validateCommand, renderCommandJob } from './remote-api-command.js';
+import { commandFile, heartbeatFile, resultFile, validateCommand, renderCommandJob, commandPolicyVersion } from './remote-api-command.js';
 /** File mailbox for state queries and named project script controls. */
 export async function main(ns) {
  ns.disableLog('ALL');
@@ -8,7 +8,7 @@ export async function main(ns) {
  let lastHeartbeat = 0;
  while (true) {
   if (Date.now() - lastHeartbeat >= 2000) {
-   lastHeartbeat = Date.now(); await ns.write(heartbeatFile, JSON.stringify({pid:ns.pid,at:lastHeartbeat,version:2}), 'w');
+   lastHeartbeat = Date.now(); await ns.write(heartbeatFile, JSON.stringify({pid:ns.pid,at:lastHeartbeat,version:2,policy:commandPolicyVersion}), 'w');
   }
   let command;
   try { command = JSON.parse(ns.read(commandFile) || 'null'); } catch { }
@@ -31,7 +31,7 @@ export async function main(ns) {
       if (!pid) await ns.write(output, JSON.stringify({id:command.id,state:'failed',at:Date.now(),error:'Unable to launch command job'}), 'w');
       else {
        while (ns.isRunning(pid)) {
-        await ns.write(heartbeatFile, JSON.stringify({pid:ns.pid,at:Date.now(),version:1,commandId:command.id}), 'w');
+        await ns.write(heartbeatFile, JSON.stringify({pid:ns.pid,at:Date.now(),version:2,policy:commandPolicyVersion,commandId:command.id}), 'w');
         await ns.sleep(500);
        }
       }

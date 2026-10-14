@@ -1,5 +1,6 @@
 import { isScriptPaused } from './automation-control.js';
 import { activityBusy, ramReserveFile } from './activity-coordination.js';
+import { commandPolicyVersion, heartbeatFile } from './remote-api-command.js';
 import { beginTransition, endTransition } from './progression-coordination.js';
 import {
     log, getFilePath, getConfiguration, instanceCount, getNsDataThroughFile, runCommand, waitForProcessToComplete,
@@ -160,26 +161,6 @@ export async function main(ns) {
         dictOwnedSourceFiles = await getActiveSourceFiles(ns, false);
         unlockedSFs = await getActiveSourceFiles(ns, true);
         homeRam = await getNsDataThroughFile(ns, `ns.getServerMaxRam(ns.args[0])`, null, ["home"]);
-
-        // Leave RAM for absent priority managers while existing batches drain naturally.
-        const priorityManagers = [
-            { name: 'remote-api-agent.js', enabled: true },
-            { name: 'corporation-manager.js', enabled: !options['disable-corporation'] && (resetInfo.currentNode === 3 || Number(unlockedSFs[3]) > 0) },
-            { name: 'health-manager.js', enabled: Number(unlockedSFs[4]) > 0 },
-            { name: 'infiltration-manager.js', enabled: !options['disable-infiltration'] && Number(unlockedSFs[4]) > 0 && homeRam >= 64 },
-        ];
-        let pending = 0;
-        const managerStatus = priorityManagers.map(manager => {
-            const script = getFilePath(manager.name), process = findScript(manager.name);
-            const ram = ns.fileExists(script, 'home') ? ns.getScriptRam(script, 'home') : 0;
-            const state = isScriptPaused(ns, manager.name) ? 'paused' : !manager.enabled ? 'locked-or-disabled' :
-                process ? 'running' : ram <= 0 ? 'missing' : ram + pending + 16 > homeRam ? 'needs-home-ram' : 'waiting-for-ram';
-            if (state === 'waiting-for-ram') pending += ram;
-            return { script: manager.name, state, ram, pid: process?.pid || null };
-        });
-        await ns.write(ramReserveFile, JSON.stringify({ ownerPid: ns.pid, expiresAt: Date.now() + 30000, ram: pending ? pending + 8 : 0 }), 'w');
-        await ns.write('tasks/automation-status.json', JSON.stringify({ at: Date.now(), ownerPid: ns.pid,
-            managers: managerStatus, processes: runningScripts.map(p => ({ script: p.filename, pid: p.pid })), priority: 'casino, completed BitNode, active graft, infiltration, faction work' }), 'w');
 
         try {
             if (!(4 in unlockedSFs)) {
@@ -548,9 +529,33 @@ export async function main(ns) {
         // See if home ram has improved. We hold back on launching certain scripts if we are low on home RAM
         homeRam = await getNsDataThroughFile(ns, `ns.getServerMaxRam(ns.args[0])`, null, ["home"]);
 
+        // Leave RAM for absent priority managers while existing batches drain naturally.
+        const priorityManagers = [
+            { name: 'remote-api-agent.js', enabled: true },
+            { name: 'corporation-manager.js', enabled: !options['disable-corporation'] && (resetInfo.currentNode === 3 || Number(unlockedSFs[3]) > 0) },
+            { name: 'health-manager.js', enabled: Number(unlockedSFs[4]) > 0 },
+            { name: 'infiltration-manager.js', enabled: !options['disable-infiltration'] && Number(unlockedSFs[4]) > 0 && homeRam >= 64 },
+            { name: 'work-for-factions.js', enabled: Number(unlockedSFs[4]) > 0 },
+        ];
+        let pending = 0;
+        const managerStatus = priorityManagers.map(manager => {
+            const script = getFilePath(manager.name), process = findScript(manager.name);
+            const ram = ns.fileExists(script, 'home') ? ns.getScriptRam(script, 'home') : 0;
+            const state = isScriptPaused(ns, manager.name) ? 'paused' : !manager.enabled ? 'locked-or-disabled' :
+                process ? 'running' : ram <= 0 ? 'missing' : ram + pending + 16 > homeRam ? 'needs-home-ram' : 'waiting-for-ram';
+            if (state === 'waiting-for-ram') pending += ram;
+            return { script: manager.name, state, ram, pid: process?.pid || null };
+        });
+        await ns.write(ramReserveFile, JSON.stringify({ ownerPid: ns.pid, expiresAt: Date.now() + 30000, ram: pending ? pending + 8 : 0 }), 'w');
+        await ns.write('tasks/automation-status.json', JSON.stringify({ at: Date.now(), ownerPid: ns.pid,
+            managers: managerStatus, processes: runningScripts.map(p => ({ script: p.filename, pid: p.pid })), priority: 'casino, completed BitNode, active graft, infiltration, faction work' }), 'w');
+
         // Maintain the Remote API mailbox after normal automation restarts.
         const remoteWorker = findScript('remote-api-agent.js');
-        const oldWorker = remoteWorker && !remoteWorker.args.some((arg, index) => arg === '--protocol-version' && remoteWorker.args[index + 1] === 2);
+        let workerHeartbeat;
+        try { workerHeartbeat = JSON.parse(ns.read(heartbeatFile)); } catch { }
+        const oldWorker = remoteWorker && (!remoteWorker.args.some((arg, index) => arg === '--protocol-version' && remoteWorker.args[index + 1] === 2) ||
+            (workerHeartbeat?.pid === remoteWorker.pid && workerHeartbeat.policy !== commandPolicyVersion));
         if (oldWorker) await killScript(ns, 'remote-api-agent.js', runningScripts, remoteWorker);
         if (!remoteWorker || oldWorker) {
             const worker = getFilePath('remote-api-agent.js');

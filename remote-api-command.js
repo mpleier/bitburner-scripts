@@ -1,6 +1,7 @@
 import { pauseFile } from './automation-control.js';
 export const commandFile = 'remote-control/request.json';
 export const heartbeatFile = 'remote-control/heartbeat.json';
+export const commandPolicyVersion = 3;
 export const resultFile = id => 'remote-control/results/' + id + '.json';
 export const managedScripts = ['autopilot.js','corporation-manager.js','darknet-manager.js','casino.js','daemon.js','grafting-manager.js','sleeve-expansion.js','health-manager.js','infiltration-manager.js','work-for-factions.js','bladeburner.js','stockmaster.js'];
 const queries = new Set(['getPlayer','getResetInfo','ps','scan','getServer','getScriptRam','cloud.getServerNames','getPurchasedServers','ls','singularity.getCurrentWork','singularity.getOwnedAugmentations','corporation.hasCorporation','corporation.getCorporation','corporation.getDivision','corporation.getOffice','corporation.getWarehouse','corporation.getProduct','corporation.getInvestmentOffer','corporation.getMaterial','sleeve.getNumSleeves','sleeve.getSleeve','gang.inGang','gang.getGangInformation','gang.getMemberNames','bladeburner.inBladeburner','bladeburner.getCurrentAction']);

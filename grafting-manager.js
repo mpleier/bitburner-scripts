@@ -1,5 +1,5 @@
 import { isScriptPaused } from './automation-control.js';
-import { activityBusy } from './activity-coordination.js';
+import { activityBusy, markActivitySupport } from './activity-coordination.js';
 import { transitionActive, transitionFile } from './progression-coordination.js';
 import { graftScore } from './automation-policy.js';
 
@@ -38,13 +38,14 @@ export function graftTick(ns, fraction = 0.25) {
   if (!choice) return { status: 'waiting' };
   if (player.city !== 'New Tokyo' && !ns.singularity.travelToCity('New Tokyo')) return { status: 'travel-failed' };
   // Recheck work after travel to avoid replacing a graft started by another script.
-  if (ns.singularity.getCurrentWork()?.type === 'GRAFTING') return { status: 'busy' };
+  if (activityBusy(ns) || ns.singularity.getCurrentWork()?.type === 'GRAFTING') return { status: 'busy' };
   if (ns.getPlayer().money < choice.cost + reserve) return { status: 'waiting' };
   return { status: ns.grafting.graftAugmentation(choice.name, false) ? 'started' : 'rejected', name: choice.name };
 }
 
 export async function main(ns) {
     if (isScriptPaused(ns, ns.getScriptName())) return;
+  await markActivitySupport(ns);
   ns.disableLog('ALL');
   if (ns.ps('home').some(process => process.filename === ns.getScriptName() && process.pid !== ns.pid)) return;
   while (true) {

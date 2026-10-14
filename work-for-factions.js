@@ -1,4 +1,4 @@
-import { activityBusy } from './activity-coordination.js';
+import { activityBusy, markActivitySupport } from './activity-coordination.js';
 import {
     instanceCount, getConfiguration, getNsDataThroughFile, getFilePath, getActiveSourceFiles, tryGetBitNodeMultipliers,
     formatDuration, formatMoney, formatNumberShort, disableLogs, log, getErrorInfo, tail
@@ -123,6 +123,7 @@ const breakToMainLoop = () => Date.now() > mainLoopStart + checkForNewPriorities
 
 /** @param {NS} ns */
 export async function main(ns) {
+    await markActivitySupport(ns);
     const runOptions = getConfiguration(ns, argsSchema);
     if (!runOptions || await instanceCount(ns) > 1) return; // Prevent multiple instances of this script from being started, even with different args.
     options = runOptions; // We don't set the global "options" until we're sure this is the only running instance

@@ -274,7 +274,7 @@ export async function main(ns) {
             const scout = ns.ps(host).find(p => p.filename === nodeFile);
             try {
               const status = JSON.parse(ns.read(`tasks/dnet-${encodeURIComponent(host)}.json`) || '{}');
-              if (isStalledScout(scout, status) || (scout && status.pid === scout.pid && status.version !== 3)) {
+              if (isStalledScout(scout, status) || (scout && status.pid === scout.pid && (status.version !== 3 || status.revision !== codeSignature))) {
                 ns.kill(scout.pid);
                 for (const process of ns.ps(host)) if ([lootFile, stasisFile, cacheFile, 'darknet-promote.js', 'darknet-migrate.js'].includes(process.filename)) ns.kill(process.pid);
                 note(`${host}:restart`, `${host}: refreshing an outdated or stalled scout.`);

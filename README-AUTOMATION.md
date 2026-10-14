@@ -26,7 +26,7 @@ With Node.js installed, run `npm test` for the local unit tests and `npm run che
 - **Darknet:** Probes the current network, reports server depth and password hints, attempts to buy TOR and `DarkscapeNavigator.exe` when Singularity access permits, and deploys scouts after authentication. It uses each server's password length and character format to skip impossible supplied guesses, and tries direct hint data when it fits those constraints. Authenticated scouts open cache files, run phishing attempts, reclaim blocked memory, inspect recent logs with non-destructive heartbleed peeks when Charisma allows, and continue probing as the network changes. Scouts at depth 2 or greater claim an available stasis link to keep a deep foothold reachable; the global link limit is respected.
 - **Credentials:** The scripts try exact words from `darknet-candidates.txt` and known entries from `darknet-passwords.txt` (`hostname=password`). Successful matches are saved as individual `darknet-passwords-HOST.txt` reports, synchronized back to home by scouts, and propagated to new scouts so one discovery can help the whole network. Do not add credentials you do not want stored in your game save.
 
-The storm-seed executable is never launched. Unrecognized puzzle models and passwords absent from supplied dictionaries may still require investigation.
+The storm-seed executable is never launched. All currently known password models have solver paths; network changes, Charisma requirements, and game version differences can postpone a solution.
 
 ## Included systems
 
@@ -45,16 +45,34 @@ Daemon starts the new progression workers automatically when their access and RA
 
 The upstream suite provides the main hacking daemon plus helpers for root access and server management, companies and factions, gangs, sleeves, Bladeburner, stocks, Hacknet, Stanek, Go, coding contracts, and augmentation/reset workflows. Mechanics locked behind Source Files, API access, money, or player progress remain idle until they become available.
 
-The corporation manager is based on the supplied optimizer's Agriculture-first, Restaurant-second plan. The source used older method names; this version uses the current API (`purchaseUnlock`, `getUnlockCost`, and `canCreateCorporation(true)`). It has not been run inside a Bitburner save, so check the in-game log on first launch.
+The corporation manager is based on the supplied optimizer's Agriculture-first, Restaurant-second plan. The source used older method names; this version uses the current API (`purchaseUnlock`, `getUnlockCost`, and `canCreateCorporation(true)`). The corporation manager has been run in the connected save. Its calculations and other-division maintenance are also covered by mocked API tests.
 
-## Manual or partial areas
+## Complete automation coverage
 
-- **Darknet passwords:** Supported models are solved automatically. Unknown models and incomplete dictionaries remain partial. Stock promotion is not automatic because it requires TIX access and a deliberate stock selection. `STORM_SEED.exe` is never launched. The automation avoids freezing servers because that removes their RAM and experience benefits.
-- **Corporations:** Agriculture, Chemical, and Restaurant are managed. Upgrade returns are estimates, and arbitrary industries and all share-trading strategies are outside this plan.
-- **Sleeves:** Tasks and augmentations are managed with Sleeve access. Additional purchases and memory upgrades wait for BitNode 10 as required by the game.
-- **Grafting and infiltration:** Grafting is automated with access and sufficient unreserved cash. Infiltration minigames remain manual.
-- **Singularity-locked play:** Without Singularity access (BN4/SF4), faction work, augmentation purchases/installs, and BitNode progression need manual actions. Other managers can still run when their own unlocks are met.
-- **Setup and choices:** You still need to import the scripts, start `autopilot.js`, and review darknet candidate words. Review autopilot's automatic augmentation and BitNode reset options before running unattended.
+Start `autopilot.js` to supervise the available systems. No tails open automatically.
+
+| System | Automatic work | Waits for |
+| --- | --- | --- |
+| Casino | Highest-priority earnings and restart workflow | Eligibility, seed cash, a supported game UI |
+| Hacking | Rooting, batching, servers, programs, RAM and cores | Skill, cash and available RAM |
+| Factions and companies | Invitations, jobs, reputation, augmentation purchases and installs | Singularity access and progression |
+| BitNodes | Detect completion and advance using autopilot's configured sequence | Singularity access and completion requirements |
+| Corporation | Agriculture/Chemical/Restaurant growth; upkeep, recipes, sales, research and managed products in other existing industries | Corporation API, funding and reserves |
+| Dark Net | All 25 known model paths, dictionaries, scouts, caches, phishing, stasis, air-gap migration and stock promotion | Navigator, Charisma, direct connections and RAM |
+| Infiltration | Enter a suitable location, solve all eight puzzle types, collect money or faction reputation | Singularity, compatible UI, healthy HP, market demand, no graft/Black Op |
+| Health | Hospital recovery with reserve checks | Singularity and enough unreserved cash |
+| Gang, sleeves, Bladeburner | Existing workers plus supervised recovery; sleeve purchases/memory in BN10 | Their API and gameplay unlocks |
+| Stocks, Hacknet, Stanek, Go, contracts | Existing managers, forecasts, upgrades, charging, Go play and contract solving | Relevant access, money and RAM |
+| Grafting | Beneficial graft selection and prerequisites | Grafting/Singularity access and budget |
+| Recovery | Restart missing managers, preserve pause flags, reserve home RAM for pending priority managers | Enough total home RAM |
+
+Infiltration uses the company entry callback, current UI stage handlers, and normal reward buttons. A complete run at SysCore Securities has been verified in the connected save, including collection of the cash reward. It cancels an unknown model instead of sending synthetic keyboard events, which the game rejects. It yields to casino and completed BitNodes, preserves grafts and Black Ops, pauses competing focus work during a run, and resumes that work afterward. Use autopilot's `--disable-infiltration` option to leave it manual. `infiltration-manager.js --money-only` always takes cash; its default trades for the previously worked faction when that selection is available. Repeated runs wait when market demand falls below 65%.
+
+Dark Net RMS and divisibility solvers reconstruct passwords from feedback; packet captures are intersected across attempts; hill searches verify the exact peak; labyrinth scouts use their own persistent position and backtrack through dead ends. Built-in dictionaries do not depend on manually supplying candidate files. Scouts refresh when their deployed code changes. Migration only targets populated frontier scouts and preserves stasis/story servers. Stock promotion raises volatility and only targets a currently held favorable position using fresh 4S forecasts; it waits without reliable signals.
+
+Game unlocks are real limits: scripts cannot invoke locked APIs before the required Source Files or BitNodes are available. The first import and startup still require setup. Unsupported future UI/API changes are reported and retried gracefully. Custom corporation products are retained; only manager-created products are retired. Storm Seed and server freezing are excluded from normal progression because they destroy useful network resources.
+
+Runtime status is available in `tasks/automation-status.json` and `tasks/infiltration-status.json`. The Remote API worker supports the read-only `automation.status` command. Infiltration reports its current level while running and its outcome afterward; it waits for older focus workers to be refreshed before taking control of the UI. Corporation logic remains in the standalone manager; autopilot only launches it.
 
 ## Files
 
@@ -76,3 +94,7 @@ Remote `stop` now persists a pause flag under `remote-control/paused/`; autopilo
 ### Corporation cash recovery
 
 The corporation manager makes growth decisions once per full corporation cycle, keeps two cycles of input/salary expenses in reserve, and suspends boost purchases and dividends during cash recovery. Office upkeep shares a 2% cash allowance capped at 25% of operating profit per cycle; parties are sized to the morale shortfall. Offices with at least six employees can temporarily use interns to recover morale and energy without paid upkeep while preserving production roles. Existing MP price multipliers survive manager restarts.
+
+### Supervisor and worker updates
+
+Autopilot reserves additional home RAM while priority managers or the faction worker are absent, so hacking batches can drain naturally and leave room for them. Infiltration also retains the paused faction worker's RAM allowance while it owns the UI. Daemon rechecks supervised managers every 30 seconds, with at least 60 seconds between launch attempts. Explicit pause flags and disabled scripts are honored. API workers keep protocol version 2 and publish command-policy version 3; autopilot refreshes an older policy automatically. Activity locks expire when their owner disappears, and augmentation installs wait for an active infiltration.

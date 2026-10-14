@@ -34,7 +34,7 @@ export function infiltrationInput(stage) {
     return { unsupported: true };
   }
   if (Number.isFinite(stage.guardingEndTime) && Number.isInteger(stage.phase))
-    return stage.phase === 1 ? { key: ' ' } : stage.phase === 0 ? { wait: true } : { unsupported: true };
+    return stage.phase === 1 ? { key: ' ' } : stage.phase === 0 ? { wait: true } : { unsupported: true, missedWindow: true };
   if (stage.wiresToCut instanceof Set && Array.isArray(stage.cutWires)) {
     const index = [...stage.wiresToCut].find(i => !stage.cutWires[i]);
     return Number.isInteger(index) ? { key: String(index + 1) } : { unsupported: true };
@@ -74,4 +74,36 @@ export function selectRewardFaction(document, faction) {
     }
   }
   return false;
+}
+
+/** Invoke the game's company-entry callback; native scripted clicks are ignored there. */
+export function enterInfiltration(button) {
+  if (!button || button.disabled || !/^Infiltrate Company$/i.test(button.textContent.trim())) return false;
+  const propsKey = Object.keys(button).find(key => key.startsWith('__reactProps$'));
+  const fiberKey = Object.keys(button).find(key => key.startsWith('__reactFiber$'));
+  const onClick = button[propsKey]?.onClick || button[fiberKey]?.memoizedProps?.onClick;
+  if (typeof onClick !== 'function') return false;
+  onClick({ isTrusted: true, target: button, currentTarget: button, preventDefault() {}, stopPropagation() {} });
+  return true;
+}
+
+/** Limited game UI diagnostics for compatibility failures; omit model values and event handlers. */
+export function infiltrationUiDetails(document) {
+  const nodes = [...document.querySelectorAll('h4,h5,button')];
+  const samples = [];
+  for (const node of nodes.filter(value => /infiltrat|start|cancel/i.test(value.textContent || '')).slice(0, 8)) {
+    const keys = Object.keys(node).filter(key => /react/i.test(key));
+    const ancestry = [];
+    const fiberKey = keys.find(key => key.startsWith('__reactFiber$') || key.startsWith('__reactInternalInstance$'));
+    for (let fiber = fiberKey && node[fiberKey], depth = 0; fiber && depth < 30; fiber = fiber.return, depth++) {
+      const props = fiber.memoizedProps;
+      if (props?.state || props?.stage) ancestry.push({ component: fiber.type?.name || String(fiber.type).slice(0,40),
+        props: Object.keys(props).slice(0,20), stateKeys: props.state ? Object.keys(props.state).slice(0,30) : null,
+        stateType: props.state?.constructor?.name, maxLevel: props.state?.maxLevel,
+        startType: typeof props.state?.startInfiltration, cancelType: typeof props.state?.cancel, onKeyType: typeof props.state?.stage?.onKey });
+    }
+    samples.push({ text: (node.textContent || '').slice(0,120), keys, ancestry });
+  }
+  return { headings: [...document.querySelectorAll('h2,h3,h4,h5')].map(node => node.textContent.slice(0,100)).slice(0,20),
+    buttons: [...document.querySelectorAll('button')].map(node => ({ text: node.textContent.trim().slice(0,100), disabled: !!node.disabled })).slice(-30), samples };
 }

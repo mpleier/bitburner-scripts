@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { infiltrationInput, chooseInfiltration, findInfiltrationState, selectRewardFaction, enterInfiltration } from '../infiltration-solvers.js';
+import { infiltrationInput, chooseInfiltration, findInfiltrationState, selectRewardFaction, selectedRewardFaction, enterInfiltration, marketRecoveryDelay, recordInfiltrationOutcome } from '../infiltration-solvers.js';
 import { playInfiltration } from '../infiltration-manager.js';
 import { activityBusy, claimActivity, releaseActivity, pendingRam, markActivitySupport, compatibleFocusWorkers } from '../activity-coordination.js';
 import { needsHealing } from '../health-manager.js';
@@ -33,6 +33,31 @@ test('infiltration selection rejects difficult locations and ranks rewards per f
   assert.equal(chooseInfiltration([info('danger',2,1e12,1),info('slow',1,100,30),info('easy',1,100,5)],'Sector-12').location.name,'easy');
   assert.equal(chooseInfiltration([info('danger',2,1e12,1)],'Sector-12'),null);
 });
+test('infiltration selection learns completion time, cooldowns, travel limits and reputation value', () => {
+  const info = (name, cash, rep, city='Sector-12') => ({location:{name,city},difficulty:1,reward:{sellCash:cash,tradeRep:rep},maxClearanceLevel:10});
+  const locations=[info('cash',1000,1),info('rep',100,100),info('travel',1e6,1e6,'Aevum')];
+  assert.equal(chooseInfiltration(locations,'Sector-12',1.5,{canTravel:false}).location.name,'cash');
+  assert.equal(chooseInfiltration(locations,'Sector-12',1.5,{canTravel:false,reputation:true}).location.name,'rep');
+  assert.equal(chooseInfiltration(locations,'Sector-12',1.5,{canTravel:false,history:{cash:{retryAt:200}},now:100}).location.name,'rep');
+  assert.equal(chooseInfiltration(locations.slice(0,2),'Sector-12',1.5,{interval:1000,history:{cash:{durationMs:1000000},rep:{durationMs:1000}}}).location.name,'rep');
+});
+test('market recovery waits follow global demand decay and handle clamped demand',()=>{
+  assert.equal(marketRecoveryDelay(0.8),0);
+  assert.equal(marketRecoveryDelay(0),60000);
+  const delay=marketRecoveryDelay(0.2);
+  const recovered=1-(1-0.2)*Math.exp(-0.00004*delay);
+  assert.ok(recovered >= 2/3 && recovered < 0.667);
+});
+test('failed locations back off while successful runs reset streaks and learn duration',()=>{
+  const first=recordInfiltrationOutcome({}, {status:'failed'},100);
+  assert.equal(first.retryAt,30100);
+  const second=recordInfiltrationOutcome(first,{status:'missed-window'},200);
+  assert.equal(second.retryAt,60200);
+  assert.deepEqual(recordInfiltrationOutcome(second,{status:'interrupted'},300),second);
+  const success=recordInfiltrationOutcome(second,{status:'completed',durationMs:10000},400);
+  assert.equal(success.retryAt,0);assert.equal(success.failureStreak,0);assert.equal(success.successes,1);
+  assert.equal(recordInfiltrationOutcome(success,{status:'completed',durationMs:20000},500).durationMs,13000);
+});
 function fakeDocument(state, buttons = []) {
   const node = { '__reactFiber$test': { memoizedProps:{state},return:null } };
   return { body:{textContent:''},querySelectorAll:selector => selector === 'button' ? buttons : selector === '[role="combobox"]' ? [] : [node] };
@@ -44,6 +69,33 @@ test('the UI adapter locates only a valid infiltration model and routes faction 
   let value;
   const document={querySelectorAll:()=>[{'__reactFiber$x':{memoizedProps:{value:'none',onChange:event=>value=event.target.value}}}]};
   assert.equal(selectRewardFaction(document,'CyberSec'),true); assert.equal(value,'CyberSec');
+});
+test('reward faction selection rejects factions absent from the offered menu',()=>{
+  const props={value:'NiteSec',children:[{props:{value:'NiteSec'}}],onChange(){throw new Error('must not select absent faction');}};
+  const document={querySelectorAll:()=>[{'__reactFiber$x':{memoizedProps:props}}]};
+  assert.equal(selectRewardFaction(document,'CyberSec'),false);
+  assert.equal(selectedRewardFaction(document,'CyberSec'),false);
+  assert.equal(selectedRewardFaction(document,'NiteSec'),true);
+});
+test('victory falls back to cash when the requested faction cannot be verified',async()=>{
+  let ended=false, selected='';
+  const model={maxLevel:3,startInfiltration(){},cancel(){ended=true;},results:'',stage:stage({})};
+  const sell={textContent:'Sell for $100',click(){selected='money';ended=true;}};
+  const trade={textContent:'Trade for reputation',click(){selected='wrong-faction';ended=true;}};
+  const document=fakeDocument(model,[sell,trade]);document.body.textContent='Infiltration successful!';
+  const query=document.querySelectorAll;document.querySelectorAll=selector=>ended?[]:query(selector);
+  const files=new Map(),ns={pid:1,read:f=>files.get(f)||'',ps:()=>[],isRunning:()=>true,write:async(f,v)=>files.set(f,v),sleep:async()=>{}};
+  const result=await playInfiltration(ns,document,model,'CyberSec');
+  assert.equal(result.status,'completed');assert.equal(result.reward,'money');assert.equal(selected,'money');
+});
+test('low demand cancels entry and returns a recovery wait without starting puzzles',async()=>{
+  let cancelled=false;
+  const model={maxLevel:3,gameStartTimestamp:-1,startInfiltration(){},cancel(){cancelled=true;},results:'',stage:stage({})};
+  const document=fakeDocument(model,[{textContent:'Start',click(){throw new Error('must wait for demand');}}]);
+  document.body.textContent='Market demand: 20.00%';
+  const files=new Map(),ns={pid:1,read:f=>files.get(f)||'',ps:()=>[],isRunning:()=>true,write:async(f,v)=>files.set(f,v),sleep:async()=>{}};
+  const result=await playInfiltration(ns,document,model);
+  assert.equal(result.status,'market-cooldown');assert.equal(cancelled,true);assert.ok(result.retryAfter>20000);
 });
 test('infiltration entry calls only the enabled company-entry handler', () => {
   let entered=false;
@@ -202,5 +254,6 @@ test('divisibility solvers confirm a complete factor product without scanning un
 
 test('infiltration combat cleanup converts the void API result into a readable receipt', async () => {
   const source=await readFile(new URL('../infiltration-manager.js',import.meta.url),'utf8');
-  assert.match(source,/stopBladeburnerAction\(\), true/);
+  assert.match(source,/stopBladeburnerAction\(\), "stopped"/);
+  assert.match(source,/if \(combat === 'blackop-active'\)/);
 });

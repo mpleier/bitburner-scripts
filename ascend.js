@@ -1,3 +1,5 @@
+import {achievementActionAllowed} from './achievement-policy.js';
+import { prepareResetBackup } from './reset-backup.js';
 import { beginTransition, endTransition } from './progression-coordination.js';
 import {
     log, getConfiguration, getFilePath, runCommand, waitForProcessToComplete, getNsDataThroughFile,
@@ -41,7 +43,7 @@ export async function main(ns) {
         log(ns, "INFO: The --prioritize-augmentations flag is deprecated, as this is now the default behaviour. Use --prioritize-home-ram to get back the old behaviour.")
 
     // Kill every script except this one, since it can interfere with out spending
-    let pid = await runCommand(ns, `ns.ps().filter(s => s.filename != ns.args[0]).forEach(s => ns.kill(s.pid));`,
+    let pid = await runCommand(ns, `ns.ps().filter(s => s.pid!==ns.pid && s.filename!=ns.args[0] && !s.filename.includes('remote-api-agent') && !s.filename.startsWith('remote-control/')).forEach(s => ns.kill(s.pid));`,
         '/Temp/kill-everything-but.js', [ns.getScriptName()]);
     await waitForProcessToComplete(ns, pid, true); // Wait for the script to shut down, indicating it has shut down other scripts
 
@@ -82,7 +84,7 @@ export async function main(ns) {
 
     // STEP 3: (SF13) STANEK'S GIFT
     // There is now an API to accept stanek's gift without resorting to exploits. We must do this before installing augs for the first time
-    if (13 in dictSourceFiles) {
+    if (13 in dictSourceFiles && achievementActionAllowed(ns,"stanek")) {
         // By feature request: Auto-skip stanek in BN8 (requires a separate API check to get current BN)
         let isInBn8 = 8 === (await getNsDataThroughFile(ns, `ns.getResetInfo()`)).currentNode;
 
@@ -128,7 +130,7 @@ export async function main(ns) {
     log(ns, 'Checking on Stock Market upgrades...', true, 'info');
     await getNsDataThroughFile(ns, 'ns.stock.purchaseWseAccount()');
     let hasStockApi = await getNsDataThroughFile(ns, 'ns.stock.purchaseTixApi()');
-    if (hasStockApi) {
+    if (hasStockApi && achievementActionAllowed(ns,"fourSigma")) {
         await getNsDataThroughFile(ns, 'ns.stock.purchase4SMarketData()');
         await getNsDataThroughFile(ns, 'ns.stock.purchase4SMarketDataTixApi()');
     }
@@ -149,7 +151,7 @@ export async function main(ns) {
 
     // STEP 8: Buy whatever home CPU upgrades we can afford
     log(ns, 'Try Upgrade Home Cores...', true, 'info');
-    pid = await runCommand(ns, `while(ns.singularity.upgradeHomeCores()); { await ns.sleep(10); }`, '/Temp/upgrade-home-ram.js');
+    pid = await runCommand(ns, `while((${achievementActionAllowed.toString()})(ns,"homeCores")&&ns.singularity.upgradeHomeCores()) { await ns.sleep(10); }`, '/Temp/upgrade-home-ram.js');
     await waitForProcessToComplete(ns, pid, true); // Wait for the script to shut down, indicating it has bought all it can.
 
     // STEP 9: Join every faction we've been invited to (gives a little INT XP)
@@ -175,16 +177,6 @@ export async function main(ns) {
         lastMoney = money;
     }
 
-    // TODO STEP 11: Accept any outstanding faction invitations, and claim our +1 free favour if available.
-    /*
-    const factionInvites = ns.singularity.checkFactionInvitations()
-    if (factionInvites.length > 0)
-        factionInvites.forEach(factionName => ns.singularity.joinFaction(factionName));
-    if (ns.singularity.exportGameBonus())
-        ns.singularity.exportGame();
-    // TODO: No way to close the pop-up save dialog, which is a deal-breaker for me.
-    */
-
     // STEP 4 REDUX: If somehow we have money left over and can afford some junk augs that weren't on our desired list, grab them too
     log(ns, 'Seeing if we can afford any other augmentations...', true, 'info');
     facmanArgs.push('--stat-desired', '_'); // Means buy any aug with any stats
@@ -197,6 +189,7 @@ export async function main(ns) {
 
     // FINALLY: If configured, soft reset
     if (options.reset || options['install-augmentations']) {
+        await prepareResetBackup(ns,'augmentation reset');
         log(ns, '\nCatch you on the flippity-flip\n', true, 'success');
         await ns.sleep(1000); // Pause for effect?
         const resetScript = options['on-reset-script'] ??

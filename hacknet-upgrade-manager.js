@@ -1,4 +1,9 @@
-import { getConfiguration, disableLogs, formatDuration, formatMoney, } from './helpers.js'
+import { achievementActionAllowed } from './achievement-policy.js';
+import { isScriptPaused } from './automation-control.js';
+import { registerAutomation, automationHeartbeat, maintenanceRequested } from './runtime-policy.js';
+import { hacknetProduction, hacknetServerMode, hacknetOptionsError } from './hacknet-policy.js';
+import { claimSpending } from './spending-policy.js';
+import { getConfiguration, disableLogs, formatDuration, formatMoney, tryGetBitNodeMultipliers, } from './helpers.js'
 
 let haveHacknetServers = true; // Cached flag after detecting whether we do (or don't) have hacknet servers
 const argsSchema = [
@@ -20,12 +25,13 @@ export function autocomplete(data, _) {
 
 /** @param {NS} ns **/
 export async function main(ns) {
+    if(isScriptPaused(ns,ns.getScriptName()))return;
     const options = getConfiguration(ns, argsSchema);
     if (!options) return; // Invalid options, or ran in --help mode.
     const continuous = options.c || options.continuous;
     const interval = options.interval;
     let maxSpend = options["max-spend"];
-    let maxPayoffTime = options['time'] || options['max-payoff-time'];
+    let maxPayoffTime = options['time'] ?? options['max-payoff-time'];
     // A little string parsing to be more user friendly
     if (maxPayoffTime && String(maxPayoffTime).endsWith("m"))
         maxPayoffTime = Number.parseFloat(maxPayoffTime.replace("m", "")) * 60
@@ -33,11 +39,18 @@ export async function main(ns) {
         maxPayoffTime = Number.parseFloat(maxPayoffTime.replace("h", "")) * 3600
     else
         maxPayoffTime = Number.parseFloat(maxPayoffTime);
+    const invalid=hacknetOptionsError(options,maxPayoffTime);if(invalid)return ns.tprint('Hacknet: '+invalid);
+    options.productionMultiplier=(await tryGetBitNodeMultipliers(ns)).HacknetNodeMoney;
+    registerAutomation(ns);
+    haveHacknetServers=hacknetServerMode(ns.getResetInfo(),ns.hacknet.numNodes()?ns.hacknet.getNodeStats(0):null);
     disableLogs(ns, ['sleep', 'getServerUsedRam', 'getServerMoneyAvailable']);
     setStatus(ns, `Starting hacknet-upgrade-manager with purchase payoff time limit of ${formatDuration(maxPayoffTime * 1000)} and ` +
         (maxSpend == Number.MAX_VALUE ? 'no spending limit' : `a spend limit of ${formatMoney(maxSpend)}`) +
         `. Current fleet: ${ns.hacknet.numNodes()} nodes...`);
     do {
+        if(isScriptPaused(ns,ns.getScriptName()))return;
+        automationHeartbeat(ns);
+        if(maintenanceRequested(ns)){if(!continuous)return;await ns.sleep(Math.max(100,interval));continue;}
         try {
             const moneySpent = upgradeHacknet(ns, maxSpend, maxPayoffTime, options);
             // Using this method, we cannot know for sure that we don't have hacknet servers until we have purchased one
@@ -64,87 +77,26 @@ function setStatus(ns, logMessage) {
 
 // Will buy the most effective hacknet upgrade, so long as it will pay for itself in the next {payoffTimeSeconds} seconds.
 /** @param {NS} ns **/
-export function upgradeHacknet(ns, maxSpend, maxPayoffTimeSeconds = 3600 /* 3600 sec == 1 hour */, options) {
-    const currentHacknetMult = ns.getPlayer().mults.hacknet_node_money;
-    // Get the lowest cache level, we do not consider upgrading the cache level of servers above this until all have the same cache level
-    const minCacheLevel = [...Array(ns.hacknet.numNodes()).keys()].reduce((min, i) => Math.min(min, ns.hacknet.getNodeStats(i).cache), Number.MAX_VALUE);
-    // Note: Formulas API has a hashGainRate which should agree with these calcs, but this way they're available even without the formulas API
-    const upgrades = [{ name: "none", cost: 0 }, {
-        name: "level", upgrade: ns.hacknet.upgradeLevel, cost: i => ns.hacknet.getLevelUpgradeCost(i, 1), nextValue: nodeStats => nodeStats.level + 1,
-        addedProduction: nodeStats => nodeStats.production * ((nodeStats.level + 1) / nodeStats.level - 1)
-    }, {
-        name: "ram", upgrade: ns.hacknet.upgradeRam, cost: i => ns.hacknet.getRamUpgradeCost(i, 1), nextValue: nodeStats => nodeStats.ram * 2,
-        addedProduction: nodeStats => nodeStats.production * 0.07
-    }, {
-        name: "cores", upgrade: ns.hacknet.upgradeCore, cost: i => ns.hacknet.getCoreUpgradeCost(i, 1), nextValue: nodeStats => nodeStats.cores + 1,
-        addedProduction: nodeStats => nodeStats.production * ((nodeStats.cores + 5) / (nodeStats.cores + 4) - 1)
-    }, {
-        name: "cache", upgrade: ns.hacknet.upgradeCache, cost: i => ns.hacknet.getCacheUpgradeCost(i, 1), nextValue: nodeStats => nodeStats.cache + 1,
-        addedProduction: nodeStats => nodeStats.cache > minCacheLevel || !haveHacknetServers ? 0 : nodeStats.production * 0.01 / nodeStats.cache // Note: Does not actually give production, but it has "worth" to us so we can buy more things
-    }];
-    // Find the best upgrade we can make to an existing node
-    let nodeToUpgrade = -1;
-    let bestUpgrade;
-    let bestUpgradePayoff = 0; // Hashes per second per dollar spent. Bigger is better.
-    let cost = 0;
-    let upgradedValue = 0;
-    let worstNodeProduction = Number.MAX_VALUE; // Used to how productive a newly purchased node might be
-    for (var i = 0; i < ns.hacknet.numNodes(); i++) {
-        let nodeStats = ns.hacknet.getNodeStats(i);
-        if (haveHacknetServers) { // When a hacknet server runs scripts, nodeStats.production lags behind what it should be for current ram usage. Get the "raw" rate
-            try { nodeStats.production = ns.formulas.hacknetServers.hashGainRate(nodeStats.level, 0, nodeStats.ram, nodeStats.cores, currentHacknetMult); }
-            catch { /* If we do not have the formulas API yet, we cannot account for this and must simply fall-back to using the production reported by the node */ }
-        }
-        worstNodeProduction = Math.min(worstNodeProduction, nodeStats.production);
-        for (let up = 1; up < upgrades.length; up++) {
-            let currentUpgradeCost = upgrades[up].cost(i);
-            let payoff = upgrades[up].addedProduction(nodeStats) / currentUpgradeCost; // Production (Hashes per second) per dollar spent
-            if (payoff > bestUpgradePayoff) {
-                nodeToUpgrade = i;
-                bestUpgrade = upgrades[up];
-                bestUpgradePayoff = payoff;
-                cost = currentUpgradeCost;
-                upgradedValue = upgrades[up].nextValue(nodeStats);
-            }
-        }
-    }
-    // Compare this to the cost of adding a new node. This is an imperfect science. We are paying to unlock the ability to buy all the same upgrades our
-    // other nodes have - all of which have been deemed worthwhile. Not knowing the sum total that will have to be spent to reach that same production,
-    // the "most optimistic" case is to treat "price" of all that production to be just the cost of this server, but this is **very** optimistic.
-    // In practice, the cost of new hacknodes scales steeply enough that this should come close to being true (cost of server >> sum of cost of upgrades)
-    let newNodeCost = ns.hacknet.getPurchaseNodeCost();
-    let newNodePayoff = ns.hacknet.numNodes() == ns.hacknet.maxNumNodes() ? 0 : worstNodeProduction / newNodeCost;
-    let shouldBuyNewNode = newNodePayoff > bestUpgradePayoff;
-    if (newNodePayoff == 0 && bestUpgradePayoff == 0) {
-        setStatus(ns, `All upgrades have no value (is hashNet income disabled in this BN?)`);
-        return false; // As long as maxSpend doesn't change, we will never purchase another upgrade
-    }
-    // If specified, only buy upgrades that will pay for themselves in {payoffTimeSeconds}.
-    const hashDollarValue = haveHacknetServers ? 2.5e5 : 1; // Dollar value of one hash-per-second (0.25m dollars per production).
-    let payoffTimeSeconds = 1 / (hashDollarValue * (shouldBuyNewNode ? newNodePayoff : bestUpgradePayoff));
-    if (shouldBuyNewNode) cost = newNodeCost;
-
-    // Prepare info about the next uprade. Whether we end up purchasing or not, we will display this info.
-    let strPurchase = (shouldBuyNewNode ? `a new node "hacknet-node-${ns.hacknet.numNodes()}"` :
-        `hacknet-node-${nodeToUpgrade} ${bestUpgrade.name} ${upgradedValue}`) + ` for ${formatMoney(cost)}`;
-    let strPayoff = `production ${((shouldBuyNewNode ? newNodePayoff : bestUpgradePayoff) * cost).toPrecision(3)} payoff time: ${formatDuration(1000 * payoffTimeSeconds)}`
-    if (cost > maxSpend) {
-        setStatus(ns, `The next best purchase would be ${strPurchase}, but the cost exceeds the spending limit (${formatMoney(maxSpend)})`);
-        return false; // Shut-down. As long as maxSpend doesn't change, we will never purchase another upgrade
-    }
-    if (payoffTimeSeconds > maxPayoffTimeSeconds) {
-        setStatus(ns, `The next best purchase would be ${strPurchase}, but the ${strPayoff} is worse than the limit (${formatDuration(1000 * maxPayoffTimeSeconds)})`);
-        return false; // Shut-down. As long as maxPayoffTimeSeconds doesn't change, we will never purchase another upgrade
-    }
-    const reserve = (options['reserve'] != null ? options['reserve'] : Number(ns.read("reserve.txt") || 0));
-    const playerMoney = ns.getPlayer().money;
-    if (cost > playerMoney - reserve) {
-        setStatus(ns, `The next best purchase would be ${strPurchase}, but the cost exceeds the our ` +
-            `current available funds` + (reserve == 0 ? '.' : ` (after reserving ${formatMoney(reserve)}).`));
-        return 0; //
-    }
-    let success = shouldBuyNewNode ? ns.hacknet.purchaseNode() !== -1 : bestUpgrade.upgrade(nodeToUpgrade, 1);
-    if (success && options.toast) ns.toast(`Purchased ${strPurchase}`, 'success');
-    setStatus(ns, success ? `Purchased ${strPurchase} with ${strPayoff}` : `Insufficient funds to purchase the next best upgrade: ${strPurchase}`);
-    return success ? cost : 0;
+export function upgradeHacknet(ns,maxSpend,maxPayoffTimeSeconds=3600,options={}) {
+ if(isScriptPaused(ns,ns.getScriptName())||maintenanceRequested(ns)||!achievementActionAllowed(ns,'hacknetExpense'))return 0;
+ const count=ns.hacknet.numNodes(),servers=hacknetServerMode(ns.getResetInfo(),count?ns.hacknet.getNodeStats(0):null);
+ const multiplier=ns.getPlayer().mults.hacknet_node_money*(options.productionMultiplier??1),hashValue=servers?250000:1;
+ const reserve=Math.max(0,Number(options.reserve??ns.read('reserve.txt'))||0),funds=Math.min(maxSpend,ns.getPlayer().money-reserve);
+ const candidates=[];
+ const add=(candidate,gain)=>{if(Number.isFinite(candidate.cost)&&candidate.cost>0&&Number.isFinite(gain)&&gain>0){candidate.payoff=candidate.cost/(gain*hashValue);candidate.gain=gain;candidates.push(candidate);}};
+ for(let i=0;i<count;i++){
+  const stats=ns.hacknet.getNodeStats(i),current=hacknetProduction(stats,servers,multiplier);
+  add({kind:'level',index:i,cost:ns.hacknet.getLevelUpgradeCost(i,1)},hacknetProduction({...stats,level:stats.level+1},servers,multiplier)-current);
+  add({kind:'ram',index:i,cost:ns.hacknet.getRamUpgradeCost(i,1)},hacknetProduction({...stats,ram:stats.ram*2},servers,multiplier)-current);
+  add({kind:'cores',index:i,cost:ns.hacknet.getCoreUpgradeCost(i,1)},hacknetProduction({...stats,cores:stats.cores+1},servers,multiplier)-current);
+ }
+ if(count<ns.hacknet.maxNumNodes())add({kind:'node',cost:ns.hacknet.getPurchaseNodeCost()},hacknetProduction({level:1,ram:1,cores:1,ramUsed:0},servers,multiplier));
+ const useful=candidates.filter(c=>c.payoff<=maxPayoffTimeSeconds).sort((a,b)=>a.payoff-b.payoff);
+ const best=useful.find(c=>c.cost<=funds);
+ if(!best){setStatus(ns,useful.length?'Hacknet waiting for funds or spending limit.':'No production upgrades meet the payoff limit.');return useful.some(c=>c.cost<=maxSpend)?0:false;}
+ if(!claimSpending(ns,'hacknet',best.cost))return 0;
+ const success=best.kind==='node'?ns.hacknet.purchaseNode()>=0:best.kind==='level'?ns.hacknet.upgradeLevel(best.index,1):best.kind==='ram'?ns.hacknet.upgradeRam(best.index,1):ns.hacknet.upgradeCore(best.index,1);
+ const message=success?`Purchased Hacknet ${best.kind} for ${formatMoney(best.cost)}; payoff ${formatDuration(best.payoff*1000)}`:'Hacknet purchase failed; will recheck costs and funds.';
+ setStatus(ns,message);if(success&&options.toast)ns.toast(message,'success');
+ return success?best.cost:0;
 }

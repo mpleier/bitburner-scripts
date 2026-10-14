@@ -1,79 +1,40 @@
-import { treasuryPolicy, recoveryJobCounts, priorSaleMultiplier, partySpendPerEmployee } from './corporation-policy.js';
+import {registerAutomation,automationHeartbeat,maintenanceRequested} from './runtime-policy.js';
+import {achievementActionAllowed} from './achievement-policy.js';
+import { claimSpending } from './spending-policy.js';
+import { treasuryPolicy, recoveryJobCounts, priorSaleMultiplier, partySpendPerEmployee, materialSalePrice, outputBacklog, boostPurchaseBudget, productPriceStep, researchAffordable, salesPotential, formulaSalePrice, inferProductMarkup, supportAdvertLimit } from './corporation-policy.js';
+import { researchParents, extraResearch, productInvestment, investmentDecision, rescueShareIssue, shareSale, shareBuyback, recipeInputPlan } from './corporation-lifecycle.js';
+import { getNsDataThroughFile } from './helpers.js';
 import { isScriptPaused } from './automation-control.js';
-/**
- * Corporation automation for the Bitburner 3.x Corporation API.
- *
- * Strategy:
- *   - Agriculture, expanded to all six cities; sells Plants and Food with Market-TA.II.
- *   - Chemical division with a quality loop (Agri Plants -> Chem, Chem Chemicals
- *     -> Agri). Gated on funds and on Hi-Tech R&D Lab.
- *   - Restaurant, product-based; develops Apex Dining products. Fed by
- *     Agriculture's Food export so its avgQlt isn't pinned at 1.
- *   - Round 1 investment only, when the cash meaningfully exceeds current funds.
- *   - Late game: IPO with no shares issued, pay dividends on the tiered rate.
- *   - Hacknet: buy and level servers, spend hashes on a rotating plan.
- *
- * Source-verified against bitburner-src/dev/src:
- *   - Seed money is free in BN3 but disallowed outside BN3 (with SF3 you must
- *     self-fund for $150B from the player's wallet). createCorporation returns
- *     { success, message? } rather than a boolean — success is confirmed by
- *     re-checking hasCorporation() after the call.
- *   - getInvestmentOffer returns round: fundingRound + 1 (1-indexed). Round 1
- *     pays 0.3x valuation for 10% of initialShares. Rounds 2-4 are much worse
- *     (0.057-0.080 per 1% given vs 0.300 for round 1). Only round 1 is accepted.
- *   - investorShares cannot be bought back — buybackShares sources only from
- *     issuedShares. Ownership given to investors is permanent.
- *   - goPublic(0) leaves issuedShares at 0; buybackShares then fails with
- *     "Not enough shares are available for buyback." The buyback branch is
- *     removed as dead code.
- *   - buyBackShares draws from Player.money, not corporation funds.
- *   - tributeModifier is reduced by 0.05 per ShadyAccounting and 0.1 per
- *     GovernmentPartnership. Both are purchased, so the dividend payout is
- *     full (dividends^1.0). Without them the payout would be dividends^0.85.
- *   - getIndustryData(...).startingCost is the purchase price.
- *   - Division.maxProducts grows with uPgrade: Capacity.I / .II, starting at 3.
- *   - Production multiplier: (0.002*RE+1)^0.72 * (0.002*HW+1)^0.2 *
- *     (0.002*RB+1)^0.3 * (0.002*AI+1)^0.3 per city, ^0.73, summed.
- *   - Product effective rating caps at avgQlt * sqrt(rating); Restaurant
- *     needs Agriculture's Food export to avoid quality-1 collapse.
- *   - Warehouse size is linear in level; cost is 1e9 * 1.07^level.
- *     Warehouse upgrades are exempted from the reserve check.
- *   - purchaseWarehouse / upgradeWarehouse / upgradeOfficeSize / hireAdVert
- *     return void on insufficient funds. buyMaterial does NOT check funds and
- *     the game keeps charging the last-set rate every PURCHASE cycle until
- *     it's overwritten. Every early-return path in manageBoosts must clear.
- *   - sellMaterial and exportMaterial both throw when the relevant warehouse
- *     is missing from a city. sellMaterials and setupExportChain guard on
- *     hasWarehouse before calling to avoid per-cycle log spam.
- *   - sellProduct with all=true writes every city in one call and doesn't
- *     require a warehouse lookup for the passed city.
- *   - issueDividends takes a fraction in [0, dividendMaxRate]; requires public.
- *   - cancelExportMaterial does not throw on missing routes.
- *   - Ownership is CorporationInfo.numShares / totalShares.
- *   - hasHacknetServers() (BN9 or SF9) gates hashes entirely.
- *   - purchaseNode returns -1 on failure, not false. Node count is the signal.
- *   - throwParty returns a multiplier, not a boolean.
- *   - Hacknet nodes/servers reset on augmentation install (unlike corp/gang).
- */
-import { optimalBoostTargets, nextSaleMultiplier, chooseRetirement, upgradeReturn } from './automation-policy.js';
+/** Standalone corporation controller: recipe-based supply, research, products,
+ * expansion and finances. All discretionary spending preserves operating reserves.
+ * Investor ownership cannot be recovered; share actions preserve min-ownership.
+ * Custom products and existing export routes are preserved. */
+import { optimalBoostTargets, chooseRetirement, upgradeReturn } from './automation-policy.js';
 
 export async function main(ns) {
+ registerAutomation(ns);
     if (isScriptPaused(ns, ns.getScriptName())) return;
     if (ns.ps("home").some(process => process.filename === ns.getScriptName() && process.pid !== ns.pid)) return;
+  const options = typeof ns.flags === 'function' ? ns.flags([
+    ['min-ownership', 0.5], ['expand-all-industries', true], ['manage-shares', true], ['bribe-factions', true],
+  ]) : { 'min-ownership': 0.5, 'expand-all-industries': true, 'manage-shares': true, 'bribe-factions': true };
+  const minOwnership = Number(options['min-ownership']);
+  if (!(minOwnership > 0 && minOwnership <= 1)) { ns.tprint('min-ownership must be greater than zero and at most one.'); return; }
   const c = ns.corporation;
   const cities = ["Sector-12", "Aevum", "Volhaven", "Chongqing", "New Tokyo", "Ishima"];
   const name = "Apex Holdings";
   const agri = "Agri";
   const restaurant = "Dining";
   const chem = "Chem";
+  const tobacco = "Tobacco";
   const CITY_EXPAND_BUFFER = 5e9;
   const WAREHOUSE_BUFFER = 5e9;
   let reserve = 5e9;
   let boostBudget = 0;
-  const BOOST_SPEND_FRACTION = 0.20;
   const officeJobs = ["Operations", "Engineer", "Business", "Management", "Research & Development", "Intern"];
   let recovering = false;
   let upkeepBudget = 0;
+  let growthBank = null;
   const constants = (() => { try { return c.getConstants(); } catch { return {}; } })();
   const cycleSeconds = Number(constants.secondsPerMarketCycle) || 10;
   const teaCostPerEmployee = Number(constants.teaCostPerEmployee) || 500000;
@@ -100,10 +61,8 @@ export async function main(ns) {
   const PAY_DIVIDENDS = true;
   const IPO_VALUATION = 1e12;
   const ACCEPT_INVESTMENT = true;
-  const INVESTMENT_ROUND = 1;
-  const INVESTMENT_MIN_FUNDS_RATIO = 1.0;
-  const INVESTMENT_MIN_FUNDS = 1e9;
-  let lastDividendRate = -1;
+  let lastDividendRate = -1,financeDecision=null,financeHistory=null,lastShareSaleAt=0;
+  const financeFile='tasks/corporation-finance.json';
 
   // ---- Hash spend plan --------------------------------------------------
   const HASH_SPEND_PLAN = [
@@ -121,7 +80,6 @@ export async function main(ns) {
   const HACKNET_CACHE_TARGET = 4;
 
   // ---- Upgrade priority -------------------------------------------------
-  const WILSON_TARGET_LEVEL = 17;
 
   // ---- Chemical quality loop --------------------------------------------
   const EXPORT_FORMULA = "(IPROD+IINV/10)*(-1)";
@@ -133,9 +91,6 @@ export async function main(ns) {
   // ---- Office upkeep ----------------------------------------------------
   // Upkeep is budgeted across offices rather than spending a fixed party amount.
 
-  // ---- Input buffer -----------------------------------------------------
-  const INPUT_BUY_HEADROOM = 1.10;
-  const INPUT_STOCK_CEILING = 30;
 
   // ---- Boost target -----------------------------------------------------
   const BOOST_WAREHOUSE_FRACTION = 0.60;
@@ -194,6 +149,7 @@ export async function main(ns) {
     ns.tprint("Corporation manager stopped: requires BitNode 3 or Source-File 3 access.");
     return;
   }
+  try{const saved=JSON.parse(ns.read(financeFile));if(saved.nodeReset===resetInfo.lastNodeReset&&saved.corporation===corp()?.name){financeHistory=saved.history;lastShareSaleAt=Number(saved.lastShareSaleAt)||0;}}catch{}
   const hasHacknetServers = () =>
     resetInfo.currentNode === 9 || Number(sf(9)) > 0;
 
@@ -208,6 +164,7 @@ export async function main(ns) {
   };
 
   while (!safe("Check corporation API", () => c.hasCorporation())) {
+ automationHeartbeat(ns);
     const seed = attemptCreate(false);
     if (seed.ok) { ns.print(`Created ${name} with seed money.`); break; }
     const self = attemptCreate(true);
@@ -235,19 +192,32 @@ export async function main(ns) {
     if (Number.isFinite(cost) && funds() > cost + reserve)
       attempt(`Buy ${unlock}`, () => c.purchaseUnlock(unlock));
   };
-  const hireAdVert = (division) => {
+  const capitalPurchase = (label, cost, fn) => {
+    if (recovering || !Number.isFinite(cost) || cost <= 0 || cost > growthBank || funds() <= reserve + cost) return false;
+    const before = funds();
+    if (!attempt(label, fn)) return false;
+    const spent = Math.max(0, before - funds());
+    growthBank = Math.max(0, growthBank - spent);
+    return spent > 0;
+  };
+  const advertQueue=new Set();
+  const hireAdVert=division=>advertQueue.add(division);
+  const buyAdVert = (division) => {
+    const d=safe('Read advertising division',()=>c.getDivision(division));
+    let goals;try{goals=JSON.parse(ns.read('tasks/achievement-goals.json'));}catch{}
+    if(!d||supportAdvertLimit(d,goals?.expiresAt>Date.now()&&goals.finance)||d.awareness===Number.MAX_VALUE&&d.popularity===Number.MAX_VALUE)return;
     const adCost = safe(`Get AdVert cost (${division})`, () => c.getHireAdVertCost(division));
     const cash = funds();
     if (!Number.isFinite(adCost) || adCost > cash * ADVERT_SPEND_FRACTION || cash <= adCost + reserve)
       return;
-    attempt(`Hire AdVert (${division})`, () => c.hireAdVert(division));
+    capitalPurchase(`Hire AdVert (${division})`, adCost, () => c.hireAdVert(division));
   };
 
   // ---- IPO / dividends --------------------------------------------------
   const manageIPO = () => {
     if (!PAY_DIVIDENDS) return;
     const info = corp();
-    if (!info || info.public) return;
+    if (!info || info.public || financeDecision?.holdIPO) return;
     const valuation = Number(info.valuation) || 0;
     if (valuation < IPO_VALUATION) return;
     if (attempt("Go public", () => c.goPublic(0)))
@@ -258,7 +228,10 @@ export async function main(ns) {
     if (!PAY_DIVIDENDS) return;
     const info = corp();
     if (!info?.public) return;
-    const rate = recovering ? 0 : dividendRateFor(funds());
+    const wallet = Number(ns.getPlayer().money) || 0;
+    const playerReserve = Math.max(0, Number(ns.read('reserve.txt')) || 0);
+    const rate = recovering || Number(info.revenue) <= Number(info.expenses) ? 0 :
+      Math.min(DIVIDEND_MAX, Math.max(dividendRateFor(funds()), wallet < playerReserve + 1e9 && funds() > reserve * 5 ? 0.2 : 0));
     if (rate === lastDividendRate) return;
     if (attempt(`Set dividend rate ${(rate * 100).toFixed(0)}%`, () => c.issueDividends(rate)))
       lastDividendRate = rate;
@@ -266,6 +239,7 @@ export async function main(ns) {
 
   // ---- Hash spends ------------------------------------------------------
   const spendHashes = () => {
+    if(!achievementActionAllowed(ns,"hashSpending"))return null;
     if (!SELL_HASHES_FOR_CORP || !hasHacknetServers()) return null;
 
     let available = 0;
@@ -292,7 +266,7 @@ export async function main(ns) {
 
   // ---- Hacknet server management ----------------------------------------
   const manageHacknetServers = () => {
-    if (!BUY_HACKNET_SERVERS || !hasHacknetServers()) return;
+    if (!BUY_HACKNET_SERVERS || !hasHacknetServers() || !achievementActionAllowed(ns,"hacknetExpense")) return;
 
     let numNodes = 0;
     try { numNodes = ns.hacknet.numNodes(); }
@@ -308,7 +282,7 @@ export async function main(ns) {
       try { cost = ns.hacknet.getPurchaseNodeCost(); }
       catch { cost = Infinity; }
       if (!canSpend(cost)) break;
-      try { ns.hacknet.purchaseNode(); }
+      try { if(claimSpending(ns,"hacknet",cost))ns.hacknet.purchaseNode(); }
       catch { break; }
       const after = ns.hacknet.numNodes();
       if (after <= numNodes) break;
@@ -337,7 +311,7 @@ export async function main(ns) {
         if (!canSpend(cost)) continue;
         if (!bestCache || cost < bestCache.cost) bestCache = { i, cost };
       }
-      if (bestCache && canSpend(bestCache.cost)) {
+      if (bestCache && canSpend(bestCache.cost) && claimSpending(ns,"hacknet",bestCache.cost)) {
         attempt(`Upgrade cache on node ${bestCache.i}`, () => ns.hacknet.upgradeCache(bestCache.i, 1));
         return;
       }
@@ -366,7 +340,7 @@ export async function main(ns) {
         if (!best || ratio > best.ratio) best = { ...cand, i, ratio };
       }
     }
-    if (!best || !canSpend(best.cost)) return;
+    if (!best || !canSpend(best.cost) || !claimSpending(ns,"hacknet",best.cost)) return;
     const upgradeFns = {
       level: () => ns.hacknet.upgradeLevel(best.i, 1),
       ram:   () => ns.hacknet.upgradeRam(best.i, 1),
@@ -387,6 +361,10 @@ export async function main(ns) {
     for (const city of d.cities) {
       const key = `${sourceDiv}|${city}|${targetDiv}|${sourceMat}`;
       if (exportRoutes.has(key)) continue;
+      const material = safe('Read existing export routes', () => c.getMaterial(sourceDiv, city, sourceMat));
+      if (Array.isArray(material?.exports)) {
+        if (material.exports.some(route => route.division === targetDiv && route.city === city)) continue;
+      }
       if (!safe(`Check ${sourceDiv}/${city} wh`, () => c.hasWarehouse(sourceDiv, city))) continue;
       if (!safe(`Check ${targetDiv}/${city} wh`, () => c.hasWarehouse(targetDiv, city))) continue;
       if (attempt(`Export ${sourceMat} → ${targetDiv}`, () =>
@@ -395,17 +373,20 @@ export async function main(ns) {
     }
   };
   const manageExports = () => {
-    if (!hasDivision(agri)) return;
-    if (!hasDivision(chem) && !hasDivision(restaurant)) return;
-    buyUnlock("Export");
-    if (!hasUnlock("Export") || !hasUnlock("Warehouse API")) return;
-    if (hasDivision(chem)) {
-      setupExportChain(agri, "Plants", chem);
-      setupExportChain(chem, "Chemicals", agri);
+    const data = divisions().map(name => {
+      const division = safe('Read export division', () => c.getDivision(name));
+      return { name, industry: division && safe('Read export recipe', () => c.getIndustryData(division.industry)) };
+    }).filter(item => item.industry);
+    const routes = [];
+    data.sort((a,b)=>Number(b.industry.makesProducts)-Number(a.industry.makesProducts));
+    for (const target of data) for (const material of Object.keys(target.industry.requiredMaterials || {})) {
+      const source = data.find(item => item.name !== target.name && item.industry.producedMaterials?.includes(material));
+      if (source) routes.push([source.name, material, target.name]);
     }
-    if (hasDivision(restaurant)) {
-      setupExportChain(agri, "Food", restaurant);
-    }
+    if (!routes.length) return;
+    buyUnlock('Export');
+    if (!hasUnlock('Export') || !hasUnlock('Warehouse API')) return;
+    for (const route of routes) setupExportChain(...route);
   };
 
   // ---- Per-city office management ---------------------------------------
@@ -415,10 +396,12 @@ export async function main(ns) {
     if (!hasUnlock("Office API")) return;
     let office = safe(`Read office ${division}/${city}`, () => c.getOffice(division, city));
     if (!office) return;
-    const target = productDivision
+    let target = productDivision
       ? (funds() > 1e15 ? 120 : funds() > 1e14 ? 100 : funds() > 1e13 ? 80 : funds() > 1e12 ? 60 : 30)
       : (funds() > 1e13 ? 60 : funds() > 5e12 ? 45 : funds() > 1e12 ? 30 : funds() > 1e11 ? 20 : funds() > 1e10 ? 15 : funds() > 1e9 ? 9 : 3);
-    if (office.size < target) {
+      let achievements;try{achievements=JSON.parse(ns.read('tasks/achievement-goals.json'));}catch{}
+      if(achievements?.expiresAt>Date.now()&&achievements.finance&&!achievements.owned?.includes('CORPORATION_EMPLOYEE_3000'))target=Math.max(target,500);
+      if (office.size < target) {
       const add = target - office.size;
       const cost = safe("Get office size cost", () => c.getOfficeSizeUpgradeCost(division, city, add));
       if (Number.isFinite(cost) && funds() > cost + reserve) {
@@ -458,28 +441,32 @@ export async function main(ns) {
   };
 
   // ---- Agriculture inputs and boosts ------------------------------------
-  const manageInputs = (city) => {
-    const set = (material, rate) =>
-      attempt(`Set ${material} buy rate`, () => c.buyMaterial(agri, city, material, rate));
-    if (hasUnlock("Smart Supply")) { set("Water", 0); set("Chemicals", 0); return; }
-    if (hasDivision(chem)) set("Chemicals", 0);
-    const wh = safe("Read warehouse", () => c.getWarehouse(agri, city));
-    const full = wh ? wh.sizeUsed / Math.max(1, wh.size) > 0.9 : false;
-    let produced = 0;
-    for (const output of ["Plants", "Food"]) {
-      const item = safe(`Read ${output}`, () => c.getMaterial(agri, city, output));
-      produced += Number(item?.productionAmount) || 0;
+  let inputBudget = 0;
+  const manageInputs = (division, city) => {
+    const d = safe('Read input division', () => c.getDivision(division));
+    const industry = d && safe('Read input recipe', () => c.getIndustryData(d.industry));
+    if (!industry) return;
+    const recipe = industry.requiredMaterials || {};
+    if (hasUnlock('Smart Supply')) {
+      for (const material of Object.keys(recipe)) {
+        attempt('Clear manual input', () => c.buyMaterial(division, city, material, 0));
+        if (constants.smartSupplyOptions?.includes('leftovers'))
+          attempt('Use exports before purchased inputs', () => c.setSmartSupplyOption(division, city, material, 'leftovers'));
+      }
+      return;
     }
-    produced = Math.max(produced, 1);
-    const inputs = hasDivision(chem)
-      ? [["Water", 0.5]]
-      : [["Water", 0.5], ["Chemicals", 0.2]];
-    for (const [material, per] of inputs) {
-      const item = safe(`Read ${material}`, () => c.getMaterial(agri, city, material));
-      const need = per * produced;
-      const overCeiling = full || Number(item?.stored) > need * INPUT_STOCK_CEILING;
-      set(material, overCeiling ? 0 : need * INPUT_BUY_HEADROOM);
-    }
+    let production = 0;
+    for (const material of industry.producedMaterials || [])
+      production = Math.max(production, Number(safe('Read input demand', () => c.getMaterial(division, city, material))?.productionAmount) || 0);
+    for (const product of d.products || [])
+      production += Number(safe('Read product input demand', () => c.getProduct(division, city, product))?.productionAmount) || 0;
+    const items = Object.fromEntries(Object.keys(recipe).map(material => [material, safe('Read input inventory', () => c.getMaterial(division, city, material))]));
+    const warehouse = safe('Read input storage', () => c.getWarehouse(division, city));
+    const budget = warehouse && warehouse.sizeUsed < warehouse.size * 0.95 ? Math.min(inputBudget, Math.max(0, funds() - reserve)) : 0;
+    const plan = recipeInputPlan(recipe, items, production, budget, cycleSeconds);
+    for (const order of plan.orders) attempt('Set recipe input rate', () => c.buyMaterial(division, city, order.name, order.rate));
+    inputBudget -= plan.cost;
+    reserve += plan.cost; // These rates will be charged during PURCHASE; reserve them now.
   };
   const boosts = [
     { name: "Real Estate", factor: 0.72, size: 0.005 },
@@ -491,8 +478,13 @@ export async function main(ns) {
   // buyMaterial sets a rate the game charges every PURCHASE cycle until
   // overwritten. Every early return in manageBoosts must zero the rate,
   // otherwise a stale rate from a prior cycle keeps draining funds.
+  const recipeBoosts = division => {
+    const d = safe('Read boost recipe division', () => c.getDivision(division));
+    return d && safe('Read boost recipe', () => c.getIndustryData(d.industry))?.requiredMaterials || {};
+  };
   const clearBoostRates = (division, city) => {
-    for (const b of boosts)
+    const recipe = recipeBoosts(division);
+    for (const b of boosts.filter(item => !(item.name in recipe)))
       attempt(`Clear ${b.name} buy rate`, () => c.buyMaterial(division, city, b.name, 0));
   };
   const manageBoosts = (city, division = agri) => {
@@ -502,7 +494,7 @@ export async function main(ns) {
     const full = wh.sizeUsed / Math.max(1, wh.size) > 0.9;
     const divisionInfo = safe(`Read ${division}`, () => c.getDivision(division));
     const industry = safe('Read industry factors', () => c.getIndustryData(divisionInfo?.industry));
-    const materials = boosts.map(b => ({ ...b,
+    const materials = boosts.filter(b => !(b.name in (industry?.requiredMaterials || {}))).map(b => ({ ...b,
       factor: Number.isFinite(industry?.[boostKeys[b.name]]) ? industry[boostKeys[b.name]] : b.factor,
       size: Number(safe(`Read ${b.name} size`, () => c.getMaterialData(b.name))?.size) || b.size,
     }));
@@ -525,21 +517,40 @@ export async function main(ns) {
 
   // ---- Research ---------------------------------------------------------
   const runResearch = (division, order) => {
-    const points = safe(`Read ${division}`, () => c.getDivision(division))?.researchPoints ?? 0;
-    for (const name of order) {
-      if (safe(`Check ${name}`, () => c.hasResearched(division, name)) === true) continue;
-      const cost = safe(`Get ${name} cost`, () => c.getResearchCost(division, name));
-      if (Number.isFinite(cost) && points >= cost)
-        attempt(`Research ${name}`, () => c.research(division, name));
+    const d=safe('Read research division',()=>c.getDivision(division));
+    if(!d)return;
+    const points=d.researchPoints??0;
+    if(safe('Check laboratory',()=>c.hasResearched(division,'Hi-Tech R&D Laboratory'))!==true){
+      const cost=safe('Laboratory cost',()=>c.getResearchCost(division,'Hi-Tech R&D Laboratory'));
+      if(researchAffordable(points,cost,.5))attempt('Research laboratory',()=>c.research(division,'Hi-Tech R&D Laboratory'));
+      return;
+    }
+    if(!hasTA2(division)){
+      const hasTA1=safe('Check TA.I',()=>c.hasResearched(division,'Market-TA.I'))===true;
+      const first=hasTA1?0:safe('TA.I cost',()=>c.getResearchCost(division,'Market-TA.I'));
+      const second=safe('TA.II cost',()=>c.getResearchCost(division,'Market-TA.II'));
+      if(Number.isFinite(first)&&Number.isFinite(second)&&researchAffordable(points,first+second,.5)){
+        if(!hasTA1&&!attempt('Research TA.I',()=>c.research(division,'Market-TA.I')))return;
+        if(safe('Confirm TA.I',()=>c.hasResearched(division,'Market-TA.I'))===true)attempt('Research TA.II',()=>c.research(division,'Market-TA.II'));
+      }
+      return; // Preserve points toward automated pricing before optional research.
+    }
+    const available=[...order,...extraResearch,...(constants.researchNamesBase||[]),...(d.makesProducts?constants.researchNamesProductOnly||[]:[])];
+    const optionalAutomation=new Set(['AutoBrew','AutoPartyManager','HRBuddy-Recruitment','HRBuddy-Training','uPgrade: Dashboard']);
+    for(const name of new Set(available)){
+      if(optionalAutomation.has(name))continue;
+      if(safe(`Check ${name}`,()=>c.hasResearched(division,name))===true)continue;
+      const parent=researchParents[name]||'Hi-Tech R&D Laboratory';
+      if(safe(`Check research prerequisite ${parent}`,()=>c.hasResearched(division,parent))!==true)continue;
+      const cost=safe(`Get ${name} cost`,()=>c.getResearchCost(division,name));
+      if(researchAffordable(points,cost))attempt(`Research ${name}`,()=>c.research(division,name));
       break;
     }
   };
   const hasTA2 = (division) => safe(`Check TA.II ${division}`, () => c.hasResearched(division, "Market-TA.II")) === true;
 
   // ---- Warehouse management ---------------------------------------------
-  // Warehouse upgrades are exempt from the reserve check: they're what
-  // restores production when the warehouse fills, and production is what
-  // generates the revenue that refills the reserve.
+  // A sales backlog needs pricing recovery before more storage spending.
   let storagePressure = false;
   const runWarehouse = (division, city) => {
     if (!hasUnlock("Warehouse API")) return;
@@ -550,11 +561,17 @@ export async function main(ns) {
     }
     if (!has) return;
     const wh = safe("Read warehouse", () => c.getWarehouse(division, city));
+    const divisionData = safe('Read warehouse division', () => c.getDivision(division));
+    const industryData = safe('Read warehouse outputs', () => c.getIndustryData(divisionData?.industry));
+    const outputs = (industryData?.producedMaterials || []).map(material => safe('Read warehouse output', () => c.getMaterial(division, city, material)));
+    if (divisionData?.makesProducts) for (const product of divisionData.products || [])
+      outputs.push(safe('Read warehouse product', () => c.getProduct(division, city, product)));
+    const backlog = outputBacklog(outputs);
     let used = wh ? wh.sizeUsed / Math.max(1, wh.size) : 0;
     if (used > 0.8) storagePressure = true;
-    for (let level = 0; level < 5 && used > 0.7; level++) {
+    for (let level = 0; level < 5 && used > 0.7 && !backlog; level++) {
       const cost = safe("Get warehouse upgrade cost", () => c.getUpgradeWarehouseCost(division, city));
-      if (!Number.isFinite(cost) || funds() <= cost) break;
+      if (!Number.isFinite(cost) || funds() <= cost + reserve) break;
       if (!attempt("Upgrade warehouse", () => c.upgradeWarehouse(division, city))) break;
       const next = safe("Refresh warehouse", () => c.getWarehouse(division, city));
       used = next ? next.sizeUsed / Math.max(1, next.size) : 0;
@@ -563,17 +580,41 @@ export async function main(ns) {
   };
 
   // ---- Selling ----------------------------------------------------------
+  const productMarkup=new Map(),markupCandidates=new Map(),pricingObservations=new Map();
+  const formulaPricing=(division,city,item,materialData=null)=>{
+    const d=safe('Read pricing division',()=>c.getDivision(division));
+    const industry=d&&safe('Read pricing industry',()=>c.getIndustryData(d.industry));
+    const office=safe('Read pricing office',()=>c.getOffice(division,city));
+    const bots=safe('Read sales bots',()=>c.getUpgradeLevel('ABC SalesBots'));
+    const potential=salesPotential(item,d,industry,office,bots,!!d?.makesProducts);
+    if(!potential)return null;
+    const key=division+'/'+city+'/'+item.name,markupKey=division+'/'+item.name;
+    if(d.makesProducts){
+      const previous=pricingObservations.get(key);
+      const stable=previous?.potential>0&&Math.abs(potential/previous.potential-1)<.05&&previous.rating>0&&Math.abs(Number(item.effectiveRating)/previous.rating-1)<.05&&previous.base>0&&Math.abs(Number(item.productionCost)/previous.base-1)<.05;
+      const observed=stable?inferProductMarkup(item,previous):null;
+      if(observed&&!productMarkup.has(markupKey)){
+        const candidate=markupCandidates.get(markupKey);
+        if(candidate&&Math.abs(observed/candidate-1)<.1)productMarkup.set(markupKey,(observed+candidate)/2);
+        else markupCandidates.set(markupKey,observed);
+      }
+      const markup=productMarkup.get(markupKey);
+      if(!markup)return {potential,key};
+      return {...formulaSalePrice(item,potential,Math.max(item.effectiveRating,.001)/markup,cycleSeconds),key};
+    }
+    return formulaSalePrice(item,potential,Number(item.quality)/Number(materialData?.baseMarkup),cycleSeconds);
+  };
   const saleMultipliers = new Map();
   const saleTimes = new Map();
   const salePrice = (key, item, automated) => {
     if (automated) return 'MP';
-    let multiplier = saleMultipliers.get(key) || priorSaleMultiplier(item?.desiredSellPrice);
-    // Tune once a minute rather than once per corporation phase.
-    if (Date.now() - (saleTimes.get(key) || 0) >= 60_000) {
-      multiplier = nextSaleMultiplier(item, multiplier);
-      saleMultipliers.set(key, multiplier);
-      saleTimes.set(key, Date.now());
+    let state=saleMultipliers.get(key)||{multiplier:priorSaleMultiplier(item?.desiredSellPrice)};
+    // Tune after each full market cycle, using only completed sales feedback.
+    if(Date.now()-(saleTimes.get(key)||0)>=cycleSeconds*1000){
+      state=productPriceStep(item,state,cycleSeconds);
+      saleMultipliers.set(key,state);saleTimes.set(key,Date.now());
     }
+    const multiplier=state.multiplier;
     return `MP*${multiplier}`;
   };
   // sellMaterial throws when the city has no warehouse. Cities are expanded
@@ -587,7 +628,8 @@ export async function main(ns) {
       if (!safe(`Check ${division}/${city} warehouse`, () => c.hasWarehouse(division, city))) continue;
       for (const material of materials) {
         const item = safe(`Read ${material} sale`, () => c.getMaterial(division, city, material));
-        const price = salePrice(`${division}/${city}/${material}`, item, ta2);
+        const data = ta2 ? null : safe('Read material markup', () => c.getMaterialData(material));
+        const price = ta2 ? 'MP' : formulaPricing(division,city,item,data)?.price || materialSalePrice(item, data);
         attempt(`Sell ${material}`, () => c.sellMaterial(division, city, material, "MAX", price));
         if (ta2)
           attempt(`Market-TA.II ${material}`, () => c.setMaterialMarketTA2(division, city, material, true));
@@ -612,7 +654,13 @@ export async function main(ns) {
         attempt(`Market-TA.II ${product}`, () => c.setProductMarketTA2(division, product, true));
       } else for (const city of activeCities) {
         const item = safe(`Read ${product} sale`, () => c.getProduct(division, city, product));
-        const price = salePrice(`${division}/${city}/${product}`, item, false);
+        const formula=formulaPricing(division,city,item);
+        const price=formula?.price||salePrice(`${division}/${city}/${product}`,item,false);
+        if(formula?.potential){
+          const premium=formula.premium??Math.max(0,(priorSaleMultiplier(price)-1)*Number(item.productionCost));
+          pricingObservations.set(formula.key,{potential:formula.potential,target:formula.target??Number(item.productionAmount)+Number(item.stored)/cycleSeconds,premium,rating:Number(item.effectiveRating),base:Number(item.productionCost)});
+        }
+        if(typeof c.setProductMarketTA1==='function'&&safe('Check TA.I pricing',()=>c.hasResearched(division,'Market-TA.I'))===true)attempt('Disable TA.I for custom pricing',()=>c.setProductMarketTA1(division,product,false));
         attempt(`Sell ${product} in ${city}`, () => c.sellProduct(division, city, product, "MAX", price, false));
       }
     }
@@ -634,6 +682,55 @@ export async function main(ns) {
     }
   };
 
+  const manageShares = () => {
+    if (!options['manage-shares']) return;
+    const info = corp();
+    if (!info?.public) return;
+    const issue = rescueShareIssue(info, reserve, minOwnership);
+    if (issue > 0) { attempt('Issue emergency operating capital', () => c.issueNewShares(issue)); return; }
+    const wallet = Number(ns.getPlayer().money) || 0;
+    const playerReserve = Math.max(0, Number(ns.read('reserve.txt')) || 0);
+    const sale = shareSale(info, wallet, playerReserve, minOwnership);
+    if (sale > 0) {if(attempt('Sell shares for player liquidity',()=>c.sellShares(sale)))lastShareSaleAt=Date.now();return;}
+    const buyback = recovering || Date.now()-lastShareSaleAt<60*60000 ? 0 : shareBuyback(info, wallet, playerReserve, minOwnership);
+    if (buyback > 0 && claimSpending(ns,'corporation',buyback*info.sharePrice*1.25)) attempt('Recover public share ownership', () => c.buyBackShares(buyback));
+  };
+  let lastExpansion = 0, lastBribe = 0;
+  const expandIndustries = () => {
+    if (!options['expand-all-industries'] || recovering || !hasDivision(tobacco) || !hasTA2(tobacco) || Date.now() - lastExpansion < 300000) return;
+    const info = corp();
+    if (!(Number(info?.revenue) > Number(info?.expenses))) return;
+    const current = new Set(divisions().map(division => safe('Read industry presence', () => c.getDivision(division))?.industry));
+    const candidates = (constants.industryNames || []).filter(industry => !current.has(industry)).map(industry => ({
+      industry, cost: Number(safe('Read expansion cost', () => c.getIndustryData(industry))?.startingCost),
+    })).filter(item => item.cost > 0).sort((a, b) => a.cost - b.cost);
+    const next = candidates.find(item => item.cost + 25e9 < Math.max(0, funds() - reserve) * 0.1);
+    if (!next) return;
+    lastExpansion = Date.now(); // Includes rejected attempts at the BitNode division cap.
+    createDivision(next.industry, `Auto ${next.industry}`);
+  };
+  const bribeFactions = async () => {
+    const info = corp();
+    if (!options['bribe-factions'] || recovering || !(Number(sf(4)) > 0 || resetInfo.currentNode === 4) ||
+        !(info?.valuation >= (Number(constants.bribeThreshold) || 100e12)) || Date.now() - lastBribe < 60000) return;
+    lastBribe = Date.now();
+    try {
+      const targets = await getNsDataThroughFile(ns, `(() => {
+        const owned = new Set(ns.singularity.getOwnedAugmentations(true));
+        return ns.getPlayer().factions.filter(f => ns.singularity.getFactionWorkTypes(f).length).map(faction => {
+          const required = Math.max(0, ...ns.singularity.getAugmentationsFromFaction(faction)
+            .filter(aug => aug !== 'NeuroFlux Governor' && !owned.has(aug)).map(aug => ns.singularity.getAugmentationRepReq(aug)));
+          return { faction, deficit: Math.max(0, required - ns.singularity.getFactionRep(faction)) };
+        }).filter(item => item.deficit > 0).sort((a,b) => a.deficit - b.deficit);
+      })()`, 'Temp/corporation-bribe-targets.txt', [], false, 1, 0, true);
+      const target = targets?.[0];
+      if (!target) return;
+      const profit = Math.max(0, (Number(info.revenue) - Number(info.expenses)) * cycleSeconds);
+      const amount = Math.min(target.deficit * (Number(constants.bribeAmountPerReputation) || 1e9), Math.max(0, funds() - reserve) * 0.001, profit * 0.05);
+      if (amount >= 1e9) attempt('Bribe for useful augmentation reputation', () => c.bribe(target.faction, amount));
+    } catch (error) { ns.print(`Faction support waiting: ${String(error)}`); }
+  };
+
   // ---- Main loop --------------------------------------------------------
   let lastInvestmentCycle = 0;
   let lastUpgrade = 0;
@@ -642,6 +739,14 @@ export async function main(ns) {
   const productStateFile = 'tasks/corporation-product-cycle.json';
   const otherProductStateFile = 'tasks/corporation-other-product-cycles.json';
   let otherProductTimes = {};
+  const lifecycleFile = 'tasks/corporation-lifecycle.json';
+  try {
+    const saved = JSON.parse(ns.read(lifecycleFile) || '{}');
+    if (saved.nodeReset === resetInfo.lastNodeReset && saved.corporation === corp()?.name) {
+      if (Number.isFinite(saved.growthBank)) growthBank = Math.max(0, saved.growthBank);
+      lastExpansion = Number(saved.lastExpansion) || 0;
+    }
+  } catch { /* No previous lifecycle state. */ }
   try {
     const saved = JSON.parse(ns.read(otherProductStateFile) || '{}');
     if (saved.nodeReset === resetInfo.lastNodeReset && saved.corporation === corp()?.name)
@@ -655,11 +760,17 @@ export async function main(ns) {
   if (typeof ns.atExit === 'function') ns.atExit(() => {
     // Buy rates persist after a script exits. Stop this manager's boost orders.
     for (const division of divisions()) for (const city of cities) {
-      try { if (c.hasWarehouse(division, city)) for (const material of boosts) c.buyMaterial(division, city, material.name, 0); }
+      try {
+        if (!c.hasWarehouse(division, city)) continue;
+        const d = c.getDivision(division), industry = c.getIndustryData(d.industry);
+        for (const material of new Set([...boosts.map(item => item.name), ...Object.keys(industry.requiredMaterials || {})]))
+          c.buyMaterial(division, city, material, 0);
+      }
       catch { /* Division or warehouse may no longer exist. */ }
     }
   });
-  while (true) {
+  while (!isScriptPaused(ns,ns.getScriptName())) {
+    automationHeartbeat(ns);
     try {
       const info = corp();
       if (!info) { await ns.sleep(30_000); continue; }
@@ -672,15 +783,22 @@ export async function main(ns) {
       recovering = treasury.recovering;
       upkeepBudget = treasury.upkeepBudget;
 
+      const available = Math.max(0, funds() - reserve);
+      const profit = Math.max(0, (Number(info.revenue) || 0) - (Number(info.expenses) || 0)) * cycleSeconds;
+      growthBank = Math.min(available, (growthBank === null ? available * 0.2 : growthBank) + profit * 0.25);
+      inputBudget = available * 0.5;
       if (ACCEPT_INVESTMENT) {
-        const offer = safe("Read investment offer", () => c.getInvestmentOffer());
-        if (offer?.round === INVESTMENT_ROUND && offer.funds > 0) {
-          const threshold = Math.max(INVESTMENT_MIN_FUNDS, funds() * INVESTMENT_MIN_FUNDS_RATIO);
-          if (offer.funds > threshold)
-            attempt(`Accept round ${INVESTMENT_ROUND} investment`, () => c.acceptInvestmentOffer());
-        }
+        const offer=safe('Read investment offer',()=>c.getInvestmentOffer());
+        const stageReady=offer?.round<=2?hasDivision(agri)&&safe('Read agricultural reach',()=>c.getDivision(agri))?.cities?.length===6&&
+          (offer.round===1||hasDivision(chem)):divisions().some(name=>{const d=safe('Read funding product stage',()=>c.getDivision(name));return d?.makesProducts&&d.products?.some(p=>safe('Read funding product',()=>c.getProduct(name,d.cities[0],p))?.developmentProgress>=100);});
+        financeDecision=investmentDecision(info,offer,financeHistory,minOwnership,{reserve,cycleSeconds,stageReady});
+        financeHistory=financeDecision.history;
+        if(financeDecision.accept&&attempt(`Accept round ${offer.round} investment`,()=>c.acceptInvestmentOffer()))financeHistory=null;
       }
+      manageShares();
 
+      advertQueue.clear();
+      exportRoutes.clear(); // Reinspect persistent routes every cycle; deduplicate calls within this pass.
       storagePressure = false;
       // Preserve cash for upcoming inputs and salaries before discretionary spending.
       const boostLocations = [];
@@ -698,7 +816,7 @@ export async function main(ns) {
           runOffice(agri, city, false);
           runWarehouse(agri, city);
           if (hasUnlock("Warehouse API") && safe("Check agricultural warehouse", () => c.hasWarehouse(agri, city))) {
-            manageInputs(city);
+            manageInputs(agri, city);
             boostLocations.push({ city, division: agri });
           }
         }
@@ -707,7 +825,7 @@ export async function main(ns) {
         hireAdVert(agri);
       }
 
-      if (hasDivision(agri) && !hasDivision(chem) && funds() > CHEM_FUNDS_GATE) {
+      if (hasDivision(agri) && !hasDivision(chem) && funds() > Math.max(reserve * 2, (Number(safe('Read Chemical cost', () => c.getIndustryData('Chemical'))?.startingCost) || CHEM_FUNDS_GATE / 4) * 4)) {
         const agriResearchDone = safe("Check Hi-Tech R&D (Agri)",
           () => c.hasResearched(agri, "Hi-Tech R&D Laboratory")) === true;
         if (agriResearchDone) createDivision("Chemical", chem);
@@ -718,36 +836,48 @@ export async function main(ns) {
           if (!inCity(chem, city)) continue;
           runOffice(chem, city, false);
           runWarehouse(chem, city);
-          if (hasUnlock("Warehouse API") && safe("Check chemical warehouse", () => c.hasWarehouse(chem, city)))
+          if (hasUnlock("Warehouse API") && safe("Check chemical warehouse", () => c.hasWarehouse(chem, city))) {
+            manageInputs(chem, city);
             boostLocations.push({ city, division: chem });
+          }
         }
         sellMaterials(chem, ["Chemicals"]);
         runResearch(chem, MATERIAL_RESEARCH_ORDER);
-        manageExports();
         hireAdVert(chem);
       }
 
-      if (hasDivision(agri) && funds() > 1e12) createDivision("Restaurant", restaurant);
+      if(hasDivision(agri)&&hasDivision(chem)&&!hasDivision(tobacco)){
+        const cost=Number(safe('Read Tobacco cost',()=>c.getIndustryData('Tobacco'))?.startingCost);
+        if(Number.isFinite(cost)&&cost>0&&funds()>reserve+cost*2)createDivision('Tobacco',tobacco);
+      }
+      if(hasDivision(tobacco)&&hasTA2(tobacco)&&funds()>Math.max(reserve*2,(Number(safe('Read Restaurant cost',()=>c.getIndustryData('Restaurant'))?.startingCost)||250e9)*4))createDivision('Restaurant',restaurant);
+      if(divisions().some(name=>safe('Read product data need',()=>c.getDivision(name))?.makesProducts)){
+        for(const unlock of ['Market Research - Demand','Market Data - Competition']){
+          const cost=hasUnlock(unlock)?Infinity:safe('Market data price',()=>c.getUnlockCost(unlock));
+          if(Number.isFinite(cost)&&cost<=Math.max(0,funds()-reserve)*.2)capitalPurchase('Buy '+unlock,cost,()=>c.purchaseUnlock(unlock));
+        }
+      }
       if (hasDivision(restaurant)) {
-        manageExports();
         runResearch(restaurant, PRODUCT_RESEARCH_ORDER);
         for (const city of allCities) {
           expand(restaurant, city);
           if (!inCity(restaurant, city)) continue;
           runOffice(restaurant, city, true, true);
           runWarehouse(restaurant, city);
-          if (hasUnlock('Warehouse API') && safe('Check restaurant warehouse', () => c.hasWarehouse(restaurant, city)))
+          if (hasUnlock('Warehouse API') && safe('Check restaurant warehouse', () => c.hasWarehouse(restaurant, city))) {
+            manageInputs(restaurant, city);
             boostLocations.push({ city, division: restaurant });
+          }
         }
         sellProducts(restaurant);
         const d = safe("Read Restaurant division", () => c.getDivision(restaurant));
         const activeCities = d?.cities ?? [];
         const products = d?.products ?? [];
         const maxProducts = d?.maxProducts ?? 3;
-        if (activeCities.length && hasUnlock("Warehouse API") && funds() > 2e12) {
+        if (!recovering && activeCities.length && hasUnlock("Warehouse API") && productInvestment(funds(), reserve) > 0) {
           const allComplete = products.every(p => productComplete(restaurant, p, activeCities));
           if (allComplete) {
-            const investment = Math.min(10e9, Math.max(1e9, funds() * 0.005));
+            const investment = productInvestment(funds(), reserve);
             if (funds() > 2 * investment + reserve) {
               const sequence = Math.max(0, ...products.map(p => Number(p.match(/^Apex Dining (\d+)$/)?.[1]) || 0)) + 1;
               if (products.length >= maxProducts && Date.now() - lastProductAt >= 15 * 60_000) {
@@ -775,13 +905,13 @@ export async function main(ns) {
 
       if (Date.now() - lastUpgrade >= 30_000) {
         const cash = funds();
-        const wilsonLevel = safe("Wilson level", () => c.getUpgradeLevel("Wilson Analytics")) ?? 0;
+        const growingProducts=divisions().some(name=>{const d=safe('Read product advertising need',()=>c.getDivision(name));return d?.makesProducts&&d.products?.length&&!(d.awareness===Number.MAX_VALUE&&d.popularity===Number.MAX_VALUE);});
         let bought = 0;
 
-        if (wilsonLevel < WILSON_TARGET_LEVEL) {
+        if (growingProducts) {
           const cost = safe("Wilson cost", () => c.getUpgradeLevelCost("Wilson Analytics"));
           if (Number.isFinite(cost) && cost <= cash * 0.35 && cash > cost + reserve) {
-            if (attempt("Level Wilson Analytics", () => c.levelUpgrade("Wilson Analytics"))) {
+            if (capitalPurchase("Level Wilson Analytics", cost, () => c.levelUpgrade("Wilson Analytics"))) {
               lastUpgrade = Date.now();
               bought++;
             }
@@ -804,7 +934,7 @@ export async function main(ns) {
           for (const { upgrade, cost } of ranked) {
             const cap = storagePressure && upgrade === "Smart Storage" ? 0.35 : 0.20;
             if (Number.isFinite(cost) && cost <= cash * cap && funds() > cost + reserve) {
-              if (attempt(`Level ${upgrade}`, () => c.levelUpgrade(upgrade))) {
+              if (capitalPurchase(`Level ${upgrade}`, cost, () => c.levelUpgrade(upgrade))) {
                 lastUpgrade = Date.now();
                 bought++;
               }
@@ -825,15 +955,13 @@ export async function main(ns) {
         const industry = d && safe(`Read ${division} industry`, () => c.getIndustryData(d.industry));
         if (!d || !industry) continue;
         runResearch(division, d.makesProducts ? PRODUCT_RESEARCH_ORDER : MATERIAL_RESEARCH_ORDER);
-        for (const city of d.cities || []) {
+        for (const city of cities) {
+          expand(division, city);
+          if (!inCity(division, city)) continue;
           runOffice(division, city, d.makesProducts, d.makesProducts);
           runWarehouse(division, city);
           if (!hasUnlock('Warehouse API') || !safe('Check existing warehouse', () => c.hasWarehouse(division, city))) continue;
-          if (hasUnlock('Smart Supply')) {
-            // Smart Supply buys recipe inputs automatically; clear obsolete manual input orders.
-            for (const material of Object.keys(industry.requiredMaterials || {}))
-              attempt(`Clear ${division} manual input`, () => c.buyMaterial(division, city, material, 0));
-          }
+          manageInputs(division, city);
           boostLocations.push({ city, division });
         }
         if (d.makesProducts) {
@@ -841,8 +969,8 @@ export async function main(ns) {
           const productList = d.products || [], prefix = `${division} Auto`;
           const canDevelop = d.cities?.some(city => safe('Check existing development warehouse', () => c.hasWarehouse(division, city)));
           const cooldownReady = Date.now() - (Number(otherProductTimes[division]) || 0) >= 15 * 60_000;
-          const investment = Math.min(10e9, Math.max(1e9, funds() * 0.005));
-          if (!recovering && funds() > 2e12 && funds() > reserve + 2 * investment && canDevelop && cooldownReady &&
+          const investment = productInvestment(funds(), reserve);
+          if (!recovering && investment > 0 && funds() > reserve + 2 * investment && canDevelop && cooldownReady &&
               productList.every(product => productComplete(division, product, d.cities))) {
             const capacity = d.maxProducts || 3;
             const candidates = productList.map(product => safe('Rate existing product', () => c.getProduct(division, d.cities[0], product))).filter(Boolean);
@@ -864,7 +992,23 @@ export async function main(ns) {
           }
         } else sellMaterials(division, industry.producedMaterials || []);
       }
-      let remainingBoostBudget = recovering ? 0 : Math.max(0, Math.min(funds() * BOOST_SPEND_FRACTION, funds() - reserve - upkeepBudget));
+      let achievements;try{achievements=JSON.parse(ns.read('tasks/achievement-goals.json'));}catch{}
+      if(!recovering&&achievements?.expiresAt>Date.now()&&achievements.finance&&!achievements.owned?.includes('CORPORATION_PROD_1000')) {
+        for(const division of divisions()){const d=safe('Achievement division',()=>c.getDivision(division));if(!d||d.productionMult>=1000)continue;
+          for(const city of d.cities){if(!safe('Achievement warehouse',()=>c.hasWarehouse(division,city)))continue;
+            const cost=safe('Achievement warehouse price',()=>c.getUpgradeWarehouseCost(division,city,1));if(Number.isFinite(cost)&&cost<(funds()-reserve)*.01)capitalPurchase('Achievement production storage',cost,()=>c.upgradeWarehouse(division,city,1));}break;}
+      }
+      manageExports();
+      for(const division of [...advertQueue].sort((a,b)=>Number(safe('Read advert priority',()=>c.getDivision(b))?.makesProducts)-Number(safe('Read advert priority',()=>c.getDivision(a))?.makesProducts)))buyAdVert(division);
+      expandIndustries();
+      // Optional late unlocks, capped individually to leave room for division growth.
+      if (!recovering) for (const unlock of constants.unlockNames || []) {
+        const cost = hasUnlock(unlock) ? Infinity : safe('Read optional unlock cost', () => c.getUnlockCost(unlock));
+        if (Number.isFinite(cost) && cost <= Math.max(0, funds() - reserve) * 0.05)
+          capitalPurchase(`Buy optional ${unlock}`, cost, () => c.purchaseUnlock(unlock));
+      }
+      await bribeFactions();
+      let remainingBoostBudget = recovering ? 0 : boostPurchaseBudget({ ...info, funds: funds() }, reserve, upkeepBudget, cycleSeconds);
       for (let index = 0; index < boostLocations.length; index++) {
         boostBudget = remainingBoostBudget / (boostLocations.length - index);
         const allowance = boostBudget;
@@ -882,6 +1026,15 @@ export async function main(ns) {
         ns.print(`Spent hashes on "${spentOn}" (${ns.format.number(hashCount)} hashes remaining).`);
       }
 
+      const liveStatus = corp() || info;
+      await ns.write(financeFile,JSON.stringify({at:Date.now(),pid:ns.pid,nodeReset:resetInfo.lastNodeReset,corporation:info.name,history:financeHistory,lastShareSaleAt,decision:financeDecision&&{accept:financeDecision.accept,holdIPO:financeDecision.holdIPO,reason:financeDecision.reason}}),'w');
+      await ns.write(lifecycleFile, JSON.stringify({nodeReset: resetInfo.lastNodeReset, corporation: info.name, growthBank, lastExpansion}), 'w');
+      await ns.write('tasks/corporation-status.json', JSON.stringify({ at: Date.now(), pid: ns.pid, corporation: info.name,
+        growthBank, mode: recovering ? 'cash recovery' : 'growth', funds: funds(), reserve, divisions: divisions(),
+        revenue: liveStatus.revenue, expenses: liveStatus.expenses, public: liveStatus.public,
+        ownership: liveStatus.totalShares > 0 ? liveStatus.numShares / liveStatus.totalShares : null,
+        minOwnership, financing:financeDecision?.reason, lastShareSaleAt, dividendRate: Math.max(0, lastDividendRate), expandAllIndustries: options['expand-all-industries'],
+      }), 'w');
       const now = Date.now();
       if (now - lastInvestmentCycle > 60_000) {
         lastInvestmentCycle = now;

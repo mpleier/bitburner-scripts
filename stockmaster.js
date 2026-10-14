@@ -1,3 +1,7 @@
+import {stockOptionsError,stockReserve,holdYoungStock,stockTradeReceipt} from './stock-policy.js';
+import {registerAutomation,automationHeartbeat,maintenanceRequested} from './runtime-policy.js';
+import {isScriptPaused} from './automation-control.js';
+import {achievementActionAllowed} from './achievement-policy.js';
 import { stockSignalFile, stockPromotionSignals } from './darknet-stock-policy.js';
 import {
     instanceCount, getConfiguration, getNsDataThroughFile, runCommand, getActiveSourceFiles, tryGetBitNodeMultipliers,
@@ -11,7 +15,7 @@ let lastLog = ""; // We update faster than the stock-market ticks, but we don't 
 let allStockSymbols = null; // Stores the set of all symbols collected at start
 let mock = false; // If set to true, will "mock" buy/sell but not actually buy/sell anythingorecast
 let noisy = false; // If set to true, tprints and announces each time stocks are bought/sold
-// Pre-4S configuration (influences how we play the stock market before we have 4S data, after which everything's fool-proof)
+// Pre-4S configuration for trading from estimated forecasts.
 let showMarketSummary = false;  // If set to true, will always generate and display the pre-4s forecast table in a separate tail window
 let minTickHistory; // This much history must be gathered before we will offer a stock forecast.
 let longTermForecastWindowLength; // This much history will be used to determine the historical probability of the stock (so long as no inversions are detected)
@@ -50,6 +54,7 @@ const argsSchema = [
     ['disable-purchase-tix-api', false], // Disable purchasing the TIX API if you do not already have it.
     // The following settings are related only to tweaking pre-4s stock-market logic
     ['show-pre-4s-forecast', false], // If set to true, will always generate and display the pre-4s forecast (if false, it's only shown while we hold no stocks)
+    ['tail-summary', false], // Explicitly open the optional forecast tail.
     ['show-market-summary', false], // Same effect as "show-pre-4s-forecast", this market summary has become so informative, it's valuable even with 4s
     ['pre-4s-buy-threshold-probability', 0.15], // Before we have 4S data, only buy stocks whose probability is more than this far away from 0.5, to account for imprecision
     ['pre-4s-buy-threshold-return', 0.0015], // Before we have 4S data, Buy only stocks forecasted to earn better than this return (default 0.25% or 25 Basis Points)
@@ -70,9 +75,13 @@ export function autocomplete(data, args) {
 /** Requires access to the TIX API. Purchases access to the 4S Mkt Data API as soon as it can
  * @param {NS} ns */
 export async function main(ns) {
+ registerAutomation(ns);
     const runOptions = getConfiguration(ns, argsSchema);
     if (!runOptions) return; // Invalid options, or ran in --help mode.
 
+    const invalid=stockOptionsError(runOptions);if(invalid)return ns.tprint('Stockmaster: '+invalid);
+    if(isScriptPaused(ns,ns.getScriptName())&&!runOptions.l&&!runOptions.liquidate)return;
+    if(runOptions.mock&&(runOptions.l||runOptions.liquidate))return ns.tprint('Mock mode does not liquidate real positions.');
     // If given the "liquidate" command, try to kill any versions of this script trading in stocks
     // NOTE: We must do this immediately before we start resetting / overwriting global state below (which is shared between script instances)
     const hasTixApiAccess = await getNsDataThroughFile(ns, 'ns.stock.hasTixApiAccess()');
@@ -82,7 +91,7 @@ export async function main(ns) {
         await runCommand(ns, `ns.ps().filter(proc => proc.filename == '${ns.getScriptName()}' && !proc.args.includes('-l') && !proc.args.includes('--liquidate'))` +
             `.forEach(proc => ns.kill(proc.pid))`, '/Temp/kill-stockmarket-scripts.js');
         log(ns, 'INFO: Checking for and liquidating any stocks...', false, 'info');
-        await liquidate(ns); // Sell all stocks
+        await liquidate(ns,true); // Explicit liquidation may override the trading pause
         return;
     } // Otherwise, prevent multiple instances of this script from being started, even with different args.
     if ((await instanceCount(ns)) > 1) return;
@@ -110,6 +119,7 @@ export async function main(ns) {
     let player = await getPlayerInfo(ns);
     resetInfo = await getNsDataThroughFile(ns, 'ns.getResetInfo()');
 
+    if(mock&&!hasTixApiAccess)return log(ns,'Mock trading requires existing TIX access; no access purchase was made.',true);
     if (!hasTixApiAccess) { // You cannot use the stockmaster until you have API access
         if (options['disable-purchase-tix-api'])
             return log(ns, "ERROR: You do not have stock market API access, and --disable-purchase-tix-api is set.", true);
@@ -117,9 +127,10 @@ export async function main(ns) {
         log(ns, `INFO: You are missing stock market API access. (NOTE: This is granted for free once you have SF8). ` +
             `Waiting until we have the 5b needed to buy it. (Run with --disable-purchase-tix-api to disable this feature.)`, true);
         do {
+            if(isScriptPaused(ns,ns.getScriptName()))return;automationHeartbeat(ns);
             await ns.sleep(sleepInterval);
             try {
-                const reserve = options['reserve'] != null ? options['reserve'] : Number(ns.read("reserve.txt") || 0);
+                const reserve = stockReserve(options['reserve'],ns.read('reserve.txt'));
                 player = await getPlayerInfo(ns);
                 success = await tryGetStockMarketAccess(ns, player.money - reserve);
             } catch (err) {
@@ -139,12 +150,12 @@ export async function main(ns) {
     allStocks = await initAllStocks(ns);
     bitNodeMults = await tryGetBitNodeMultipliers(ns);
 
-    if (showMarketSummary) await launchSummaryTail(ns); // Opens a separate script / window to continuously display the Pre4S forecast
+    if (showMarketSummary&&options['tail-summary']) await launchSummaryTail(ns); // Opens a separate script / window to continuously display the Pre4S forecast
 
     let hudElement = null;
     if (!disableHud) {
         hudElement = initializeHud();
-        ns.atExit(() => hudElement.parentElement.parentElement.parentElement.removeChild(hudElement.parentElement.parentElement));
+        ns.atExit(()=>{try{hudElement?.parentElement?.parentElement?.remove();}catch{}});
     }
 
     log(ns, `Welcome! Please note: all stock purchases will initially result in a Net (unrealized) Loss. This is not only due to commission, but because each stock has a 'spread' (difference in buy price and sell price). ` +
@@ -152,14 +163,16 @@ export async function main(ns) {
         `If you choose to stop the script, make sure you SELL all your stocks (can go 'run ${ns.getScriptName()} --liquidate') to get your money back.\n\nGood luck!\n~ Insight\n\n`)
 
     let pre4s = true;
-    while (true) {
+    while (!isScriptPaused(ns,ns.getScriptName())) {
+ automationHeartbeat(ns);
         try {
             const playerStats = await getPlayerInfo(ns);
-            const reserve = options['reserve'] != null ? options['reserve'] : Number(ns.read("reserve.txt") || 0);
+            const reserve = stockReserve(options['reserve'],ns.read('reserve.txt'));
             // Check whether we have 4s access yes (once we do, we can stop checking)
             if (pre4s) pre4s = !(await checkAccess(ns, "has4SDataTixApi"));
             const holdings = await refresh(ns, !pre4s, allStocks, myStocks); // Returns total stock value
-            const corpus = holdings + playerStats.money; // Corpus means total stocks + cash
+            const corpus = holdings + playerStats.money;
+            await ns.write('tasks/stock-status.json',JSON.stringify({at:Date.now(),pid:ns.pid,state:pre4s&&allStocks[0].priceHistory.length<minTickHistory?'building-history':'trading',mode:mock?'mock':pre4s?'estimated forecasts':'4S forecasts',cash:playerStats.money,reserve,holdings,corpus,realizedProfit:totalProfit,positions:myStocks.map(s=>({symbol:s.sym,long:s.sharesLong,short:s.sharesShort}))}),'w'); // Corpus means total stocks + cash
             const maxHoldings = (1 - fracH) * corpus; // The largest value of stock we could hold without violiating fracH (Fraction to keep as cash)
             if (pre4s && !mock && await tryGet4SApi(ns, playerStats, corpus * (options['buy-4s-budget'] - fracH) - reserve))
                 continue; // Start the loop over if we just bought 4S API access
@@ -178,12 +191,13 @@ export async function main(ns) {
             // Sell forecasted-to-underperform shares (worse than some expected return threshold)
             let sales = 0;
             for (let stk of myStocks) {
+                if(!Number.isFinite(stk.prob)||!Number.isFinite(stk.vol))continue;
                 if (stk.absReturn() <= thresholdToSell || stk.bullish() && stk.sharesShort > 0 || stk.bearish() && stk.sharesLong > 0) {
-                    if (pre4s && stk.ticksHeld < pre4sMinHoldTime) {
+                    if (pre4s && holdYoungStock(stk,pre4sMinHoldTime,pre4sBuyThresholdProbability)) {
                         if (!stk.warnedBadPurchase) log(ns, `WARNING: Thinking of selling ${stk.sym} with ER ${formatBP(stk.absReturn())}, but holding out as it was purchased just ${stk.ticksHeld} ticks ago...`);
                         stk.warnedBadPurchase = true; // Hack to ensure we don't spam this warning
                     } else {
-                        sales += await doSellAll(ns, stk);
+                        const before=stk.ownedShares();await doSellAll(ns,stk);if(stk.ownedShares()<before)sales++;
                         stk.warnedBadPurchase = false;
                     }
                 }
@@ -205,6 +219,7 @@ export async function main(ns) {
                     if (stk.blackoutWindow() >= marketCycleLength - estTick) continue;
                     if (pre4s && (Math.max(pre4sMinHoldTime, pre4sMinBlackoutWindow) >= marketCycleLength - estTick)) continue;
                     // Skip if we already own all possible shares in this stock, or if the expected return is below our threshold, or if shorts are disabled and stock is bearish
+                    if(!Number.isFinite(stk.prob)||!Number.isFinite(stk.vol)||!(stk.ask_price>=stk.bid_price&&stk.bid_price>0))continue;
                     if (stk.ownedShares() == stk.maxShares || stk.absReturn() <= thresholdToBuy || (disableShorts && stk.bearish())) continue;
                     // If pre-4s, do not purchase any stock whose last inversion was too recent, or whose probability is too close to 0.5
                     if (pre4s && (stk.lastInversion < minTickHistory || Math.abs(stk.prob - 0.5) < pre4sBuyThresholdProbability)) continue;
@@ -229,10 +244,11 @@ export async function main(ns) {
                             `\nGiven an estimated ${marketCycleLength - estTick} ticks left in market cycle, less ${stk.timeToCoverTheSpread().toFixed(1)} ticks to cover the spread (${(stk.spread_pct * 100).toFixed(2)}%), ` +
                             `remaining ${ticksBeforeCycleEnd.toFixed(1)} ticks would only generate ${formatMoney(estEndOfCycleValue)}, which is less than 2x commission (${formatMoney(2 * commission, 3)})`);
                     else
-                        cash -= await doBuy(ns, stk, numShares);
+                        cash -= await doBuy(ns, stk, numShares, budget);
                 }
             }
         } catch (err) {
+            await ns.write('tasks/stock-status.json',JSON.stringify({at:Date.now(),pid:ns.pid,state:'recovering',error:String(err)}),'w');
             log(ns, `WARNING: stockmaster.js Caught (and suppressed) an unexpected error in the main loop:\n` +
                 (typeof err === 'string' ? err : err.message || JSON.stringify(err)), false, 'warning');
         }
@@ -335,8 +351,8 @@ async function refresh(ns, has4s, allStocks, myStocks) {
         stk.position = mock ? null : dictPositions[sym];
         stk.sharesLong = mock ? (stk.sharesLong || 0) : stk.position[0];
         stk.boughtPrice = mock ? (stk.boughtPrice || 0) : stk.position[1];
-        stk.sharesShort = mock ? (stk.shares_short || 0) : stk.position[2];
-        stk.boughtPriceShort = mock ? (stk.boughtPrice_short || 0) : stk.position[3];
+        stk.sharesShort = mock ? (stk.sharesShort || 0) : stk.position[2];
+        stk.boughtPriceShort = mock ? (stk.boughtPriceShort || 0) : stk.position[3];
         holdings += stk.positionValue();
         if (stk.owned()) myStocks.push(stk); else stk.ticksHeld = 0;
         if (ticked) // Increment ticksHeld, or reset it if we have no position in this stock or reversed our position last tick.
@@ -445,69 +461,29 @@ let launchSummaryTail = async ns => {
         }`, summaryTailScript);
 }
 
-// Ram-dodging helpers that spawn temporary scripts to buy/sell rather than pay 2.5GB ram per variant
-let buyStockWrapper = async (ns, sym, numShares) => await transactStock(ns, sym, numShares, 'buyStock'); // ns.stock.buyStock(sym, numShares);
-let buyShortWrapper = async (ns, sym, numShares) => await transactStock(ns, sym, numShares, 'buyShort'); // ns.stock.buyShort(sym, numShares);
-let sellStockWrapper = async (ns, sym, numShares) => await transactStock(ns, sym, numShares, 'sellStock'); // ns.stock.sellStock(sym, numShares);
-let sellShortWrapper = async (ns, sym, numShares) => await transactStock(ns, sym, numShares, 'sellShort'); // ns.stock.sellShort(sym, numShares);
-let transactStock = async (ns, sym, numShares, action) =>
-    await getNsDataThroughFile(ns, `ns.stock.${action}(ns.args[0], ns.args[1])`, null, [sym, numShares]);
-
-/** @param {NS} ns
- * Automatically buys either a short or long position depending on the outlook of the stock. */
-async function doBuy(ns, stk, sharesToBuy) {
-    // We include -2*commission in the "holdings value" of our stock, but if we make repeated purchases of the same stock, we have to track
-    // the additional commission somewhere. So only subtract it from our running profit if this isn't our first purchase of this symbol
-    if (stk.owned())
-        totalProfit -= commission;
-    let long = stk.bullish();
-    let expectedPrice = long ? stk.ask_price : stk.bid_price; // Depends on whether we will be buying a long or short position
-    log(ns, `INFO: ${long ? 'Buying  ' : 'Shorting'} ${formatNumberShort(sharesToBuy, 3, 3).padStart(5)} (` +
-        `${stk.maxShares == sharesToBuy + stk.ownedShares() ? '@max shares' : `${formatNumberShort(sharesToBuy + stk.ownedShares(), 3, 3).padStart(5)}/${formatNumberShort(stk.maxShares, 3, 3).padStart(5)}`}) ` +
-        `${stk.sym.padEnd(5)} @ ${formatMoney(expectedPrice).padStart(9)} for ${formatMoney(sharesToBuy * expectedPrice).padStart(9)} (Spread:${(stk.spread_pct * 100).toFixed(2)}% ` +
-        `ER:${formatBP(stk.expectedReturn()).padStart(8)}) Ticks to Profit: ${stk.timeToCoverTheSpread().toFixed(2)}`, noisy, 'info');
-    let price = mock ? expectedPrice : Number(await transactStock(ns, stk.sym, sharesToBuy, long ? 'buyStock' : 'buyShort'));
-    // The rest of this work is for troubleshooting / mock-mode purposes
-    if (price == 0) {
-        const playerMoney = (await getPlayerInfo(ns)).money;
-        if (playerMoney < sharesToBuy * expectedPrice)
-            log(ns, `WARN: Failed to ${long ? 'buy' : 'short'} ${stk.sym} because money just recently dropped to ${formatMoney(playerMoney)} and we can no longer afford it.`, noisy);
-        else
-            log(ns, `ERROR: Failed to ${long ? 'buy' : 'short'} ${stk.sym} @ ${formatMoney(expectedPrice)} (0 was returned) despite having ${formatMoney(playerMoney)}.`, true, 'error');
-        return 0;
-    } else if (price != expectedPrice) {
-        log(ns, `WARNING: ${long ? 'Bought' : 'Shorted'} ${stk.sym} @ ${formatMoney(price)} but expected ${formatMoney(expectedPrice)} (spread: ${formatMoney(stk.spread)})`, false, 'warning');
-        price = expectedPrice; // Known Bitburner bug for now, short returns "price" instead of "bid_price". Correct this so running profit calcs are correct.
-    }
-    if (mock && long) stk.boughtPrice = (stk.boughtPrice * stk.sharesLong + price * sharesToBuy) / (stk.sharesLong + sharesToBuy);
-    if (mock && !long) stk.boughtPriceShort = (stk.boughtPriceShort * stk.sharesShort + price * sharesToBuy) / (stk.sharesShort + sharesToBuy);
-    if (long) stk.sharesLong += sharesToBuy; else stk.sharesShort += sharesToBuy; // Maintained for mock mode, otherwise, redundant (overwritten at next refresh)
-    return sharesToBuy * price + commission; // Return the amount spent on the transaction so it can be subtracted from our cash on hand
+// Each receipt records actual filled shares and synchronous cash movement.
+async function transactStock(ns,sym,count,action,liquidating=false,budget=Number.MAX_VALUE){
+ return await getNsDataThroughFile(ns,`(${stockTradeReceipt.toString()})({getPosition:(...a)=>ns.stock.getPosition(...a),getMaxShares:(...a)=>ns.stock.getMaxShares(...a),getPurchaseCost:(...a)=>ns.stock.getPurchaseCost(...a),has4SDataTixApi:()=>ns.stock.has4SDataTixApi(),getForecast:(...a)=>ns.stock.getForecast(...a),${action}:(...a)=>ns.stock.${action}(...a)},()=>ns.getPlayer().money,ns.args[0],ns.args[1],"${action}",(${stockReserve.toString()})(ns.args[4],ns.read("reserve.txt")),()=>ns.isRunning(ns.args[2])&&(ns.args[3]||ns.read("remote-control/paused/stockmaster.js.txt").trim()!=="true")&&(${action.startsWith('buy')?'('+achievementActionAllowed.toString()+')(ns,"stockInvesting")':'true'}),100000,ns.args[5])`,null,[sym,count,ns.pid,liquidating,options?.reserve??'__default__',budget]);
 }
-
-/** @param {NS} ns
- * Sell our current position in this stock. */
-async function doSellAll(ns, stk) {
-    let long = stk.sharesLong > 0;
-    if (long && stk.sharesShort > 0) // Detect any issues here - we should always sell one before buying the other.
-        log(ns, `ERROR: Somehow ended up both ${stk.sharesShort} short and ${stk.sharesLong} long on ${stk.sym}`, true, 'error');
-    let expectedPrice = long ? stk.bid_price : stk.ask_price; // Depends on whether we will be selling a long or short position
-    let sharesSold = long ? stk.sharesLong : stk.sharesShort;
-    let price = mock ? expectedPrice : await transactStock(ns, stk.sym, sharesSold, long ? 'sellStock' : 'sellShort');
-    const profit = (long ? stk.sharesLong * (price - stk.boughtPrice) : stk.sharesShort * (stk.boughtPriceShort - price)) - 2 * commission;
-    log(ns, `${profit > 0 ? 'SUCCESS' : 'WARNING'}: Sold all ${formatNumberShort(sharesSold, 3, 3).padStart(5)} ${stk.sym.padEnd(5)} ${long ? ' long' : 'short'} positions ` +
-        `@ ${formatMoney(price).padStart(9)} for a ` + (profit > 0 ? `PROFIT of ${formatMoney(profit).padStart(9)}` : ` LOSS  of ${formatMoney(-profit).padStart(9)}`) + ` after ${stk.ticksHeld} ticks`,
-        noisy, noisy ? (profit > 0 ? 'success' : 'error') : undefined);
-    if (price == 0) {
-        log(ns, `ERROR: Failed to sell ${sharesSold} ${stk.sym} ${long ? 'shares' : 'shorts'} @ ${formatMoney(expectedPrice)} - 0 was returned.`, true, 'error');
-        return 0;
-    } else if (price != expectedPrice) {
-        log(ns, `WARNING: Sold ${stk.sym} ${long ? 'shares' : 'shorts'} @ ${formatMoney(price)} but expected ${formatMoney(expectedPrice)} (spread: ${formatMoney(stk.spread)})`, false, 'warning');
-        price = expectedPrice; // Known Bitburner bug for now, sellSort returns "price" instead of "ask_price". Correct this so running profit calcs are correct.
-    }
-    if (long) stk.sharesLong -= sharesSold; else stk.sharesShort -= sharesSold; // Maintained for mock mode, otherwise, redundant (overwritten at next refresh)
-    totalProfit += profit;
-    return price * sharesSold - commission; // Return the amount of money recieved from the transaction
+async function doBuy(ns,stk,count,budget){
+ if(!achievementActionAllowed(ns,'stockInvesting')||isScriptPaused(ns,ns.getScriptName()))return 0;
+ const long=stk.bullish(),expected=long?stk.ask_price:stk.bid_price,owned=stk.owned();
+ const r=mock?{price:expected,shares:count,cash:count*expected+commission}:await transactStock(ns,stk.sym,count,long?'buyStock':'buyShort',false,budget);
+ if(!r.shares){log(ns,'Purchase deferred or rejected: '+stk.sym);return 0;}
+ if(owned)totalProfit-=commission;
+ if(long){stk.boughtPrice=((stk.boughtPrice||0)*stk.sharesLong+r.price*r.shares)/(stk.sharesLong+r.shares);stk.sharesLong+=r.shares;}
+ else{stk.boughtPriceShort=((stk.boughtPriceShort||0)*stk.sharesShort+r.price*r.shares)/(stk.sharesShort+r.shares);stk.sharesShort+=r.shares;}
+ log(ns,`Bought ${r.shares} ${stk.sym} ${long?'long':'short'} shares for ${formatMoney(r.cash)}`,noisy);
+ return r.cash;
+}
+async function doSellAll(ns,stk){
+ const long=stk.sharesLong>0,count=long?stk.sharesLong:stk.sharesShort,entry=long?stk.boughtPrice:stk.boughtPriceShort,expected=long?stk.bid_price:stk.ask_price;
+ const r=mock?{price:expected,shares:count,cash:count*(long?expected:2*entry-expected)-commission,entry}:await transactStock(ns,stk.sym,count,long?'sellStock':'sellShort');
+ if(!r.shares){log(ns,'Sale deferred or rejected: '+stk.sym);return 0;}
+ const profit=r.cash-r.shares*r.entry-commission;
+ totalProfit+=profit;if(long)stk.sharesLong-=r.shares;else stk.sharesShort-=r.shares;
+ log(ns,`Sold ${r.shares} ${stk.sym} ${long?'long':'short'} shares: cash ${formatMoney(r.cash)}, profit ${formatMoney(profit)}`,noisy);
+ return r.cash;
 }
 
 let formatBP = fraction => formatNumberShort(fraction * 100 * 100, 3, 2) + " BP";
@@ -537,25 +513,23 @@ function doStatusUpdate(ns, stocks, myStocks, hudElement = null) {
 }
 
 /** @param {NS} ns **/
-async function liquidate(ns) {
+async function liquidate(ns,explicit=false) {
     allStockSymbols ??= await getStockSymbols(ns);
     if (allStockSymbols == null) return; // Nothing to liquidate, no API Access
-    let totalStocks = 0, totalSharesLong = 0, totalSharesShort = 0, totalRevenue = 0;
-    const dictPositions = mock ? null : await getStockInfoDict(ns, 'getPosition');
-    for (const sym of allStockSymbols) {
-        var [sharesLong, , sharesShort, avgShortCost] = dictPositions[sym];
-        if (sharesLong + sharesShort == 0) continue;
-        totalStocks++, totalSharesLong += sharesLong, totalSharesShort += sharesShort;
-        if (sharesLong > 0) totalRevenue += (await sellStockWrapper(ns, sym, sharesLong)) * sharesLong - commission;
-        if (sharesShort > 0) totalRevenue += (2 * avgShortCost - (await sellShortWrapper(ns, sym, sharesShort))) * sharesShort - commission;
+    let totalStocks=0,totalSharesLong=0,totalSharesShort=0,totalRevenue=0,failed=0;
+    const positions=await getStockInfoDict(ns,'getPosition');
+    for(const sym of allStockSymbols){
+      const [long,,short]=positions[sym];if(!long&&!short)continue;totalStocks++;
+      for(const [count,action]of [[long,'sellStock'],[short,'sellShort']])if(count){const r=await transactStock(ns,sym,count,action,explicit);if(r.shares<count)failed++;if(!r.shares)continue;totalRevenue+=r.cash;if(action==='sellStock')totalSharesLong+=r.shares;else totalSharesShort+=r.shares;}
     }
-    log(ns, `Sold ${totalSharesLong.toLocaleString('en')} long shares and ${totalSharesShort.toLocaleString('en')} short shares ` +
-        `in ${totalStocks} stocks for ${formatMoney(totalRevenue, 3)}`, true, 'success');
+    log(ns,`Liquidated ${totalSharesLong} long and ${totalSharesShort} short shares in ${totalStocks} stocks; cash ${formatMoney(totalRevenue)}; failed positions ${failed}`,true,failed?'warning':'success');
+    return failed===0;
 }
 
 /** @param {NS} ns **/
 /** @param {Player} playerStats **/
 async function tryGet4SApi(ns, playerStats, budget) {
+    if(!achievementActionAllowed(ns,"fourSigma"))return false;
     if (await checkAccess(ns, 'has4SDataTixApi')) return false; // Only return true if we just bought it
     const cost4sData = 1E9 * bitNodeMults.FourSigmaMarketDataCost;
     const cost4sApi = 25E9 * bitNodeMults.FourSigmaMarketDataApiCost;
@@ -564,16 +538,16 @@ async function tryGet4SApi(ns, playerStats, budget) {
     // Liquidate shares if it would allow us to afford 4S API data
     if (totalCost > budget) /* Need to reserve some money to invest */
         return false;
-    if (playerStats.money < totalCost)
-        await liquidate(ns);
+    if (playerStats.money < totalCost+stockReserve(options['reserve'],ns.read('reserve.txt')) && !await liquidate(ns))
+        return false;
     if (!has4S) {
-        if (await tryBuy(ns, 'purchase4SMarketData'))
+        if (await tryBuy(ns, 'purchase4SMarketData',cost4sData))
             log(ns, `SUCCESS: Purchased 4SMarketData for ${formatMoney(cost4sData)} ` +
                 `(At ${formatDuration(getTimeInBitnode())} into BitNode)`, true, 'success');
         else
             log(ns, 'ERROR attempting to purchase 4SMarketData!', false, 'error');
     }
-    if (await tryBuy(ns, 'purchase4SMarketDataTixApi')) {
+    if (await tryBuy(ns, 'purchase4SMarketDataTixApi',cost4sApi)) {
         log(ns, `SUCCESS: Purchased 4SMarketDataTixApi for ${formatMoney(cost4sApi)} ` +
             `(At ${formatDuration(getTimeInBitnode())} into BitNode)`, true, 'success');
         return true;
@@ -593,8 +567,8 @@ async function checkAccess(ns, stockFn) {
 /** @param {NS} ns
  * @param {"purchaseWseAccount"|"purchaseTixApi"|"purchase4SMarketData"|"purchase4SMarketDataTixApi"} stockFn
  * Helper to try and buy a stock access. Yes, the code is the same as above, but I wanted to be explicit. */
-async function tryBuy(ns, stockFn) {
-    return await getNsDataThroughFile(ns, `ns.stock.${stockFn}()`)
+async function tryBuy(ns, stockFn,cost) {
+    return await getNsDataThroughFile(ns, `ns.isRunning(ns.args[0])&&ns.read('remote-control/paused/stockmaster.js.txt').trim()!=="true"&&(${achievementActionAllowed.toString()})(ns,ns.args[3])&&ns.getPlayer().money>=ns.args[1]+(${stockReserve.toString()})(ns.args[2],ns.read('reserve.txt'))?ns.stock.${stockFn}():false`,null,[ns.pid,cost,options['reserve']??'__default__',stockFn.includes('4S')?'fourSigma':'stockInvesting']);
 }
 
 /** @param {NS} ns
@@ -608,13 +582,13 @@ async function tryGetStockMarketAccess(ns, budget) {
     const totalCost = (hasWSE ? 0 : costWseAccount) + costTixApi;
     if (totalCost > budget) return false;
     if (!hasWSE) {
-        if (await tryBuy(ns, 'purchaseWseAccount'))
+        if (await tryBuy(ns, 'purchaseWseAccount',costWseAccount))
             log(ns, `SUCCESS: Purchased a WSE (stockmarket) account for ${formatMoney(costWseAccount)} ` +
                 `(At ${formatDuration(getTimeInBitnode())} into BitNode)`, true, 'success');
         else
             log(ns, 'ERROR attempting to purchase WSE account!', false, 'error');
     }
-    if (await tryBuy(ns, 'purchaseTixApi')) {
+    if (await tryBuy(ns, 'purchaseTixApi',costTixApi)) {
         log(ns, `SUCCESS: Purchased Tix (stockmarket) Api access for ${formatMoney(costTixApi)} ` +
             `(At ${formatDuration(getTimeInBitnode())} into BitNode)`, true, 'success');
         return true;
@@ -624,11 +598,12 @@ async function tryGetStockMarketAccess(ns, budget) {
 }
 
 function initializeHud() {
-    const d = eval("document");
+    const d=globalThis['document'];if(!d)return null;
     let htmlDisplay = d.getElementById("stock-display-1");
     if (htmlDisplay !== null) return htmlDisplay;
     // Get the custom display elements in HUD.
-    let customElements = d.getElementById("overview-extra-hook-0").parentElement.parentElement;
+    const hook=d.getElementById('overview-extra-hook-0');if(!hook?.parentElement?.parentElement)return null;
+    let customElements=hook.parentElement.parentElement;
     // Make a clone of the hook for extra hud elements, and move it up under money
     let stockValueTracker = customElements.cloneNode(true);
     // Remove any nested elements created by stats.js

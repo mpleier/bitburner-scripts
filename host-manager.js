@@ -1,3 +1,4 @@
+import { claimSpending } from './spending-policy.js';
 import { log, getConfiguration, instanceCount, getNsDataThroughFile, formatMoney, formatRam, formatDuration } from './helpers.js'
 
 // The purpose of the host manager is to buy the best servers it can
@@ -226,10 +227,10 @@ async function tryToBuyBestServerPossible(ns) {
 
         cost -= costByRamExponent[Math.log2(worstServerRam)]
         isUpgrade = true
-        purchasedServer = (await getNsDataThroughFile(ns, `ns.cloud.upgradeServer(ns.args[0], ns.args[1])`, null,
+        purchasedServer = (await getNsDataThroughFile(ns, `(${claimSpending.toString()})(ns,"servers",ns.cloud.getServerUpgradeCost(ns.args[0],ns.args[1])) && ns.cloud.upgradeServer(ns.args[0], ns.args[1])`, null,
             [worstServerName, maxRamPossibleToBuy])) ? worstServerName : "";
     } else {
-        purchasedServer = await getNsDataThroughFile(ns, `ns.cloud.purchaseServer(ns.args[0], ns.args[1])`, null,
+        purchasedServer = await getNsDataThroughFile(ns, `(${claimSpending.toString()})(ns,"servers",ns.cloud.getServerCost(ns.args[1])) ? ns.cloud.purchaseServer(ns.args[0], ns.args[1]) : ""`, null,
             [purchasedServerName, maxRamPossibleToBuy]);
     }
     if (!purchasedServer)

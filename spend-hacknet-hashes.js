@@ -1,3 +1,6 @@
+import {registerAutomation,automationHeartbeat,maintenanceRequested} from './runtime-policy.js';
+import {isScriptPaused} from './automation-control.js';
+import {achievementActionAllowed} from './achievement-policy.js';
 import { log as log_helper, getConfiguration, disableLogs, formatMoney, formatDuration, formatNumberShort, getErrorInfo } from './helpers.js'
 
 const sellForMoney = 'Sell for Money';
@@ -34,6 +37,8 @@ export function autocomplete(data, args) {
  * Executes instructions to spend hacknet hashes continuously.
  * NOTE: This script is written to support multiple concurrent instances running with different arguments. **/
 export async function main(ns) {
+ registerAutomation(ns);
+    if(isScriptPaused(ns,ns.getScriptName()))return;
     const options = getConfiguration(ns, argsSchema);
     if (!options) return; // Invalid options, or ran in --help mode.
     const liquidate = options.l || options.liquidate;
@@ -75,7 +80,9 @@ export async function main(ns) {
     const getMinCost = spendActions => Math.min(...spendActions.map(p => ns.hacknet.hashCost(p)));
     // Helper to format hashes in log message
     const formatHashes = (hashes) => formatNumberShort(hashes, 6, 3);
-    while (true) {
+    while (!isScriptPaused(ns,ns.getScriptName())) {
+ automationHeartbeat(ns);
+        if(!achievementActionAllowed(ns,"hashSpending")){await ns.sleep(Math.max(50,interval));continue;}
         await ns.sleep(interval);
         if (lowPriority && ns.hacknet.numHashes() > 0) // Low priority mode means any competing scripts should get to spend hashes first.
             await ns.sleep(interval); // Yeild for an additional interval to give competing scripts a chance to spend first. 
@@ -99,6 +106,8 @@ export async function main(ns) {
             let purchasesThisLoop = 0;
             // Define the spend hash loop as a local function, since we may need to call it twice.
             const fnSpendHashes = async (purchases, spendAllHashes) => {
+                if(!achievementActionAllowed(ns,'hashSpending'))return;
+                purchases=purchases.filter(action=>action!==sellForMoney||achievementActionAllowed(ns,'hacknetMoney'));
                 const startingHashes = ns.hacknet.numHashes() || 0;
                 capacity = ns.hacknet.hashCapacity() || 0;
                 // Spend every hash we can if so instructed, otherwise, spend only hashes that would be wasted on next tick.

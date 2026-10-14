@@ -1,10 +1,14 @@
+import { factionControlAllowed } from './faction-policy.js';
+import { isScriptPaused } from './automation-control.js';
+import { registerAutomation, automationHeartbeat, maintenanceRequested } from './runtime-policy.js';
+import {achievementActionAllowed} from './achievement-policy.js';
 import { activityBusy, markActivitySupport } from './activity-coordination.js';
 import {
     instanceCount, getConfiguration, getNsDataThroughFile, getFilePath, getActiveSourceFiles, tryGetBitNodeMultipliers,
     formatDuration, formatMoney, formatNumberShort, disableLogs, log, getErrorInfo, tail
 } from './helpers.js'
 
-let options;
+let options, activeNs, lastWorkStatusAt=0, lastWorkStatusKey="";
 const argsSchema = [
     ['first', []], // Grind rep with these factions first. Also forces a join of this faction if we normally wouldn't (e.g. no desired augs or all augs owned)
     ['skip', []], // Don't work for these factions
@@ -119,14 +123,17 @@ export function autocomplete(data, args) {
 }
 
 // Bit of an ugly afterthought, but this is all over the place to break out of whatever we're doing and return to the main loop.
-const breakToMainLoop = () => Date.now() > mainLoopStart + checkForNewPrioritiesInterval;
+const breakToMainLoop = () => { if(activeNs)automationHeartbeat(activeNs); return Date.now() > mainLoopStart + checkForNewPrioritiesInterval || !!activeNs&&(isScriptPaused(activeNs,activeNs.getScriptName())||maintenanceRequested(activeNs)||activityBusy(activeNs)); };
 
 /** @param {NS} ns */
 export async function main(ns) {
+    if(isScriptPaused(ns,ns.getScriptName()))return;
+    activeNs=ns; lastWorkStatusAt=0; lastWorkStatusKey="";
     await markActivitySupport(ns);
     const runOptions = getConfiguration(ns, argsSchema);
     if (!runOptions || await instanceCount(ns) > 1) return; // Prevent multiple instances of this script from being started, even with different args.
     options = runOptions; // We don't set the global "options" until we're sure this is the only running instance
+    registerAutomation(ns);
     disableLogs(ns, ['sleep']);
 
     // Reset globals whose value can persist between script restarts in weird situations
@@ -161,6 +168,9 @@ export async function main(ns) {
 
     let loadingComplete = false; // In the event of suboptimal RAM conditions, keep trying to start until we succeed
     while (!loadingComplete) {
+        if(isScriptPaused(ns,ns.getScriptName()))return;
+        automationHeartbeat(ns);
+        if(maintenanceRequested(ns)){await ns.sleep(1000);continue;}
         try {
             await loadStartupData(ns);
             loadingComplete = true;
@@ -172,10 +182,14 @@ export async function main(ns) {
 
     mainLoopStart = Date.now();
     scope = 0;
-    while (true) { // After each loop, we will repeat all prevous work "strategies" to see if anything new has been unlocked, and add one more "strategy" to the queue
+    while (!isScriptPaused(ns,ns.getScriptName())) { // After each loop, we will repeat all prevous work "strategies" to see if anything new has been unlocked, and add one more "strategy" to the queue
+        automationHeartbeat(ns);
+        if(maintenanceRequested(ns)||activityBusy(ns)){await factionWorkStatus(ns,'waiting','Maintenance or another activity owns player focus');await ns.sleep(1000);continue;}
         try {
+            await factionWorkStatus(ns,'working','Assessing invitations and reputation priorities');
             await mainLoop(ns);
         } catch (err) {
+            await factionWorkStatus(ns,'recovering',String(err));
             log(ns, 'WARNING: work-for-factions.js caught an unhandled error in its main loop. Trying again in 5 seconds...\n' + getErrorInfo(err), false, 'warning');
             await ns.sleep(loopSleepInterval);
             scope--; // Cancel out work scope increasing on the next iteration.
@@ -604,7 +618,7 @@ async function goToCity(ns, cityName) {
         ns.print(`Already in city ${cityName}`);
         return true;
     }
-    if (await getNsDataThroughFile(ns, `ns.singularity.travelToCity(ns.args[0])`, null, [cityName])) {
+    if (await factionWorkCommand(ns, `ns.singularity.travelToCity(ns.args[0])`, [cityName], true)) {
         lastTravel = Date.now()
         log(ns, `Travelled from ${player.city} to ${cityName}`, false, 'info');
         return true;
@@ -632,6 +646,8 @@ export async function crimeForKillsKarmaStats(ns, reqKills, reqKarma, reqStats, 
         /*                      */ p.skills.dexterity < reqStats || p.skills.agility < reqStats;
     let crime, lastCrime, crimeTime, lastStatusUpdateTime, needStats;
     while (forever || (needStats = anyStatsDeficient(player)) || player.numPeopleKilled < reqKills || -ns.heart.break() < reqKarma) {
+        automationHeartbeat(ns);
+        if(isScriptPaused(ns,ns.getScriptName())||maintenanceRequested(ns)||activityBusy(ns))return;
         if (!forever && breakToMainLoop()) return ns.print('INFO: Interrupting crime to check on high-level priorities.');
         let crimeChances = await getNsDataThroughFile(ns, `Object.fromEntries(ns.args.map(c => [c, ns.singularity.getCrimeChance(c)]))`, '/Temp/crime-chances.txt', bestCrimesByDifficulty);
         let karma = -ns.heart.break();
@@ -648,7 +664,8 @@ export async function crimeForKillsKarmaStats(ns, reqKills, reqKarma, reqStats, 
                 if (!options['no-tail-windows']) tail(ns); // Force a tail window open to help the user kill this script if they accidentally closed the tail window and don't want to keep doing crime
             }
             let focusArg = shouldFocus === undefined ? true : shouldFocus; // Only undefined if running as imported function
-            crimeTime = await getNsDataThroughFile(ns, 'ns.singularity.commitCrime(ns.args[0], ns.args[1])', null, [crime, focusArg])
+            crimeTime = await factionWorkCommand(ns, 'ns.singularity.commitCrime(ns.args[0], ns.args[1])', [crime, focusArg], true)
+            if(!crimeTime)return;
             if (shouldFocus && !options['no-tail-windows']) tail(ns); // Force a tail window open when auto-criming with focus so that the user can more easily kill this script
         }
         // Periodic status update with progress
@@ -691,7 +708,7 @@ async function study(ns, focus, course, university = null) {
             return;
         }
     }
-    if (await getNsDataThroughFile(ns, `ns.singularity.universityCourse(ns.args[0], ns.args[1], ns.args[2])`, null, [university, course, focus])) {
+    if (await factionWorkCommand(ns, `ns.singularity.universityCourse(ns.args[0], ns.args[1], ns.args[2])`, [university, course, focus], true)) {
         log(ns, `Started studying '${course}' at '${university}'`, false, 'success');
         return true;
     }
@@ -763,7 +780,7 @@ export async function tryJoinFaction(ns, factionName) {
     var joinedFactions = (await getPlayerInfo(ns)).factions;
     if (joinedFactions.includes(factionName))
         return true;
-    if (!(await getNsDataThroughFile(ns, `ns.singularity.joinFaction(ns.args[0])`, null, [factionName])))
+    if (!(await factionWorkCommand(ns, `ns.singularity.joinFaction(ns.args[0])`, [factionName], false)))
         return false;
     log(ns, `Joined faction "${factionName}"`, false, 'success');
     return true;
@@ -844,13 +861,14 @@ let lastInterruptionNotice = "";
  * @return {bool} true if we should stop what we're doing and let the interruption continue.
  */
 async function isValidInterruption(ns, currentWork = null) {
-    if (activityBusy(ns)) return true;
+    automationHeartbeat(ns);
+    if (isScriptPaused(ns,ns.getScriptName())||maintenanceRequested(ns)||activityBusy(ns)) return true;
     let interruptionNotice = "";
     currentWork ??= await getCurrentWorkInfo(ns); // Retrieve current work (unless it was passed in)
     // Never interrupt grafting
-    if (currentWork.type == "GRAFTING") {
-        interruptionNotice = "Grafting in progress. Pausing all activity to avoid interrupting...";
-        wasGrafting = true;
+    if (["GRAFTING","CREATE_PROGRAM"].includes(currentWork.type)) {
+        interruptionNotice = currentWork.type+" in progress. Waiting before changing player work.";
+        wasGrafting = currentWork.type === "GRAFTING";
     }
     // If bladeburner is currently active, but we do not yet have The Blade's Simulacrum, we may choose to we pause working.
     else if (7 in dictSourceFiles && !hasSimulacrum && !options['no-bladeburner-check']) {
@@ -873,6 +891,7 @@ async function isValidInterruption(ns, currentWork = null) {
 
     // If we decided to pause focus-work, display a message and return true
     if (interruptionNotice != "") {
+        await factionWorkStatus(ns,"waiting",interruptionNotice);
         if (lastInterruptionNotice != interruptionNotice) { // If we haven't already notified that we're pausing activity, do this now
             log(ns, `INFO: ${interruptionNotice}`, false, 'info');
             lastInterruptionNotice = interruptionNotice;
@@ -1013,13 +1032,13 @@ export async function workForSingleFaction(ns, factionName, forceUnlockDonations
 
 /** Stop whatever focus work we're currently doing
  * @param {NS} ns */
-async function stop(ns) { return await getNsDataThroughFile(ns, `ns.singularity.stopAction()`); }
+async function stop(ns) { return await factionWorkCommand(ns, `ns.singularity.stopAction()`, [], true); }
 
 /** Start the specified faction work
  * @param {NS} ns */
 async function startWorkForFaction(ns, factionName, work, focus) {
     //log(ns, `INFO: startWorkForFaction(${factionName}, ${work}, ${focus})`);
-    return await getNsDataThroughFile(ns, `ns.singularity.workForFaction(ns.args[0], ns.args[1], ns.args[2])`, null, [factionName, work, focus])
+    return await factionWorkCommand(ns, `ns.singularity.workForFaction(ns.args[0], ns.args[1], ns.args[2])`, [factionName, work, focus], true)
 }
 
 /** Measure our rep gain rate (per second)
@@ -1106,7 +1125,7 @@ export async function workForAllMegacorps(ns, megacorpFactionsInPreferredOrder, 
  * @param {NS} ns */
 async function trySpendHashes(ns, spendOn) {
     return await getNsDataThroughFile(ns,
-        'ns.hacknet.numHashes() + ns.hacknet.spendHashes(ns.args[0]) - ns.hacknet.numHashes()',
+        `(${achievementActionAllowed.toString()})(ns,"hashSpending") ? ns.hacknet.numHashes() + ns.hacknet.spendHashes(ns.args[0]) - ns.hacknet.numHashes() : 0`,
         '/Temp/hacknet-spendHashes-returnSpent.txt', [spendOn]);
 }
 
@@ -1128,7 +1147,7 @@ const serverByCompany = { "Bachman & Associates": "b-and-a", "ECorp": "ecorp", "
 /** Apply to the specified role at the specified company
  * @param {NS} ns */
 async function tryApplyToCompany(ns, company, role) {
-    return await getNsDataThroughFile(ns, `ns.singularity.applyToCompany(ns.args[0], ns.args[1])`, null, [company, role])
+    return await factionWorkCommand(ns, `ns.singularity.applyToCompany(ns.args[0], ns.args[1])`, [company, role], true)
 }
 
 /** Check if the server associated with the specified company has been backdoored. TODO: We could be caching this result once true.
@@ -1268,7 +1287,7 @@ export async function workForMegacorpFactionInvite(ns, factionName, waitForInvit
                 isWorking = false;
                 if (!options['no-tail-windows']) tail(ns); // Force a tail window open to help the user kill this script if they accidentally closed the tail window and don't want to keep working
             }
-            if (await getNsDataThroughFile(ns, `ns.singularity.workForCompany(ns.args[0], ns.args[1])`, null, [companyName, shouldFocus])) {
+            if (await factionWorkCommand(ns, `ns.singularity.workForCompany(ns.args[0], ns.args[1])`, [companyName, shouldFocus], true)) {
                 isWorking = true;
                 if (shouldFocus && !options['no-tail-windows']) tail(ns); // Keep a tail window open if we're stealing focus
             } else {
@@ -1302,4 +1321,15 @@ export async function workForMegacorpFactionInvite(ns, factionName, waitForInvit
     ns.print(`Stopped working for "${companyName}" repRequiredForFaction: ${repRequiredForFaction.toLocaleString('en')} ` +
         `currentReputation: ${Math.round(currentReputation).toLocaleString('en')} inFaction: ${player.factions.includes(factionName)}`);
     return false;
+}
+
+
+async function factionWorkCommand(ns,expression,args=[],focus=true) {
+ const index=args.length;
+ return await getNsDataThroughFile(ns,`(${factionControlAllowed.toString()})({isRunning:p=>ns.isRunning(p),read:f=>ns.read(f),currentWork:()=>ns.singularity.getCurrentWork()},ns.args[${index}],ns.args[${index+1}],${focus}) ? (${expression}) : false`,null,[...args,ns.pid,ns.getScriptName().split('/').pop()]);
+}
+async function factionWorkStatus(ns,state,reason) {
+ const now=Date.now(),key=state+reason;if(now-lastWorkStatusAt<5000&&key===lastWorkStatusKey)return;
+ lastWorkStatusAt=now;lastWorkStatusKey=key;
+ await ns.write('tasks/faction-work-status.json',JSON.stringify({at:now,pid:ns.pid,state,reason}),'w');
 }

@@ -1,8 +1,10 @@
+import {registerAutomation,automationHeartbeat,maintenanceRequested} from './runtime-policy.js';
 import { isScriptPaused } from './automation-control.js';
 /** Darknet coordinator. Tries supplied exact-match candidates on discovered servers. */
 import { solveFeedbackPassword, supportsFeedbackModel, modelCandidates, isStalledScout, dictionaryWords } from './darknet-solvers.js';
 import { frontierFile } from './darknet-migration-policy.js';
 export async function main(ns) {
+ registerAutomation(ns);
     if (isScriptPaused(ns, ns.getScriptName())) return;
   const passwordFile = "darknet-passwords.txt";
   const candidateFile = "darknet-candidates.txt";
@@ -192,7 +194,8 @@ export async function main(ns) {
   };
 
   ns.print("Darknet manager active. Tries exact words in darknet-candidates.txt plus saved hostname=password entries.");
-  while (true) {
+  while (!isScriptPaused(ns,ns.getScriptName())) {
+ automationHeartbeat(ns);
     try {
       ensureDarknetUnlock();
       const passwords = parsePasswords();

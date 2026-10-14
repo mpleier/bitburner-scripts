@@ -1,3 +1,5 @@
+import {registerAutomation,automationHeartbeat,maintenanceRequested} from './runtime-policy.js';
+import {achievementActionAllowed} from './achievement-policy.js';
 import { canLaunchFactionWorker, studyCommand } from './automation-policy.js';
 import { isScriptPaused } from './automation-control.js';
 import { activityBusy, pendingRam } from './activity-coordination.js';
@@ -87,6 +89,7 @@ export function autocomplete(data, args) {
 // script entry point
 /** @param {NS} ns **/
 export async function main(ns) {
+ registerAutomation(ns);
     if (isScriptPaused(ns, ns.getScriptName())) return;
     // --- CONSTANTS ---
     // track how costly (in security) a growth/hacking thread is.
@@ -245,9 +248,7 @@ export async function main(ns) {
         const fourSigmaCost = (bitNodeMults.FourSigmaMarketDataApiCost * 25000000000);
         if (!have4sApi && playerMoney >= fourSigmaCost / 2)
             shouldReserve += fourSigmaCost; // Start saving if we're half-way to buying 4S market access
-        // Conserve money if we're in BN10 and nearing the cost of the last last sleeve
-        if (bitNodeN == 10 && playerMoney >= 10e15) // 10q - 10% the cost of the last sleeve
-            shouldReserve = 100e15; // 100q, the cost of the 6th sleeve from The Covenant
+        // Sleeve expansion spends only unreserved cash; do not reserve its own purchase price against it.
         return shouldReserve;
     }
 
@@ -365,10 +366,10 @@ export async function main(ns) {
             { name: "stats.js", shouldRun: () => reqRam(64), shouldTail: false }, // Adds stats not usually in the HUD (nice to have)
             { name: "darknet-manager.js", shouldRun: () => reqRam(64), shouldTail: false },
             { name: "health-manager.js", shouldRun: () => reqRam(32) && 4 in dictSourceFiles, shouldTail: false },
-            { name: "infiltration-manager.js", shouldRun: () => reqRam(64) && 4 in dictSourceFiles, shouldTail: false },
+            { name: "infiltration-manager.js", shouldRun: () => reqRam(64), shouldTail: false },
             { name: "corporation-manager.js", shouldRun: () => reqRam(256) && (resetInfo.currentNode == 3 || 3 in dictSourceFiles), shouldTail: true }, // Autopilot disables this helper when it launches the manager itself.
-            { name: "go.js", shouldRun: () => reqRam(64), minRamReq: 20.2 }, // Play go.js (various multipliers, but large dynamic ram requirements)
-            { name: "stockmaster.js", shouldRun: () => reqRam(64), args: openTailWindows ? ["--show-market-summary"] : [] }, // Start our stockmaster
+            { name: "go.js", shouldRun: () => reqRam(32), minRamReq: 20.2, shouldTail: false }, // Play go.js (various multipliers, but large dynamic ram requirements)
+            { name: "stockmaster.js", shouldRun: () => reqRam(64), minRamReq: 32, args: openTailWindows ? ["--show-market-summary"] : [] }, // Start our stockmaster
             { name: "hacknet-upgrade-manager.js", shouldRun: () => shouldUpgradeHacknet(), args: ["-c", "--max-payoff-time", "1h", "--interval", "0"], shouldTail: false }, // One-time kickstart of hash income by buying everything with up to 1h payoff time immediately
             { name: "spend-hacknet-hashes.js", shouldRun: () => reqRam(64) && 9 in dictSourceFiles, args: [], shouldTail: false }, // Always have this running to make sure hashes aren't wasted
             { name: "sleeve.js", shouldRun: () => reqRam(64) && 10 in dictSourceFiles }, // Script to create manage our sleeves for us
@@ -546,6 +547,7 @@ export async function main(ns) {
                         ` is greater than the configured --initial-hack-xp-time of ${maxXpTime} seconds.`);
                 log(ns, `INFO: Running Hack XP-focused cycles for ${maxXpTime} seconds to further boost hack XP and speed up main hack cycle times. (set --initial-hack-xp-time 0 to disable this step.)`);
                 while (maxXpCycles-- > 0 && Date.now() - start < maxXpTime * 1000) {
+ automationHeartbeat(ns);
                     let cycleTime = await farmHackXp(ns, 1, verbose, 1);
                     if (cycleTime)
                         await ns.sleep(cycleTime);
@@ -615,7 +617,7 @@ export async function main(ns) {
 
         // Hack: this doesn't really belong here, but is essentially a "temp script" we periodically run when needed
         // Super-early aug, if we are poor, spend hashes as soon as we get them for a quick cash injection. (Only applies if we have hacknet servers)
-        if (9 in dictSourceFiles && !options['disable-spend-hashes']) { // See if we have a hacknet, and spending hashes for money isn't disabled
+        if (9 in dictSourceFiles && !options['disable-spend-hashes'] && achievementActionAllowed(ns,'hacknetMoney') && achievementActionAllowed(ns,'hashSpending')) { // See if we have a hacknet, and spending hashes for money isn't disabled
             if (homeServer.getMoney() < options['spend-hashes-for-money-when-under'] // Only if money is below the configured threshold
                 && homeServer.ramAvailable(/*ignoreReservedRam:*/true) >= 5.6) { // Ensure we have spare RAM to run this temp script
                 await runCommand(ns, `0; if(ns.hacknet.spendHashes("Sell for Money")) ns.toast('Sold 4 hashes for \$1M', 'success')`, '/Temp/sell-hashes-for-money.js');
@@ -735,6 +737,7 @@ export async function main(ns) {
         let lastHelperCheck = 0;
         //let isHelperListLaunched = false; // Uncomment this and related code to keep trying to start helpers
         do {
+            automationHeartbeat(ns);
             loops++;
             if (loops > 0) await ns.sleep(loopInterval);
             try {
@@ -1687,7 +1690,7 @@ export async function main(ns) {
                 if (!(await doesFileExist(ns, getFilePath('helpers.js'), targetServer.name)))
                     missing_scripts.push(getFilePath('helpers.js')); // Some tools require helpers.js. Best to copy it around.
                 if (tool.name.includes("/Tasks/contractor.js")) // HACK: When home RAM is low and we're running this tool on another sever, copy its dependencies
-                    missing_scripts.push(getFilePath('/Tasks/contractor.js.solver.js'), getFilePath('/Tasks/run-with-delay.js'))
+                    missing_scripts.push(getFilePath('/Tasks/contractor.js.solver.js'), getFilePath('/Tasks/run-with-delay.js'),getFilePath('contract-policy.js'),getFilePath('runtime-policy.js'),getFilePath('bitnode-fallbacks.js'))
                 if (verbose)
                     log(ns, `Copying ${tool.name} and ${missing_scripts.length - 1} dependencies from ${daemonHost} to ${targetServer.name} so that it can be executed remotely.`);
                 await getNsDataThroughFile(ns, `ns.scp(ns.args.slice(2), ns.args[0], ns.args[1])`, '/Temp/copy-scripts.txt', [targetServer.name, daemonHost, ...missing_scripts])

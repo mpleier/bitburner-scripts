@@ -1,6 +1,10 @@
+import { isScriptPaused } from './automation-control.js';
+import { registerAutomation, automationHeartbeat, maintenanceRequested } from './runtime-policy.js';
+import { pendingRam } from './activity-coordination.js';
+import { stanekChargePlan, stanekThreadBudget, stanekOptionsError, stanekSourceLevel } from './stanek-policy.js';
 import {
     log, disableLogs, getFilePath, getConfiguration, formatNumberShort, formatRam,
-    getNsDataThroughFile, waitForProcessToComplete, getActiveSourceFiles, instanceCount, unEscapeArrayArgs,
+    getNsDataThroughFile, waitForProcessToComplete, instanceCount, unEscapeArrayArgs,
     tail
 } from './helpers.js'
 
@@ -12,11 +16,9 @@ const argsSchema = [
     ['reserved-ram', 32], // Don't use this RAM
     ['reserved-ram-ideal', 64], // Leave this amount of RAM free if it represents less than 5% of available RAM
     ['max-charges', 120], // Stop charging when all fragments have this many charges (diminishing returns - num charges is ^0.07 )
-    // By default, starting an augmentation with stanek.js will still spawn daemon.js, but will instruct it not to schedule any hack cycles against home by 'reserving' all its RAM
-    // TODO: Set these defaults in some way that the user can explicitly specify that they want to run **no** startup script and **no** completion script
     ['on-startup-script', null], // Spawn this script when stanek is launched
     ['on-startup-script-args', []], // Args for the above
-    // When stanek completes, it will run daemon.js again (which will terminate the initial ram-starved daemon that is running)
+    // Autopilot supplies its daemon completion hook; standalone use has no default hooks.
     ['on-completion-script', null], // Spawn this script when max-charges is reached
     ['on-completion-script-args', []], // Optional args to pass to the script when launched
     ['no-tail', true], // Keep tail windows closed; inspect logs manually when needed.
@@ -28,23 +30,33 @@ export function autocomplete(data, args) {
     return [];
 }
 
-let options, currentServer, maxCharges, idealReservedRam, chargeAttempts, sf4Level, shouldContinueForAug;
+let options, currentServer, maxCharges, sf4Level, shouldContinueForAug;
+const chargeChildren = new Set();
 
 /** Maximizes charge on stanek fragments based on current home RAM.
  * NOTE: You should have no other scripts running on home while you do this to get the best peak charge possible
  *       Stanek stats benefit more from charges with a high avg RAM used per charge, rather than just more charges.
  * @param {NS} ns **/
 export async function main(ns) {
+    if (isScriptPaused(ns, ns.getScriptName())) return;
     const runOptions = getConfiguration(ns, argsSchema);
     if (!runOptions || await instanceCount(ns) > 1) return; // Prevent multiple instances of this script from being started, even with different args.
     options = runOptions; // We don't set the global "options" until we're sure this is the only running instance
-    disableLogs(ns, ['sleep', 'run', 'getServerMaxRam', 'getServerUsedRam'])
+    const optionError = stanekOptionsError(options);
+    if (optionError) return ns.tprint('Stanek: '+optionError);
+    registerAutomation(ns);
+    disableLogs(ns, ['sleep', 'run', 'getServerMaxRam', 'getServerUsedRam']);
+    chargeChildren.clear();
+    ns.atExit(() => { for (const pid of chargeChildren) if (ns.isRunning(pid)) ns.kill(pid); });
 
-    // Validate whether we can run
-    if ((await getActiveFragments(ns)).length == 0) {
+    // The charging API requires installed Genesis, rather than SF13 itself.
+    let initialFragments;
+    try { initialFragments = await getActiveFragments(ns); }
+    catch (error) { return ns.tprint("Stanek charging unavailable: install Stanek's Gift - Genesis first. "+String(error)); }
+    if (initialFragments.length == 0) {
         // Try to run our helper script to set up the grid
         const pid = ns.run(getFilePath('stanek.js.create.js'));
-        if (pid) await waitForProcessToComplete(ns, pid);
+        if (pid) { chargeChildren.add(pid); try { await waitForProcessToComplete(ns, pid); } finally { chargeChildren.delete(pid); } }
         else log(ns, "ERROR while attempting to run stanek.js.create.js (pid was 0)");
         // Verify that this worked.
         if ((await getActiveFragments(ns)).length == 0)
@@ -53,7 +65,6 @@ export async function main(ns) {
 
     currentServer = await getNsDataThroughFile(ns, `ns.getHostname()`);
     maxCharges = options['max-charges']; // Don't bother adding charges beyond this amount
-    idealReservedRam = 32; // Reserve this much RAM, if it wouldnt make a big difference anyway. Leaves room for other temp-scripts to spawn.
     let startupScript = options['on-startup-script'];
     let startupArgs = unEscapeArrayArgs(options['on-startup-script-args']);
     if (startupScript) {
@@ -64,22 +75,20 @@ export async function main(ns) {
         } else
             log(ns, `WARNING: Stanek.js has started successfully, but failed to launch accompanying 'on-startup-script': ${startupScript}...`, false, 'warning');
     }
-    chargeAttempts = {}; // We keep track of how many times we've charged each segment, to work around a placement bug where fragments can overlap, and then don't register charge
 
     const chargeScriptBody = "export async function main(ns) { await ns.stanek.chargeFragment(ns.args[0], ns.args[1]); }";
-    const checkOnChargeScript = () => { // We must use this periodically since cleanup might be run while we're charging.
+    const checkOnChargeScript = async () => { // We must use this periodically since cleanup might be run while we're charging.
         // Check if our charge script exists. If not, we can create it (facilitates copying stanek.js to a new server to run)
         if (ns.read(chargeScript) != chargeScriptBody)
-            ns.write(chargeScript, chargeScriptBody, "w");
+            await ns.write(chargeScript, chargeScriptBody, "w");
     }
 
     // Check what augs we own and establish the theshold to continue grinding REP if we're close to one.
-    const ownedSourceFiles = await getActiveSourceFiles(ns);
-    sf4Level = ownedSourceFiles[4] || 0;
+    sf4Level = stanekSourceLevel(ns.getResetInfo(), 4);
     shouldContinueForAug = () => false;
     if (sf4Level == 0) {
         log(ns, `INFO: SF4 required to get owned faction rep and augmentation info. Ignoring the --reputation-threshold setting.`);
-    } else {
+    } else try {
         const ownedAugmentations = await getNsDataThroughFile(ns, `ns.singularity.getOwnedAugmentations(true)`, '/Temp/player-augs-purchased.txt');
         const [strAwakening, strSerenity] = ["Stanek's Gift - Awakening", "Stanek's Gift - Serenity"];
         const [awakeningOwned, serenityOwned] = [ownedAugmentations.includes(strAwakening), ownedAugmentations.includes(strSerenity)];
@@ -90,29 +99,44 @@ export async function main(ns) {
             log(ns, `INFO: Stanek Augmentations Rep Requirements are Awakening: ${formatNumberShort(awakeningRep)}, ` +
                 `Serenity: ${formatNumberShort(serenityRep)} (--reputation-threshold = ${options['reputation-threshold']})`);
         }
-        shouldContinueForAug = (currentRep) => // return true if currentRep is high enough that we should keep grinding for the next unowned aug
-            !awakeningOwned && options['reputation-threshold'] * awakeningRep <= currentRep && currentRep < awakeningRep ||
-            !serenityOwned && options['reputation-threshold'] * serenityRep <= currentRep && currentRep < serenityRep
+        shouldContinueForAug = (currentRep, owned = ownedAugmentations) => // return true if currentRep is high enough that we should keep grinding for the next unowned aug
+            !owned.includes(strAwakening) && options['reputation-threshold'] * awakeningRep <= currentRep && currentRep < awakeningRep ||
+            !owned.includes(strSerenity) && options['reputation-threshold'] * serenityRep <= currentRep && currentRep < serenityRep
     }
+
+    catch (error) { sf4Level = 0; log(ns, 'Optional reputation tracking unavailable: '+String(error)); }
 
     // Start the main stanek loop
     let lastLoopSuccessful = true;
-    while (true) {
+    while (!isScriptPaused(ns, ns.getScriptName())) {
         await ns.sleep(lastLoopSuccessful ? 10 : 1000); // Only sleep a short while between charges if things are going well
         lastLoopSuccessful = false;
+        automationHeartbeat(ns);
+        if (isScriptPaused(ns, ns.getScriptName())) break;
+        if (maintenanceRequested(ns)) {
+            await ns.write('tasks/stanek-status.json', JSON.stringify({at:Date.now(),pid:ns.pid,mode:'waiting',reason:'Automation maintenance'}), 'w');
+            await ns.sleep(1000); continue;
+        }
         try {
             if (!options['no-tail']) tail(ns); // Keep a tail window open unless otherwise configured
-            checkOnChargeScript();
+            await checkOnChargeScript();
             const fragmentsToCharge = await getFragmentsToCharge(ns);
-            if (fragmentsToCharge === undefined) continue;
+            if (fragmentsToCharge === undefined) {
+                await ns.write('tasks/stanek-status.json', JSON.stringify({at:Date.now(),pid:ns.pid,mode:'blocked',reason:'No chargeable fragments; inspect the gift layout.'}), 'w');
+                return;
+            }
             if (fragmentsToCharge.length == 0) break; // All fragments at max desired charge
             lastLoopSuccessful = await tryChargeAllFragments(ns, fragmentsToCharge);
+            await ns.write('tasks/stanek-status.json', JSON.stringify({at:Date.now(),pid:ns.pid,mode:lastLoopSuccessful?'charging':'waiting',target:maxCharges,pending:fragmentsToCharge.length,fragments:await getActiveFragments(ns)}), 'w');
         }
         catch (err) {
+            await ns.write('tasks/stanek-status.json', JSON.stringify({at:Date.now(),pid:ns.pid,mode:'recovering',error:String(err)}), 'w');
             log(ns, `WARNING: stanek.js Caught (and suppressed) an unexpected error in the main loop:\n` +
                 (typeof err === 'string' ? err : err.message || JSON.stringify(err)), false, 'warning');
         }
     }
+    if (isScriptPaused(ns, ns.getScriptName())) return;
+    await ns.write('tasks/stanek-status.json', JSON.stringify({at:Date.now(),pid:ns.pid,mode:'complete',target:maxCharges,fragments:await getActiveFragments(ns)}), 'w');
     log(ns, `SUCCESS: All stanek fragments at desired charge ${maxCharges}`, true, 'success');
 
     // Run the completion script before shutting down
@@ -139,29 +163,25 @@ async function getFragmentsToCharge(ns) {
         return undefined;
     }
     // If we have SF4, get our updated faction rep, and determine if we should continue past --max-charges to earn rep for the next augmentation
-    const churchRep = sf4Level ? await getNsDataThroughFile(ns, 'ns.singularity.getFactionRep(ns.args[0])', null, ["Church of the Machine God"]) : 0;
-    const shouldContinue = shouldContinueForAug(churchRep);
-
-    // Collect information about each fragment's charge status, and prepare a status update
-    let fragmentSummary = '';
-    let minCharges = Number.MAX_SAFE_INTEGER;
-    for (const fragment of fragments) {
-        fragmentSummary += `Fragment ${String(fragment.id).padStart(2)} at [${fragment.x},${fragment.y}] ` +
-            (fragment.id < 100 ? `Peak: ${formatNumberShort(fragment.highestCharge)} Charges: ${fragment.numCharge.toFixed(1)}` :
-                `(booster, no charge effect)`) + `\n`;
-        if (fragment.numCharge == 0 && (chargeAttempts[fragment.id] || 0) > 0) { // Ignore fragments that aren't accepting charge.
-            if (chargeAttempts[fragment.id] == 1 && fragment.id < 100) { // First time we do this, log a message
-                log(ns, `WARNING: Detected that fragment ${fragment.id} at [${fragment.x},${fragment.y}] is not accepting charge nano (root overlaps with another segment root?)`, true, 'warning');
-                chargeAttempts[fragment.id] = 2; // Hack: We will never try to charge this fragment again. Abuse this dict value so we don't see htis log again.
-            }
-        } else if (fragment.id < 100)
-            minCharges = Math.min(minCharges, fragment.numCharge) // Track the least-charged fragment (ignoring fragments that take no charge)
+    let churchRep = 0, currentOwned = [];
+    if (sf4Level) try {
+        churchRep = await getNsDataThroughFile(ns, 'ns.singularity.getFactionRep(ns.args[0])', null, ["Church of the Machine God"]);
+        currentOwned = await getNsDataThroughFile(ns, 'ns.singularity.getOwnedAugmentations(true)', '/Temp/stanek-current-owned-augs.txt');
+    } catch (error) {
+        sf4Level = 0; shouldContinueForAug = () => false;
+        log(ns, 'Optional reputation tracking unavailable; continuing charge target: '+String(error));
     }
-    minCharges = Math.ceil(minCharges); // Fractional charges now occur. Round these up.
-    if (minCharges >= maxCharges && !shouldContinue && fragments.some(f => (chargeAttempts[f.id] || 0) > 0))
-        return []; // Max charges reached
-    // We will only charge non-booster fragments, and fragments that aren't stuck at 0 charge
-    const fragmentsToCharge = fragments.filter(f => f.id < 100 && ((chargeAttempts[f.id] || 0) < 2 || f.numCharge > 0));
+    const shouldContinue = shouldContinueForAug(churchRep, currentOwned);
+
+    const freeRam = ns.getServerMaxRam(currentServer) - ns.getServerUsedRam(currentServer);
+    const budget = stanekThreadBudget(freeRam, ns.getScriptRam(chargeScript, currentServer), options['reserved-ram'], options['reserved-ram-ideal'], currentServer === 'home' ? pendingRam(ns) : 0);
+    const coreBonus = 1 + (ns.getServer(currentServer).cpuCores - 1) / 16;
+    const plan = stanekChargePlan(fragments, maxCharges, shouldContinue, budget.threads * coreBonus);
+    if (plan.blocked) { log(ns, 'Stanek layout contains only booster fragments; nothing can be charged.'); return undefined; }
+    if (plan.complete) return [];
+    const fragmentsToCharge = plan.fragments;
+    const fragmentSummary = fragments.map(fragment => `Fragment ${fragment.id} at [${fragment.x},${fragment.y}]: ` +
+        (fragment.id < 100 ? `Peak ${formatNumberShort(fragment.highestCharge)}, charges ${fragment.numCharge}` : 'booster')).join('\n');
     // Log a status update
     log(ns, `Charging ${fragmentsToCharge.length}/${fragments.length} fragments ` + (!shouldContinue ? `to ${maxCharges}` : `until faction has ` +
         formatNumberShort(churchRep < awakeningRep ? awakeningRep : serenityRep) + ` rep (currently at ${formatNumberShort(churchRep)})`) +
@@ -173,30 +193,46 @@ async function getFragmentsToCharge(ns) {
  * @param {NS} ns
  * @returns {Promise<bool>} whether all fragments were charged successfully **/
 async function tryChargeAllFragments(ns, fragmentsToCharge) {
-    // Charge each fragment one at a time
-    for (const fragment of fragmentsToCharge) {
-        let availableRam = ns.getServerMaxRam(currentServer) - ns.getServerUsedRam(currentServer);
-        let reservedRam = (idealReservedRam / availableRam < 0.05) ? options['reserved-ram-ideal'] : options['reserved-ram'];
-        const threads = Math.floor((availableRam - reservedRam) / 2.0);
+    return await chargeStanekFragments(ns, fragmentsToCharge, currentServer, options,
+        getActiveFragments, chargeChildren, currentServer === 'home' ? pendingRam(ns) : 0);
+}
+
+/** Return true only after every launched worker produces an observed charge increase. */
+export async function chargeStanekFragments(ns, fragments, host, configuration, readFragments, children = new Set(), pending = 0) {
+    let allSuccessful = true;
+    for (const fragment of fragments) {
+        if (isScriptPaused(ns, ns.getScriptName()) || maintenanceRequested(ns)) return false;
+        const live = (await readFragments(ns)).find(f => f.id === fragment.id && f.x === fragment.x && f.y === fragment.y && f.rotation === fragment.rotation);
+        if (!live) { allSuccessful = false; continue; }
+        const availableRam = ns.getServerMaxRam(host) - ns.getServerUsedRam(host);
+        const workerRam = ns.getScriptRam(chargeScript, host);
+        const {threads, reserve} = stanekThreadBudget(availableRam, workerRam, configuration['reserved-ram'], configuration['reserved-ram-ideal'],
+            Math.max(pending, host === 'home' ? pendingRam(ns) : 0));
         if (threads <= 0) {
-            log(ns, `WARNING: Insufficient free RAM on ${currentServer} to charge Stanek ` +
-                `(${formatRam(availableRam)} free - ${formatRam(reservedRam)} reserved). Will try again later...`);
-            continue;
+            ns.print(`Stanek waiting for RAM: ${formatRam(availableRam)} free, ${formatRam(reserve)} reserved.`);
+            allSuccessful = false; continue;
         }
-        const pid = ns.run(chargeScript, { threads: threads, temporary: true }, fragment.x, fragment.y);
-        if (!pid) {
-            log(ns, `WARNING: Failed to charge Stanek with ${threads} threads thinking there was ${formatRam(availableRam)} free on ${currentServer}. ` +
-                `Check if another script is fighting stanek.js for RAM. Will try again later...`);
-            continue;
+        const pid = ns.run(chargeScript, {threads, temporary:true}, live.x, live.y);
+        if (!pid) { allSuccessful = false; continue; }
+        children.add(pid);
+        try { while (ns.isRunning(pid)) {
+            automationHeartbeat(ns);
+            if (isScriptPaused(ns, ns.getScriptName()) || maintenanceRequested(ns)) { ns.kill(pid); return false; }
+            await ns.sleep(20);
+        } }
+        finally { if (!ns.isRunning(pid)) children.delete(pid); }
+        const after = (await readFragments(ns)).find(f => f.id === live.id && f.x === live.x && f.y === live.y && f.rotation === live.rotation);
+        if (!after || !(after.numCharge > live.numCharge || after.highestCharge > live.highestCharge)) {
+            ns.print(`Stanek fragment ${live.id} at [${live.x},${live.y}] did not gain charge; retrying without declaring completion.`);
+            allSuccessful = false;
         }
-        await waitForProcessToComplete(ns, pid);
-        chargeAttempts[fragment.id] = 1 + (chargeAttempts[fragment.id] || 0);
     }
+    return allSuccessful;
 }
 
 /** Get the current active stanek fragments
  * @param {NS} ns
  * @returns {Promise<ActiveFragment[]>} **/
 async function getActiveFragments(ns) {
-    return await getNsDataThroughFile(ns, 'ns.stanek.activeFragments()');
+    return await getNsDataThroughFile(ns, 'ns.stanek.activeFragments()', '/Temp/stanek-active-fragments.txt', [], false, 1, 0, true);
 }

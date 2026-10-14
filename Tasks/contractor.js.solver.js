@@ -1,3 +1,4 @@
+import {contractAllowed,contractKey,solverVersion} from '../contract-policy.js';
 import { jsonReviver, tail } from '../helpers.js'
 const fUnsolvedContracts = '/Temp/unsolved-contracts.txt'; // A global, persistent array of contracts we couldn't solve, so we don't repeatedly log about them.
 
@@ -11,8 +12,7 @@ let heartbeat = null;
 // Solvers are mostly taken from source code at https://raw.githubusercontent.com/danielyxie/bitburner/master/src/data/codingcontracttypes.ts
 /** @param {NS} ns **/
 export async function main(ns) {
-    if (ns.args.length < 1)
-        ns.tprint('Contractor solver was incorrectly invoked without arguments.');
+    if (ns.args.length < 1)return ns.tprint('Contractor solver was incorrectly invoked without arguments.');
 
     // Hack: Use global memory to avoid multiple instances running concurrently (without paying for ns.ps)
     if (heartbeat != null) // If this variable is set, another instance is likely running!
@@ -22,6 +22,10 @@ export async function main(ns) {
 
     try {
         let contractsDb = JSON.parse(ns.args[0]);
+        let validation,quarantine;try{validation=JSON.parse(ns.read('tasks/contract-validation.json'));}catch{}
+        try{quarantine=JSON.parse(ns.read('tasks/contract-quarantine.json'));}catch{}quarantine??={};
+        const version=solverVersion(codingContractTypesMetadata);
+
         const fContents = ns.read(fUnsolvedContracts);
         const notified = fContents ? JSON.parse(fContents) : [];
 
@@ -36,7 +40,10 @@ export async function main(ns) {
 
         for (const contractInfo of contractsDb) {
             heartbeat = performance.now();
-            const answer = findAnswer(contractInfo)
+            const key=contractKey(contractInfo);
+            if(!contractAllowed(validation,version,contractInfo.type)||quarantine[key]?.version===version){ns.print('Contract deferred: '+contractInfo.type);continue;}
+            let answer;try{answer=findAnswer(contractInfo);}catch(error){quarantine[key]={version,at:Date.now(),error:String(error)};continue;}
+
             let notice = null;
             if (answer != null) {
                 let solvingResult = false;
@@ -49,11 +56,12 @@ export async function main(ns) {
                             ns.tprint(message);
                         }
                     } else {
+                        failureCount++;quarantine[key]={version,at:Date.now(),error:'Wrong answer'};
                         notice = `ERROR: Wrong answer for contract type "${contractInfo.type}" (${contractInfo.contract} on ${contractInfo.hostname}):` +
                             `\nIncorrect Answer Given: ${JSON.stringify(answer)}`;
                     }
                 } catch (err) {
-                    failureCount++;
+                    failureCount++;quarantine[key]={version,at:Date.now(),error:String(err)};
                     let errorMessage = typeof err === 'string' ? err : err.message || JSON.stringify(err);
                     if (err?.stack) errorMessage += '\n' + err.stack;
                     notice = `ERROR: Attempt to solve contract raised an error. (Answer Given: ${JSON.stringify(answer)})\n"${errorMessage}"`;
@@ -77,6 +85,7 @@ export async function main(ns) {
             }
             await ns.sleep(10)
         }
+        await ns.write('tasks/contract-quarantine.json',JSON.stringify(quarantine),'w');
         // Keep tabs of failed contracts
         if (notified.length > 0)
             await ns.write(fUnsolvedContracts, JSON.stringify(notified), "w");
@@ -94,7 +103,7 @@ export async function main(ns) {
     }
 }
 
-function findAnswer(contract) {
+export function findAnswer(contract) {
     const codingContractSolution = codingContractTypesMetadata.find((codingContractTypeMetadata) => codingContractTypeMetadata.name === contract.type)
     return codingContractSolution ? codingContractSolution.solver(JSON.parse(contract.dataJson, jsonReviver)) : null;
 }

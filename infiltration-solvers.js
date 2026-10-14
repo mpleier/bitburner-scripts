@@ -43,10 +43,34 @@ export function infiltrationInput(stage) {
   return { unsupported: true };
 }
 
-export function chooseInfiltration(locations, city, maxDifficulty = 1.5) {
-  return locations.filter(info => info.difficulty <= maxDifficulty && info.reward?.sellCash > 0)
-    .sort((a, b) => (b.reward.sellCash / (b.maxClearanceLevel + 5)) - (a.reward.sellCash / (a.maxClearanceLevel + 5)) ||
+export function chooseInfiltration(locations, city, maxDifficulty = 1.5, { history = {}, reputation = false, now = Date.now(), interval = 20000, canTravel = true } = {}) {
+  const rewardKey = reputation ? 'tradeRep' : 'sellCash';
+  const score = info => {
+    const record = history[info.location.name] || {};
+    const reliability = ((record.successes || 0) + 2) / ((record.successes || 0) + (record.failures || 0) + 2);
+    const seconds = (record.durationMs > 0 ? record.durationMs : (info.maxClearanceLevel + 5) * 3000) / 1000;
+    return info.reward[rewardKey] * reliability / (seconds + interval / 1000 + (info.location.city === city ? 0 : 5));
+  };
+  return locations.filter(info => info.difficulty <= maxDifficulty && info.reward?.[rewardKey] > 0 &&
+    (canTravel || info.location.city === city) && !(history[info.location.name]?.retryAt > now))
+    .sort((a, b) => score(b) - score(a) ||
       Number(b.location.city === city) - Number(a.location.city === city))[0] || null;
+}
+
+/** Demand recovery follows the game's exponential decay. A clamped zero needs another observation. */
+export function marketRecoveryDelay(demand, target = 2 / 3) {
+  if (!Number.isFinite(demand) || demand >= target) return 0;
+  if (demand <= 0) return 60000;
+  return Math.max(1000, Math.ceil(Math.log((1 - demand) / (1 - target)) / 0.00004));
+}
+export function recordInfiltrationOutcome(previous = {}, result, now = Date.now()) {
+  if (result.status === 'completed') return { ...previous, successes: (previous.successes || 0) + 1,
+    failureStreak: 0, retryAt: 0, durationMs: result.durationMs > 0 ?
+      (previous.durationMs > 0 ? previous.durationMs * 0.7 + result.durationMs * 0.3 : result.durationMs) : previous.durationMs };
+  if (!['failed', 'missed-window', 'unsupported-ui', 'stage-timeout', 'unsupported-entry-ui', 'entry-ui-unavailable'].includes(result.status)) return previous;
+  const failureStreak = (previous.failureStreak || 0) + 1;
+  return { ...previous, failures: (previous.failures || 0) + 1, failureStreak,
+    retryAt: now + Math.min(600000, 30000 * 2 ** Math.min(5, failureStreak - 1)) };
 }
 
 /** React passes the current infiltration state to its stage component. */
@@ -68,10 +92,26 @@ export function selectRewardFaction(document, faction) {
     for (let fiber = fiberKey && node[fiberKey], depth = 0; fiber && depth < 12; fiber = fiber.return, depth++) {
       const props = fiber.memoizedProps;
       if (props && typeof props.onChange === 'function' && typeof props.value === 'string') {
+        const choices = [];
+        const collect = child => {
+          if (Array.isArray(child)) child.forEach(collect);
+          else if (child?.props) { if (typeof child.props.value === 'string') choices.push(child.props.value); collect(child.props.children); }
+        };
+        collect(props.children);
+        if (choices.length && !choices.includes(faction)) continue;
         props.onChange({ target: { value: faction } });
         return true;
       }
     }
+  }
+  return false;
+}
+
+export function selectedRewardFaction(document, faction) {
+  for (const node of document.querySelectorAll('[role="combobox"]')) {
+    const fiberKey = Object.keys(node).find(key => key.startsWith('__reactFiber$'));
+    for (let fiber = fiberKey && node[fiberKey], depth = 0; fiber && depth < 12; fiber = fiber.return, depth++)
+      if (fiber.memoizedProps?.value === faction && typeof fiber.memoizedProps.onChange === 'function') return true;
   }
   return false;
 }

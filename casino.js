@@ -1,3 +1,4 @@
+import { casinoOptionsError, casinoHookArgs, casinoWager, casinoRoundDelta, blackjackShouldHit, parseDealerRank, casinoUiEvent, stopCasinoCompetitors } from './casino-policy.js';
 import { isScriptPaused } from './automation-control.js';
 import { beginTransition, endTransition } from './progression-coordination.js';
 import {
@@ -12,8 +13,8 @@ const argsSchema = [
     ['use-basic-strategy', false], // Set to true to use the basic strategy (Stay on 17+)
     ['enable-logging', false], // Set to true to pop up a tail window and generate logs.
     ['kill-all-scripts', false], // Set to true to kill all running scripts before running.
-    ['no-deleting-remote-files', false], // By default, if --kill-all-scripts, we will also remove remote files to speed up save/reload
-    ['on-completion-script', null], // Spawn this script when max-charges is reached
+    ['no-deleting-remote-files', true], // Preserve remote files; set false explicitly to remove them when killing all scripts
+    ['on-completion-script', null], // Spawn this script after casino completion
     ['on-completion-script-args', []], // Optional args to pass to the script when launched
 ];
 export function autocomplete(data, args) {
@@ -27,40 +28,39 @@ export function autocomplete(data, args) {
 /** @param {NS} ns **/
 export async function main(ns) {
     if (isScriptPaused(ns, ns.getScriptName())) return;
+    if (ns.ps('home').some(process=>process.filename===ns.getScriptName()&&process.pid!==ns.pid))return;
     // Note to self: This script doesn't use ram-dodging in the inner loop, because we want to
     // delete all temp files and avoid creating more so that the game saves / reloads faster.
     const supportMsg = "Consider posting a full-game screenshot and your save file in the Discord channel or in a new github issue if you want help debugging this issue.";
-    let doc = eval("document");
+    let doc;
+    try { doc = eval("document"); }
+    catch (error) { ns.tprint('Casino automation needs the in-game UI: '+String(error));return; }
     let options;
     let verbose = false;
+    let stoppedAutomation = false, casinoCompleted = false, reloading = false;
+    async function reportCasino(mode, details = {}) {
+        await ns.write('tasks/casino-status.json', JSON.stringify({at:Date.now(),pid:ns.pid,augReset:ns.getResetInfo().lastAugReset,mode,...details}), 'w');
+    }
 
     async function start() {
         options = getConfiguration(ns, argsSchema);
         if (!options) return; // Invalid options, or ran in --help mode.
+        const optionError = casinoOptionsError(options);
+        if (optionError) return ns.tprint('Casino: '+optionError);
+        try { options['on-completion-script-args'] = casinoHookArgs(options['on-completion-script-args']); }
+        catch (error) { return ns.tprint('Casino completion arguments: '+String(error)); }
+        if (casinoEarnings() > 1e10) return await onCompletion(false);
         if (!await beginTransition(ns, 'casino automation', false)) return;
+        await reportCasino('starting');
         ns.atExit(() => endTransition(ns));
         const saveSleepTime = options['save-sleep-time'];
         verbose = options['enable-logging'];
         if (verbose)
-            tail(ns)
+            tail(ns, undefined, true);
         else
             ns.disableLog("ALL");
 
         let abort = false;
-        /*// TODO:
-        // Let the user know what's going on and give them an easy way to kill casino.js
-        function showDialog(onCancel) {
-            const dlg = doc.createElement('div');
-            dlg.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);padding:20px;';
-            dlg.innerHTML = `<p>casino.js is running until it wins \$10b. It will reload the save if it loses too much.<br/>` +
-                `It should only take a minute or two, but you can cancel by clicking the button below.</p>` +
-                `<button>Cancel</button>`;
-            dlg.querySelector('button').onclick = () => { onCancel(); doc.body.removeChild(dlg); };
-            doc.body.appendChild(dlg);
-        }
-        showDialog(() => abort = true);
-        //*/
-
         /** Helper function to detect if focus was stolen by (e.g.) faction|company work|studying|training and send that work to the background
          * @param {boolean} throwError (default true) If true, and we were doing focus work, throws an Error.
          *                  If false, it will log a warning, try to stop any focus work (up to `retries` times), then return true.
@@ -79,7 +79,7 @@ export async function main(ns) {
             await click(btnUnfocus); // Click the button that should let us take back focus and return to the casino
             // Now we should confirm that we're no longer doing focus work (that the click above worked) by recursing.
             retries--; // Decrement "retries" each time we discover we're still on the focus screen.
-            return await checkStillAtCasino(retries <= 0, retries); // If out of retries, throw error on next failure
+            return await checkForStolenFocus(retries <= 0, retries, silent); // If out of retries, throw error on next failure
         }
 
         /** Helper function to detect if we're still at the casino (returns true) or if we've left.
@@ -118,7 +118,7 @@ export async function main(ns) {
                 const kickedOut = await tryfindElement("//span[contains(text(), 'Alright cheater get out of here')]", retries);
                 if (kickedOut !== null) return true; // Success: We've been kicked out
                 // If there are any other modals, they may need to be closed before we can see the kicked out alert.
-                let closeModal = await tryfindElement("//button[contains(@class,'closeButton')]", retries);
+                closeModal = await tryfindElement("//button[contains(@class,'closeButton')]", retries);
                 if (!closeModal) break; // There appears to be no other modals blocking in the way
                 log(ns, "Found a modal that needs to be closed.")
                 await click(closeModal); // Click the close button on this modal so we can see others behind it
@@ -126,17 +126,21 @@ export async function main(ns) {
             return false;
         }
 
+        // Casino has priority over grafting. Standalone launches also stop an active graft when SF4 permits.
+        try { await getNsDataThroughFile(ns, 'ns.singularity.getCurrentWork()?.type === "GRAFTING" ? (ns.singularity.stopAction(), true) : true', '/Temp/casino-stop-graft.txt', [], false, 1, 0, true); }
+        catch { /* UI navigation remains available without Singularity. */ }
+
         // Run this to try and pre-emptively clear away any modals that pop up when we restart.
         // Note that at game startup it seems to take a long while for these to be detected,
         // so we might miss them, but we don't want to slow down the reload-loop too much by waiting to clear them.
         await checkForKickedOut(3);
 
         // Step 1: Find the button used to save the game. (Lots of retries because it can take a while after reloading the page)
-        const btnSaveGame = await findRequiredElement("//button[@aria-label = 'save game']", 100,
+        await findRequiredElement("//button[@aria-label = 'save game']", 100,
             `Sorry, couldn't find the Overview Save (💾) button. Is your \"Overview\" panel collapsed or modded?`, true);
         async function saveGame() {
             if (saveSleepTime) await ns.sleep(saveSleepTime);
-            await click(btnSaveGame);
+            await click(await findRequiredElement("//button[@aria-label = 'save game']", 100));
             if (saveSleepTime) await ns.sleep(saveSleepTime);
         }
         let inputWager, btnStartGame;
@@ -171,7 +175,7 @@ export async function main(ns) {
                         await click(await findRequiredElement("//div[@role='button' and ./div/p/text()='Travel']"));
                         await click(await findRequiredElement("//span[contains(@class,'travel') and ./text()='A']"));
                         // If this didn't put us in Aevum, there's likely a travel confirmation dialog we need to click through
-                        if (!ns.getPlayer().city != "Aevum")
+                        if (ns.getPlayer().city != "Aevum")
                             await click(await findRequiredElement("//button[p/text()='Travel']"));
                     }
                     if (ns.getPlayer().city == "Aevum")
@@ -204,11 +208,11 @@ export async function main(ns) {
                 btnStartGame = await findRequiredElement("//button[text() = 'Start']");
 
                 // Step 2.6: Clean up temp files and kill other running scripts to speed up the reload cycle
-                if (ns.ls("home", "Temp/").length > 0) { // If there are some temp files, it suggests we haven't killed all scripts and cleaned up yet
+                if (options['kill-all-scripts']) { // Cleanup runs only after stopping competing scripts.
                     // Step 2.6.1: Test that we aren't already kicked out of the casino before doing drastic things like killing scripts
                     const moneySources = await getNsDataThroughFile(ns, 'ns.getMoneySources()'); // NEW (2022): We can use money sources to see what our casino earnings have been
                     const priorCasinoEarnings = moneySources.sinceInstall.casino;
-                    if (priorCasinoEarnings >= 1e10)
+                    if (priorCasinoEarnings > 1e10)
                         log(ns, `INFO: We've previously earned ${formatMoney(priorCasinoEarnings)} from the casino, which should mean we've already been kicked out, ` +
                             `but we can double-check anyway by attempting to play a game, since you bothered running this script, and I've bothered scripting the check :)`, true)
                     await setText(inputWager, `1`); // Bet just a dollar and quick the game right away, no big deal
@@ -226,13 +230,15 @@ export async function main(ns) {
                     if (options['kill-all-scripts'])
                         await killAllOtherScripts(!options['no-deleting-remote-files']);
                     // Step 2.6.3: Clear the temp folder on home (all transient scripts / outputs)
-                    await waitForProcessToComplete(ns, ns.run(getFilePath('cleanup.js')));
+                    const cleanupPid = ns.run(getFilePath('cleanup.js'));
+                    if (!cleanupPid) throw new Error('Cannot launch casino cleanup; retrying before saving.');
+                    await waitForProcessToComplete(ns, cleanupPid);
                 }
                 break; // We achieved everthing we wanted, we can exit the retry loop.
             } catch (err) {
                 // The first 5 errors that occur, we will start over and retry
                 if (++priorAttempts < 5) {
-                    tail(ns); // Since we're having difficulty, pop open a tail window so the user is aware and can monitor.
+                    if (options['enable-logging']) tail(ns, undefined, true);
                     verbose = true; // Switch on verbose logs
                     log(ns, `WARNING: casino.js Caught (and suppressed) an unexpected error while navigating to blackjack. ` +
                         `Error was:\n${getErrorInfo(err)}\nWill try again (attempt ${priorAttempts} of 5)...`, false, 'warning');
@@ -252,10 +258,13 @@ export async function main(ns) {
         try {
             let startGameRetries = 0, netWinnings = 0, peakWinnings = 0;
             while (true) {
-                if (abort) return;
+                if (abort || isScriptPaused(ns, ns.getScriptName())) return;
                 // Step 4.1: Bet the maximum amount (we save scum to avoid losing, so no risk of going broke)
-                const bet = Math.min(1E8, ns.getPlayer().money * 0.9 /* Avoid timing issues with other scripts spending money */);
-                if (bet < 0) return await reload(); // If somehow we have no money, we can't continue
+                const bet = casinoWager(ns.getPlayer().money);
+                if (bet <= 0) return await reload(); // If somehow we have no money, we can't continue
+                inputWager = await findRequiredElement("//input[@type='number']");
+                btnStartGame = await findRequiredElement("//button[text() = 'Start']");
+                const beforeCasinoEarnings = casinoEarnings();
                 await setText(inputWager, `${bet}`); // Set our bet amount
 
                 /* Step 4.2: Try to start a new game. There are a few possible outcomes here:
@@ -291,7 +300,7 @@ export async function main(ns) {
                     if (winLoseTie == null) { // Handle Outcomes #3-5 (atypical of normal casino gameplay)
                         // Step 4.4.2: Detect Outcome #3 (kicked out of casino)
                         if (await checkForKickedOut()) // Were we kicked out of the casino?
-                            return await onCompletion(ns); // This is a good thing!
+                            return await onCompletion(); // This is a good thing!
 
                         // Step 4.4.3: Detect Outcome #4 (something stole focus). We can't recover because we're out of the "navigate to casino" loop.
                         await checkStillAtCasino(); // Throws an error if not. User must stop whatever is stealing focus.
@@ -302,7 +311,7 @@ export async function main(ns) {
                             'Cannot find the Hit/Stay buttons, but there is no game-over text (win/lose/tie) either.';
                         if (startGameRetries++ >= 5) // Retry up to 5 times before giving up and crashing out.
                             throw new Error(errMessage + ` Gave up after 5 retry attempts.\n${supportMsg}`);
-                        tail(ns); // Since we're having difficulty, pop open a tail window so the user is aware and can monitor.
+                        if (options['enable-logging']) tail(ns, undefined, true);
                         verbose = true; // Switch on verbose logs
                         log(ns, `WARNING: ${errMessage} Trying again...`, false, 'warning');
                         continue; // Back to 4.1 (Place bet, and try to start a new game)
@@ -310,28 +319,24 @@ export async function main(ns) {
                 }
 
                 // Step 4.5: Play blackjack until the game is over
+                let midGameRetries = 0;
+                const roundStarted = Date.now();
                 while (winLoseTie == null) {
-                    let midGameRetries = 0;
                     try {
+                        if (Date.now() - roundStarted > 30000) throw new Error('Blackjack hand did not finish within 30 seconds.');
                         // Step 4.5.1: Get the current card count
                         const txtCount = await findRequiredElement("//p[contains(text(), 'Count:')]");
-                        const allCounts = txtCount.querySelectorAll('span'); // The text might contain multiple counts (if there is an Ace)
-
-                        // Step 4.5.2: Decide to hit or stay
-                        let shouldHit;
-                        if (options['use-basic-strategy']) { // Basic strategy just looks at our count
-                            const highCount = Number(allCounts[allCounts.length - 1].innerText); // The larger value (with Ace=11) - used in basic-strategy mode
-                            shouldHit = highCount < 17; // Basic strategy, hit on 16 or less, stay on 17 or over (whether hard or soft)
-                            if (verbose) log(ns, `INFO: Count is ${highCount}, we will ${shouldHit ? 'Hit' : 'Stay'}`);
-                        } else // Advanced strategy will also look at the dealer card
-                            shouldHit = await shouldHitAdvanced(txtCount);
+                        const shouldHit = blackjackShouldHit(txtCount.textContent,
+                            options['use-basic-strategy'] ? 2 : await getDealerCount(), options['use-basic-strategy']);
 
                         // Step 4.5.3: Click either the hit or stay button
-                        await click(shouldHit ? btnHit : btnStay);
+                        const currentButton = await findRequiredElement(shouldHit ? "//button[text() = 'Hit']" : "//button[text() = 'Stay']");
+                        await click(currentButton);
                         await ns.sleep(1); // Yield for an instant so the game can update and process events (e.g. deal the next card)
 
                         // Step 4.5.4: A new card should have been dealt, check if the game is over
                         winLoseTie = await getWinLoseOrTie();
+                        midGameRetries = 0;
                     }
                     catch (err) {
                         // We can't get kicked out mid-game, so no need to check for that. See if we left the casino.
@@ -339,34 +344,34 @@ export async function main(ns) {
                         // Any other errors must be transient failures to pick up certain UI elements, so try again
                         const errMessage = `an unexpected error in the middle of a game of blackjack:\n${getErrorInfo(err)}`;
                         if (midGameRetries++ >= 5)  // Retry up to 5 times before giving up and crashing out.
-                            throw new Error(`After ${priorAttempts} attempts, casino.js continues to catch ${errMessage}`);
-                        tail(ns); // Since we're having difficulty, pop open a tail window so the user is aware and can monitor.
+                            throw new Error(`After ${midGameRetries} attempts, casino.js continues to catch ${errMessage}`);
+                        if (options['enable-logging']) tail(ns, undefined, true);
                         verbose = true; // Switch on verbose logs
                         log(ns, `WARNING: casino.js Caught (and suppressed) ${errMessage}\n` +
                             `Will try again (attempt ${midGameRetries} of 5)...`, false, 'warning');
                     }
                 } // Once the above loop is over winLoseTie is guaranteed be set to some non-null value
 
+                startGameRetries = 0;
+                await reportCasino('playing', {outcome:winLoseTie,wager:bet,earnings:casinoEarnings()});
                 // Step 4.6: Take action depending on whether we won, lost, or tied
                 switch (winLoseTie) {
                     case "tie": // Nothing gained or lost, we can immediately start a new game.
                         continue;
                     case "win": // We want to "lock in" our wins by saving the game after each one
-                        netWinnings += bet;
+                        const blackjack = !!await tryfindElement("//p[contains(text(), 'Blackjack!')]", 1);
+                        netWinnings += casinoRoundDelta('win', bet, beforeCasinoEarnings, casinoEarnings(), blackjack);
                         // Keep tabs of our best winnings, and save the game each time we top it
                         if (netWinnings > peakWinnings) {
                             peakWinnings = netWinnings
-                            if (netWinnings > 0)
-                                if (saveSleepTime) await ns.sleep(saveSleepTime);
-                            await click(btnSaveGame); // Save if we won
-                            if (saveSleepTime) await ns.sleep(saveSleepTime);
+                            await saveGame();
                         }
                         // Quick pre-emptive test after each win to see if we've been kicked out
                         if (await checkForKickedOut(1)) // Only 1 retry should be very fast
-                            return await onCompletion(ns);
+                            return await onCompletion();
                         continue;
                     case "lose":
-                        netWinnings -= bet;
+                        netWinnings += casinoRoundDelta('lose', bet, beforeCasinoEarnings, casinoEarnings());
                         // To avoid reloading too often, only reload if we're losing really badly (almost broke, or down by 10 games)
                         if (ns.getPlayer().money < 1E8 || netWinnings <= peakWinnings - 10 * 1E8)
                             return await reload(); // We want to reload the game (save scum) to undo our loss :)
@@ -379,7 +384,7 @@ export async function main(ns) {
             }
         }
         catch (err) {
-            tail(ns); // Display the tail log if anything goes wrong so the user can review the logs
+            if (options['enable-logging']) tail(ns, undefined, true);
             log(ns, `ERROR: casino.js Caught a fatal error while playing blackjack:\n${getErrorInfo(err)}\n${supportMsg}`, true, 'error');
         }
     }
@@ -410,6 +415,8 @@ export async function main(ns) {
      * WARNING: Doesn't work if the user last ran the game with "Reload and kill all scripts"
      * @param {NS} ns */
     async function reload() {
+        reloading = true;
+        await reportCasino('reloading');
         let attempts = 0;
         let errMessage = '';
         while (attempts++ <= 5) {
@@ -420,12 +427,13 @@ export async function main(ns) {
                 win.location = win.location; // Force refresh the page without saving
             else if (attempts < 3)
                 win.location.reload(); // Another approach that may work when the above does not.
-            else if (attempts < 4)
-                win.location.reload(true);
+            else
+                win.location.reload();
             await ns.sleep(10000); // Keep the script alive to be safe. Presumably the page reloads before this completes.
             errMessage = `casino.js asked the game to reload ${attempts} times, but it didn't.`
             log(ns, `WARNING: ${errMessage} Trying again...`, true, 'warning');
         }
+        reloading = false;
         throw new Error(`${errMessage} Giving up.`);
     }
 
@@ -433,9 +441,11 @@ export async function main(ns) {
      *  Helper to kill all scripts on all other servers, except this one **/
     async function killAllOtherScripts(removeRemoteFiles) {
         // Kill processes on home (except this one)
-        let pid = await runCommand(ns, `ns.ps().filter(s => s.filename != ns.args[0]).forEach(s => ns.kill(s.pid));`,
-            '/Temp/kill-everything-but.js', [ns.getScriptName()]);
-        await waitForProcessToComplete(ns, pid);
+        const receipt = await getNsDataThroughFile(ns,
+            `(${stopCasinoCompetitors.toString()})(ns,ns.args[0])`, '/Temp/casino-stop-competitors.txt', [ns.pid]);
+        stoppedAutomation = receipt.some(process=>process.stopped);
+        if (receipt.some(process=>!process.stopped)) throw new Error('Some competing scripts could not be stopped.');
+        let pid;
         log(ns, `INFO: Killed other scripts running on home...`, true);
 
         // Kill processes on all other servers
@@ -459,6 +469,8 @@ export async function main(ns) {
      *  @param {boolean} kickedOutAfterPlaying (default: true) set to false if we detected having been kicked out before we even started.
      *  Run when we can no longer gamble at the casino (presumably because we've been kicked out) **/
     async function onCompletion(kickedOutAfterPlaying = true) {
+        casinoCompleted = true;
+        await reportCasino('complete', {earnings:casinoEarnings()});
         if (kickedOutAfterPlaying)
             log(ns, "SUCCESS: We've been kicked out of the casino.", true);
         else
@@ -474,6 +486,8 @@ export async function main(ns) {
         let completionScript = options['on-completion-script'];
         if (!completionScript) return;
         let completionArgs = options['on-completion-script-args'];
+        endTransition(ns);
+        if (ns.ps('home').some(process=>process.filename===completionScript)) return;
         if (ns.run(completionScript, 1, ...completionArgs))
             log(ns, `INFO: casino.js shutting down and launching ${completionScript}...`, false, 'info');
         else
@@ -487,13 +501,8 @@ export async function main(ns) {
         // Sleep before clicking, if so configured
         let sleepDelay = options['click-sleep-time'];
         if (sleepDelay > 0) await ns.sleep(sleepDelay);
-        // Find the onclick method on the button
-        let fnOnClick = button[Object.keys(button)[1]].onClick; // This is voodoo to me. Apparently it's function on the first property of this button?
-        if (!fnOnClick)
-            throw new Error(`Odd, we found the button we were looking for (${button.text()}), but couldn't find its onclick method!`)
         if (verbose) log(ns, `Clicking the button.`);
-        // Click the button. The "secret" to this working is just to pass any object containing isTrusted:true
-        await fnOnClick({ isTrusted: true });
+        await casinoUiEvent(button, 'onClick');
         // Sleep after clicking, if so configured
         if (sleepDelay > 0) await ns.sleep(sleepDelay);
     }
@@ -504,7 +513,7 @@ export async function main(ns) {
         let sleepDelay = options['click-sleep-time'];
         if (sleepDelay > 0) await ns.sleep(sleepDelay);
         if (verbose) log(ns, `Setting text: ${text} on input.`);
-        await input[Object.keys(input)[1]].onChange({ isTrusted: true, target: { value: text } });
+        await casinoUiEvent(input, 'onChange', text);
         if (sleepDelay > 0) await ns.sleep(sleepDelay);
     }
 
@@ -579,32 +588,27 @@ export async function main(ns) {
         return null;
     }
 
-    // Better logic for when to HIT / STAY (Partial credit @drider)
-    async function shouldHitAdvanced(playerCountElem) {
-        const txtPlayerCount = playerCountElem.textContent.substring(7);
-        const player = parseInt(txtPlayerCount.match(/\d+/).shift());
-        const dealer = await getDealerCount();
-        if (verbose)
-            log(ns, `Player Count Text: ${txtPlayerCount}, Player: ${player}, Dealer: ${dealer}`);
-        // Strategy to minimize house-edge. See https://wizardofodds.com/blackjack/images/bj_4d_s17.gif
-        if (txtPlayerCount.includes("or")) { // Player has an Ace
-            if (player >= 9) return false; // Stay on Soft 19 or higher
-            if (player == 8 && dealer <= 8) return false; // Soft 18 - Stay if dealer has 8 or less
-            return true; // Otherwise, hit on Soft 17 or less
-        }
-        if (player >= 17) return false; // Stay on Hard 17 or higher
-        if (player >= 13 && dealer <= 6) return false; // Stay if player has 13-16 and dealer shows 6 or less.
-        if (player == 12 && 4 <= dealer && dealer <= 6) return false; // Stay if player has 12 and dealer has 4 to 6
-        return true;// Otherwise Hit
+    function casinoEarnings() {
+        try { return Number(ns.getMoneySources().sinceInstall.casino); } catch { return undefined; }
     }
-
     async function getDealerCount() {
-        const dealerCount = await findRequiredElement("//p[contains(text(), 'Dealer')]/..");
-        const text = dealerCount.innerText.substring(8, 9);
-        let cardValue = parseInt(text);
-        return isNaN(cardValue) ? (text == 'A' ? 11 : 10) : cardValue;
+        const card = await findRequiredElement("//p[normalize-space(.)='Dealer']/following-sibling::*[1]//span[1]");
+        return parseDealerRank(card.textContent);
     }
 
     // Run the program
-    await start();
+    try { await start(); }
+    finally {
+        if (options && !casinoCompleted && !reloading) {
+            await reportCasino('failed', {retryAt:Date.now()+60000});
+            endTransition(ns);
+            const recovery = options['on-completion-script'];
+            // Resume only the configured autopilot on failure; other hooks require completion.
+            if (stoppedAutomation && /(^|\/)autopilot\.js$/.test(recovery || '') &&
+                !ns.ps('home').some(process=>process.filename===recovery)) {
+                const pid = ns.run(recovery, 1, ...options['on-completion-script-args']);
+                if (!pid) ns.print('Casino failed and autopilot could not restart: check available RAM.');
+            }
+        }
+    }
 }

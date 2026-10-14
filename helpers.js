@@ -1,3 +1,4 @@
+import {fallbackBitNodeMultipliers} from './bitnode-fallbacks.js';
 /**
  * Return a formatted representation of the monetary amount using scale symbols (e.g. $6.50M)
  * @param {number} num - The number to format
@@ -22,7 +23,7 @@ export function formatNumberShort(num, maxSignificantFigures = 6, maxDecimalPlac
         console.warn(`formatNumberShort called with "num" set to a non-numeric "${typeof num}" value ${JSON.stringify(num)}`);
         num = Number(num);
     }
-    if (Math.abs(num) > 10 ** (3 * symbols.length)) // If we've exceeded our max symbol, switch to exponential notation
+    if (Math.abs(num) >= 10 ** (3 * symbols.length)) // If we've exceeded our max symbol, switch to exponential notation
         return num.toExponential(Math.min(maxDecimalPlaces, maxSignificantFigures - 1));
     for (var i = 0, sign = Math.sign(num), num = Math.abs(num); num >= 1000 && i < symbols.length; i++) num /= 1000;
     // TODO: A number like 9.999 once rounded to show 3 sig figs, will become 10.00, which is now 4 sig figs.
@@ -31,12 +32,13 @@ export function formatNumberShort(num, maxSignificantFigures = 6, maxDecimalPlac
 
 /** Convert a shortened number back into a value */
 export function parseShortNumber(text = "0") {
-    let parsed = Number(text);
-    if (!isNaN(parsed)) return parsed;
-    for (const sym of symbols.slice(1))
-        if (text.toLowerCase().endsWith(sym))
-            return Number.parseFloat(text.slice(0, text.length - sym.length)) * Math.pow(10, 3 * symbols.indexOf(sym));
-    return Number.NaN;
+    text=String(text).trim();
+    const parsed=Number(text);if(!Number.isNaN(parsed))return parsed;
+    // q/Q and s/S are different scales. Only unambiguous suffixes accept either case.
+    const suffix=symbols.slice(1).find(sym=>text.endsWith(sym))||symbols.slice(1).find(sym=>!['q','Q','s','S'].includes(sym)&&text.toLowerCase().endsWith(sym));
+    if(!suffix)return NaN;
+    const prefix=text.slice(0,-suffix.length).trim();if(!prefix)return NaN;
+    const value=Number(prefix);return Number.isFinite(value)?value*10**(3*symbols.indexOf(suffix)):NaN;
 }
 
 /**
@@ -46,7 +48,7 @@ export function parseShortNumber(text = "0") {
  * @param {number=} minDecimalPlaces - (default: 3) The minimum decimal places you wish to see, regardless of significant figures. (e.g. 12.3, 1.2, 0.1 all have 1 decimal)
  **/
 export function formatNumber(num, minSignificantFigures = 3, minDecimalPlaces = 1) {
-    return num == 0.0 ? "0" : num.toFixed(Math.max(minDecimalPlaces, Math.max(0, minSignificantFigures - Math.ceil(Math.log10(num)))));
+    return num == 0.0 ? "0" : num.toFixed(Math.max(minDecimalPlaces, Math.max(0, minSignificantFigures - Math.ceil(Math.log10(Math.abs(num))))));
 }
 
 const memorySuffixes = ["GB", "TB", "PB", "EB"];
@@ -244,45 +246,31 @@ export async function getNsDataThroughFile_Custom(ns, fnRun, command, fName = nu
     // Check whether any backwards-compatible changes need to be made to the command being executed
     command = checkBackwardsCompatibility(ns, command);
 
-    // Create a file that will store the results of whatever command is executed.
     fName = fName || getDefaultCommandFileName(command);
-    const fNameCommand = fName + '.js'
-    // Pre-write contents to the file that will allow us to detect if our temp script never got run
-    const initialContents = "<Insufficient RAM>";
-    ns.write(fName, initialContents, 'w');
+    // The script is immutable per command; each worker writes a result identified by its own PID.
+    const fNameCommand = fName+'.'+hashCode(command)+'.js';
+    const startedAt=Date.now();
+    const commandToFile=`const f=${JSON.stringify(fName)}+".result-"+ns.pid+".txt";let r;try{r=JSON.stringify(await (
+${command}
+),jsonReplacer);}catch(e){r="ERROR: "+String(e?.message??e);}
+ns.write(f,JSON.stringify({at:Date.now(),data:r}),"w");`;
+    const pid=await runCommand_Custom(ns,fnRun,commandToFile,fNameCommand,args,verbose,maxRetries,retryDelayMs,silent);
+    const resultName=fName+'.result-'+pid+'.txt';
+    const readReceipt=()=>{try{const r=JSON.parse(ns.read(resultName));return r.at>=startedAt&&typeof r.data==='string'?r:null;}catch{return null;}};
+    try {
+        await waitForProcessToComplete_Custom(ns,()=>!readReceipt()&&ns.isRunning(pid),pid,verbose);
+        const receipt=await autoRetry(ns,readReceipt,Boolean,()=>`Temporary query ${pid} ended without a result: ${fNameCommand}`,maxRetries,retryDelayMs,undefined,verbose,verbose,silent);
+        // Preserve the documented public data file for scripts which read it separately.
+        ns.write(fName,receipt.data,'w');
+        if(receipt.data.startsWith('ERROR: '))throw new Error(receipt.data.slice(7));
+        return JSON.parse(receipt.data,jsonReviver);
+    } finally { ns.rm(resultName); }
 
-    // Prepare a command that will write out a new file containing the results of the command
-    // unless it already exists with the same contents (saves time/ram to check first)
-    // If an error occurs, it will write the error message to the file (and this will be detected when we read the result)
-    // TODO: (Issue #481) Add special handling for null and undefined results, so that functions returning no value can also be invoked via this function.
-    const commandToFile = `let r;try{r=JSON.stringify(\n` +
-        `    ${command}\n` +
-        `, jsonReplacer);}catch(e){r="ERROR: "+(typeof e=='string'?e:e?.message??JSON.stringify(e));}\n` +
-        `const f="${fName}"; if(ns.read(f)!==r) ns.write(f,r,'w')`;
-    // Run the command with auto-retries if it fails
-    const pid = await runCommand_Custom(ns, fnRun, commandToFile, fNameCommand, args, verbose, maxRetries, retryDelayMs, silent);
-    // Wait for the process to complete. Note, as long as the above returned a pid, we don't actually have to check it, just the file contents
-    const fnIsAlive = (ignored_pid) => ns.read(fName) === initialContents;
-    await waitForProcessToComplete_Custom(ns, fnIsAlive, pid, verbose);
-    if (verbose) log(ns, `Process ${pid} is done. Reading the contents of ${fName}...`);
-    // Read the file, with auto-retries if it fails // TODO: Unsure reading a file can fail or needs retrying.
-    let lastRead;
-    const fileData = await autoRetry(ns, () => ns.read(fName),
-        f => (lastRead = f) !== undefined && f !== "" && f !== initialContents && !(typeof f == "string" && f.startsWith("ERROR: ")),
-        () => `\nns.read('${fName}') returned a bad result: "${lastRead}".` +
-            `\n  Script:  ${fNameCommand}\n  Args:    ${JSON.stringify(args)}\n  Command: ${command}` +
-            (lastRead == undefined ? '\nThe developer has no idea how this could have happened. Please post a screenshot of this error on discord.' :
-                lastRead == initialContents ? `\nThe script that ran this will likely recover and try again later once you have more free ram.` :
-                    lastRead == "" ? `\nThe file appears to have been deleted before a result could be retrieved. Perhaps there is a conflicting script.` :
-                        lastRead.includes('API ACCESS ERROR') ? `\nThis script should not have been run until you have the required Source-File upgrades. Sorry about that.` :
-                            `\nThe script was likely passed invalid arguments. Please post a screenshot of this error on discord.`),
-        maxRetries, retryDelayMs, undefined, verbose, verbose, silent);
-    if (verbose) log(ns, `Read the following data for command ${command}:\n${fileData}`);
-    return JSON.parse(fileData, jsonReviver); // Deserialize it back into an object/array and return
 }
 
 /** Allows us to serialize types not normally supported by JSON.serialize */
 export function jsonReplacer(key, val) {
+    if(key===''&&val===undefined)return {$type:'undefined'};
     if (val === Infinity)
         return { $type: 'number', $value: 'Infinity' };
     if (val === -Infinity)
@@ -302,6 +290,7 @@ export function jsonReplacer(key, val) {
 export function jsonReviver(key, val) {
     if (val == null || typeof val !== 'object' || val.$type == null)
         return val;
+    if(val.$type==='undefined')return undefined;
     if (val.$type == 'number')
         return Number.parseFloat(val.$value);
     if (val.$type == 'bigint')
@@ -364,7 +353,7 @@ export async function runCommand_Custom(ns, fnRun, command, fileName, args = [],
     let importFunctions = getExports(ns).filter(e => command.includes(`${e}`)) // Check if the script includes the name of any functions
         // To avoid false positives, narrow these to "whole word" matches (no alpha characters on either side)
         .filter(e => new RegExp(`(^|[^\\w])${e}([^\\w]|\$)`).test(command));
-    let script = (importFunctions.length > 0 ? `import { ${importFunctions.join(", ")} } from 'helpers.js'\n` : '') +
+    let script = (importFunctions.length > 0 ? `import { ${importFunctions.join(", ")} } from ${JSON.stringify(getFilePath('helpers.js'))}\n` : '') +
         `export async function main(ns) { ${command} }`;
     fileName = fileName || getDefaultCommandFileName(command, '.js');
     if (verbose)
@@ -387,7 +376,7 @@ export async function runCommand_Custom(ns, fnRun, command, fileName, args = [],
         // NEW! We can inject "RunOptions" as the middle arg (rather than an integer thread count)
         // Run the script, now that we're sure it is in place
         return fnRun(fileName, { temporary: true }, ...args);
-    }, pid => pid !== 0,
+    }, pid => Number.isInteger(pid)&&pid>0,
         async () => {
             if (silent) return `(silent = true)`; // No reason needed in silent mode, messages should all be suppressed
             let reason = " (likely due to insufficient RAM)";
@@ -470,21 +459,21 @@ export async function autoRetry(ns, fnFunctionThatMayFail, fnSuccessCondition, e
     if (maxRetries == null) maxRetries = 5; if (initialRetryDelayMs == null) initialRetryDelayMs = 50; if (backoffRate == null) backoffRate = 3;
     if (verbose == null) verbose = false; if (tprintFatalErrors == null) tprintFatalErrors = true; if (silent == null) silent = false;
     checkNsInstance(ns, '"autoRetry"');
+    if(!Number.isFinite(maxRetries)||maxRetries<0||!Number.isFinite(initialRetryDelayMs)||initialRetryDelayMs<0||!Number.isFinite(backoffRate)||backoffRate<0)throw new Error('Invalid retry settings');
+    maxRetries=Math.max(1,Math.ceil(maxRetries));
     let retryDelayMs = initialRetryDelayMs, attempts = 0;
     let sucessConditionMet;
-    while (attempts++ <= maxRetries) {
+    while (attempts++ < maxRetries) {
         // Sleep between attempts
         if (attempts > 1) {
             await ns.sleep(retryDelayMs);
-            retryDelayMs *= backoffRate;
+            retryDelayMs = Math.min(60000,retryDelayMs*backoffRate);
         }
         try {
             sucessConditionMet = true;
             const result = await fnFunctionThatMayFail()
             // Check if this is considered a successful result
-            sucessConditionMet = fnSuccessCondition(result);
-            if (sucessConditionMet instanceof Promise)
-                sucessConditionMet = await sucessConditionMet; // If fnSuccessCondition was async, await its result
+            sucessConditionMet = await fnSuccessCondition(result); // If fnSuccessCondition was async, await its result
             if (!sucessConditionMet) {
                 // If we have not yet reached our maximum number of retries, we can continue, without throwing
                 if (attempts < maxRetries) {
@@ -598,21 +587,15 @@ export async function getActiveSourceFiles(ns, includeLevelsFromCurrentBitnode =
  * @returns {Promise<{[k: number]: number}>} A dictionary keyed by source file number, where the value is the level (between 1 and 3 for all but BN12) **/
 export async function getActiveSourceFiles_Custom(ns, fnGetNsDataThroughFile, includeLevelsFromCurrentBitnode = true, silent = true) {
     checkNsInstance(ns, '"getActiveSourceFiles"');
-    // Find out what source files the user has unlocked
-    let dictSourceFiles = (/**@returns{{[bitNodeN: number]: number;}}*/() => null)();
-    try {
-        dictSourceFiles = await fnGetNsDataThroughFile(ns,
-            `Object.fromEntries(ns.singularity.getOwnedSourceFiles().map(sf => [sf.n, sf.lvl]))`,
-            '/Temp/getOwnedSourceFiles-asDict.txt', null, null, null, null, silent);
-    } catch { } // If this fails (e.g. presumably due to low RAM or no singularity access), default to an empty dictionary
-    dictSourceFiles ??= {};
-
-    // Try to get reset info
-    let resetInfo = (/**@returns{ResetInfo}*/() => null)();
-    try {
-        resetInfo = await fnGetNsDataThroughFile(ns, 'ns.getResetInfo()', null, null, null, null, null, silent);
-    } catch { } // As above, suppress any errors and use a fall-back to survive low ram conditions.
-    resetInfo ??= { currentNode: 0 }
+    let resetInfo;
+    try {resetInfo=await fnGetNsDataThroughFile(ns,'ns.getResetInfo()',null,null,null,null,null,silent);}catch{}
+    resetInfo??={currentNode:0};
+    const entries=value=>value instanceof Map?[...value]:Object.entries(value||{});
+    let dictSourceFiles;
+    if(resetInfo.ownedSF!=null)dictSourceFiles=Object.fromEntries(entries(resetInfo.ownedSF));
+    else try{dictSourceFiles=await fnGetNsDataThroughFile(ns,'Object.fromEntries(ns.singularity.getOwnedSourceFiles().map(sf => [sf.n, sf.lvl]))','/Temp/getOwnedSourceFiles-asDict.txt',null,null,null,null,silent);}catch{}
+    dictSourceFiles??={};
+    Object.keys(dictSourceFiles).forEach(k=>{const level=Number(dictSourceFiles[k]);if(level>0&&Number.isFinite(level))dictSourceFiles[k]=level;else delete dictSourceFiles[k];});
 
     // If the user is currently in a given bitnode, they will have its features unlocked. Include these "effective" levels if requested;
     if (includeLevelsFromCurrentBitnode && resetInfo.currentNode != 0) {
@@ -624,10 +607,8 @@ export async function getActiveSourceFiles_Custom(ns, fnGetNsDataThroughFile, in
 
     // If any bitNodeOptions were set, it might reduce our source file levels for gameplay purposes,
     // but the game currently has a bug where getOwnedSourceFiles won't reflect this, so we must do it ourselves.
-    if ((resetInfo?.bitNodeOptions?.sourceFileOverrides?.size ?? 0) > 0) {
-        resetInfo.bitNodeOptions.sourceFileOverrides.forEach((sfLevel, bn) => dictSourceFiles[bn] = sfLevel);
-        // Completely remove keys whose override level is 0
-        Object.keys(dictSourceFiles).filter(bn => dictSourceFiles[bn] == 0).forEach(bn => delete dictSourceFiles[bn]);
+    for(const [bn,raw]of entries(resetInfo.bitNodeOptions?.sourceFileOverrides)) {
+        const level=Number(raw);if(level>0&&Number.isFinite(level))dictSourceFiles[bn]=level;else delete dictSourceFiles[bn];
     }
 
     return dictSourceFiles;
@@ -674,65 +655,14 @@ export async function tryGetBitNodeMultipliers_Custom(ns, fnGetNsDataThroughFile
  * @param {number} bnOverride The bitnode for which to retrieve multipliers. Defaults to the current BN if null.
  * @returns {Promise<BitNodeMultipliers>} a mocked BitNodeMultipliers instance with hard-coded values. */
 export async function getHardCodedBitNodeMultipliers(ns, fnGetNsDataThroughFile, bnOverride = null) {
-    let bn = bnOverride ?? 1;
-    if (!bnOverride) {
-        try { bn = (await fnGetNsDataThroughFile(ns, 'ns.getResetInfo()', '/Temp/reset-info.txt')).currentNode; }
-        catch { /* We are expected to be fault-tolerant in low-ram conditions */ }
-    }
-    return Object.fromEntries(Object.entries({
-        AgilityLevelMultiplier: /*     */[1, 1, 1, 1, 1, 1, 1, 1, 0.45, 0.4, 1, 1, 0.7, 0.5],
-        AugmentationMoneyCost: /*      */[1, 1, 3, 1, 2, 1, 3, 1, 1, 5, 2, 1, 1, 1.5],
-        AugmentationRepCost: /*        */[1, 1, 3, 1, 1, 1, 1, 1, 1, 2, 1, 1, 1, 1],
-        BladeburnerRank: /*            */[1, 1, 1, 1, 1, 1, 0.6, 0, 0.9, 0.8, 1, 1, 0.45, 0.6],
-        BladeburnerSkillCost: /*       */[1, 1, 1, 1, 1, 1, 2, 1, 1.2, 1, 1, 1, 2, 2],
-        CharismaLevelMultiplier: /*    */[1, 1, 1, 1, 1, 1, 1, 1, 0.45, 0.4, 1, 1, 1, 1],
-        ClassGymExpGain: /*            */[1, 1, 1, 0.5, 1, 1, 1, 1, 1, 1, 1, 1, 0.5, 1],
-        CodingContractMoney: /*        */[1, 1, 1, 1, 1, 1, 1, 0, 1, 0.5, 0.25, 1, 0.4, 1],
-        CompanyWorkExpGain: /*         */[1, 1, 1, 0.5, 1, 1, 1, 1, 1, 1, 1, 1, 0.5, 1],
-        CompanyWorkMoney: /*           */[1, 1, 0.25, 0.1, 1, 0.5, 0.5, 0, 1, 0.5, 0.5, 1, 0.4, 1],
-        CompanyWorkRepGain: /*         */[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0.2],
-        CorporationDivisions: /*       */[1, 0.9, 1, 1, 0.75, 0.8, 0.8, 0, 0.8, 0.9, 0.9, 0.5, 0.4, 0.8],
-        CorporationSoftcap: /*         */[1, 0.9, 1, 1, 1, 0.9, 0.9, 0, 0.75, 0.9, 0.9, 0.8, 0.4, 0.9],
-        CorporationValuation: /*       */[1, 1, 1, 1, 0.75, 0.2, 0.2, 0, 0.5, 0.5, 0.1, 1, 0.001, 0.4],
-        CrimeExpGain: /*               */[1, 1, 1, 0.5, 1, 1, 1, 1, 1, 1, 1, 1, 0.5, 1],
-        CrimeMoney: /*                 */[1, 3, 0.25, 0.2, 0.5, 0.75, 0.75, 0, 0.5, 0.5, 3, 1, 0.4, 0.75],
-        CrimeSuccessRate: /*           */[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0.4],
-        DaedalusAugsRequirement: /*    */[30, 30, 30, 30, 30, 35, 35, 30, 30, 30, 30, 31, 30, 30],
-        DefenseLevelMultiplier: /*     */[1, 1, 1, 1, 1, 1, 1, 1, 0.45, 0.4, 1, 1, 0.7, 1],
-        DexterityLevelMultiplier: /*   */[1, 1, 1, 1, 1, 1, 1, 1, 0.45, 0.4, 1, 1, 0.7, 0.5],
-        FactionPassiveRepGain: /*      */[1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
-        FactionWorkExpGain: /*         */[1, 1, 1, 0.5, 1, 1, 1, 1, 1, 1, 1, 1, 0.5, 1],
-        FactionWorkRepGain: /*         */[1, 0.5, 1, 0.75, 1, 1, 1, 1, 1, 1, 1, 1, 0.6, 0.2],
-        FourSigmaMarketDataApiCost: /* */[1, 1, 1, 1, 1, 1, 2, 1, 4, 1, 4, 1, 10, 1],
-        FourSigmaMarketDataCost: /*    */[1, 1, 1, 1, 1, 1, 2, 1, 5, 1, 4, 1, 10, 1],
-        GangSoftcap: /*                */[1, 1, 0.9, 1, 1, 0.7, 0.7, 0, 0.8, 0.9, 1, 0.8, 0.3, 0.7],
-        GangUniqueAugs: /*             */[1, 1, 0.5, 0.5, 0.5, 0.2, 0.2, 0, 0.25, 0.25, 0.75, 1, 0.1, 0.4],
-        GoPower: /*                    */[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 4],
-        HackExpGain: /*                */[1, 1, 1, 0.4, 0.5, 0.25, 0.25, 1, 0.05, 1, 0.5, 1, 0.1, 1],
-        HackingLevelMultiplier: /*     */[1, 0.8, 0.8, 1, 1, 0.35, 0.35, 1, 0.5, 0.35, 0.6, 1, 0.25, 0.4],
-        HackingSpeedMultiplier: /*     */[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0.3],
-        HacknetNodeMoney: /*           */[1, 1, 0.25, 0.05, 0.2, 0.2, 0.2, 0, 1, 0.5, 0.1, 1, 0.4, 0.25],
-        HomeComputerRamCost: /*        */[1, 1, 1.5, 1, 1, 1, 1, 1, 5, 1.5, 1, 1, 1, 1],
-        InfiltrationMoney: /*          */[1, 3, 1, 1, 1.5, 0.75, 0.75, 0, 1, 0.5, 2.5, 1, 1, 0.75],
-        InfiltrationRep: /*            */[1, 1, 1, 1, 1.5, 1, 1, 1, 1, 1, 2.5, 1, 1, 1],
-        ManualHackMoney: /*            */[1, 1, 1, 1, 1, 1, 1, 0, 1, 0.5, 1, 1, 1, 1],
-        CloudServerCost: /*            */[1, 1, 2, 1, 1, 1, 1, 1, 1, 5, 1, 1, 1, 1],
-        CloudServerSoftcap: /*         */[1, 1.3, 1.3, 1.2, 1.2, 2, 2, 4, 1, 1.1, 2, 1, 1.6, 1],
-        CloudServerLimit: /*           */[1, 1, 1, 1, 1, 1, 1, 1, 0, 0.6, 1, 1, 1, 1],
-        CloudServerMaxRam: /*          */[1, 1, 1, 1, 1, 1, 1, 1, 1, 0.5, 1, 1, 1, 1],
-        FavorToDonateToFaction: /*     */[1, 1, 0.5, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1],
-        ScriptHackMoney: /*            */[1, 1, 0.2, 0.2, 0.15, 0.75, 0.5, 0.3, 0.1, 0.5, 1, 1, 0.2, 0.3],
-        ScriptHackMoneyGain: /*        */[1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1],
-        ServerGrowthRate: /*           */[1, 0.8, 0.2, 1, 1, 1, 1, 1, 1, 1, 0.2, 1, 1, 1],
-        ServerMaxMoney: /*             */[1, 0.08, 0.04, 0.1125, 1, 0.2, 0.2, 1, 0.01, 1, 0.01, 1, 0.3375, 0.7],
-        ServerStartingMoney: /*        */[1, 0.4, 0.2, 0.75, 0.5, 0.5, 0.5, 1, 0.1, 1, 0.1, 1, 0.75, 0.5],
-        ServerStartingSecurity: /*     */[1, 1, 1, 1, 2, 1.5, 1.5, 1, 2.5, 1, 1, 1.5, 3, 1.5],
-        ServerWeakenRate: /*           */[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 1, 1, 1],
-        StrengthLevelMultiplier: /*    */[1, 1, 1, 1, 1, 1, 1, 1, 0.45, 0.4, 1, 1, 0.7, 0.5],
-        StaneksGiftPowerMultiplier: /* */[1, 2, 0.75, 1.5, 1.3, 0.5, 0.9, 1, 0.5, 0.75, 1, 1, 2, 0.5],
-        StaneksGiftExtraSize: /*       */[0, -6, -2, 0, 0, 2, -1, -99, 2, -3, 0, 1, 1, -1],
-        WorldDaemonDifficulty: /*      */[1, 5, 2, 3, 1.5, 2, 2, 1, 2, 2, 1.5, 1, 3, 5]
-    }).map(([mult, values]) => [mult, values[bn - 1]]));
+    let reset;
+    try{reset=await fnGetNsDataThroughFile(ns,'ns.getResetInfo()','/Temp/reset-info.txt');}catch{}
+    const bn=bnOverride??reset?.currentNode??1;
+    const values=value=>value instanceof Map?Object.fromEntries(value):value||{};
+    const owned=values(reset?.ownedSF),overrides=values(reset?.bitNodeOptions?.sourceFileOverrides);
+    const level=overrides[12]??owned[12]??0;
+    return fallbackBitNodeMultipliers(bn,level);
+
 }
 
 /** Returns the number of instances of the current script running on the specified host.
@@ -742,7 +672,7 @@ export async function getHardCodedBitNodeMultipliers(ns, fnGetNsDataThroughFile,
  * @param {boolean} warn - Whether to automatically log a warning when there are more than other running instances
  * @param {tailOtherInstances} warn - Whether to open the tail window of other running instances so that they can be easily killed
  * @returns {Promise<number>} The number of other instance of this script running on this host. */
-export async function instanceCount(ns, onHost = "home", warn = true, tailOtherInstances = true) {
+export async function instanceCount(ns, onHost = "home", warn = true, tailOtherInstances = false) {
     checkNsInstance(ns, '"alreadyRunning"');
     const scriptName = ns.getScriptName();
     let otherInstancePids = (/**@returns{number[]}*/() => [])();
@@ -817,18 +747,19 @@ export function getConfiguration(ns, argsSchema) {
     // If the user has a local config file, override the defaults in the argsSchema
     const confName = `${scriptName}.config.txt`;
     const overrides = ns.read(confName);
-    const overriddenSchema = overrides ? [...argsSchema] : argsSchema; // Clone the original args schema
+    const overriddenSchema = argsSchema.map(([key,value])=>[key,Array.isArray(value)?value.slice():value]); // Clone the original args schema
     const dictArgsSchema = Object.fromEntries(argsSchema);
     if (overrides) {
         try {
             let parsedOverrides = JSON.parse(overrides, jsonReviver); // Expect a parsable dict or array of 2-element arrays like args schema
             if (Array.isArray(parsedOverrides)) parsedOverrides = Object.fromEntries(parsedOverrides);
+            if(!parsedOverrides||typeof parsedOverrides!=='object')throw new Error('Config must be an object or an array of flag entries.');
             log(ns, `INFO: Applying ${Object.keys(parsedOverrides).length} overriding default arguments from "${confName}"...`);
             for (const key in parsedOverrides) {
                 const override = parsedOverrides[key];
                 const matchIndex = overriddenSchema.findIndex(o => o[0] == key);
                 const match = matchIndex === -1 ? null : overriddenSchema[matchIndex];
-                const strDefaultValue = match[1] === undefined ? "undefined" : JSON.stringify(match[1], jsonReplacer);
+                const strDefaultValue = !match || match[1] === undefined ? "undefined" : JSON.stringify(match[1], jsonReplacer);
                 const strFinalValue = override === undefined ? "undefined" : JSON.stringify(override, jsonReplacer);
                 if (!match)
                     throw new Error(`Unrecognized key "${key}" does not match any of this script's options: ` + JSON.stringify(argsSchema.map(a => a[0])));
@@ -836,7 +767,7 @@ export function getConfiguration(ns, argsSchema) {
                     throw new Error(`The key "${key}" appeared in the config with no value. Some value must be provided. Try null?`);
                 else if (match && strDefaultValue != strFinalValue) {
                     log(ns, `INFO: Overriding "${key}" value: ${strDefaultValue}  ->  ${strFinalValue}`);
-                    overriddenSchema[matchIndex] = { ...match }; // Clone the (previously shallow-copied) object at this position of the new argsSchema
+                    overriddenSchema[matchIndex] = [...match]; // Clone the (previously shallow-copied) object at this position of the new argsSchema
                     overriddenSchema[matchIndex][1] = override; // Update the value of the clone.
                 }
             }
@@ -856,6 +787,7 @@ export function getConfiguration(ns, argsSchema) {
         // rather than appropriately notifying the user that "1m" is a string, so not a valid value (resulting in Bug #237 )
         // As a result, we may wish to stop using ns.flags below and implement our own arg parsing, as painful as that may be.
         const finalOptions = ns.flags(overriddenSchema);
+        for(const [key,value]of Object.entries(finalOptions))if(typeof value==='number'&&Number.isNaN(value))throw new Error('Invalid numeric value for --'+key);
         // Summarize the final set of settings the script is being run with
         log(ns, `INFO: Running ${scriptName} with the following settings:` +
             Object.keys(finalOptions).filter(a => a != "_").map(key => {
@@ -916,10 +848,10 @@ export function getConfiguration(ns, argsSchema) {
  * @returns {string[]} The the array-argument unescaped (or deserialized if a single argument starting with '[' was supplied]). */
 export function unEscapeArrayArgs(args) {
     // For convenience, also support args as a single stringified array
-    if (args.length == 1 && args[0].startsWith("[")) return JSON.parse(args[0]);
+    if(args.length===1&&typeof args[0]==='string'&&args[0].startsWith('[')){const result=JSON.parse(args[0]);if(!Array.isArray(result))throw new Error('Expected an argument array');return result;}
     // Otherwise, args wrapped in quotes should have those quotes removed.
     const escapeChars = ['"', "'", "`"];
-    return args.map(arg => escapeChars.some(c => arg.startsWith(c) && arg.endsWith(c)) ? arg.slice(1, -1) : arg);
+    return args.map(arg => typeof arg==='string'&&arg.length>=2&&escapeChars.some(c => arg.startsWith(c) && arg.endsWith(c)) ? arg.slice(1, -1) : arg);
 }
 
 /**
@@ -954,7 +886,7 @@ export function tail(ns, processId = undefined, openWindow = false) {
 }
 
 function isV3(ns) {
-    return ns.ui.getGameInfo().versionNumber >= 44;
+    try{return ns.ui.getGameInfo().versionNumber>=44;}catch{return false;}
 }
 
 export function formatTime(ns, milliseconds, milliPrecision) {

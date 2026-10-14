@@ -1,3 +1,7 @@
+import { optimizeLayout, layoutScore } from './stanek-optimizer.js';
+import { isScriptPaused } from './automation-control.js';
+import { maintenanceRequested } from './runtime-policy.js';
+import { selectStanekLayout, stanekLayoutDimensions } from './stanek-policy.js';
 import { log, getConfiguration, getNsDataThroughFile } from './helpers.js'
 
 const argsSchema = [
@@ -13,7 +17,8 @@ export function autocomplete(data, args) {
 /** @param {NS} ns */
 export async function main(ns) {
     const options = getConfiguration(ns, argsSchema);
-    if (!options) return;
+    if (!options || isScriptPaused(ns,ns.getScriptName()) || isScriptPaused(ns,"stanek.js") || maintenanceRequested(ns)) return;
+    try {
 
     // Check if stanek was previously placed
     if (!options['clear']) {
@@ -23,40 +28,44 @@ export async function main(ns) {
     }
 
     // Find the saved layout that best matches
-    const height = options['force-height'] || await getNsDataThroughFile(ns, 'ns.stanek.giftHeight()');
-    const width = options['force-width'] || await getNsDataThroughFile(ns, 'ns.stanek.giftWidth()');
-    const usableLayouts = layouts.filter(l => l.height <= height && l.width <= width);
-    const bestLayout = usableLayouts.sort((l1, l2) => // Use the layout with the least amount of unused rows/columns
-        (height - l1.height + width - l1.width) - (height - l2.height + width - l2.width))[0];
+    const actualWidth = await getNsDataThroughFile(ns, 'ns.stanek.giftWidth()');
+    const actualHeight = await getNsDataThroughFile(ns, 'ns.stanek.giftHeight()');
+    const dimensions = stanekLayoutDimensions(actualWidth,actualHeight,options['force-width'],options['force-height']);
+    if (!dimensions) return log(ns,'Invalid forced Stanek dimensions; preserving the current grid.',true,'warning');
+    const {width,height} = dimensions;
+    const bitnodeN = ns.getResetInfo().currentNode;
+    let bestLayout = selectStanekLayout(layouts, width, height, bitnodeN);
+    const definitions=await getNsDataThroughFile(ns,'ns.stanek.fragmentDefinitions()');
+    let candidate;try{candidate=JSON.parse(ns.read('tasks/stanek-layout.json'));}catch{}
+    if(candidate?.version!==1||candidate.width!==width||candidate.height!==height||candidate.node!==bitnodeN||!Array.isArray(candidate.fragments)||!candidate.fragments.length||!Number.isFinite(layoutScore(candidate.fragments,definitions,width,height,bitnodeN))) {
+        candidate=await optimizeLayout(definitions,width,height,bitnodeN,()=>ns.sleep(0));
+        await ns.write('tasks/stanek-layout.json',JSON.stringify(candidate),'w');
+    }
+    const savedScore=bestLayout?layoutScore(bestLayout.fragments,definitions,width,height,bitnodeN):-Infinity;
+    if(!Number.isFinite(savedScore))bestLayout=null;
+    const optimizedScore=layoutScore(candidate.fragments,definitions,width,height,bitnodeN);
+    if(candidate.fragments.length&&Number.isFinite(optimizedScore)&&optimizedScore>savedScore)bestLayout=candidate;
+    if (!bestLayout) return log(ns, `No saved Stanek layout fits ${width}x${height}; preserving the existing grid.`, true, 'warning');
     log(ns, `Best layout found for current Stanek grid dimentions (height: ${height} width: ${width}) ` +
         `has height: ${bestLayout.height} width: ${bestLayout.width} fragments: ${bestLayout.fragments.length}`);
 
+    if(isScriptPaused(ns,ns.getScriptName()) || isScriptPaused(ns,'stanek.js') || maintenanceRequested(ns))return;
     // Clear any prior layout if enabled
     if (options['clear']) {
         await getNsDataThroughFile(ns, 'ns.stanek.clearGift() || true', '/Temp/stanek-clearGift.txt');
         log(ns, 'Cleared any existing stanek layout.');
     }
 
-    // If we're in a bladeburner BN, and there's no bladeburner piece in our selected layout (id=30),
-    // replace the identically shaped hacking multi piece  with this one.
-    const has0butNot30 = bestLayout.fragments.some(p => p.id == 0) && !bestLayout.fragments.some(p => p.id == 30);
-    if (has0butNot30) {
-        const bitnodeN = (await getNsDataThroughFile(ns, 'ns.getResetInfo()')).currentNode;;
-        if (bitnodeN == 6 || bitnodeN == 7) {
-            log(ns, `We're in a bladeburner node, replacing a hack piece with the bladeburner piece.`);
-            bestLayout.fragments.find(p => p.id == 0).id = 30;
-        }
-    }
-
     // Place the layout
     log(ns, `Placing ${bestLayout.fragments.length} fragments:\n` + JSON.stringify(bestLayout.fragments));
     const result = await getNsDataThroughFile(ns,
-        'JSON.parse(ns.args[0]).reduce((t, f) => ns.stanek.placeFragment(f.x, f.y, f.rotation, f.id) && t, true)',
+        '(() => { const before=ns.stanek.activeFragments(); if(before.length) return false; for(const f of JSON.parse(ns.args[0])) { if(!ns.stanek.canPlaceFragment(f.x,f.y,f.rotation,f.id)||!ns.stanek.placeFragment(f.x,f.y,f.rotation,f.id)){ns.stanek.clearGift();return false;} } return true; })()', 
         '/Temp/stanek-placeFragments.txt', [JSON.stringify(bestLayout.fragments)]);
     if (result)
         log(ns, `SUCCESS: Placed ${bestLayout.fragments.length} Stanek fragments.`, true, 'success');
     else
         log(ns, `ERROR: Failed to place one or more fragments. The layout may be invalid.`, true, 'error');
+    } catch (error) { log(ns,'Stanek layout unavailable: '+String(error),true,'warning'); }
 }
 
 // DISCLAIMER: These layouts are mostly hack focused, but bring in additional important stats as there is room

@@ -1,3 +1,6 @@
+import {registerAutomation,automationHeartbeat,maintenanceRequested} from './runtime-policy.js';
+import {autopilotSourceFiles} from './autopilot-policy.js';
+import {achievementActionAllowed} from './achievement-policy.js';
 /**Author:
  * Discord:
  * - Sphyxis
@@ -10,11 +13,16 @@
  * - Insight (alainbryden)
  */
 
+import { isScriptPaused } from './automation-control.js';
+import { rankGoOpponents, goOpponents, goOptionsError, goCheatsEnabled, validGoPair, shuffleGoMoves, liveGoGoals, attemptGoFailure,goCheatChanceAllowed,validGoBoard } from './go-policy.js';
 import {
     getConfiguration, instanceCount, log, getErrorInfo, getActiveSourceFiles, getNsDataThroughFile, formatTime
 } from './helpers.js'
 
 const argsSchema = [
+    ['goal','auto'], // auto, money, speed, hacking, reputation, combat, crime, hacknet
+    ['board-size',13], // Supported native sizes: 5, 7, 9, 13.
+    ['opponent',''], // Optional explicit opponent override
     ['cheats', true], // (Now true by default - but still an option for backwards compatibility) This is only possible if you have BN14.2
     ['disable-cheats', false], // Set to true if you want to *not* use cheats for some reason.
     ['cheat-chance-threshold', 0.9], // Don't cheat if our success chance is less than this
@@ -32,12 +40,17 @@ export function autocomplete(data, args) {
  * Note that to protect against "shared global memory", the entire script is wrapped in the body of the main function.
  * @param {NS} ns */
 export async function main(ns) {
+ registerAutomation(ns);
+    if(isScriptPaused(ns,ns.getScriptName()))return;
+    let goOptions, unavailableOpponents=new Map();
+    const stopPlaying=Symbol('Go stopped');let failureAttempts=0,startedGame=false,lastStatusAt=0,goStatus={};
+    const ensurePlaying=()=>{if(isScriptPaused(ns,ns.getScriptName())||!achievementActionAllowed(ns,'go'))throw stopPlaying;};
     let cheats = false;
     let cheatChanceThreshold = 1.0;
     let logtime = false;
     let runOnce = true;
     let silent = false;
-    let currentValidMovesTurn = 0; //The turn count that the currentValidMoves is valid for
+    let currentValidMovesTurn = -1; //The turn count that the currentValidMoves is valid for
     let turn = 0;
     let START = performance.now();
     // Global variables initialized in this way get strong typing throughout
@@ -84,8 +97,6 @@ export async function main(ns) {
     //const opponent = ["Slum Snakes", "Tetrads", "Daedalus", "Illuminati"]
     //const opponent2 = ["????????????"]
     // Original
-    const opponent = ["Netburners", "Slum Snakes", "The Black Hand", "Tetrads", "Daedalus", "Illuminati"];
-    const opponent2 = ["Netburners", "Slum Snakes", "The Black Hand", "Tetrads", "Daedalus", "Illuminati", "????????????"];
 
     await start();
 
@@ -94,23 +105,28 @@ export async function main(ns) {
         const runOptions = getConfiguration(ns, argsSchema);
         if (!runOptions || (await instanceCount(ns)) > 1) return; // Prevent multiple instances of this script from being started, even with different args.
 
+        goOptions=runOptions;
+        const invalid=goOptionsError(goOptions);if(invalid)return ns.tprint(invalid);
         logtime = runOptions.logtime;
         runOnce = runOptions.runOnce;
 
-        const sourceFiles = await getActiveSourceFiles(ns, true);
+        const reset=ns.getResetInfo();const sourceFiles=reset.ownedSF?autopilotSourceFiles(reset):await getActiveSourceFiles(ns,true);
         // Enable cheats if we have SF14.2 or higher (unless the user disabled cheats).
-        cheats = !runOptions['disable-cheats'] && (sourceFiles[14] ?? 0) >= 2;
+        cheats = goCheatsEnabled(runOptions,sourceFiles[14]??0);
         cheatChanceThreshold = runOptions['cheat-chance-threshold'];
 
         ns.disableLog("go.makeMove")
 
         let ranToCompletion = false;
-        while (!ranToCompletion) {
+        while (!ranToCompletion && !isScriptPaused(ns,ns.getScriptName())) {
             try {
                 await playGo(ns);
                 ranToCompletion = true;
             }
             catch (err) {
+                if(err===stopPlaying)return;
+                currentValidMovesTurn=-1;
+                await ns.write('tasks/go-status.json',JSON.stringify({...goStatus,at:Date.now(),pid:ns.pid,state:'recovering',error:getErrorInfo(err)}),'w');
                 log(ns, `WARNING: go.js Caught (and suppressed) an unexpected error:\n${getErrorInfo(err)}`, false, 'warning');
                 log(ns, `INFO: Will sleep for 10 seconds than try playing again.`, false);
                 await ns.sleep(10 * 1000);
@@ -146,12 +162,16 @@ export async function main(ns) {
     /** @param {NS} ns @param {number} x1 @param {number} y1 @param {number} x2 @param {number} y2
      * @returns {Promise<{type: "move" | "pass" | "gameOver";x: number;y: number;}>} */
     async function go_cheat_playTwoMoves(ns, x1, y1, x2, y2) {
-        return await getNsDataThroughFile(ns, `await ns.go.cheat.playTwoMoves(...ns.args)`, null, [x1, y1, x2, y2]);
+        ensurePlaying();
+        return await getNsDataThroughFile(ns, `await (() => {if(!ns.isRunning(ns.args[4])||ns.read("remote-control/paused/go.js.txt").trim()==="true"||!(${achievementActionAllowed.toString()})(ns,"go"))return null;const coords=ns.args.slice(0,4);if(!(${validGoPair.toString()})(ns.go.analysis.getValidMoves(),coords))return null;return ns.go.cheat.playTwoMoves(...coords);})()`, null, [x1,y1,x2,y2,ns.pid]);
     }
     /** @param {NS} ns @param {number} x1 @param {number} y1 @param {number} x2 @param {number} y2
      * @returns {Promise<{type: "move" | "pass" | "gameOver";x: number;y: number;}>} */
     async function go_makeMove(ns, x, y) {
-        return await ns.go.makeMove(x, y);
+        ensurePlaying();
+        const latest=await go_analysis_getValidMoves(ns);ensurePlaying();
+        if(latest[x]?.[y]!==true)throw new Error('Go board changed before move submission; refreshing.');
+        return await ns.go.makeMove(x,y);
         // Note to self - I decided against ram-dodging this request because the "await" actually blocks for a long time.
         // This program spends 99% of its time waiting for makeMove to complete (which is time-throttled by the game)
         // As such, this script permantly eats 4GB of the "temporary memory reserve" left by Daemon, which
@@ -159,6 +179,8 @@ export async function main(ns) {
         // Better to just consume this 4GB predictably as part of this script.
         //return await getNsDataThroughFile(ns, `await ns.go.makeMove(...ns.args)`, null, [x, y]);
     }
+
+    async function go_passTurn(ns) {ensurePlaying();return await ns.go.passTurn();}
 
     /** @param {NS} ns */
     async function playGo(ns) {
@@ -177,12 +199,17 @@ export async function main(ns) {
             }
             if (inProgress) break
         }
+        startedGame=typeof ns.go.getCurrentPlayer==='function'?ns.go.getCurrentPlayer()!=='None':inProgress;
         const currentGame = await ns.go.opponentNextTurn(false)
-        checkNewGame(ns, currentGame)
-        const playStyle = getStyle(ns);
+        await checkNewGame(ns, currentGame)
+        let playStyle = getStyle(ns);
         while (true) {
-            turn++
+            automationHeartbeat(ns);ensurePlaying();currentValidMovesTurn=-1;
+            turn++; if(turn===1)playStyle=getStyle(ns);
             board = await go_getBoardState(ns);
+            if(!validGoBoard(board))throw new Error('Malformed Go board; waiting for native state.');
+            startedGame=true;
+            if(Date.now()-lastStatusAt>=5000){goStatus={...goStatus,at:Date.now(),pid:ns.pid,state:'playing',error:null,opponent:ns.go.getOpponent(),turn,boardSize:board.length,cheats};await ns.write('tasks/go-status.json',JSON.stringify(goStatus),'w');lastStatusAt=Date.now();}
             contested = await go_analysis_getControlledEmptyNodes(ns);
             validMove = await go_analysis_getValidMoves(ns);
             validLibMoves = await go_analysis_getLiberties(ns);
@@ -198,10 +225,16 @@ export async function main(ns) {
             //We have our test board
 
             let results;
-            if (turn < 3)
+            const achievement=liveGoGoals(ns);
+            if(attemptGoFailure(achievement,failureAttempts,cheats)) {
+                const moves=validMove.flatMap((row,x)=>row.flatMap((valid,y)=>valid?[[x,y]]:[]));
+                if(moves.length>=2){failureAttempts++;results=await go_cheat_playTwoMoves(ns,...moves[0],...moves[1]);}
+                if(results?.type==='gameOver'){await checkNewGame(ns,results);continue;}
+            }
+            if (!results && turn < 3)
                 results = await movePiece(ns, getOpeningMove(ns))
 
-            if (turn >= 3) {
+            if (!results && turn >= 3) {
                 switch (playStyle) {
                     case 0:  //Netburners
                         if (results = await movePiece(ns, getRandomCounterLib())) break
@@ -221,7 +254,7 @@ export async function main(ns) {
                         if (results = await movePiece(ns, getRandomLibAttack())) break
                         if (results = await movePiece(ns, getRandomStrat())) break
                         ns.print("Turn Passed")
-                        results = await ns.go.passTurn()
+                        results = await go_passTurn(ns)
                         break
                     case 1:  //The Black Hand
                         if (results = await movePiece(ns, getRandomCounterLib())) break
@@ -240,7 +273,7 @@ export async function main(ns) {
                         if (results = await movePiece(ns, getRandomLibAttack())) break
                         if (results = await movePiece(ns, getRandomStrat())) break
                         ns.print("Turn Passed")
-                        results = await ns.go.passTurn()
+                        results = await go_passTurn(ns)
                         break
                     case 2: //Mr. Mustacio - Slum Snakes
                         if (results = await movePiece(ns, getRandomCounterLib())) break
@@ -259,7 +292,7 @@ export async function main(ns) {
                         if (results = await movePiece(ns, getRandomLibAttack())) break
                         if (results = await movePiece(ns, getRandomStrat())) break
                         ns.print("Turn Passed")
-                        results = await ns.go.passTurn()
+                        results = await go_passTurn(ns)
                         break
                     case 3: //Daedalus
                         if (results = await movePiece(ns, getRandomCounterLib())) break
@@ -278,7 +311,7 @@ export async function main(ns) {
                         if (results = await movePiece(ns, getRandomLibAttack())) break
                         if (results = await movePiece(ns, getRandomStrat())) break
                         ns.print("Turn Passed")
-                        results = await ns.go.passTurn()
+                        results = await go_passTurn(ns)
                         break
                     case 4: //Tetrads
                         if (results = await movePiece(ns, getRandomCounterLib())) break
@@ -297,7 +330,7 @@ export async function main(ns) {
                         if (results = await movePiece(ns, getRandomLibAttack())) break
                         if (results = await movePiece(ns, getRandomStrat(),)) break
                         ns.print("Turn Passed")
-                        results = await ns.go.passTurn()
+                        results = await go_passTurn(ns)
                         break
                     case 5: //Illum
                         if (results = await movePiece(ns, getRandomCounterLib())) break
@@ -315,7 +348,7 @@ export async function main(ns) {
                         if (results = await movePiece(ns, getRandomLibAttack())) break
                         if (results = await movePiece(ns, getRandomStrat())) break
                         ns.print("Turn Passed")
-                        results = await ns.go.passTurn()
+                        results = await go_passTurn(ns)
                         break
                     case 6: //??????
                         if (results = await movePiece(ns, getRandomCounterLib())) break
@@ -334,11 +367,12 @@ export async function main(ns) {
                         if (results = await movePiece(ns, getRandomLibAttack())) break
                         if (results = await movePiece(ns, getRandomStrat())) break
                         ns.print("Turn Passed")
-                        results = await ns.go.passTurn()
+                        results = await go_passTurn(ns)
                         break
                 } //End of style switch
             } // end of turn >= 3
-            checkNewGame(ns, results)
+            if(!results)results=await go_passTurn(ns);
+            await checkNewGame(ns, results)
         }
     }
 
@@ -358,12 +392,24 @@ export async function main(ns) {
     /** @param {NS} ns
      * @param {{ type:"move"|"pass"|"gameOver"; x:number; y:number;}} gameInfo
      */
-    function checkNewGame(ns, gameInfo) {
-        if (gameInfo.type === "gameOver") {
-            if (runOnce) ns.exit()
-            try { ns.go.resetBoardState(opponent2[Math.floor(Math.random() * opponent2.length)], 13) }
-            catch { ns.go.resetBoardState(opponent[Math.floor(Math.random() * opponent.length)], 13) }
-            turn = 0
+    async function checkNewGame(ns, gameInfo) {
+        if (gameInfo?.type === "gameOver") {
+            ensurePlaying();
+            if (runOnce&&startedGame){await ns.write('tasks/go-status.json',JSON.stringify({...goStatus,at:Date.now(),pid:ns.pid,state:'completed',error:null}),'w');throw stopPlaying;}
+            const stats=ns.go.analysis.getStats(),ranked=rankGoOpponents(stats,goOptions.goal,ns.getResetInfo().currentNode);
+            const achievement=liveGoGoals(ns);
+            if(!goOptions.opponent&&achievement?.goStreak)ranked.sort((a,b)=>Number(b.name==='Illuminati')-Number(a.name==='Illuminati'));
+            if(goOptions.opponent)ranked.splice(0,ranked.length,...ranked.filter(c=>c.name===goOptions.opponent));
+            let selected;
+            for(const candidate of ranked) {
+                if((unavailableOpponents.get(candidate.name)||0)>Date.now())continue;
+                try{ensurePlaying();const fresh=ns.go.resetBoardState(candidate.name,goOptions['board-size']??13);if(!validGoBoard(fresh))throw new Error('Board reset was not accepted');selected=candidate;startedGame=true;break;}
+                catch(err){if(err===stopPlaying)throw err;unavailableOpponents.set(candidate.name,Date.now()+300000);}
+            }
+            if(!selected)throw new Error('No available Go opponent; retrying after cooldown.');
+            goStatus={at:Date.now(),pid:ns.pid,state:'starting',error:null,selected,ranked,stats,boardSize:goOptions['board-size']??13};
+            await ns.write('tasks/go-status.json',JSON.stringify(goStatus),'w');
+            turn = 0;currentValidMovesTurn=-1;failureAttempts=0;
             ns.clearLog()
         }
     }
@@ -386,7 +432,7 @@ export async function main(ns) {
             //For, say a 3x3 pattern, we do a grid of 0,0 -> 2, 2
             for (let cx = ((patternSize - 1) * -1); cx <= 0; cx++) { // We've added a wall around everything, so 0 is a wall
                 if (cx + x + 1 < 0 || cx + x + 1 > size - 1) continue
-                for (let cy = ((patternSize - 1) * -1); cy <= 0 - 1; cy++) {
+                for (let cy = ((patternSize - 1) * -1); cy <= 0; cy++) {
                     //We now have a cycle that will check each section of the grid against the pattern
                     //Safety checks: We know 0,0 is safe, we were sent it, but each other section could be bad
                     if (cy + y + 1 < 0 || cy + y + 1 > size - 1) continue
@@ -517,8 +563,8 @@ export async function main(ns) {
 
         const checked = new Set
 
-        for (let x = 0; x < size - 1; x++)
-            for (let y = 0; y < size - 1; y++) {
+        for (let x = 0; x < size; x++)
+            for (let y = 0; y < size; y++) {
                 if (contested[x][y] === "X" || board[x][y] !== "O" || validLibMoves[x][y] !== 2 || checked.has(JSON.stringify([x, y]))) continue
                 //Is it the enemy, with 2 libs (we can kill) and we have not checked this spot and the chain is large enough
                 const chain = getChainValue(x, y, "O")
@@ -557,6 +603,7 @@ export async function main(ns) {
                     }
                 } // End of searching the enemy
 
+                if(!validGoPair(validMove,[...(move1[0]||[]),...(move2[0]||[])]))continue;
                 if (chain > highValue) {
                     highValue = chain
                     moveOptions.length = 0
@@ -1299,7 +1346,7 @@ export async function main(ns) {
     /** @param {NS} ns
      * @returns {Promise<false | {type:"move"|"pass"|"gameOver"; x:number; y:number;}} */
     async function movePiece(ns, attack) {
-        if (attack.coords === undefined) return false
+        if (!attack?.coords) return false
         const [x, y] = attack.coords
         if (x === undefined) return false
         let mid = performance.now()
@@ -1313,21 +1360,22 @@ export async function main(ns) {
     /** @param {NS} ns
      * @returns {Promise<false | {type:"move"|"pass"|"gameOver"; x:number; y:number;}} */
     async function moveSnakeEyes(ns, attack) {
-        if (attack.coords === undefined || !cheats) return false
+        if (!attack?.coords || !cheats || !validGoPair(validMove,attack.coords)) return false
         const [s1x, s1y, s2x, s2y] = attack.coords
         if (s1x === undefined) return false
         const chance = await go_cheat_getCheatSuccessChance(ns);
-        if (chance < cheatChanceThreshold) return false
+        if (!goCheatChanceAllowed(chance,cheatChanceThreshold)) return false
         try {
             let mid = performance.now()
             const results = await go_cheat_playTwoMoves(ns, s1x, s1y, s2x, s2y)
+            if(!results){ensurePlaying();return false;}
             ns.printf("%s  Chance: %.2f%%  Result: %s", attack.msg, chance * 100, results.type);
             let END = performance.now()
             if (logtime) ns.printf("Time: Me: %s  Them: %s", formatTime(ns, mid - START, true), formatTime(ns, END - mid, true))
             START = performance.now()
             return results
         }
-        catch { return false }
+        catch(err) {if(err===stopPlaying)throw err;return false;}
     }
     function getAllValidMoves(notMine = false) {
         if (currentValidMovesTurn === turn) return notMine ? currentValidContestedMoves : currentValidMoves
@@ -1342,8 +1390,8 @@ export async function main(ns) {
             }
 
         //Moves contains a randomized array of x,y
-        moves = moves.sort(() => Math.random() - Math.random())
-        contestedMoves = contestedMoves.sort(() => Math.random() - Math.random())
+        moves = shuffleGoMoves(moves)
+        contestedMoves = shuffleGoMoves(contestedMoves)
         currentValidMoves = moves
         currentValidContestedMoves = contestedMoves
         currentValidMovesTurn = turn

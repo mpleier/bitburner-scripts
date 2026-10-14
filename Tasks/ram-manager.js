@@ -1,3 +1,5 @@
+import {achievementActionAllowed} from '../achievement-policy.js';
+import { claimSpending } from '../spending-policy.js';
 import { formatMoney, formatRam, getConfiguration, getNsDataThroughFile, log } from '../helpers.js'
 
 const max_ram = 2 ** 30;
@@ -13,6 +15,7 @@ export function autocomplete(data, _) {
 
 /** @param {NS} ns **/
 export async function main(ns) {
+    if(!achievementActionAllowed(ns,"homeRam"))return;
     const options = getConfiguration(ns, argsSchema);
     if (!options) return; // Invalid options, or ran in --help mode.
     const reserve = (options['reserve'] != null ? options['reserve'] : Number(ns.read("reserve.txt") || 0));
@@ -30,7 +33,7 @@ export async function main(ns) {
         const upgradeDesc = `home RAM from ${formatRam(currentRam)} to ${formatRam(nextRam)} (cost: ${formatMoney(cost)})`;
         if (spendable < cost)
             return log(ns, `Money we're allowed to spend (${formatMoney(spendable)}) is less than the cost (${formatMoney(cost)}) to upgrade ${upgradeDesc}`);
-        if (!(await getNsDataThroughFile(ns, `ns.singularity.upgradeHomeRam()`)))
+        if (!(await getNsDataThroughFile(ns, `(${claimSpending.toString()})(ns,"home",ns.singularity.getUpgradeHomeRamCost()) && ns.singularity.upgradeHomeRam()`)))
             return log(ns, `ERROR: Failed to upgrade ${upgradeDesc} thinking we could afford it ` +
                 `(cash: ${formatMoney(money)} budget: ${formatMoney(spendable)})`, true, 'error');
         // Otherwise, we've successfully upgraded home ram.

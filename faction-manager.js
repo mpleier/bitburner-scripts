@@ -1,3 +1,6 @@
+import { factionForcedJoins, factionControlAllowed, factionPurchaseBatch } from './faction-policy.js';
+import { isScriptPaused } from './automation-control.js';
+import { achievementActionAllowed } from './achievement-policy.js';
 import {
     log, getConfiguration, instanceCount, formatNumberShort, formatMoney,
     getNsDataThroughFile, getActiveSourceFiles, tryGetBitNodeMultipliers, getStocksValue
@@ -44,7 +47,7 @@ const argsSchema = [ // The set of all command line arguments
     ['v', false], // (Kept for backwards compatilily) this was an alias flag for setting --verbose to true when it previously defaulted to false.
     ['ignore-player-data', false], // Display stats for all factions and augs, despite what we already have (kind of a "mock" mode)
     ['i', false], // Flag alias for --ignore-player-data
-    // By default, we ignore "Shadows of Anarchy" because they are tied to infiltration (manual action) and their aug prices don't follow normal conventions
+    // soa-manager.js purchases Shadows of Anarchy upgrades separately using their special money and reputation prices.
     ['ignore-faction', ["Shadows of Anarchy"]], // Factions to omit from all data, stats, and calcs, (e.g.) if you do not want to purchase augs from them, or do not want to see them because they are impractical to join at this time
     ['after-faction', []], // Pretend we were to buy all augs offered by these factions. Show us only what remains.
     ['force-join', null], // Always join these factions if we have an invite (useful to force join a gang faction)
@@ -96,6 +99,7 @@ export function autocomplete(data, args) {
 // Flags -a for all factions, -v to print to terminal
 /** @param {NS} ns **/
 export async function main(ns) {
+    if(isScriptPaused(ns,ns.getScriptName()))return;
     const runOptions = getConfiguration(ns, argsSchema);
     if (!runOptions || await instanceCount(ns) > 1) return; // Prevent multiple instances of this script from being started, even with different args.
     options = runOptions; // We don't set the global "options" until we're sure this is the only running instance
@@ -126,7 +130,7 @@ export async function main(ns) {
     bitNode = resetInfo.currentNode;
     const ownedSourceFiles = await getActiveSourceFiles(ns, false);
     effectiveSourceFiles = await getActiveSourceFiles(ns, true);
-    const sf4Level = bitNode == 4 ? 3 : ownedSourceFiles[4] || 0; // If in BN4, singularity costs are as though you had SF4.3
+    const sf4Level = effectiveSourceFiles[4] || 0; // If in BN4, singularity costs are as though you had SF4.3
     if (sf4Level == 0)
         return log(ns, `ERROR: This script requires SF4 (singularity) functions to work.`, true, 'error');
     else if (sf4Level < 3)
@@ -179,18 +183,7 @@ export async function main(ns) {
         log(ns, 'INFO: Skipping joining available factions due to the --ignore-player-data flag set.');
     else {
         log(ns, 'Joining available factions...');
-        let forceJoinFactions = options['force-join'] || [];
-        // If the user didn't set the 'force-join' option, there are some defaults we should apply
-        if (!forceJoinFactions) {
-            // If we're in BN 10, we can purchase special Sleeve-related things from the Covenant, so we should always join it
-            if (bitNode == 10)
-                forceJoinFactions.push("The Covenant");
-            // If gangs are an available feature, we should by default want to join any available gang factions
-            if (!gangFaction && 2 in ownedSourceFiles && ns.heart.break() <= -53000) {
-                forceJoinFactions.push(potentialGangFactions); // Try to join all gang factions as we near unlocking gangs, regardless of their augmentations
-                log(ns, `INFO: Will join any gang faction because Karma is at ${formatNumberShort(ns.heart.break())}`, printToTerminal, printToTerminal ? 'info' : undefined);
-            }
-        }
+        const forceJoinFactions = factionForcedJoins(options['force-join'],bitNode,gangFaction,Number(effectiveSourceFiles[2])>0,ns.heart.break());
         let joined = await joinFactions(ns, forceJoinFactions);
         if (joined) log(ns, `SUCCESS: Joined ${joined} factions.`);
         displayJoinedFactionSummary(ns);
@@ -219,7 +212,15 @@ export async function main(ns) {
         const augsAwaitingInstall = ownedAugmentations.slice(installedAugmentations.length); // Assumes augs are returned in purchased order
         // Infer the number of nf we have installed based on the current nf purchase level, minus the pending nf installs
         const nfInstalled = nfLevelPurchased - augsAwaitingInstall.filter(a => a == strNF).length;
+        const readyAugs=augsAwaitingInstall.concat(purchaseableAugs.map(a=>a.name));
+        const readySet=new Set(readyAugs),totalPurchaseCost=getTotalCost(purchaseableAugs)+Object.values(purchaseFactionDonations).reduce((t,r)=>t+r,0);
+        const speedSnapshot={at:Date.now(),augReset:resetInfo.lastAugReset,worth:playerData.money+stockValue,
+            ready:readyAugs.map(name=>({name,stats:augmentationData[name]?.stats||{}})),
+            reputation:Object.fromEntries(Object.values(factionData).filter(f=>f.joined).map(f=>[f.name,f.reputation])),
+            targets:Object.values(augmentationData).filter(a=>a.desired&&!a.owned&&!readySet.has(a.name)&&a.name!==strNF&&a.prereqs.every(p=>simulatedOwnedAugmentations.includes(p)||readySet.has(p))&&a.joinedFactionsWithAug().length)
+                .map(a=>({name:a.name,cost:totalPurchaseCost+a.price*augCountMult**purchaseableAugs.length,rep:a.reputation,factions:a.joinedFactionsWithAug().map(f=>f.name),donationCost:Math.min(...a.joinedFactionsWithAug().filter(f=>f.donationsUnlocked&&!options['disable-donations']).map(f=>getReqDonationForAug(a,f.name)))}))};
         ns.write(output_file, JSON.stringify({
+            speedSnapshot,
             // Augs we already have installed
             installed_augs: installedAugmentations, // Names of augs we've installed (Note: NeuroFlux will only appears once)
             installed_count: installedAugmentations.length, // Number of augs we've installed (Note: multiple NeuroFlux levels only counts as one)
@@ -513,6 +514,7 @@ async function joinFactions(ns, forceJoinFactions) {
     let joined = 0;
     // Join all factions with remaining augmentations we care about
     for (const faction of invitations.sort(factionSortOrder)) {
+        if(isScriptPaused(ns,ns.getScriptName()))break;
         let unownedAugs = faction.unownedAugmentations(true); // Filter out augmentations we've already purchased
         let newAugs = unownedAugs.filter(aug => !accessibleAugmentations.has(aug)); //  Filter out augmentations we can purchase from another faction we've already joined
         let desiredAugs = newAugs.filter(aug => augmentationData[aug].desired); //  Filter out augmentations we have no interest in
@@ -525,7 +527,7 @@ async function joinFactions(ns, forceJoinFactions) {
         else {
             log(ns, `Joining faction ${faction.name} which has ${desiredAugs.length} desired augmentations: ${desiredAugs}`);
             let response;
-            if (response = await getNsDataThroughFile(ns, `ns.singularity.joinFaction(ns.args[0])`, null, [faction.name])) {
+            if (response = await getNsDataThroughFile(ns, `(${factionControlAllowed.toString()})({isRunning:p=>ns.isRunning(p),read:f=>ns.read(f)},ns.args[1],"faction-manager.js")&&ns.singularity.joinFaction(ns.args[0])`, null, [faction.name,ns.pid])) {
                 faction.joined = true;
                 faction.augmentations.forEach(aug => accessibleAugmentations.add(aug));
                 joinedFactions.push(faction.name);
@@ -896,6 +898,7 @@ function computeAugsRepReqDonationByFaction(augmentations) {
 /** @param {NS} ns
  * Donate any required rep and purchase the desired augmentations */
 async function purchaseDesiredAugs(ns) {
+    if(isScriptPaused(ns,ns.getScriptName())||!achievementActionAllowed(ns,'cashSpending'))return;
     let totalRepCost = Object.values(purchaseFactionDonations).reduce((t, r) => t + r, 0);
     let totalAugCost = getTotalCost(purchaseableAugs);
     // Refresh player data to get an accurate read of current money
@@ -913,8 +916,7 @@ async function purchaseDesiredAugs(ns) {
             `(We had ${formatMoney(startingPlayerMoney)} at startup). Will proceed with buying most of the purchase order.`, printToTerminal, 'warning');
     // Donate to factions if necessary (using a ram-dodging script of course)
     if (Object.keys(purchaseFactionDonations).length > 0 && Object.values(purchaseFactionDonations).some(v => v > 0)) {
-        if (await getNsDataThroughFile(ns, 'JSON.parse(ns.args[0]).reduce((success, o) => success && ns.singularity.donateToFaction(o.faction, o.repDonation), true)',
-            '/Temp/facman-donate.txt', [JSON.stringify(Object.keys(purchaseFactionDonations).map(f => ({ faction: f, repDonation: purchaseFactionDonations[f] })))]))
+        if (await executeFactionPurchases(ns,Object.keys(purchaseFactionDonations).map(f => ({ faction:f,repDonation:purchaseFactionDonations[f],targetRep:Math.max(...purchaseableAugs.filter(a=>a.getFromJoined()===f).map(a=>a.reputation),0) })),true)===Object.keys(purchaseFactionDonations).length)
             log(ns, `SUCCESS: Donated to ${Object.keys(purchaseFactionDonations).length} factions to gain access to desired augmentations.`, printToTerminal, 'success')
         else
             log(ns, `ERROR: One or more attempts to donate to factions for reputation failed. Go investigate!`, printToTerminal, 'error');
@@ -922,8 +924,7 @@ async function purchaseDesiredAugs(ns) {
     // Purchase desired augs (using a ram-dodging script of course)
     if (purchaseableAugs.length == 0)
         return log(ns, `INFO: Cannot afford to buy any augmentations at this time.`, printToTerminal)
-    const purchased = await getNsDataThroughFile(ns, 'JSON.parse(ns.args[0]).reduce((total, o) => total + (ns.singularity.purchaseAugmentation(o.faction, o.augmentation) ? 1 : 0), 0)',
-        '/Temp/facman-purchase-augs.txt', [JSON.stringify(purchaseableAugs.map(aug => ({ faction: aug.getFromJoined(), augmentation: aug.name })))]);
+    const purchased = await executeFactionPurchases(ns,purchaseableAugs.map(aug => ({faction:aug.getFromJoined(),augmentation:aug.name})));
     if (purchased == purchaseableAugs.length)
         log(ns, `SUCCESS: Purchased ${purchased} desired augmentations in optimal order!`, printToTerminal, 'success')
     else
@@ -1006,4 +1007,11 @@ function displayFactionSummary(ns, sortBy, unique, overrideFinishedFactions, exc
         summaryFactions = actualUnjoinedFactions;
     }
     log(ns, `INFO: The following is a summary of ${unownedAugCount} remaining augmentations available from each faction:\n` + summary, printToTerminal);
+}
+
+
+async function executeFactionPurchases(ns,orders,donations=false) {
+ if(donations&&options['disable-donations'])return 0;
+ const adapter=donations?'rep:f=>ns.singularity.getFactionRep(f),donate:(f,a)=>ns.singularity.donateToFaction(f,a)':'price:a=>ns.singularity.getAugmentationPrice(a),buy:(f,a)=>ns.singularity.purchaseAugmentation(f,a)';
+ return await getNsDataThroughFile(ns,`(${factionPurchaseBatch.toString()})({player:()=>ns.getPlayer(),${adapter}},JSON.parse(ns.args[0]),()=>(${factionControlAllowed.toString()})({isRunning:p=>ns.isRunning(p),read:f=>ns.read(f)},ns.args[1],"faction-manager.js")&&(${achievementActionAllowed.toString()})(ns,"cashSpending"),()=>ns.read("reserve.txt"),ns.args[2],ns.args[3])`,donations?'/Temp/facman-donate.txt':'/Temp/facman-purchase-augs.txt',[JSON.stringify(orders),ns.pid,donations,bitNodeMults.FactionWorkRepGain]);
 }

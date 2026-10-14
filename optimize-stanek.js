@@ -1,3 +1,4 @@
+import { optimizeLayout } from './stanek-optimizer.js';
 const FragmentType = {
     HackingChance: 2,
     HackingSpeed: 3,
@@ -60,42 +61,20 @@ export function autocomplete(data, args) {
 
 /** @param {NS} ns */
 export async function main(ns) {
-    /*
-    if (ns.args.length == 0) {
-        tlog(ns, "ERROR", "At least one fragment type required");
+    const o=ns.flags([['exhaustive',false]]);
+    if(!o.exhaustive) {
+        try {
+            const result=await optimizeLayout(ns.stanek.fragmentDefinitions(),ns.stanek.giftWidth(),ns.stanek.giftHeight(),ns.getResetInfo().currentNode,()=>ns.sleep(0));
+            await ns.write('tasks/stanek-layout.json',JSON.stringify(result),'w');
+            ns.print(`Saved Stanek layout: ${result.width}x${result.height}, score ${result.score.toFixed(2)}. Existing fragments are preserved.`);
+        }catch(error){ns.print('Stanek optimizer unavailable: '+String(error));}
         return;
     }
-    if (!ns.args.every(arg => Object.keys(FragmentType).includes(arg))) {
-        tlog("ERROR", "Invalid fragment type(s): %s",
-            ns.args.filter(arg => !Object.keys(FragmentType).includes(arg)));
-        return;
-    }*/
-
-    // 1. Set up priority order of stat fragments to include
-    const targetIds = [
-        FragmentId.Rep, FragmentId.Hacking2, FragmentId.Hacking1, // Basics, always want
-        FragmentId.HackingSpeed, // Priority 2, improve hack EXP gain and income?
-        FragmentId.HacknetMoney, FragmentId.HacknetCost, // Priority 3, hacknet good for lots of things?
-        FragmentId.HackingGrow, FragmentId.HackingMoney // Priority 4, improves growth, income for RAM from hacking?
-        //etc...
-    ];
-    const allFragments = ns.stanek.fragmentDefinitions();
-    const statFrags = allFragments.filter(frag => targetIds.includes(frag.id));
-    const boosterFrags = allFragments.filter(frag => frag.type == FragmentType.Booster);
-
-    // 2. Pick dimensions (why not pick many!)
-    //const height = 6; //ns.stanek.giftHeight()
-    //const width = 6; //ns.stanek.giftWidth(); // NOTE: Width is always the same, or one more than height.
-    for (let height = 3; height <= 5; height++)
-        for (let width = height; width <= height + 1; width++) {
-            const [score, plan] = await planFragments(ns, width, height, statFrags, boosterFrags);
-            ns.tprint(score);
-            const strFragments = [];
-            // Output the layout so you can stick it in a database
-            for (const elem of [...plan.stats, ...plan.boosters])
-                strFragments.push(`{"id":${elem.fragment.id},"x":${elem.x},"y":${elem.y},"rotation":${elem.rot}}`);
-            ns.tprint(`\n{"height": ${height}, "width": ${width}, "fragments": [\n    ${strFragments.join(",\n    ")}\n]}`);
-        }
+    const allFragments=ns.stanek.fragmentDefinitions(),targetIds=[25,1,0,5,20,21,7,6];
+    for(let height=3;height<=5;height++)for(let width=height;width<=height+1;width++){
+        const [score,plan]=await planFragments(ns,width,height,allFragments.filter(f=>targetIds.includes(f.id)),allFragments.filter(f=>f.type===FragmentType.Booster));
+        ns.tprint(JSON.stringify({score,width,height,fragments:[...plan.stats,...plan.boosters].map(p=>({id:p.fragment.id,x:p.x,y:p.y,rotation:p.rot}))}));
+    }
 }
 
 /** @param {NS} ns */
@@ -263,7 +242,7 @@ async function planStats(ns, statPlacements, boosterPlacements, statFragsKeys, b
             if (boosterStatAdjacencies[i] === 0)
                 blockedBoosters[i]--;
 
-        if (boosterScore || 0 > currentBestScore) {
+        if ((boosterScore || 0) > currentBestScore) {
             bestResult = [boosterScore, boosterPlan];
             currentBestScore = boosterScore;
         }

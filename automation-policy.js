@@ -49,17 +49,33 @@ export function officeJobCounts(employees, productDivision) {
 
 /** Approximate marginal return; storage relief receives priority when production is blocked. */
 export function upgradeReturn(name, level, cost, storagePressure) {
-  const increments = { 'Smart Factories': 0.03, 'Smart Storage': 0.10, 'Project Insight': 0.05 };
+  const increments = { 'Smart Factories': 0.03, 'Smart Storage': 0.10, 'Project Insight': 0.05, 'ABC SalesBots': 0.01 };
   const increment = increments[name] || 0.10;
   const weight = name === 'Smart Storage' ? (storagePressure ? 5 : 0.5) : name === 'Smart Factories' ? 2 : 1;
   return weight * increment / (1 + Math.max(0, level) * increment) / cost;
 }
 
-export function graftScore(stats) {
+export function graftScore(stats, entropyFactor = 1) {
   const weights = { hacking: 3, hacking_exp: 2, hacking_chance: 1, hacking_speed: 2,
     hacking_money: 3, hacking_grow: 2, faction_rep: 2, company_rep: 1,
     charisma: 1, charisma_exp: 1, strength: 0.3, defense: 0.3, dexterity: 0.3, agility: 0.3 };
-  return Object.entries(weights).reduce((sum, [key, weight]) => sum + weight * Math.log(Math.max(0.001, Number(stats?.[key]) || 1)), 0);
+  return Object.entries(weights).reduce((sum, [key, weight]) => sum + weight * Math.log(Math.max(0.001, (Number(stats?.[key]) || 1) * entropyFactor)), 0);
+}
+
+/** Conservative cash estimate: do not assume skill/speed gains translate directly to income. */
+export function graftEconomics({ stats, cost, duration, entropy = 0, immune = false, congruity = false,
+  hackingIncome = 0, rates = {}, focusImmune = false, maxPayback = 4 * 3600_000 }) {
+  const factor = congruity ? 1 / (0.98 ** Math.max(0, entropy)) : immune ? 1 : 0.98;
+  const benefit = graftScore(stats, factor);
+  const seconds = duration / 1000 / (focusImmune ? 1 : 0.8);
+  const multiplier = key => (Number(stats?.[key]) || 1) * factor;
+  let incrementalIncome = Math.max(0, hackingIncome) * (multiplier('hacking_money') - 1);
+  for (const [source, key] of Object.entries({ hacknet: 'hacknet_node_money', crime: 'crime_money', work: 'work_money', darknet: 'dnet_money' }))
+    incrementalIncome += Math.max(0, Number(rates[source]) || 0) * (multiplier(key) - 1);
+  const lostIncome = seconds * ['work', 'infiltration', 'crime', 'bladeburner'].reduce((sum, key) => sum + Math.max(0, Number(rates[key]) || 0), 0);
+  const payback = incrementalIncome > 0 ? (seconds + (cost + lostIncome) / incrementalIncome) * 1000 : Infinity;
+  return { benefit, incrementalIncome, lostIncome, duration: seconds * 1000, payback,
+    eligible: benefit > 0.1 && Number.isFinite(payback) && payback <= maxPayback };
 }
 
 export function canLaunchFactionWorker(sf4, hasRam, studying) {

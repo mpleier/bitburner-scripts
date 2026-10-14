@@ -1,3 +1,4 @@
+import {registerAutomation,automationHeartbeat,maintenanceRequested} from './runtime-policy.js';
 import { getNsDataThroughFile, getActiveSourceFiles } from './helpers.js';
 import { isScriptPaused } from './automation-control.js';
 import { activityBusy, activityGuard } from './activity-coordination.js';
@@ -8,12 +9,14 @@ export function needsHealing(player, threshold = 0.9) {
 }
 /** Recover health with available cash, preserving grafts and UI activity. */
 export async function main(ns) {
+ registerAutomation(ns);
   ns.disableLog('ALL');
   if (isScriptPaused(ns, ns.getScriptName())) return;
   const access = await getActiveSourceFiles(ns);
   if (!access[4]) { ns.print('Health recovery requires Singularity access.'); return; }
   if (ns.ps('home').some(p => p.filename === ns.getScriptName() && p.pid !== ns.pid)) return;
-  while (true) {
+  while (!isScriptPaused(ns,ns.getScriptName())) {
+ automationHeartbeat(ns);
     try {
       let transition;
       try { transition = JSON.parse(ns.read(transitionFile)); } catch { }

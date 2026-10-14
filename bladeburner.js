@@ -1,11 +1,18 @@
-import { activityBusy, markActivitySupport } from './activity-coordination.js';
+import {registerAutomation,automationHeartbeat,maintenanceRequested} from './runtime-policy.js';
+import {isBlackOp,nextSkill,raidCities,recoveryRequired,optionsError,requiredBladeburnerTeam,prepareBladeburnerTeam} from './bladeburner-policy.js';
+import {isScriptPaused} from './automation-control.js';
+import {achievementActionAllowed} from './achievement-policy.js';
+import { activityBusy, markActivitySupport, activityGuard } from './activity-coordination.js';
 import { log, disableLogs, getConfiguration, instanceCount, getNsDataThroughFile, getFilePath, getActiveSourceFiles, formatNumberShort, formatDuration } from './helpers.js'
 
 const cityNames = ["Sector-12", "Aevum", "Volhaven", "Chongqing", "New Tokyo", "Ishima"];
 const antiChaosOperation = "Stealth Retirement Operation"; // Note: Faster and more effective than Diplomacy at reducing city chaos
 const simulacrumAugName = "The Blade's Simulacrum"; // This augmentation lets you do bladeburner actions while busy
+// Recheck ownership in the temporary worker immediately before a mutation.
+const bbMutationGuard=`!${activityGuard} && ns.read("remote-control/paused/bladeburner.js.txt").trim()!=="true" && (${achievementActionAllowed.toString()})(ns,"bladeburner") && !/black/i.test(ns.bladeburner.getCurrentAction()?.type||"")`;
 
-// In general, we will buy the skill upgrade with the next highest cost, but to tweak the priority of various skills,
+
+// In general, we buy the affordable skill upgrade with the lowest adjusted cost, but to tweak the priority of various skills,
 // we use the following configuration to change their relative cost. Higher number means lower priority
 // Note: Ideally we could emphasize Tracer "early-game" and Digital Observer "late-game", but this is too much of a pain to solve for
 const costAdjustments = {
@@ -21,13 +28,17 @@ const costAdjustments = {
 
 // Some bladeburner info gathered at startup and cached
 let skillNames, generalActionNames, contractNames, operationNames, remainingBlackOpsNames, blackOpsRanks;
-let inFaction, haveSimulacrum, lastBlackOpComplete, lowStaminaTriggered, timesTrained, currentTaskEndTime, maxRankNeeded, lastAssignedTask;
+let inFaction, haveSimulacrum, lastBlackOpComplete, lowStaminaTriggered, lowHealthTriggered, timesTrained, currentTaskEndTime, maxRankNeeded, lastAssignedTask;
 let ownedSourceFiles;
 let player = (/**@returns{Player}*/() => undefined)();
 let resetInfo = (/**@returns{ResetInfo}*/() => undefined)(); // Information about the current bitnode
-let options;
+let options,teamBudget,teamLastTick;
+const teamStatusFile='tasks/bladeburner-team.json';
 
 const argsSchema = [
+    ['disable-recruitment', false],
+    ['team-cap',30], // Maximum squad needed to bridge a Black Op success threshold.
+    ['recruitment-budget-minutes',10], // At most this many minutes recruiting per rolling hour.
     ['success-threshold', 0.99], // Attempt the best action whose minimum chance of success exceeds this threshold
     ['chaos-recovery-threshold', 50], // Prefer to do "Stealth Retirement" operations to reduce chaos when it reaches this number
     ['max-chaos', 100], // If chaos exceeds this amount in every city, we will reluctantly resort to diplomacy to reduce it.
@@ -50,27 +61,33 @@ export function autocomplete(data, _) {
 
 /** @param {NS} ns */
 export async function main(ns) {
+ registerAutomation(ns);
+    if(isScriptPaused(ns,ns.getScriptName()))return;
     await markActivitySupport(ns);
     const runOptions = getConfiguration(ns, argsSchema);
     if (!runOptions || await instanceCount(ns) > 1) return; // Prevent multiple instances of this script from being started, even with different args.
+    const invalid=optionsError(runOptions);if(invalid)return log(ns,'ERROR: '+invalid,true,'error');
     options = runOptions; // We don't set the global "options" until we're sure this is the only running instance
     disableLogs(ns, ['sleep'])
     player = await getNsDataThroughFile(ns, 'ns.getPlayer()');
     resetInfo = await getNsDataThroughFile(ns, 'ns.getResetInfo()');
+    teamBudget={nodeReset:resetInfo.lastNodeReset,windowAt:Date.now(),spentMs:0};
+    try{const saved=JSON.parse(ns.read(teamStatusFile));if(saved.nodeReset===resetInfo.lastNodeReset&&Number.isFinite(saved.windowAt)&&Date.now()-saved.windowAt<3600000&&Number.isFinite(saved.spentMs))teamBudget={nodeReset:saved.nodeReset,windowAt:saved.windowAt,spentMs:Math.max(0,saved.spentMs)};}catch{}
+    teamLastTick=Date.now();
     // Ensure we have access to bladeburner
     ownedSourceFiles = await getActiveSourceFiles(ns);
-    //if (!(6 in ownedSourceFiles) && resetInfo.currentNode != 7) // NOTE: Despite the SF6 description, it seems you don't need SF6
-    //    return log(ns, "ERROR: You have not yet unlocked bladeburner outside of BNs 6 & 7 (need SF6)", true, 'error');
-    if (!(7 in ownedSourceFiles))
-        return log(ns, "ERROR: You have not yet unlocked the bladeburner API (need SF7 or to be in BN7)", true, 'error');
+    if (!(7 in ownedSourceFiles) && !(6 in ownedSourceFiles))
+        return log(ns, "ERROR: You have not yet unlocked the bladeburner API (need SF6/SF7 or to be in BN6/BN7)", true, 'error');
     if (resetInfo.currentNode == 8)
         return log(ns, "ERROR: Bladeburner is completely disabled in Bitnode 8 :`(\nHappy stonking", true, 'error');
     // Ensure we've joined bladeburners before proceeding further
-    await beingInBladeburner(ns);
-    // Gather one-time info such as contract and operation names
-    await gatherBladeburnerInfo(ns);
+    try {
+        if(!await beingInBladeburner(ns))return;
+        await gatherBladeburnerInfo(ns);
+    } catch(err) { return log(ns,'WARNING: Bladeburner API unavailable or initialization failed: '+String(err),false,'warning'); }
     // Start the main loop which monitors stats and changes activities as needed
-    while (true) {
+    while (!isScriptPaused(ns,ns.getScriptName()) && achievementActionAllowed(ns,'bladeburner')) {
+ automationHeartbeat(ns);
         try { await mainLoop(ns); }
         catch (err) {
             log(ns, `WARNING: bladeburner.js Caught (and suppressed) an unexpected error in the main loop:\n` +
@@ -112,13 +129,14 @@ async function gatherBladeburnerInfo(ns) {
         .sort((b1, b2) => blackOpsRanks[b1] - blackOpsRanks[b2]);
     log(ns, `There are ${remainingBlackOpsNames.length} remaining BlackOps operations to complete in order:\n` +
         remainingBlackOpsNames.map(n => `${n} (${blackOpsRanks[n]})`).join(", "));
-    maxRankNeeded = blackOpsRanks[remainingBlackOpsNames[remainingBlackOpsNames.length - 1]];
+    maxRankNeeded = Math.max(1,...Object.values(blackOpsRanks));
     // Check if we have the aug that lets us do bladeburner while otherwise busy
     haveSimulacrum = !(4 in ownedSourceFiles) ? true : // If player doesn't have SF4, we cannot check, so hope for the best.
         await getNsDataThroughFile(ns, `ns.singularity.getOwnedAugmentations().includes("${simulacrumAugName}")`, '/Temp/bladeburner-hasSimulacrum.txt');
     // Initialize some flags that may change over time
     lastAssignedTask = null;
     lastBlackOpComplete = false; // Flag will track whether we've notified the user that the last black-op is ready
+    lowHealthTriggered = false;
     lowStaminaTriggered = false; // Flag will track whether we've previously switched to stamina recovery to reduce noise
     timesTrained = 0; // Count of how many times we've trained (capped at --training-limit)
     currentTaskEndTime = 0; // When set to a date, we will not assign new tasks until that date.
@@ -140,6 +158,12 @@ async function mainLoop(ns) {
     if (!inFaction) await tryJoinFaction(ns, rank);
     // Spend any un-spent skill points
     await spendSkillPoints(ns);
+    // Preserve every active Black Op before choosing a city or a replacement action.
+    const observedAction=await getBBInfo(ns,'getCurrentAction()');
+    if(isBlackOp(observedAction)){lastAssignedTask=observedAction.name;return;}
+    const teamNow=Date.now();if(teamNow-teamBudget.windowAt>=3600000)teamBudget={nodeReset:resetInfo.lastNodeReset,windowAt:teamNow,spentMs:0};
+    if(observedAction?.name==='Recruitment')teamBudget.spentMs+=Math.max(0,Math.min(teamNow-teamLastTick,options['update-interval']*3));teamLastTick=teamNow;
+    if(maintenanceRequested(ns))return;
     // See if we are able to do bladeburner work
     if (!(await canDoBladeburnerWork(ns))) return;
 
@@ -153,7 +177,7 @@ async function mainLoop(ns) {
         const msg = `Bladeburner has completed the last BlackOp! (At ${formatDuration(getTimeInBitnode())}). ` +
             `You can destroy the Bitnode on the Bladeburner > BlackOps tab.`;
         log(ns, `SUCCESS: ${msg}`, true, 'success');
-        ns.alert(msg);
+        // Autopilot handles departure; avoid a blocking completion popup.
         lastBlackOpComplete = true;
     }
 
@@ -188,10 +212,10 @@ async function mainLoop(ns) {
     // If the only operations left to us are "Raid" (reduces population by a %, which, counter-intuitively, is bad for us),
     // thrash the city with the lowest population (but still having some communities to enable Raid).
     if (getCount("Raid") > 0 && unreservedActions.every(c => getCount(c) == 0)) {
-        const raidableCities = cityNames.filter(c => communitiesByCity[c] > 0); // Cities with at least one community
+        const raidableCities = raidCities(cityNames,populationByCity,communitiesByCity,options['allow-raiding-highest-pop-city']); // Cities with at least one community
         // Only allow Raid if we would not be raiding our highest-population city (need to maintain at least one)
-        const [highestPopCity, _] = getMaxKeyValue(populationByCity, cityNames);
-        goingRaiding = raidableCities.length > 0 && (raidableCities[0] != highestPopCity || options['allow-raiding-highest-pop-city']);
+
+        goingRaiding = raidableCities.length > 0;
         if (goingRaiding) { // Select the raid-able city with the smallest population
             [goToCity, population] = getMinKeyValue(populationByCity, raidableCities);
             travelReason = `Lowest population (${formatNumberShort(population)}) city with communities (${communitiesByCity[goToCity]}) to use up ${getCount("Raid")} Raid operations`;
@@ -227,6 +251,12 @@ async function mainLoop(ns) {
     if (currentCity != goToCity && Date.now() > currentTaskEndTime && (await switchToCity(ns, goToCity, travelReason)))
         currentCity = goToCity;
 
+    let teamPlan={state:'not-needed'};
+    if(!options['disable-recruitment']&&options['team-cap']>0&&nextBlackOp&&rank>=blackOpsRanks[nextBlackOp]){
+      try{teamPlan=await getNsDataThroughFile(ns,`(${bbMutationGuard}) ? (${prepareBladeburnerTeam.toString()})({getTeamSize:(...a)=>ns.bladeburner.getTeamSize(...a),setTeamSize:(...a)=>ns.bladeburner.setTeamSize(...a),getActionEstimatedSuccessChance:(...a)=>ns.bladeburner.getActionEstimatedSuccessChance(...a)},ns.args[0],ns.args[1],ns.args[2],(${requiredBladeburnerTeam.toString()})) : {state:"protected-work"}`,'/Temp/bladeburner-team-plan.txt',[nextBlackOp,options['success-threshold'],options['team-cap']]);}
+      catch(error){teamPlan={state:'unavailable',error:String(error)};}
+    }
+    await ns.write(teamStatusFile,JSON.stringify({at:Date.now(),pid:ns.pid,...teamBudget,...teamPlan,target:nextBlackOp,budgetMinutes:options['recruitment-budget-minutes']}),'w');
     // Gather the success chance of contracts (based on our current city)
     const contractChances = await getBBDictByActionType(ns, 'getActionEstimatedSuccessChance', "Contracts", contractNames);
     const operationChances = await getBBDictByActionType(ns, 'getActionEstimatedSuccessChance', "Operations", operationNames);
@@ -247,10 +277,14 @@ async function mainLoop(ns) {
     // Trigger stamina recovery if we drop below our --low-stamina-pct configuration, and remain trigered until we've recovered to --high-stamina-pct
     const stamina = await getBBInfo(ns, `getStamina()`); // Returns [current, max];
     const staminaPct = stamina[0] / stamina[1];
-    lowStaminaTriggered = staminaPct < options['low-stamina-pct'] || lowStaminaTriggered && staminaPct < options['high-stamina-pct'];
+    player=await getNsDataThroughFile(ns,'ns.getPlayer()');
+    const recovery=recoveryRequired(player.hp.current/Math.max(1,player.hp.max),staminaPct,{health:lowHealthTriggered,stamina:lowStaminaTriggered},options['low-stamina-pct'],options['high-stamina-pct']);
+    lowHealthTriggered=recovery.health;lowStaminaTriggered=recovery.stamina;
     // If we are suffering a stamina penalty, perform an action that consumes no stamina
-    if (lowStaminaTriggered) {
-        bestActionName = chaosByCity[currentCity] > options['max-chaos'] ? "Diplomacy" : "Field Analysis";
+    if(lowHealthTriggered) {
+        bestActionName='Hyperbolic Regeneration Chamber';reason='Recovering health before combat';
+    } else if (lowStaminaTriggered) {
+        bestActionName = chaosByCity[currentCity] > options['max-chaos'] ? "Diplomacy" : "Hyperbolic Regeneration Chamber";
         reason = `Stamina is low: ${(100 * staminaPct).toFixed(1)}% < ${(100 * options['low-stamina-pct']).toFixed(1)}%`
     } // If current city chaos is greater than our threshold, keep it low with "Stealth Retirement" if odds are good
     else if (chaosByCity[currentCity] > options['chaos-recovery-threshold'] && getCount(antiChaosOperation) > 0 && minChance(antiChaosOperation) > 0.99) {
@@ -268,7 +302,7 @@ async function mainLoop(ns) {
         // Note: Candidate actions will be maintained in order of highest-rep to lowest-rep earning, so we can pick the first after filtering.
         let candidateActions = limitedActions;
         // We should deal with population uncertainty if its causing some mission to be on the verge of our success threshold
-        let populationUncertain = candidateActions.some(a => maxChance(a) > options['success-threshold'] && minChance(a) < options['success-threshold']);
+        let populationUncertain = unreservedActions.some(a => getCount(a)>0 && maxChance(a) >= options['success-threshold'] && minChance(a) < options['success-threshold']);
         // If current population uncertainty is such that some actions have a maxChance of ~100%, but not a minChance of ~100%,
         //   focus on actions that improve the population estimate, otherwise, reserve these actions for later
         // TODO: "Field Analysis" is the only population action that scales with player stats, so we should calculate and sort by
@@ -280,12 +314,12 @@ async function mainLoop(ns) {
 
         // Pick the first candidate action with a minimum chance of success that exceeds our --success-threshold
         if (!populationUncertain)
-            bestActionName = candidateActions.filter(a => minChance(a) > options['success-threshold'] && getCount(a) >= 1)[0];
+            bestActionName = candidateActions.filter(a => minChance(a) >= options['success-threshold'] && getCount(a) >= 1)[0];
         else // Special case for when population uncertainty is high - proceed so long as max chance is high enough
-            bestActionName = candidateActions.filter(a => maxChance(a) > options['success-threshold'] && getCount(a) >= 1)[0];
+            bestActionName = candidateActions.filter(a => maxChance(a) >= options['success-threshold'] && getCount(a) >= 1)[0];
 
         if (!bestActionName) // If there were none, allow us to fall-back to an action with a minimum chance >50%, and maximum chance > threshold
-            bestActionName = candidateActions.filter(a => minChance(a) > 0.5 && maxChance(a) > options['success-threshold'] && getCount(a) >= 1)[0];
+            bestActionName = candidateActions.filter(a => a!==nextBlackOp && minChance(a) > 0.5 && maxChance(a) >= options['success-threshold'] && getCount(a) >= 1)[0];
         if (bestActionName) // If we found something to do, log details about its success chance range
             reason = actionSummaryString(bestActionName);
 
@@ -313,52 +347,55 @@ async function mainLoop(ns) {
                 reason = `Nothing better to do`;
             }
         }
-        // NOTE: We never "Recruit". Community consensus is that team mates die too readily, and have minimal impact on success.
-        // NOTE: We don't use the "Hyperbolic Regeneration Chamber". We are cautious enough that we should never need healing.
+        // Recruitment is reserved for a bounded, useful squad that unlocks a pending Black Op.
+
     }
 
+    if(teamPlan?.state==='needs-recruitment'&&!lowHealthTriggered&&!lowStaminaTriggered&&chaosByCity[currentCity]<=options['chaos-recovery-threshold']&&teamBudget.spentMs<options['recruitment-budget-minutes']*60000&&generalActionNames.includes('Recruitment')){
+      const recruitmentChance=await getBBInfo(ns,'getActionEstimatedSuccessChance(ns.args[0],ns.args[1])','General','Recruitment');
+      if(Array.isArray(recruitmentChance)&&recruitmentChance[0]>=.5){bestActionName='Recruitment';reason=`Recruiting ${teamPlan.required-teamPlan.available} members to reach the success threshold for ${nextBlackOp}`;}
+    }
     // Detect our current action (API returns an object like { "type":"Operations", "name":"Investigation" })
     const currentAction = await getBBInfo(ns, `getCurrentAction()`);
     // Special case: If the user has manually kicked off the last BlackOps, don't interrupt it, let it be our last task
-    if (currentAction?.name == remainingBlackOpsNames[remainingBlackOpsNames - 1]) lastAssignedTask = currentAction;
+    if(isBlackOp(currentAction)){lastAssignedTask=currentAction.name;return;}
     // Warn the user if it looks like a task was interrupted by something else (user activity or bladeburner automation). Ignore if our last assigned task has run out of actions.
     if (lastAssignedTask && lastAssignedTask != currentAction?.name && getCount(lastAssignedTask) > 0) {
         log(ns, `WARNING: The last task this script assigned was "${lastAssignedTask}", but you're now doing "${currentAction?.name || '(nothing)'}". ` +
             `Have you been using Bladeburner Automation? If so, try typing "automate dis" in the Bladeburner Console.`, false, 'warning');
-    } else if (currentAction?.name) {
-        const currentDuration = await getBBInfo(ns, `getActionTime(ns.args[0], ns.args[1])`, currentAction.type, currentAction.name);
+    }
+    if (currentAction?.name) {
+
         if (!lastAssignedTask) { // Leave a log acknowledging if we just started up and there was an activity already underway.
             log(ns, `INFO: At startup, Bladeburner was already doing "${currentAction?.name}", ` +
                 (bestActionName != currentAction.name ? `but we would prefer to do "${bestActionName}", so we will be switching.` :
                     `which is what we were planning to do, so we will leave the current task alone.`));
-            lastAssignedTask = bestActionName;
+            lastAssignedTask = currentAction.name;
         }
-        // Normally, we don't switch tasks if our previously assigned task hasn't had time to complete once.
-        // EXCEPTION: Early after a reset, this time is LONG, and in a few seconds it may be faster to just stop and restart it.
-        if (currentDuration < currentTaskEndTime - Date.now()) {
-            log(ns, `INFO: ${bestActionName == currentAction.name ? 'Restarting' : 'Cancelling'} action "${currentAction.name}" because its new duration ` +
-                `is less than the time remaining (${formatDuration(currentDuration)} < ${formatDuration(currentTaskEndTime - Date.now())})`);
-        } else if (Date.now() < currentTaskEndTime || bestActionName == currentAction.name) return;
+        // Preserve an assigned action until its first completion; recovery may interrupt ordinary combat.
+        const interrupted=lastAssignedTask!==currentAction.name;
+        const urgent=lowHealthTriggered||lowStaminaTriggered;
+        if(bestActionName===currentAction.name||!urgent&&!interrupted&&Date.now()<currentTaskEndTime)return;
     } // Otherwise prior action was stopped or ended and no count remain, so we should start a new one regardless of expected currentTaskEndTime
 
     // Change actions if we're not currently doing the desired action
     const bestActionType = nextBlackOp == bestActionName ? "Black Operations" : contractNames.includes(bestActionName) ? "Contracts" :
         operationNames.includes(bestActionName) ? "Operations" : "General";
-    const success = await getBBInfo(ns, `startAction(ns.args[0], ns.args[1])`, bestActionType, bestActionName);
+    const success = await getNsDataThroughFile(ns, `(${bbMutationGuard}) ? ns.bladeburner.startAction(ns.args[0],ns.args[1]) : false`,null,[bestActionType,bestActionName]);
     const expectedDuration = await getBBInfo(ns, `getActionTime(ns.args[0], ns.args[1])`, bestActionType, bestActionName);
     log(ns, (success ? `INFO: Switched to Bladeburner ${bestActionType} "${bestActionName}" (${reason}). ETA: ${formatDuration(expectedDuration)}` :
         `ERROR: Failed to switch to Bladeburner ${bestActionType} "${bestActionName}" (Count: ${getCount(bestActionName)}, ` +
         `ETA: ${formatDuration(expectedDuration)}, Details: ${reason})`),
         !success, success ? (options['toast-operations'] ? 'info' : undefined) : 'error');
     // Ensure we perform this new action at least once before interrupting it
-    lastAssignedTask = bestActionName;
+    lastAssignedTask = success ? bestActionName : null;
     currentTaskEndTime = !success ? 0 : Date.now() + expectedDuration + 10; // Pad this a little to ensure we don't interrupt it.
 }
 
 /** @param {NS} ns
  * Helper to switch cities. */
 async function switchToCity(ns, city, reason) {
-    const success = await getBBInfo(ns, `switchCity(ns.args[0])`, city);
+    const success = await getNsDataThroughFile(ns, `(${bbMutationGuard}) ? ns.bladeburner.switchCity(ns.args[0]) : false`,null,[city]);
     log(ns, (success ? 'INFO: Switched' : 'ERROR: Failed to switch') + ` to Bladeburner city "${city}" (${reason})`,
         !success, success ? (options['toast-relocations'] ? 'info' : undefined) : 'error');
     return success;
@@ -367,29 +404,23 @@ async function switchToCity(ns, city, reason) {
 /** @param {NS} ns
  * Decides how to spend skill points. */
 async function spendSkillPoints(ns) {
-    while (true) { // Loop until we determine there's nothing left to spend skill points on
+    try{const goal=JSON.parse(ns.read('tasks/achievement-goals.json'));if(goal.nodeReset===resetInfo.lastNodeReset&&goal.expiresAt>Date.now()&&ns.isRunning(goal.ownerPid)&&goal.bankBladeburnerPoints)return;}catch{}
+    for(let purchases=0;purchases<100;purchases++) { // Bound spending so actions are still monitored.
+        if(isScriptPaused(ns,ns.getScriptName()))return;
         const unspent = await getBBInfo(ns, 'getSkillPoints()');
-        if (unspent == 0) return;
+        if (!(unspent>0)) return;
         const skillLevels = await getBBDict(ns, 'getSkillLevel(%)', skillNames);
         const skillCosts = await getBBDict(ns, 'getSkillUpgradeCost(%)', skillNames);
-        // Find the next lowest skill cost
-        let skillToUpgrade, minPercievedCost = Number.MAX_SAFE_INTEGER;
-        for (const skillName of skillNames) {
-            // Workaround: Next v2.6.0 API is supposed to return 'Infinity' for skills that can't be upgraded but this comes back as null
-            let percievedCost = (skillCosts[skillName] ?? Number.POSITIVE_INFINITY) * (costAdjustments[skillName] || 1);
-            // Bitburner pre-2.6.0 workaround: Overclock is capped at lvl 90, but the cost makes it seem upgradable
-            if (skillName === "Overclock" && skillLevels[skillName] == 90) percievedCost = Number.POSITIVE_INFINITY;
-            if (percievedCost < minPercievedCost)
-                [skillToUpgrade, minPercievedCost] = [skillName, percievedCost];
-        }
-        // If the percieved or actual cost of the next best upgrade is too high, save our remaining points for later
-        if (minPercievedCost > unspent || skillCosts[skillToUpgrade] > unspent) return;
+        const skillToUpgrade=nextSkill(skillNames,skillLevels,skillCosts,unspent,costAdjustments);
+        if(!skillToUpgrade)return;
         // Otherwise, purchase the upgrade
         if (await getBBInfo(ns, `upgradeSkill(ns.args[0])`, skillToUpgrade))
             log(ns, `SUCCESS: Upgraded Bladeburner skill ${skillToUpgrade}`, false, options['toast-upgrades'] ? 'success' : undefined);
-        else
+        else {
             log(ns, `WARNING: Something went wrong while trying to upgrade Bladeburner skill ${skillToUpgrade}. ` +
                 `Currently have ${unspent} SP, upgrade should cost ${skillCosts[skillToUpgrade]} SP.`, false, 'warning');
+            return; // Retry after the normal update interval, rather than looping forever.
+        }
         await ns.sleep(10);
     }
 }
@@ -413,6 +444,7 @@ async function canDoBladeburnerWork(ns) {
     if (activityBusy(ns)) return false;
     if (options['ignore-busy-status'] || haveSimulacrum) return true;
     // Check if the player is busy doing something else
+    if(!(4 in ownedSourceFiles))return true;
     const busy = await getNsDataThroughFile(ns, 'ns.singularity.isBusy()');
     if (!busy) return lastCanWorkCheckIdle = true;
     if (lastCanWorkCheckIdle)
@@ -426,11 +458,12 @@ async function canDoBladeburnerWork(ns) {
 async function beingInBladeburner(ns) {
     // Ensure we're in the Bladeburner division. If not, wait until we've joined it.
     while (!(await getNsDataThroughFile(ns, 'ns.bladeburner.inBladeburner()'))) {
+        if(isScriptPaused(ns,ns.getScriptName())||!achievementActionAllowed(ns,'bladeburner'))return false;
         try {
             if (player.skills.strength < 100 || player.skills.defense < 100 || player.skills.dexterity < 100 || player.skills.agility < 100)
-                log(ns, `Waiting for physical stats >100 to join bladeburner ` +
+                log(ns, `Waiting for physical stats >=100 to join bladeburner ` +
                     `(Currently Str: ${player.skills.strength}, Def: ${player.skills.defense}, Dex: ${player.skills.dexterity}, Agi: ${player.skills.agility})`);
-            else if (await getBBInfo(ns, 'joinBladeburnerDivision()')) {
+            else if (achievementActionAllowed(ns,'bladeburner') && await getBBInfo(ns, 'joinBladeburnerDivision()')) {
                 let message = `SUCCESS: Joined Bladeburner (At ${formatDuration(getTimeInBitnode())} into BitNode)`;
                 if (9 in ownedSourceFiles && options['disable-spending-hashes'])
                     message += ' --disable-spending-hashes is set, but consider running the following command to give it a boost:\n' +
@@ -438,7 +471,7 @@ async function beingInBladeburner(ns) {
                 log(ns, message, true, 'success');
                 break;
             } else
-                log(ns, 'WARNING: Failed to joined Bladeburner despite physical stats. Will try again...', false, 'warning');
+                log(ns, 'WARNING: Failed to join Bladeburner despite physical stats. Will try again...', false, 'warning');
             player = await getNsDataThroughFile(ns, 'ns.getPlayer()');
         }
         catch (err) {
@@ -449,13 +482,15 @@ async function beingInBladeburner(ns) {
     }
     log(ns, "INFO: We are in Bladeburner. Starting main loop...")
     // If not disabled, launch an external script to spend hashes on bladeburner rank
-    if (!(9 in ownedSourceFiles)) return; // Hacknet not unlocked
+    if (!(9 in ownedSourceFiles)) return true; // Hacknet not unlocked
     if (options['disable-spending-hashes'])
-        return log(ns, `INFO: Not spending hashes on bladeburner (--disable-spending-hashes flag is set)`);
+        {log(ns, `INFO: Not spending hashes on bladeburner (--disable-spending-hashes flag is set)`);return true;}
+    if(!achievementActionAllowed(ns,'hashSpending'))return true;
     const fPath = getFilePath('spend-hacknet-hashes.js');
     const args = ['--spend-on', 'Exchange_for_Bladeburner_Rank', '--spend-on', 'Exchange_for_Bladeburner_SP', '--liquidate'];
     if (ns.run(fPath, { preventDuplicates: true }, ...args))
         log(ns, `INFO: Launched '${fPath}' to gain Bladeburner Rank and Skill Points more quickly (Can be disabled with --disable-spending-hashes)`)
     else
         log(ns, `WARNING: Failed to launch '${fPath}' (already running?)`)
+    return true;
 }

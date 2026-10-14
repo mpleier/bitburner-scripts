@@ -39,6 +39,8 @@ export function autocomplete(data, args) {
  * Executes instructions to spend hacknet hashes continuously.
  * NOTE: This script is written to support multiple concurrent instances running with different arguments. **/
 export async function main(ns) {
+    let lastToast = 0, lastStatusAt = 0, lastStatusState = "", lastProduction = 0;
+    const report = async (state,extra={}) => { const now=Date.now();if(now-lastStatusAt<5000&&state===lastStatusState)return;lastStatusAt=now;lastStatusState=state;await ns.write("tasks/hacknet-hash-status.json",JSON.stringify({at:now,pid:ns.pid,state,...extra}),"w"); };
  registerAutomation(ns);
     if(isScriptPaused(ns,ns.getScriptName()))return;
     const options = getConfiguration(ns, argsSchema);
@@ -65,7 +67,6 @@ export async function main(ns) {
         `Saving up hashes, only spending hashes when near capacity to avoid wasting them.`);
 
     // Set up a helper to log but limit how often we generate a toast notification when making many purchases in a short time
-    let lastToast = 0; // Last time we generated a toast notification about a successful purchase
     function log(ns, message, printToTerminal, toastStyle, maxLength) {
         if (toastStyle != undefined) {
             const shouldToast = Date.now() - lastToast > minTimeBetweenToasts;
@@ -86,15 +87,16 @@ export async function main(ns) {
     const formatHashes = (hashes) => formatNumberShort(hashes, 6, 3);
     while (!isScriptPaused(ns,ns.getScriptName())) {
  automationHeartbeat(ns);
-        if(!achievementActionAllowed(ns,"hashSpending")){await ns.sleep(Math.max(50,interval));continue;}
+        if(!achievementActionAllowed(ns,"hashSpending")){await report("waiting",{reason:"Hash spending reserved for achievements"});await ns.sleep(Math.max(50,interval));continue;}
         await ns.sleep(interval);
         if (lowPriority && ns.hacknet.numHashes() > 0) // Low priority mode means any competing scripts should get to spend hashes first.
             await ns.sleep(interval); // Yeild for an additional interval to give competing scripts a chance to spend first. 
         if(isScriptPaused(ns,ns.getScriptName()))break;
-        if(maintenanceRequested(ns)){await ns.sleep(Math.max(50,interval));continue;}
+        if(maintenanceRequested(ns)){await report("waiting",{reason:"Automation maintenance"});await ns.sleep(Math.max(50,interval));continue;}
         try {
             let capacity = ns.hacknet.hashCapacity() || 0;
             let currentHashes = ns.hacknet.numHashes();
+            await report('spending',{hashes:currentHashes,capacity,production:lastProduction,actions:toBuy,target:spendOnServer??null});
             // Go back to sleep if the game hasn't ticket yet (given us more hashes) since our last loop.
             if (lastHashBalance != capacity && lastHashBalance == currentHashes) continue;
             //log(ns, `INFO: Waking up, last hash balance has changed from ${lastHashBalance} to ${currentHashes}`);
@@ -111,7 +113,7 @@ export async function main(ns) {
             const hashesEarnedNextTick = hashOverflowBuffer(globalProduction,interval,options['reserve-buffer']); // If we are this far from our capacity, start spending
             let purchasesThisLoop = 0;
             // Define the spend hash loop as a local function, since we may need to call it twice.
-            await ns.write('tasks/hacknet-hash-status.json',JSON.stringify({at:Date.now(),pid:ns.pid,state:'spending',hashes:currentHashes,capacity,production:globalProduction,actions:toBuy,target:spendOnServer??null}),'w');
+            lastProduction = globalProduction;
             const fnSpendHashes = async (purchases, spendAllHashes) => {
                 if(isScriptPaused(ns,ns.getScriptName())||maintenanceRequested(ns)||!achievementActionAllowed(ns,'hashSpending'))return;
                 purchases=purchases.filter(action=>action!==sellForMoney||achievementActionAllowed(ns,'hacknetMoney'));
@@ -245,7 +247,7 @@ export async function main(ns) {
             currentHashes = lastHashBalance = ns.hacknet.numHashes();
         }
         catch (err) {
-            await ns.write('tasks/hacknet-hash-status.json',JSON.stringify({at:Date.now(),pid:ns.pid,state:'recovering',error:String(err)}),'w');
+            await report('recovering',{error:String(err)});
             log(ns, `WARNING: spend-hacknet-hashes.js Caught (and suppressed) an unexpected error in the main loop:\n` +
                 getErrorInfo(err), false, 'warning');
         }

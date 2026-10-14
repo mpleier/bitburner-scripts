@@ -5,7 +5,6 @@ import { hacknetProduction, hacknetServerMode, hacknetOptionsError } from './hac
 import { claimSpending } from './spending-policy.js';
 import { getConfiguration, disableLogs, formatDuration, formatMoney, tryGetBitNodeMultipliers, } from './helpers.js'
 
-let haveHacknetServers = true; // Cached flag after detecting whether we do (or don't) have hacknet servers
 const argsSchema = [
     ['max-payoff-time', '1h'], // Controls how far to upgrade hacknets. Can be a number of seconds, or an expression of minutes/hours (e.g. '123m', '4h')
     ['time', null], // alias for max-payoff-time
@@ -41,8 +40,8 @@ export async function main(ns) {
         maxPayoffTime = Number.parseFloat(maxPayoffTime);
     const invalid=hacknetOptionsError(options,maxPayoffTime);if(invalid)return ns.tprint('Hacknet: '+invalid);
     options.productionMultiplier=(await tryGetBitNodeMultipliers(ns)).HacknetNodeMoney;
+    lastUpgradeLog="";lastUpgradeStatusAt=0;
     registerAutomation(ns);
-    haveHacknetServers=hacknetServerMode(ns.getResetInfo(),ns.hacknet.numNodes()?ns.hacknet.getNodeStats(0):null);
     disableLogs(ns, ['sleep', 'getServerUsedRam', 'getServerMoneyAvailable']);
     setStatus(ns, `Starting hacknet-upgrade-manager with purchase payoff time limit of ${formatDuration(maxPayoffTime * 1000)} and ` +
         (maxSpend == Number.MAX_VALUE ? 'no spending limit' : `a spend limit of ${formatMoney(maxSpend)}`) +
@@ -53,10 +52,7 @@ export async function main(ns) {
         if(maintenanceRequested(ns)){if(!continuous)return;await ns.sleep(Math.max(100,interval));continue;}
         try {
             const moneySpent = upgradeHacknet(ns, maxSpend, maxPayoffTime, options);
-            // Using this method, we cannot know for sure that we don't have hacknet servers until we have purchased one
-            if (haveHacknetServers && ns.hacknet.numNodes() > 0 && ns.hacknet.hashCapacity() == 0)
-                haveHacknetServers = false;
-            if (maxSpend && moneySpent === false) {
+            if (moneySpent === false) {
                 setStatus(ns, `Spending limit reached. Breaking...`);
                 break; // Hack, but we return a non-number (false) when we've bought all we can for the current config
             }
@@ -70,8 +66,9 @@ export async function main(ns) {
     } while (continuous);
 }
 
-let lastUpgradeLog = "";
+let lastUpgradeLog = "", lastUpgradeStatusAt=0;
 function setStatus(ns, logMessage) {
+    if(typeof ns.write==='function'&&Date.now()-lastUpgradeStatusAt>=5000){lastUpgradeStatusAt=Date.now();ns.write('tasks/hacknet-upgrade-status.json',JSON.stringify({at:Date.now(),pid:ns.pid,state:logMessage.startsWith('Purchased')?'upgrading':'waiting',reason:logMessage}),'w');}
     if (logMessage != lastUpgradeLog) ns.print(lastUpgradeLog = logMessage);
 }
 

@@ -1,3 +1,4 @@
+import vm from 'node:vm';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
@@ -70,4 +71,12 @@ test('hash spender budgets capacity purchases, checks pauses after yields, and c
  assert.match(source,/claimSpending\(ns,"hacknet",nextCacheUpgradeCost\)/);
  assert.match(source,/purchasesThisLoop\+=quantity/);assert.match(source,/maintenanceRequested\(ns\)/);
  assert.match(source,/hashOverflowBuffer\(globalProduction/);
+});
+
+
+test('invalid hash settings report an error without a startup logging exception',async()=>{
+ const source=await readFile(new URL('../spend-hacknet-hashes.js',import.meta.url),'utf8'),messages=[];
+ const context={hashOptionsError,registerAutomation:()=>{},isScriptPaused:()=>false,getConfiguration:()=>({interval:-1}),log_helper:(_ns,message)=>messages.push(message)};
+ vm.runInNewContext(source.replace(/^import[\s\S]*?from\s+['"][^'"]+['"];?\r?$/gm,'').replaceAll('export async function','async function').replaceAll('export function','function')+';globalThis.start=main;',context);
+ await context.start({getScriptName:()=> 'spend-hacknet-hashes.js'});assert.match(messages[0],/interval must/);
 });

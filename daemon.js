@@ -357,7 +357,7 @@ export async function main(ns) {
         // Helper to decide whether we should launch one of the hacknet upgrade manager scripts.
         const shouldUpgradeHacknet = () =>
             bitNodeMults.HacknetNodeMoney > 0 && // Ensure hacknet is not disabled in this BN
-            reqRam(Math.min(64, homeReservedRam + 6.1)) && // These scripts consume 6.1 GB and keep running a long time, so we want to ensure we have more than the home reservered RAM amount available if home reserved RAM is a small number
+            reqRam(Math.min(64, homeReservedRam + Math.max(6.1,ns.getScriptRam(getFilePath('hacknet-upgrade-manager.js'),'home')+4))) && // These scripts consume 6.1 GB and keep running a long time, so we want to ensure we have more than the home reservered RAM amount available if home reserved RAM is a small number
             getPlayerMoney(ns) > reservedMoney(ns); // Player money exceeds the reserve (otherwise it will sit there buying nothing)
 
         // ASYNCHRONOUS HELPERS

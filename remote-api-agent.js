@@ -8,7 +8,7 @@ export async function main(ns) {
  let lastHeartbeat = 0;
  while (true) {
   if (Date.now() - lastHeartbeat >= 2000) {
-   lastHeartbeat = Date.now(); await ns.write(heartbeatFile, JSON.stringify({pid:ns.pid,at:lastHeartbeat,version:1}), 'w');
+   lastHeartbeat = Date.now(); await ns.write(heartbeatFile, JSON.stringify({pid:ns.pid,at:lastHeartbeat,version:2}), 'w');
   }
   let command;
   try { command = JSON.parse(ns.read(commandFile) || 'null'); } catch { }

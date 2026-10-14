@@ -1,3 +1,4 @@
+import { activityBusy } from './activity-coordination.js';
 import {
     instanceCount, getConfiguration, getNsDataThroughFile, getFilePath, getActiveSourceFiles, tryGetBitNodeMultipliers,
     formatDuration, formatMoney, formatNumberShort, disableLogs, log, getErrorInfo, tail
@@ -842,6 +843,7 @@ let lastInterruptionNotice = "";
  * @return {bool} true if we should stop what we're doing and let the interruption continue.
  */
 async function isValidInterruption(ns, currentWork = null) {
+    if (activityBusy(ns)) return true;
     let interruptionNotice = "";
     currentWork ??= await getCurrentWorkInfo(ns); // Retrieve current work (unless it was passed in)
     // Never interrupt grafting

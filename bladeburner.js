@@ -1,3 +1,4 @@
+import { activityBusy } from './activity-coordination.js';
 import { log, disableLogs, getConfiguration, instanceCount, getNsDataThroughFile, getFilePath, getActiveSourceFiles, formatNumberShort, formatDuration } from './helpers.js'
 
 const cityNames = ["Sector-12", "Aevum", "Volhaven", "Chongqing", "New Tokyo", "Ishima"];
@@ -408,6 +409,7 @@ let lastCanWorkCheckIdle = true;
 /** @param {NS} ns
  * Helper to see if we are able to do bladeburner work */
 async function canDoBladeburnerWork(ns) {
+    if (activityBusy(ns)) return false;
     if (options['ignore-busy-status'] || haveSimulacrum) return true;
     // Check if the player is busy doing something else
     const busy = await getNsDataThroughFile(ns, 'ns.singularity.isBusy()');

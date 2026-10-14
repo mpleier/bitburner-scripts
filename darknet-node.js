@@ -1,5 +1,7 @@
 /** Runs on authenticated darknet servers, scouts outward, and tries exact-match candidates. */
 import { solveFeedbackPassword, supportsFeedbackModel, modelCandidates, isStalledScout, dictionaryWords } from './darknet-solvers.js';
+import { stockSignalFile, chooseStockPromotion } from './darknet-stock-policy.js';
+import { frontierFile, chooseMigrationTarget } from './darknet-migration-policy.js';
 export async function main(ns) {
   const passwordFile = "darknet-passwords.txt";
   const candidateFile = "darknet-candidates.txt";
@@ -9,7 +11,10 @@ export async function main(ns) {
   const lootFile = "darknet-loot.js";
   const stasisFile = "darknet-stasis.js";
   const cacheFile = "darknet-cache.js";
-  const codeFiles = [nodeFile, lootFile, stasisFile, cacheFile, "darknet-solvers.js"];
+  const promoteFile = 'darknet-promote.js';
+  const migrateFile = 'darknet-migrate.js';
+  const codeFiles = [nodeFile, lootFile, stasisFile, cacheFile, "darknet-solvers.js", "darknet-advanced.js", "darknet-dictionaries.js", promoteFile, "darknet-stock-policy.js", migrateFile, "darknet-migration-policy.js"];
+  let lastMigration = 0;
   const reportedHints = new Map();
   // Retry when the shared credential or candidate files change, not on every mutation.
   const attemptedInputs = new Map();
@@ -37,7 +42,9 @@ export async function main(ns) {
   const syncedReports = new Map();
   const heartbeat = async () => {
     if (Date.now() - lastHeartbeat < 30_000) return;
-    await ns.write(heartbeatFile, JSON.stringify({ host: ns.getHostname(), pid: ns.pid, at: Date.now() }), 'w');
+    const info = ns.dnet.getServerDetails(ns.getHostname());
+    await ns.write(heartbeatFile, JSON.stringify({ host: ns.getHostname(), pid: ns.pid, at: Date.now(), version: 3,
+      depth: info.depth, difficulty: info.difficulty }), 'w');
     try { await ns.scp(heartbeatFile, 'home', ns.getHostname()); } catch { /* local heartbeat still helps adjacent scouts */ }
     lastHeartbeat = Date.now();
   };
@@ -120,9 +127,9 @@ export async function main(ns) {
         note(`${host}:nil`, `${host}: ${info.modelId} solving needs ${info.requiredCharismaSkill} Charisma for Heartbleed.`);
         return false;
       }
-      const solution = await solveFeedbackPassword(info,
+      const solution = await solveFeedbackPassword({ ...info, hostname: host },
         password => tryPassword(host, password),
-        () => ns.dnet.heartbleed(host, { peek: true, logsToCapture: 20 }), progress);
+        () => ns.dnet.heartbleed(host, { peek: true, logsToCapture: 20 }), progress, () => ns.dnet.labreport());
       if (!solution.success) {
         note(`${host}:nil`, `${host}: ${info.modelId} waiting: ${solution.reason}${solution.code ? ` (${solution.code})` : ""}.`);
         return false;
@@ -188,7 +195,8 @@ export async function main(ns) {
       const linked = ns.dnet.getStasisLinkedServers();
       let stasisStarted = false;
       // Deep servers are valuable exploration anchors. Respect the global link cap.
-      if (ns.dnet.getServerDetails(self).depth >= 2 && !linked.includes(self) && linked.length < ns.dnet.getStasisLinkLimit()
+      const selfInfo = ns.dnet.getServerDetails(self);
+      if (selfInfo.depth >= 2 && selfInfo.difficulty % 8 < 6 && !linked.includes(self) && linked.length < ns.dnet.getStasisLinkLimit()
           && ns.fileExists(stasisFile, self) && !procRunning(stasisFile)) {
         const ram = ns.getScriptRam(stasisFile, self);
         if (ram > 0 && freeRam() >= ram) stasisStarted = ns.exec(stasisFile, self, 1) > 0;
@@ -201,6 +209,18 @@ export async function main(ns) {
         const ram = ns.getScriptRam(cacheFile, self);
         if (ram > 0 && freeRam() >= ram) cacheStarted = ns.exec(cacheFile, self, 1) > 0;
         else note(`${self}:cache`, `${self}: cache file waiting; needs ${fmtRam(ram)} free RAM, ${fmtRam(freeRam())} available.`);
+      }
+      // Give one promotion thread space before allocating the remaining RAM to phishing.
+      if (!stasisStarted && !cacheStarted && ns.fileExists(promoteFile, self) && !procRunning(promoteFile)) {
+        try {
+          if (ns.fileExists(stockSignalFile, 'home') && await ns.scp(stockSignalFile, self, 'home') &&
+              chooseStockPromotion(JSON.parse(ns.read(stockSignalFile)))) {
+            const ram = ns.getScriptRam(promoteFile, self);
+            const loot = ns.ps(self).find(p => p.filename === lootFile);
+            if (freeRam() < ram && loot?.threads > 1) { ns.kill(loot.pid); await ns.sleep(1); }
+            if (ram > 0 && freeRam() >= ram) ns.exec(promoteFile, self, 1);
+          }
+        } catch { /* No current stock signal or TIX access: keep phishing. */ }
       }
       // The stasis and cache one-shots need their RAM first; loot is sized on the next pass.
       if (!stasisStarted && !cacheStarted && ns.fileExists(lootFile, self) && !procRunning(lootFile)) {
@@ -215,7 +235,7 @@ export async function main(ns) {
         try {
         if (host === self) continue;
         const info = ns.dnet.getServerDetails(host);
-        if (!info.isOnline) continue;
+        if (info.isOnline === false) continue;
         if (!known.has(host)) {
           const hint = `${info.passwordHint || "none"} (format ${info.passwordFormat || "unknown"}, length ${info.passwordLength ?? "?"})`;
           if (reportedHints.get(host) !== hint) {
@@ -262,8 +282,9 @@ export async function main(ns) {
         try {
           if (scout && ns.fileExists(statusFile, host) && await ns.scp(statusFile, self, host)) {
             const status = JSON.parse(ns.read(statusFile));
-            if (isStalledScout(scout, status)) {
+            if (isStalledScout(scout, status) || (scout && status.pid === scout.pid && status.version !== 3)) {
               ns.kill(scout.pid);
+              for (const process of ns.ps(host)) if ([lootFile, stasisFile, cacheFile, promoteFile, migrateFile].includes(process.filename)) ns.kill(process.pid);
               note(`${host}:restart`, `${host}: restarting stalled scout.`);
             }
           }
@@ -279,6 +300,21 @@ export async function main(ns) {
           } else note(`${host}:scout`, `${host}: scout needs ${fmtRam(ram)} free RAM; ${fmtRam(free)} available.`);
         }
         } catch (error) { ns.print(`${host}: skipped after a server/network error: ${String(error)}`); }
+      }
+      if (Date.now() - lastMigration > 300000 && ns.fileExists(migrateFile, self) && !procRunning(migrateFile)) {
+        try {
+          if (await ns.scp(frontierFile, self, 'home')) {
+            const neighbours = ns.dnet.probe().filter(host => host !== self).map(host => ({ host,
+              ...ns.dnet.getServerDetails(host), stasis: linked.includes(host), scoutRunning: ns.ps(host).some(p => p.filename === nodeFile) }));
+            const target = chooseMigrationTarget(neighbours, JSON.parse(ns.read(frontierFile)));
+            if (target) {
+              const ram = ns.getScriptRam(migrateFile, self), loot = ns.ps(self).find(p => p.filename === lootFile);
+              if (ram > 0 && freeRam() < ram && loot?.threads > 1) { ns.kill(loot.pid); await ns.sleep(1); }
+              const threads = ram > 0 ? Math.min(16, Math.floor(freeRam() / ram)) : 0;
+              if (threads && ns.exec(migrateFile, self, threads, target)) lastMigration = Date.now();
+            }
+          }
+        } catch { /* Network changes: leave scouts and stasis links in place. */ }
       }
       await ns.sleep(15_000);
     } catch (error) {

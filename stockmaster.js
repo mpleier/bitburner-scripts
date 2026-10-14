@@ -1,3 +1,4 @@
+import { stockSignalFile, stockPromotionSignals } from './darknet-stock-policy.js';
 import {
     instanceCount, getConfiguration, getNsDataThroughFile, runCommand, getActiveSourceFiles, tryGetBitNodeMultipliers,
     formatMoney, formatNumberShort, formatDuration, getStockSymbols
@@ -342,6 +343,7 @@ async function refresh(ns, has4s, allStocks, myStocks) {
             stk.ticksHeld = !stk.owned() || (priorLong > 0 && stk.sharesLong == 0) || (priorShort > 0 && stk.sharesShort == 0) ? 0 : 1 + (stk.ticksHeld || 0);
     }
     if (ticked) await updateForecast(ns, allStocks, has4s); // Logic below only required on market tick
+    await ns.write(stockSignalFile, JSON.stringify(stockPromotionSignals(allStocks, has4s && !mock)), 'w');
     return holdings;
 }
 

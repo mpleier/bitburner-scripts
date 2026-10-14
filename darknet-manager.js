@@ -1,6 +1,9 @@
+import { isScriptPaused } from './automation-control.js';
 /** Darknet coordinator. Tries supplied exact-match candidates on discovered servers. */
 import { solveFeedbackPassword, supportsFeedbackModel, modelCandidates, isStalledScout, dictionaryWords } from './darknet-solvers.js';
+import { frontierFile } from './darknet-migration-policy.js';
 export async function main(ns) {
+    if (isScriptPaused(ns, ns.getScriptName())) return;
   const passwordFile = "darknet-passwords.txt";
   const candidateFile = "darknet-candidates.txt";
   const nodeFile = "darknet-node.js";
@@ -11,7 +14,7 @@ export async function main(ns) {
   const lootFile = "darknet-loot.js";
   const stasisFile = "darknet-stasis.js";
   const cacheFile = "darknet-cache.js";
-  const codeFiles = [nodeFile, lootFile, stasisFile, cacheFile, "darknet-solvers.js"];
+  const codeFiles = [nodeFile, lootFile, stasisFile, cacheFile, "darknet-solvers.js", "darknet-advanced.js", "darknet-dictionaries.js", "darknet-promote.js", "darknet-stock-policy.js", "darknet-migrate.js", "darknet-migration-policy.js"];
   // Every ns call is logged by default (scp, probe, getServerMaxRam...), which
   // buried the useful lines. Keep only what this script prints itself.
   ns.disableLog("ALL");
@@ -141,7 +144,7 @@ export async function main(ns) {
         note(`${host}:nil`, `${host}: ${details.modelId} solving needs ${details.requiredCharismaSkill} Charisma for Heartbleed.`);
         return false;
       }
-      const solution = await solveFeedbackPassword(details,
+      const solution = await solveFeedbackPassword({ ...details, hostname: host },
         password => tryPassword(host, password),
         () => ns.dnet.heartbleed(host, { peek: true, logsToCapture: 20 }), progress);
       if (!solution.success) {
@@ -194,11 +197,20 @@ export async function main(ns) {
       ensureDarknetUnlock();
       const passwords = parsePasswords();
       const candidates = [...new Set([...parseCandidates(), ...dictionaryWords(ns)])];
+      let depth = 0;
+      for (const file of ns.ls('home', 'tasks/dnet-')) {
+        try {
+          const status = JSON.parse(ns.read(file));
+          if (status.pid && Number.isFinite(status.depth) && Date.now() - status.at < 120000 && ns.isRunning(status.pid))
+            depth = Math.max(depth, status.depth);
+        } catch { }
+      }
+      await ns.write(frontierFile, JSON.stringify({ depth, expiresAt: Date.now() + 90000 }), 'w');
 
       for (const host of ns.dnet.probe()) {
         try {
           const details = ns.dnet.getServerDetails(host);
-          if (!details.isOnline) continue;
+          if (details.isOnline === false) continue;
 
           if (!passwords.has(host)) {
             const hint = `${details.passwordHint || "none"} (format ${details.passwordFormat || "unknown"}, length ${details.passwordLength ?? "?"})`;
@@ -262,9 +274,10 @@ export async function main(ns) {
             const scout = ns.ps(host).find(p => p.filename === nodeFile);
             try {
               const status = JSON.parse(ns.read(`tasks/dnet-${encodeURIComponent(host)}.json`) || '{}');
-              if (isStalledScout(scout, status)) {
+              if (isStalledScout(scout, status) || (scout && status.pid === scout.pid && status.version !== 3)) {
                 ns.kill(scout.pid);
-                note(`${host}:restart`, `${host}: restarting scout after 30 minutes without a heartbeat.`);
+                for (const process of ns.ps(host)) if ([lootFile, stasisFile, cacheFile, 'darknet-promote.js', 'darknet-migrate.js'].includes(process.filename)) ns.kill(process.pid);
+                note(`${host}:restart`, `${host}: refreshing an outdated or stalled scout.`);
               }
             } catch { /* missing heartbeat: leave an existing scout running */ }
             const running = ns.ps(host).some((p) => p.filename === nodeFile);

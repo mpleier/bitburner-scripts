@@ -1,4 +1,5 @@
 import { getNsDataThroughFile, getFilePath, getConfiguration, instanceCount, log, getErrorInfo } from '../helpers.js'
+import { activityBusy } from '../activity-coordination.js';
 
 const argsSchema = [
     ['spawn-delay', 50], // Delay to allow time for `installBackdoor` to start running before a we connect back to 'home' and optionally start backdooring the next server
@@ -22,6 +23,7 @@ export function autocomplete(data, args) {
  * Requires: SF-4.1 **/
 /** @param {NS} ns **/
 export async function main(ns) {
+    if (activityBusy(ns)) return;
     let notAtHome = false;
     try {
         const options = getConfiguration(ns, argsSchema);
@@ -44,7 +46,7 @@ export async function main(ns) {
         // Filter out servers that cannot or should not be hacked / backdoored
         // Backdoors can only be installed on faction/company servers, not servers
         // owned by the player (including purchased servers and hacknet servers).
-        const purchasedServers = await getNsDataThroughFile(ns, 'ns.getPurchasedServers()');
+        const purchasedServers = await getNsDataThroughFile(ns, 'ns.cloud.getServerNames()');
         const hackableServers = getBackdoorCandidates(servers, purchasedServers);
 
         // Get the required hacking level of each server

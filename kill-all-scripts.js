@@ -14,7 +14,7 @@ export async function main(ns) {
             continue;
 
         // skip if not running anything
-        if (ns.ps(server) === 0)
+        if (ns.ps(server).length === 0)
             continue;
 
         // kill all scripts
@@ -27,7 +27,7 @@ export async function main(ns) {
         if (server == startingNode)
             continue;
         // idle until they're dead, this is to avoid killing the cascade before it's finished.
-        while (ns.ps(server) > 0) {
+        while (ns.ps(server).length > 0) {
             await ns.sleep(20);
         }
         // Remove script files the daemon would have copied over (in case we update the source)

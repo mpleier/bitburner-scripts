@@ -1,3 +1,4 @@
+import { chooseSleeveCrime } from './automation-policy.js';
 import { log, getConfiguration, instanceCount, disableLogs, getActiveSourceFiles, getNsDataThroughFile, runCommand, formatMoney, formatDuration } from './helpers.js'
 
 const argsSchema = [
@@ -350,7 +351,7 @@ async function pickSleeveTask(ns, playerInfo, playerWorkInfo, i, sleeve, canTrai
     if (sleeve.shock > 0)
         return shockRecoveryTask(sleeve, i, `there appears to be nothing better to do`);
     // Finally, do crime for Karma. Pick the best crime based on success chances
-    var crime = options.crime || (await calculateCrimeChance(ns, sleeve, "Homicide")) >= options['homicide-chance-threshold'] ? 'Homicide' : 'Mug';
+    var crime = options.crime || chooseSleeveCrime(null, await calculateCrimeChance(ns, sleeve, 'Homicide'), options['homicide-chance-threshold']);
     return await crimeTask(ns, crime, i, sleeve, `there appears to be nothing better to do`);
 }
 

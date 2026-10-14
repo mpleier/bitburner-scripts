@@ -1,3 +1,6 @@
+import { canLaunchFactionWorker, studyCommand } from './automation-policy.js';
+import { isScriptPaused } from './automation-control.js';
+import { activityBusy, pendingRam } from './activity-coordination.js';
 import {
     formatMoney, formatRam, formatDuration, formatDateTime, formatNumber, formatNumberShort,
     hashCode, disableLogs, log, getFilePath, getConfiguration,
@@ -84,6 +87,7 @@ export function autocomplete(data, args) {
 // script entry point
 /** @param {NS} ns **/
 export async function main(ns) {
+    if (isScriptPaused(ns, ns.getScriptName())) return;
     // --- CONSTANTS ---
     // track how costly (in security) a growth/hacking thread is.
     const growthThreadHardening = 0.004;
@@ -356,10 +360,12 @@ export async function main(ns) {
             getPlayerMoney(ns) > reservedMoney(ns); // Player money exceeds the reserve (otherwise it will sit there buying nothing)
 
         // ASYNCHRONOUS HELPERS
-        // Set up "asynchronous helpers" - standalone scripts to manage certain aspacts of the game. daemon.js launches each of these once when ready (but not again if they are shut down)
+        // Standalone managers are supervised; one-shot tools retain their original lifecycle.
         asynchronousHelpers = [
             { name: "stats.js", shouldRun: () => reqRam(64), shouldTail: false }, // Adds stats not usually in the HUD (nice to have)
             { name: "darknet-manager.js", shouldRun: () => reqRam(64), shouldTail: false },
+            { name: "health-manager.js", shouldRun: () => reqRam(32) && 4 in dictSourceFiles, shouldTail: false },
+            { name: "infiltration-manager.js", shouldRun: () => reqRam(64) && 4 in dictSourceFiles, shouldTail: false },
             { name: "corporation-manager.js", shouldRun: () => reqRam(256) && (resetInfo.currentNode == 3 || 3 in dictSourceFiles), shouldTail: true }, // Autopilot disables this helper when it launches the manager itself.
             { name: "go.js", shouldRun: () => reqRam(64), minRamReq: 20.2 }, // Play go.js (various multipliers, but large dynamic ram requirements)
             { name: "stockmaster.js", shouldRun: () => reqRam(64), args: openTailWindows ? ["--show-market-summary"] : [] }, // Start our stockmaster
@@ -371,7 +377,7 @@ export async function main(ns) {
             { name: "gangs.js", shouldRun: () => reqRam(64) && 2 in dictSourceFiles }, // Script to create manage our gang for us
             {
                 name: "work-for-factions.js", args: ['--fast-crimes-only', '--no-coding-contracts'],  // Singularity script to manage how we use our "focus" work.
-                shouldRun: () => 4 in dictSourceFiles && reqRam(256 / (2 ** dictSourceFiles[4]) && !studying) // Higher SF4 levels result in lower RAM requirements
+                shouldRun: () => canLaunchFactionWorker(dictSourceFiles[4], reqRam, studying) // Higher SF4 levels result in lower RAM requirements
             },
             {
                 name: "bladeburner.js", // Script to manage bladeburner for us. Run automatically if not disabled and bladeburner API is available
@@ -506,7 +512,7 @@ export async function main(ns) {
                     const { CityName, LocationName, UniversityClassType } = ns.enums
                     if (money >= 200000) { // If we can afford to travel, we're probably far enough along that it's worthwhile going to Volhaven where ZB university is.
                         log(ns, `INFO: Travelling to Volhaven for best study XP gain rate.`);
-                        await getNsDataThroughFile(ns, `ns.singularity.travelToCity(ns.args[0])`, null, [CityName.Volhaven]);
+                        await getNsDataThroughFile(ns, studyCommand('travel'), null, [CityName.Volhaven]);
                     }
                     const playerInfo = await getPlayerInfo(ns); // Update player stats to be certain of our new location.
                     const university = playerInfo.city == CityName.Sector12 ? LocationName.Sector12RothmanUniversity :
@@ -517,7 +523,7 @@ export async function main(ns) {
                     else {
                         const course = playerInfo.city == CityName.Sector12 ? UniversityClassType.computerScience : UniversityClassType.algorithms; // Assume if we are still in Sector-12 we are poor and should only take the free course
                         log(ns, `INFO: Studying "${course}" at "${university}" because we are in city "${playerInfo.city}".`);
-                        startedStudying = await getNsDataThroughFile(ns, `ns.singularity.universityCourse(ns.args[0], ns.args[1], ns.args[2])`, null, [university, course, false]);
+                        startedStudying = await getNsDataThroughFile(ns, studyCommand('start'), null, [university, course, false]);
                         if (startedStudying)
                             await ns.sleep(studyTime * 1000); // Wait for studies to affect Hack XP. This will often greatly reduce time-to-hack/grow/weaken, and avoid a slow first cycle
                         else
@@ -552,7 +558,7 @@ export async function main(ns) {
             log(ns, 'WARNING: Encountered an error while trying to kickstart hack XP (low RAM issues perhaps?)', false, 'warning');
         } finally {
             // Ensure we stop studying (in case no other running scripts end up stealing focus, so we don't keep studying forever)
-            if (startedStudying) await getNsDataThroughFile(ns, `ns.singularity.stopAction()`);
+            if (startedStudying) await getNsDataThroughFile(ns, studyCommand('stop'));
             studying = false; // This will allow work-for-faction to launch
         }
     }
@@ -576,7 +582,15 @@ export async function main(ns) {
      * @returns {Promise<boolean>} true if all scripts have been launched */
     async function runStartupScripts(ns) {
         let launched = 0;
-        for (const script of asynchronousHelpers.filter(s => !s.isLaunched)) {
+        const supervised = new Set(['stats.js', 'darknet-manager.js', 'corporation-manager.js', 'health-manager.js',
+            'infiltration-manager.js', 'go.js', 'spend-hacknet-hashes.js', 'sleeve.js', 'sleeve-expansion.js',
+            'grafting-manager.js', 'gangs.js', 'work-for-factions.js', 'bladeburner.js']);
+        for (const script of asynchronousHelpers) {
+            const restart = supervised.has(script.name.split('/').pop());
+            if (script.isLaunched && (!restart || whichServerIsRunning(ns, script.name, false)[0] != null)) continue;
+            if (Date.now() - (script.lastLaunch || 0) < 60000) continue;
+            // Attempts are bounded even when an unlocked API rejects startup.
+            script.lastLaunch = Date.now();
             if (!(await tryRunTool(ns, getTool(script))))
                 continue; // We may have chosen not to run the script for a number of reasons. Proceed to the next one.
             if (++launched > 1) await ns.sleep(1); // If we successfully launch more than 1 script at a time, yeild execution a moment to give them a chance to complete, so many aren't all fighting for temp RAM at the same time.
@@ -616,6 +630,8 @@ export async function main(ns) {
      * @param {NS} ns
      * @param {Tool} tool */
     async function tryRunTool(ns, tool) {
+        if (isScriptPaused(ns, tool.name)) return false;
+        if (activityBusy(ns) && /(^|\/)(work-for-factions|grafting-manager|infiltration-manager)\.js$/.test(tool.name)) return false;
         if (options['disable-script'].includes(tool.name)) { // Ensure the script hasn't been disabled
             if (verbose) log(ns, `Tool ${tool.name} was not launched as it was specified with --disable-script`);
             return false;
@@ -716,6 +732,7 @@ export async function main(ns) {
     async function doTargetingLoop(ns) {
         log(ns, "doTargetingLoop");
         let loops = -1;
+        let lastHelperCheck = 0;
         //let isHelperListLaunched = false; // Uncomment this and related code to keep trying to start helpers
         do {
             loops++;
@@ -727,8 +744,10 @@ export async function main(ns) {
                 await updateCachedServerData(ns); // Update server data that only needs to be refreshed once per loop
                 await updatePortCrackers(ns); // Check if any new port crackers have been purchased
                 await getPlayerInfo(ns); // Force an update of _cachedPlayerInfo               
-                if (!allHelpersRunning && loops % 60 == 0) // If we have not yet launched all helpers see if any are now ready to be run (launch may have been postponed while e.g. awaiting more home ram, or TIX API to be purchased)
+                if (Date.now() - lastHelperCheck >= 30000) {
+                    lastHelperCheck = Date.now();
                     allHelpersRunning = await runStartupScripts(ns);
+                }
                 // Run some auxilliary processes that ease the ram burden of this daemon and add additional functionality (like managing hacknet or buying servers)
                 await runPeriodicScripts(ns);
                 if (stockMode) await updateStockPositions(ns); // In stock market manipulation mode, get our current position in all stocks, as it affects targetting order
@@ -1256,7 +1275,7 @@ export async function main(ns) {
             // Complete HACK: but for most planning purposes, we want to pretend home has less ram to leave room for temp scripts to run
             if (!ignoreReservedRam && (this.name == "home" ||
                 (this.name == backupServerName && dictServerMaxRam["home"] <= 16))) // Double-hack: When home RAM sucks (start of BN 1.1) reserve a server for helpers.
-                maxRam = Math.max(0, maxRam - homeReservedRam);
+                maxRam = Math.max(0, maxRam - Math.max(homeReservedRam, this.name === 'home' ? pendingRam(this.ns) : 0));
             return maxRam;
         }
         usedRam() { return this.ns.getServerUsedRam(this.name); }

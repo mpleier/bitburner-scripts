@@ -1,3 +1,4 @@
+import { isScriptPaused } from './automation-control.js';
 /** Buys sleeves and raises memory in BN10, without changing sleeve tasks. */
 export function expandSleeves(ns, fraction = 0.1) {
   if (ns.getResetInfo().currentNode !== 10) return { available: false, bought: 0, upgraded: 0 };
@@ -29,6 +30,7 @@ export function expandSleeves(ns, fraction = 0.1) {
 }
 
 export async function main(ns) {
+    if (isScriptPaused(ns, ns.getScriptName())) return;
   ns.disableLog('ALL');
   if (ns.ps('home').some(process => process.filename === ns.getScriptName() && process.pid !== ns.pid)) return;
   if (ns.getResetInfo().currentNode !== 10) return;

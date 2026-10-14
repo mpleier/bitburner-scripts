@@ -1,5 +1,7 @@
 // darknet-solvers.js — deterministic password solvers for darknet models.
 // Mirrors the decode logic in DarknetServerOptions.ts.
+import { solveAdvancedPassword } from './darknet-advanced.js';
+import { defaultSettingsDictionary, dogNameDictionary, EUCountries, commonPasswordDictionary } from './darknet-dictionaries.js';
 
 const CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"; // numbers + lettersUppercase
 
@@ -193,6 +195,10 @@ export function modelCandidates(details) {
   const length = details.passwordLength;
   let value = null;
   switch (details.modelId) {
+    case 'FreshInstall_1.0': return [...defaultSettingsDictionary];
+    case 'Laika4': return [...dogNameDictionary];
+    case 'EuroZone Free': return [...EUCountries];
+    case 'TopPass': return [...commonPasswordDictionary];
     case 'ZeroLogon': return [''];
     case 'DeskMemo_3.1': value = data; break;
     case 'CloudBlare(tm)': value = data.replace(/\D/g, ''); break;
@@ -227,7 +233,9 @@ export function dictionaryWords(ns) {
 }
 
 export function supportsFeedbackModel(details) {
-  return ['NIL', 'DeepGreen', 'AccountsManager_4.2', '2G_cellular', 'RateMyPix.Auth', 'BigMo%od'].includes(details.modelId) ||
+  return ['NIL', 'DeepGreen', 'AccountsManager_4.2', '2G_cellular', 'RateMyPix.Auth', 'BigMo%od',
+    'Factori-Os', 'KingOfTheHill', 'OpenWebAccessPoint', '(The Labyrinth)'].includes(details.modelId) ||
+    (details.modelId === 'PHP 5.4' && details.passwordLength >= 5) ||
     (details.modelId === 'BellaCuore' && String(details.data).includes(','));
 }
 
@@ -237,13 +245,14 @@ export function isStalledScout(process, status, now = Date.now()) {
 }
 
 /** Stateful bounded solver; feedback comes from the exact attempt's Heartbleed log. */
-export async function solveFeedbackPassword(details, authenticate, readLogs, state = {}) {
+export async function solveFeedbackPassword(details, authenticate, readLogs, state = {}, readLabReport = null) {
   if (details.modelId === 'NIL') return solveNilPassword(details, authenticate, readLogs, state);
   const length = details.passwordLength;
   if (!supportsFeedbackModel(details) || !Number.isInteger(length) || length < 1 || length > 64)
     return { success: false, reason: 'unsupported feedback details' };
   const signature = JSON.stringify([details.modelId, length, details.passwordFormat, details.data]);
   if (state.signature !== signature) {
+    for (const key of Object.keys(state)) delete state[key];
     Object.assign(state, { signature, prefix: '', index: 0, low: 0, high: 10 ** Math.min(15, length) - 1,
       residue: 0n, modulus: 1n, primeIndex: 0 });
     if (details.modelId === 'BellaCuore') {
@@ -257,8 +266,9 @@ export async function solveFeedbackPassword(details, authenticate, readLogs, sta
     Array.from({ length: 95 }, (_, i) => String.fromCharCode(32 + i)).join('');
   const probe = async password => {
     const result = await authenticate(password);
-    if (result?.success) return { success: true, password };
+    if (result?.success) return { success: true, password: details.modelId === '(The Labyrinth)' && typeof result.data === 'string' ? result.data : password };
     if (Number(result?.code) !== 401) return { success: false, reason: 'authentication interrupted', code: result?.code };
+    if (details.modelId === '(The Labyrinth)') return { feedback: result };
     const scraped = await readLogs();
     if (!scraped?.success) return { success: false, reason: 'Heartbleed unavailable', code: scraped?.code };
     for (const line of scraped.logs || []) {
@@ -269,6 +279,8 @@ export async function solveFeedbackPassword(details, authenticate, readLogs, sta
     }
     return { success: false, reason: 'matching authentication feedback not found' };
   };
+  if (['PHP 5.4', 'Factori-Os', 'KingOfTheHill', 'OpenWebAccessPoint', '(The Labyrinth)'].includes(details.modelId))
+    return solveAdvancedPassword(details, probe, readLogs, state, readLabReport);
   for (let tries = 0; tries < 64; tries++) {
     if (['AccountsManager_4.2', 'BellaCuore'].includes(details.modelId)) {
       if (length > 15 || state.low > state.high) return { success: false, reason: 'numeric range exhausted' };

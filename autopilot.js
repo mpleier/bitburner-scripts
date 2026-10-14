@@ -1,3 +1,5 @@
+import { isScriptPaused } from './automation-control.js';
+import { activityBusy, ramReserveFile } from './activity-coordination.js';
 import { beginTransition, endTransition } from './progression-coordination.js';
 import {
     log, getFilePath, getConfiguration, instanceCount, getNsDataThroughFile, runCommand, waitForProcessToComplete,
@@ -20,6 +22,7 @@ const argsSchema = [ // The set of all command line arguments
     ['enable-bladeburner', null], // (Deprecated) Bladeburner is now always enabled if it's available. Use '--disable-bladeburner' to explicitly turn off
     ['disable-bladeburner', false], // This will instruct daemon.js not to run the bladeburner.js, even if bladeburner is available.
     ['disable-corporation', false], // Prevent autopilot and its daemon from starting corporation-manager.js.
+    ['disable-infiltration', false], // Leave infiltration entry and minigames manual.
     ['wait-for-4s-threshold', 0.9], // Set to 0 to not reset until we have 4S. If money is above this ratio of the 4S Tix API cost, don't reset until we buy it.
     ['disable-wait-for-4s', false], // If true, will doesn't wait for the 4S Tix API to be acquired under any circumstantes
     ['disable-rush-gangs', false], // Set to true to disable focusing work-for-faction on Karma until gangs are unlocked
@@ -44,6 +47,7 @@ export function autocomplete(data, args) {
  * global shared memory surviving between multiple invocations of this script.
  * @param {NS} ns **/
 export async function main(ns) {
+    if (isScriptPaused(ns, ns.getScriptName())) return;
     const persistentLog = "log.autopilot.txt";
     const factionManagerOutputFile = "/Temp/affordable-augs.txt"; // Temp file produced by faction manager with status information
     const defaultBnOrder = [ // The order in which we intend to play bitnodes
@@ -156,6 +160,26 @@ export async function main(ns) {
         dictOwnedSourceFiles = await getActiveSourceFiles(ns, false);
         unlockedSFs = await getActiveSourceFiles(ns, true);
         homeRam = await getNsDataThroughFile(ns, `ns.getServerMaxRam(ns.args[0])`, null, ["home"]);
+
+        // Leave RAM for absent priority managers while existing batches drain naturally.
+        const priorityManagers = [
+            { name: 'remote-api-agent.js', enabled: true },
+            { name: 'corporation-manager.js', enabled: !options['disable-corporation'] && (resetInfo.currentNode === 3 || Number(unlockedSFs[3]) > 0) },
+            { name: 'health-manager.js', enabled: Number(unlockedSFs[4]) > 0 },
+            { name: 'infiltration-manager.js', enabled: !options['disable-infiltration'] && Number(unlockedSFs[4]) > 0 && homeRam >= 64 },
+        ];
+        let pending = 0;
+        const managerStatus = priorityManagers.map(manager => {
+            const script = getFilePath(manager.name), process = findScript(manager.name);
+            const ram = ns.fileExists(script, 'home') ? ns.getScriptRam(script, 'home') : 0;
+            const state = isScriptPaused(ns, manager.name) ? 'paused' : !manager.enabled ? 'locked-or-disabled' :
+                process ? 'running' : ram <= 0 ? 'missing' : ram + pending + 16 > homeRam ? 'needs-home-ram' : 'waiting-for-ram';
+            if (state === 'waiting-for-ram') pending += ram;
+            return { script: manager.name, state, ram, pid: process?.pid || null };
+        });
+        await ns.write(ramReserveFile, JSON.stringify({ ownerPid: ns.pid, expiresAt: Date.now() + 30000, ram: pending ? pending + 8 : 0 }), 'w');
+        await ns.write('tasks/automation-status.json', JSON.stringify({ at: Date.now(), ownerPid: ns.pid,
+            managers: managerStatus, processes: runningScripts.map(p => ({ script: p.filename, pid: p.pid })), priority: 'casino, completed BitNode, active graft, infiltration, faction work' }), 'w');
 
         try {
             if (!(4 in unlockedSFs)) {
@@ -525,12 +549,15 @@ export async function main(ns) {
         homeRam = await getNsDataThroughFile(ns, `ns.getServerMaxRam(ns.args[0])`, null, ["home"]);
 
         // Maintain the Remote API mailbox after normal automation restarts.
-        if (!findScript('remote-api-agent.js')) {
+        const remoteWorker = findScript('remote-api-agent.js');
+        const oldWorker = remoteWorker && !remoteWorker.args.some((arg, index) => arg === '--protocol-version' && remoteWorker.args[index + 1] === 2);
+        if (oldWorker) await killScript(ns, 'remote-api-agent.js', runningScripts, remoteWorker);
+        if (!remoteWorker || oldWorker) {
             const worker = getFilePath('remote-api-agent.js');
             if (ns.fileExists(worker, 'home')) {
                 const required = ns.getScriptRam(worker, 'home');
                 const free = await getNsDataThroughFile(ns, 'ns.getServerMaxRam("home") - ns.getServerUsedRam("home")');
-                if (required > 0 && free >= required) launchScriptHelper(ns, 'remote-api-agent.js');
+                if (required > 0 && free >= required) launchScriptHelper(ns, 'remote-api-agent.js', ['--protocol-version', 2]);
             }
         }
 
@@ -545,6 +572,12 @@ export async function main(ns) {
                 if (requiredRam > 0 && homeRam - ns.getServerUsedRam('home') >= requiredRam)
                     launchScriptHelper(ns, 'corporation-manager.js');
             }
+        }
+
+        for (const manager of ['health-manager.js', 'infiltration-manager.js']) {
+            const status = managerStatus.find(item => item.script === manager);
+            if (status?.state === 'waiting-for-ram' && ns.getServerUsedRam('home') + status.ram <= homeRam)
+                launchScriptHelper(ns, manager);
         }
 
         // Launch stock-master in a way that emphasizes it as our main source of income early-on
@@ -677,6 +710,9 @@ export async function main(ns) {
         const corporationScript = getFilePath('corporation-manager.js');
         if (!daemonArgs.some((arg, index) => arg === '--disable-script' && daemonArgs[index + 1] === corporationScript))
             daemonArgs.push('--disable-script', corporationScript);
+        for (const script of ['health-manager.js', 'infiltration-manager.js'])
+            if (!daemonArgs.some((arg, index) => arg === '--disable-script' && daemonArgs[index + 1] === getFilePath(script)))
+                daemonArgs.push('--disable-script', getFilePath(script));
 
         // Once stanek's gift is accepted, launch it once per reset before we launch daemon (Note: stanek's gift is auto-purchased by faction-manager.js on your first install)
         let stanekRunning = (13 in unlockedSFs) && findScript('stanek.js') !== undefined;
@@ -789,6 +825,7 @@ export async function main(ns) {
      * @param {NS} ns
      * @param {Player} player */
     async function maybeDoCasino(ns, player) {
+        if (isScriptPaused(ns, "casino.js")) return;
         if (ranCasino || options['disable-casino']) return;
         // Figure out whether we've already been kicked out of the casino for earning more than 10b there
         const moneySources = await getPlayerMoneySources(ns);
@@ -1156,6 +1193,8 @@ export async function main(ns) {
     /** Helper to launch a script and log whether if it succeeded or failed
      * @param {NS} ns */
     function launchScriptHelper(ns, baseScriptName, args = [], convertFileName = true) {
+        if (isScriptPaused(ns, baseScriptName)) return 0;
+        if (activityBusy(ns) && /(^|\/)(work-for-factions|grafting-manager)\.js$/.test(baseScriptName)) return 0;
         if (!options['no-tail-windows'])
             tail(ns); // If we're going to be launching scripts, show our tail window so that we can easily be killed if the user wants to interrupt.
         let pid, err;

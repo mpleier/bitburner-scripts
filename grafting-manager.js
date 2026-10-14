@@ -1,8 +1,11 @@
+import { isScriptPaused } from './automation-control.js';
+import { activityBusy } from './activity-coordination.js';
 import { transitionActive, transitionFile } from './progression-coordination.js';
 import { graftScore } from './automation-policy.js';
 
 /** Choose useful, affordable grafts; do not interrupt grafting or program creation. */
 export function graftTick(ns, fraction = 0.25) {
+  if (activityBusy(ns)) return { status: 'busy' };
   const reset = ns.getResetInfo();
   const sf = number => Number(typeof reset.ownedSF?.get === 'function' ? reset.ownedSF.get(number) : reset.ownedSF?.[number]) || 0;
   if ((reset.currentNode !== 10 && !sf(10)) || (reset.currentNode !== 4 && !sf(4))) return { status: 'unavailable' };
@@ -41,6 +44,7 @@ export function graftTick(ns, fraction = 0.25) {
 }
 
 export async function main(ns) {
+    if (isScriptPaused(ns, ns.getScriptName())) return;
   ns.disableLog('ALL');
   if (ns.ps('home').some(process => process.filename === ns.getScriptName() && process.pid !== ns.pid)) return;
   while (true) {

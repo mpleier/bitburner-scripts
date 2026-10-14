@@ -1,3 +1,5 @@
+import { treasuryPolicy, recoveryJobCounts, priorSaleMultiplier, partySpendPerEmployee } from './corporation-policy.js';
+import { isScriptPaused } from './automation-control.js';
 /**
  * Corporation automation for the Bitburner 3.x Corporation API.
  *
@@ -53,9 +55,11 @@
  *   - throwParty returns a multiplier, not a boolean.
  *   - Hacknet nodes/servers reset on augmentation install (unlike corp/gang).
  */
-import { optimalBoostTargets, nextSaleMultiplier, chooseRetirement, officeJobCounts, upgradeReturn } from './automation-policy.js';
+import { optimalBoostTargets, nextSaleMultiplier, chooseRetirement, upgradeReturn } from './automation-policy.js';
 
 export async function main(ns) {
+    if (isScriptPaused(ns, ns.getScriptName())) return;
+    if (ns.ps("home").some(process => process.filename === ns.getScriptName() && process.pid !== ns.pid)) return;
   const c = ns.corporation;
   const cities = ["Sector-12", "Aevum", "Volhaven", "Chongqing", "New Tokyo", "Ishima"];
   const name = "Apex Holdings";
@@ -67,7 +71,12 @@ export async function main(ns) {
   let reserve = 5e9;
   let boostBudget = 0;
   const BOOST_SPEND_FRACTION = 0.20;
-  const officeJobs = ["Operations", "Engineer", "Business", "Management", "Research & Development"];
+  const officeJobs = ["Operations", "Engineer", "Business", "Management", "Research & Development", "Intern"];
+  let recovering = false;
+  let upkeepBudget = 0;
+  const constants = (() => { try { return c.getConstants(); } catch { return {}; } })();
+  const cycleSeconds = Number(constants.secondsPerMarketCycle) || 10;
+  const teaCostPerEmployee = Number(constants.teaCostPerEmployee) || 500000;
 
   // ---- Dividend strategy ------------------------------------------------
   const DIVIDEND_TIERS = [
@@ -122,7 +131,7 @@ export async function main(ns) {
   const ADVERT_SPEND_FRACTION = 0.50;
 
   // ---- Office upkeep ----------------------------------------------------
-  const PARTY_COST_PER_EMPLOYEE = 5e6;
+  // Upkeep is budgeted across offices rather than spending a fixed party amount.
 
   // ---- Input buffer -----------------------------------------------------
   const INPUT_BUY_HEADROOM = 1.10;
@@ -134,8 +143,8 @@ export async function main(ns) {
   // ---- Research orders --------------------------------------------------
   const MATERIAL_RESEARCH_ORDER = [
     "Hi-Tech R&D Laboratory",
-    "AutoPartyManager",
     "AutoBrew",
+    "AutoPartyManager",
     "Market-TA.I",
     "Market-TA.II",
     "Self-Correcting Assemblers",
@@ -249,7 +258,7 @@ export async function main(ns) {
     if (!PAY_DIVIDENDS) return;
     const info = corp();
     if (!info?.public) return;
-    const rate = dividendRateFor(funds());
+    const rate = recovering ? 0 : dividendRateFor(funds());
     if (rate === lastDividendRate) return;
     if (attempt(`Set dividend rate ${(rate * 100).toFixed(0)}%`, () => c.issueDividends(rate)))
       lastDividendRate = rate;
@@ -288,7 +297,9 @@ export async function main(ns) {
     let numNodes = 0;
     try { numNodes = ns.hacknet.numNodes(); }
     catch { return; }
-    let budget = Math.max(0, ns.getPlayer().money * HACKNET_SPEND_FRACTION);
+    const playerReserve = Math.max(0, Number(ns.read('reserve.txt')) || 0);
+    let budget = Math.max(0, ns.getPlayer().money - playerReserve) * HACKNET_SPEND_FRACTION;
+    const canSpend = cost => Number.isFinite(cost) && cost > 0 && cost <= budget && ns.getPlayer().money >= cost + playerReserve;
     if (budget <= 0) return;
 
     let bought = 0;
@@ -296,7 +307,7 @@ export async function main(ns) {
       let cost = Infinity;
       try { cost = ns.hacknet.getPurchaseNodeCost(); }
       catch { cost = Infinity; }
-      if (!Number.isFinite(cost) || cost <= 0 || cost > budget) break;
+      if (!canSpend(cost)) break;
       try { ns.hacknet.purchaseNode(); }
       catch { break; }
       const after = ns.hacknet.numNodes();
@@ -323,10 +334,10 @@ export async function main(ns) {
       for (const { i, s } of stats) {
         if (s.cache === undefined || s.cache >= HACKNET_CACHE_TARGET) continue;
         const cost = safe(`cache cost ${i}`, () => ns.hacknet.getCacheUpgradeCost(i, 1));
-        if (!Number.isFinite(cost) || cost <= 0 || cost > budget) continue;
+        if (!canSpend(cost)) continue;
         if (!bestCache || cost < bestCache.cost) bestCache = { i, cost };
       }
-      if (bestCache) {
+      if (bestCache && canSpend(bestCache.cost)) {
         attempt(`Upgrade cache on node ${bestCache.i}`, () => ns.hacknet.upgradeCache(bestCache.i, 1));
         return;
       }
@@ -350,12 +361,12 @@ export async function main(ns) {
       ];
       for (const cand of candidates) {
         if (!Number.isFinite(cand.cost) || cand.cost <= 0) continue;
-        if (cand.cost > budget) continue;
+        if (!canSpend(cand.cost)) continue;
         const ratio = cand.value / cand.cost;
         if (!best || ratio > best.ratio) best = { ...cand, i, ratio };
       }
     }
-    if (!best) return;
+    if (!best || !canSpend(best.cost)) return;
     const upgradeFns = {
       level: () => ns.hacknet.upgradeLevel(best.i, 1),
       ram:   () => ns.hacknet.upgradeRam(best.i, 1),
@@ -421,7 +432,10 @@ export async function main(ns) {
     office = safe("Refresh employees", () => c.getOffice(division, city)) ?? office;
     const employees = office.numEmployees ?? 0;
     if (employees > 0) {
-      const counts = officeJobCounts(employees, production);
+      const recoveryGap = Number(office.employeeJobs?.Intern) > 0 ? 2 : 5;
+      const needsRecovery = office.avgEnergy < (office.maxEnergy ?? 100) - recoveryGap || office.avgMorale < (office.maxMorale ?? 100) - recoveryGap;
+      const cannotFundUpkeep = recovering || upkeepBudget < employees * teaCostPerEmployee;
+      const counts = recoveryJobCounts(employees, production, needsRecovery && cannotFundUpkeep);
       const jobs = office.employeeJobs;
       const aligned = jobs && officeJobs.every((job, i) => Number(jobs[job] ?? -1) === counts[i]);
       if (!aligned) {
@@ -429,10 +443,17 @@ export async function main(ns) {
         for (let i = 0; i < officeJobs.length; i++)
           if (counts[i]) attempt(`Assign ${officeJobs[i]}`, () => c.setJobAssignment(division, city, officeJobs[i], counts[i]));
       }
-      if (office.avgEnergy < (office.maxEnergy ?? 100) - 1)
-        attempt("Buy employee tea", () => c.buyTea(division, city));
-      if (office.avgMorale < (office.maxMorale ?? 100) - 1)
-        attempt("Throw party", () => c.throwParty(division, city, PARTY_COST_PER_EMPLOYEE));
+      const teaCost = employees * teaCostPerEmployee;
+      if (!recovering && office.avgEnergy < (office.maxEnergy ?? 100) - 2 && teaCost <= upkeepBudget && funds() >= reserve + teaCost) {
+        const success = safe('Buy employee tea', () => c.buyTea(division, city));
+        if (success === true) upkeepBudget -= teaCost;
+      }
+      const allowance = Math.max(0, Math.min(upkeepBudget, funds() - reserve));
+      const partyPerEmployee = partySpendPerEmployee(office.avgMorale, office.maxMorale ?? 100, employees, allowance);
+      if (!recovering && partyPerEmployee > 0) {
+        const result = safe('Throw budgeted party', () => c.throwParty(division, city, partyPerEmployee));
+        if (Number(result) > 1) upkeepBudget -= partyPerEmployee * employees;
+      }
     }
   };
 
@@ -499,7 +520,7 @@ export async function main(ns) {
     const scale = total > spend ? spend / total : 1;
     boostBudget -= total * scale;
     for (const p of plan)
-      attempt(`Set ${p.name} buy rate`, () => c.buyMaterial(division, city, p.name, (p.need * scale) / 10));
+      attempt(`Set ${p.name} buy rate`, () => c.buyMaterial(division, city, p.name, (p.need * scale) / cycleSeconds));
   };
 
   // ---- Research ---------------------------------------------------------
@@ -546,7 +567,7 @@ export async function main(ns) {
   const saleTimes = new Map();
   const salePrice = (key, item, automated) => {
     if (automated) return 'MP';
-    let multiplier = saleMultipliers.get(key) || 1;
+    let multiplier = saleMultipliers.get(key) || priorSaleMultiplier(item?.desiredSellPrice);
     // Tune once a minute rather than once per corporation phase.
     if (Date.now() - (saleTimes.get(key) || 0) >= 60_000) {
       multiplier = nextSaleMultiplier(item, multiplier);
@@ -617,7 +638,15 @@ export async function main(ns) {
   let lastInvestmentCycle = 0;
   let lastUpgrade = 0;
   let lastProductAt = 0;
+  let managedOnce = false;
   const productStateFile = 'tasks/corporation-product-cycle.json';
+  const otherProductStateFile = 'tasks/corporation-other-product-cycles.json';
+  let otherProductTimes = {};
+  try {
+    const saved = JSON.parse(ns.read(otherProductStateFile) || '{}');
+    if (saved.nodeReset === resetInfo.lastNodeReset && saved.corporation === corp()?.name)
+      otherProductTimes = saved.divisions || {};
+  } catch { }
   try {
     const previous = JSON.parse(ns.read(productStateFile) || '{}');
     if (previous.nodeReset === resetInfo.lastNodeReset && previous.corporation === corp()?.name)
@@ -625,7 +654,7 @@ export async function main(ns) {
   } catch { /* First run: start with a fresh product cycle. */ }
   if (typeof ns.atExit === 'function') ns.atExit(() => {
     // Buy rates persist after a script exits. Stop this manager's boost orders.
-    for (const division of [agri, chem, restaurant]) for (const city of cities) {
+    for (const division of divisions()) for (const city of cities) {
       try { if (c.hasWarehouse(division, city)) for (const material of boosts) c.buyMaterial(division, city, material.name, 0); }
       catch { /* Division or warehouse may no longer exist. */ }
     }
@@ -634,6 +663,14 @@ export async function main(ns) {
     try {
       const info = corp();
       if (!info) { await ns.sleep(30_000); continue; }
+      // START applies the previous cycle's results before the next purchases.
+      // Manage once per full cycle; the first pass also handles startup mid-cycle.
+      if (managedOnce && info.prevState && info.prevState !== 'START') { await c.nextUpdate(); continue; }
+      managedOnce = true;
+      const treasury = treasuryPolicy(info, cycleSeconds);
+      reserve = treasury.reserve;
+      recovering = treasury.recovering;
+      upkeepBudget = treasury.upkeepBudget;
 
       if (ACCEPT_INVESTMENT) {
         const offer = safe("Read investment offer", () => c.getInvestmentOffer());
@@ -645,7 +682,7 @@ export async function main(ns) {
       }
 
       storagePressure = false;
-      reserve = Math.max(1e7, Math.min(5e9, funds() * 0.1));
+      // Preserve cash for upcoming inputs and salaries before discretionary spending.
       const boostLocations = [];
 
       createDivision("Agriculture", agri);
@@ -781,7 +818,53 @@ export async function main(ns) {
       manageDividends();
       // Schedule boost purchases after immediate corporation expenses, so buy
       // rates cannot commit money later consumed by offices, upgrades or products.
-      let remainingBoostBudget = Math.max(0, Math.min(funds() * BOOST_SPEND_FRACTION, funds() - reserve));
+      // Maintain divisions already created by the player, using their own industry recipes.
+      // Custom products are preserved; only products created by this manager are retired.
+      for (const division of divisions().filter(value => ![agri, chem, restaurant].includes(value))) {
+        const d = safe(`Read existing ${division}`, () => c.getDivision(division));
+        const industry = d && safe(`Read ${division} industry`, () => c.getIndustryData(d.industry));
+        if (!d || !industry) continue;
+        runResearch(division, d.makesProducts ? PRODUCT_RESEARCH_ORDER : MATERIAL_RESEARCH_ORDER);
+        for (const city of d.cities || []) {
+          runOffice(division, city, d.makesProducts, d.makesProducts);
+          runWarehouse(division, city);
+          if (!hasUnlock('Warehouse API') || !safe('Check existing warehouse', () => c.hasWarehouse(division, city))) continue;
+          if (hasUnlock('Smart Supply')) {
+            // Smart Supply buys recipe inputs automatically; clear obsolete manual input orders.
+            for (const material of Object.keys(industry.requiredMaterials || {}))
+              attempt(`Clear ${division} manual input`, () => c.buyMaterial(division, city, material, 0));
+          }
+          boostLocations.push({ city, division });
+        }
+        if (d.makesProducts) {
+          sellProducts(division);
+          const productList = d.products || [], prefix = `${division} Auto`;
+          const canDevelop = d.cities?.some(city => safe('Check existing development warehouse', () => c.hasWarehouse(division, city)));
+          const cooldownReady = Date.now() - (Number(otherProductTimes[division]) || 0) >= 15 * 60_000;
+          const investment = Math.min(10e9, Math.max(1e9, funds() * 0.005));
+          if (!recovering && funds() > 2e12 && funds() > reserve + 2 * investment && canDevelop && cooldownReady &&
+              productList.every(product => productComplete(division, product, d.cities))) {
+            const capacity = d.maxProducts || 3;
+            const candidates = productList.map(product => safe('Rate existing product', () => c.getProduct(division, d.cities[0], product))).filter(Boolean);
+            const managed = candidates.filter(product => product.name?.startsWith(prefix + ' '));
+            const sequence = Math.max(0, ...managed.map(product => Number(product.name.slice(prefix.length + 1)) || 0)) + 1;
+            if (productList.length >= capacity && productList.length > 1) {
+              const retiring = chooseRetirement(candidates, prefix);
+              if (retiring) attempt(`Retire ${retiring.name}`, () => c.discontinueProduct(division, retiring.name));
+            }
+            const slots = safe('Read existing product slots', () => c.getDivision(division))?.products || productList;
+            if (slots.length < capacity) {
+              const productName = `${prefix} ${sequence}`;
+              startProduct(division, d.cities, productName, investment);
+              if (safe('Confirm existing division product', () => c.getDivision(division))?.products?.includes(productName)) {
+                otherProductTimes[division] = Date.now();
+                await ns.write(otherProductStateFile, JSON.stringify({ nodeReset: resetInfo.lastNodeReset, corporation: info.name, divisions: otherProductTimes }), 'w');
+              }
+            }
+          }
+        } else sellMaterials(division, industry.producedMaterials || []);
+      }
+      let remainingBoostBudget = recovering ? 0 : Math.max(0, Math.min(funds() * BOOST_SPEND_FRACTION, funds() - reserve - upkeepBudget));
       for (let index = 0; index < boostLocations.length; index++) {
         boostBudget = remainingBoostBudget / (boostLocations.length - index);
         const allowance = boostBudget;
@@ -817,6 +900,7 @@ export async function main(ns) {
           `${info.name}: $${ns.format.number(funds())}; ` +
           `divisions: ${divisions().join(", ") || "none"}; ` +
           `public: ${live?.public ? "yes" : "no"}; ` +
+          `mode: ${recovering ? "cash recovery" : "growth"}; ` +
           `shares: ${(owned / total * 100).toFixed(1)}% (${ns.format.number(owned)}/${ns.format.number(total)}); ` +
           `dividends: ${(Math.max(0, lastDividendRate) * 100).toFixed(0)}%; ` +
           `hashes: ${ns.format.number(hashes)}; ` +

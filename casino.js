@@ -1,3 +1,4 @@
+import { isScriptPaused } from './automation-control.js';
 import { beginTransition, endTransition } from './progression-coordination.js';
 import {
     log, getConfiguration, getFilePath, waitForProcessToComplete,
@@ -25,6 +26,7 @@ export function autocomplete(data, args) {
 
 /** @param {NS} ns **/
 export async function main(ns) {
+    if (isScriptPaused(ns, ns.getScriptName())) return;
     // Note to self: This script doesn't use ram-dodging in the inner loop, because we want to
     // delete all temp files and avoid creating more so that the game saves / reloads faster.
     const supportMsg = "Consider posting a full-game screenshot and your save file in the Discord channel or in a new github issue if you want help debugging this issue.";

@@ -1,3 +1,4 @@
+import { activityGuard } from './activity-coordination.js';
 /** Pure policies shared by the in-game managers. No Netscript calls or PC runtime. */
 export function optimalBoostTargets(materials, space) {
   let active = materials.filter(item => item.factor > 0 && item.size > 0);
@@ -26,8 +27,9 @@ export function nextSaleMultiplier(item, current = 1) {
   return current;
 }
 
-export function chooseRetirement(products) {
-  const eligible = products.filter(product => /^Apex Dining \d+$/.test(product.name) && product.developmentProgress >= 100);
+export function chooseRetirement(products, prefix = 'Apex Dining') {
+  const managed = new RegExp('^' + prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ' \\d+$');
+  const eligible = products.filter(product => managed.test(product.name) && product.developmentProgress >= 100);
   return eligible.sort((a, b) => (Number(a.effectiveRating ?? a.rating) || 0) - (Number(b.effectiveRating ?? b.rating) || 0))[0] || null;
 }
 
@@ -58,4 +60,16 @@ export function graftScore(stats) {
     hacking_money: 3, hacking_grow: 2, faction_rep: 2, company_rep: 1,
     charisma: 1, charisma_exp: 1, strength: 0.3, defense: 0.3, dexterity: 0.3, agility: 0.3 };
   return Object.entries(weights).reduce((sum, [key, weight]) => sum + weight * Math.log(Math.max(0.001, Number(stats?.[key]) || 1)), 0);
+}
+
+export function canLaunchFactionWorker(sf4, hasRam, studying) {
+ return Number(sf4) > 0 && !studying && hasRam(256 / (2 ** sf4));
+}
+export function chooseSleeveCrime(override, chance, threshold) { return override || (chance >= threshold ? 'Homicide' : 'Mug'); }
+/** Fresh work checks execute in the same RAM-dodged call as each action. */
+export function studyCommand(action) {
+ if (action === 'travel') return `${activityGuard} || ns.singularity.getCurrentWork()?.type === "GRAFTING" ? false : ns.singularity.travelToCity(ns.args[0])`;
+ if (action === 'start') return `${activityGuard} || ns.singularity.getCurrentWork()?.type === "GRAFTING" ? false : ns.singularity.universityCourse(ns.args[0], ns.args[1], ns.args[2])`;
+ if (action === 'stop') return 'ns.singularity.getCurrentWork()?.type === "CLASS" ? ns.singularity.stopAction() : false';
+ throw new Error('Unknown study action');
 }

@@ -4,10 +4,12 @@ import { main } from '../corporation-manager.js';
 
 /** Run a real manager cycle against a minimal game API, then stop at nextUpdate. */
 async function cycle({ exportCost = 20e9, cash = 3e12, wallet = 100, nodeCost = 3,
-    products = [], upgradeCosts = {}, lastProductAt = 0 } = {}) {
+    products = [], upgradeCosts = {}, lastProductAt = 0, playerReserve = 0, office = null, expenses = 0, phases = [], advertCost = Infinity, salePrice = 'MP' } = {}) {
   const stop = new Error('test cycle complete');
-  const calls = { exports: [], products: [], retired: [], nodes: 0, upgrades: [], logs: [], unlocks: [] };
+  const calls = { exports: [], products: [], retired: [], nodes: 0, upgrades: [], logs: [], unlocks: [], tea: [], parties: [], jobs: [], adverts: [], sales: [] };
   const unlocked = new Set(['Warehouse API', 'Smart Supply']);
+  if (office) unlocked.add('Office API');
+  let phaseIndex = 0;
   const cities = ['Sector-12', 'Aevum', 'Volhaven', 'Chongqing', 'New Tokyo', 'Ishima'];
   const divisions = Object.fromEntries(['Agri', 'Chem', 'Dining'].map(name => [name, {
     name, cities, products: name === 'Dining' ? [...products] : [], researchPoints: 0,
@@ -17,7 +19,7 @@ async function cycle({ exportCost = 20e9, cash = 3e12, wallet = 100, nodeCost = 
   const c = {
     getConstants: () => ({ dividendMaxRate: 1 }),
     hasCorporation: () => true,
-    getCorporation: () => ({ name: 'Test Corp', funds, divisions: Object.keys(divisions), valuation: 0, public: false }),
+    getCorporation: () => ({ name: 'Test Corp', funds, divisions: Object.keys(divisions), valuation: 0, public: false, expenses, prevState: phases[phaseIndex] }),
     getDivision: name => ({ ...divisions[name], products: [...divisions[name].products] }),
     hasUnlock: name => unlocked.has(name),
     getUnlockCost: name => name === 'Export' ? exportCost : Infinity,
@@ -28,11 +30,15 @@ async function cycle({ exportCost = 20e9, cash = 3e12, wallet = 100, nodeCost = 
     hasWarehouse: () => true,
     getWarehouse: () => ({ size: 100, sizeUsed: 0 }),
     setSmartSupply: () => {},
-    getMaterial: () => ({ stored: 1e9, marketPrice: 1, productionAmount: 1 }),
+    getMaterial: () => ({ stored: 1e9, marketPrice: 1, productionAmount: 1, desiredSellPrice: salePrice }),
     getMaterialData: () => ({ size: 1 }),
-    buyMaterial: () => {}, sellMaterial: () => {}, sellProduct: () => {},
+    buyMaterial: () => {}, sellMaterial: (...args) => calls.sales.push(args), sellProduct: () => {},
+    getOffice: () => office ? {...office} : null, getOfficeSizeUpgradeCost: () => Infinity,
+    setJobAssignment: (...args) => { calls.jobs.push(args); return true; },
+    buyTea: (division,city) => { const cost=office.numEmployees*500000;if(cost>funds)throw new Error('unaffordable tea');funds-=cost;calls.tea.push({division,city,cost});return true; },
+    throwParty: (division,city,cost) => {if(cost*office.numEmployees>funds)throw new Error('unaffordable party');funds-=cost*office.numEmployees;calls.parties.push(cost);return 1+cost/1e7;},
     hasResearched: () => false, getResearchCost: () => Infinity,
-    getHireAdVertCost: () => Infinity,
+    getHireAdVertCost: () => advertCost, hireAdVert: division => {funds-=advertCost;calls.adverts.push(division);},
     getInvestmentOffer: () => ({ round: 1, funds: 0 }),
     getUpgradeLevel: () => 0,
     getUpgradeLevelCost: name => upgradeCosts[name] ?? Infinity,
@@ -52,12 +58,13 @@ async function cycle({ exportCost = 20e9, cash = 3e12, wallet = 100, nodeCost = 
       if (!unlocked.has('Export')) throw new Error('Export not unlocked');
       calls.exports.push(args);
     },
-    nextUpdate: async () => { throw stop; },
+    nextUpdate: async () => { phaseIndex++; if(phaseIndex>=phases.length)throw stop; },
   };
   const ns = {
-    corporation: c,
+    corporation: c, pid: 1, ps: () => [],
     getResetInfo: () => ({ currentNode: 3, ownedSF: new Map([[9, 1]]), lastNodeReset: 1 }),
-    read: () => JSON.stringify({ at: lastProductAt, nodeReset: 1, corporation: 'Test Corp' }),
+    getScriptName: () => 'corporation-manager.js',
+    read: file => file === 'reserve.txt' ? String(playerReserve) : JSON.stringify({ at: lastProductAt, nodeReset: 1, corporation: 'Test Corp' }),
     write: async () => {},
     getPlayer: () => ({ money }),
     format: { number: String },
@@ -130,4 +137,30 @@ test('a saved product cooldown prevents immediate retirement after a manager res
   const { calls } = await cycle({ products: ['Apex Dining 1', 'Apex Dining 2', 'Apex Dining 3'], lastProductAt: Date.now() });
   assert.deepEqual(calls.retired, []);
   assert.deepEqual(calls.products, []);
+});
+
+test('corporation Hacknet spending does not touch a fully reserved wallet', async () => {
+ const {calls,money}=await cycle({wallet:100,playerReserve:100,nodeCost:3});
+ assert.equal(calls.nodes,0); assert.equal(money,100);
+});
+test('corporation Hacknet budget is based on unreserved funds', async () => {
+ const {calls,money}=await cycle({wallet:100,playerReserve:80,nodeCost:3});
+ assert.equal(calls.nodes,0); assert.equal(money,100);
+ const partial=await cycle({wallet:100,playerReserve:40,nodeCost:3});
+ assert.equal(partial.calls.nodes,1); assert.equal(partial.money,97);
+});
+
+test('cash recovery avoids unaffordable upkeep and assigns interns',async()=>{
+ const {calls,money}=await cycle({cash:438596,expenses:214491,office:{size:15,numEmployees:15,avgEnergy:75,avgMorale:75,employeeJobs:{}}});
+ assert.equal(calls.tea.length,0);assert.equal(calls.parties.length,0);
+ assert.ok(calls.jobs.some(args=>args[2]==='Intern'&&args[3]===4));
+ assert.ok(!calls.logs.some(line=>/unaffordable tea|unaffordable party/.test(line)));
+});
+test('discretionary corporation actions run once per full cycle, plus startup',async()=>{
+ const {calls}=await cycle({phases:['PURCHASE','PRODUCTION','EXPORT','SALE','START','PURCHASE'],advertCost:1});
+ assert.equal(calls.adverts.length,6);
+});
+test('material pricing reuses the existing market multiplier after restart',async()=>{
+ const {calls}=await cycle({salePrice:'MP*3'});
+ assert.ok(calls.sales.length>0);assert.equal(calls.sales[0][4],'MP*2.5');
 });

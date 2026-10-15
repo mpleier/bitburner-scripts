@@ -53,6 +53,9 @@ test('priority installation recognizes both affordable and already queued Simula
  assert.equal(priorityAugmentationReady(priority,{awaiting_install_augs:["The Shadow's Simulacrum"]}),false);
  assert.equal(priorityAugmentationReady([], {awaiting_install_augs:priority}),false);
  assert.equal(priorityAugmentationReady(priority,{}),false);
+ assert.equal(priorityAugmentationReady(priority,null),false);
+ assert.equal(priorityAugmentationReady(priority,undefined),false);
+ assert.equal(priorityAugmentationReady(null,{affordable_augs:priority}),false);
 });
 test('autopilot defaults to installing Simulacrum through the guarded reset path',async()=>{
  const source=await readFile(new URL('../autopilot.js',import.meta.url),'utf8');

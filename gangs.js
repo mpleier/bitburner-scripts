@@ -530,16 +530,16 @@ async function doUpgradePurchases(ns, purchaseOrder, reserve) {
     if (purchaseOrder.length == 0) return;
     const totalCost = purchaseOrder.reduce((t, e) => t + e.cost, 0);
     const getOrderSummary = (items) => items.map(o => `${o.member} ${o.type}: "${o.equipmentName}"`).join(", ");
-    const orderOutcomes = await getNsDataThroughFile(ns, `(() => { const claimSpending=${claimSpending.toString()}; return (${purchaseGangEquipment.toString()})(ns,JSON.parse(ns.args[0]),ns.args[1],ns.args[2],claimSpending,ns=>(${gangMutationAllowed.toString()})(ns,ns.args[3])); })()`,
+    const orderOutcomes = await getNsDataThroughFile(ns, `(() => { const claimSpending=${claimSpending.toString()}; return (${purchaseGangEquipment.toString()})(ns,JSON.parse(ns.args[0]),ns.args[1],ns.args[2],claimSpending,ns=>(${gangMutationAllowed.toString()})(ns,ns.args[3]),true); })()`,
         '/Temp/gang-upgrade-members.txt', [JSON.stringify(purchaseOrder), reserve, totalCost,ns.pid]);
-    const succeeded = [], failed = [];
-    for (let i = 0; i < orderOutcomes.length; i++)
-        (orderOutcomes[i] ? succeeded : failed).push(purchaseOrder[i]);
-    if (succeeded.length == purchaseOrder.length)
-        log(ns, `SUCCESS: Purchased ${purchaseOrder.length} gang member upgrades for ${formatMoney(totalCost)}:\n${getOrderSummary(succeeded)}`, false, 'success');
-    else
-        log(ns, `WARNING: Failed to purchase one or more gang upgrades totalling ${formatMoney(totalCost)} (Insufficient funds?).` +
-            `\n  Failed: ${getOrderSummary(failed)}\n  Succeeded: ${getOrderSummary(succeeded)}`, false, 'error');
+    const succeeded = [], failed = [], deferred = [];
+    for (let i = 0; i < orderOutcomes.length; i++) {
+        const receipt=orderOutcomes[i],order={...purchaseOrder[i],reason:receipt.reason,actualCost:receipt.price};
+        (receipt.success?succeeded:receipt.reason==='game-rejected'||receipt.reason==='invalid-price'?failed:deferred).push(order);
+    }
+    if(succeeded.length)log(ns,`SUCCESS: Purchased ${succeeded.length} gang upgrades for ${formatMoney(succeeded.reduce((sum,o)=>sum+o.actualCost,0))}:\n${getOrderSummary(succeeded)}`,false,'success');
+    if(deferred.length)log(ns,`INFO: Deferred ${deferred.length} gang upgrades (${[...new Set(deferred.map(o=>o.reason))].join(', ')}); retrying on a later tick.\n${getOrderSummary(deferred)}`);
+    if(failed.length)log(ns,`WARNING: Game rejected ${failed.length} gang equipment orders:\n${getOrderSummary(failed)}`,false,'warning');
 }
 
 let sequentialMisfires = 0;

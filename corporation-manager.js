@@ -384,12 +384,12 @@ export async function main(ns) {
     for (const city of d.cities) {
       const key = `${sourceDiv}|${city}|${targetDiv}|${sourceMat}`;
       if (exportRoutes.has(key)) continue;
+      if (!safe(`Check ${sourceDiv}/${city} wh`, () => c.hasWarehouse(sourceDiv, city))) continue;
+      if (!safe(`Check ${targetDiv}/${city} wh`, () => c.hasWarehouse(targetDiv, city))) continue;
       const material = safe('Read existing export routes', () => c.getMaterial(sourceDiv, city, sourceMat));
       if (Array.isArray(material?.exports)) {
         if (material.exports.some(route => route.division === targetDiv && route.city === city)) continue;
       }
-      if (!safe(`Check ${sourceDiv}/${city} wh`, () => c.hasWarehouse(sourceDiv, city))) continue;
-      if (!safe(`Check ${targetDiv}/${city} wh`, () => c.hasWarehouse(targetDiv, city))) continue;
       if (attempt(`Export ${sourceMat} → ${targetDiv}`, () =>
         c.exportMaterial(sourceDiv, city, targetDiv, city, sourceMat, EXPORT_FORMULA)))
         exportRoutes.add(key);

@@ -2,7 +2,7 @@ import vm from 'node:vm';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
-import {hacknetProduction,hacknetServerMode,hacknetOptionsError,hashOptionsError,hashOverflowBuffer,hashCapacityChoice} from '../hacknet-policy.js';
+import {hacknetProduction,hacknetServerMode,hacknetOptionsError,hashOptionsError,hashOverflowBuffer,hashCapacityChoice,hacknetPayoffLimit} from '../hacknet-policy.js';
 import {upgradeHacknet} from '../hacknet-upgrade-manager.js';
 
 test('production estimates distinguish money nodes, hashes and occupied server RAM',()=>{
@@ -80,3 +80,15 @@ test('invalid hash settings report an error without a startup logging exception'
  vm.runInNewContext(source.replace(/^import[\s\S]*?from\s+['"][^'"]+['"];?\r?$/gm,'').replaceAll('export async function','async function').replaceAll('export function','function')+';globalThis.start=main;',context);
  await context.start({getScriptName:()=> 'spend-hacknet-hashes.js'});assert.match(messages[0],/interval must/);
 });
+
+test('cash bottleneck caps Hacknet payoff limit at 3600 seconds outside BN9',()=>{
+ const reset={currentNode:1,lastAugReset:1000};
+ const livePlan={reset:1000,expiresAt:2000,epoch:1000,signals:{bottleneck:'cash'}};
+ assert.equal(hacknetPayoffLimit(7200,livePlan,reset,1500,true),3600);
+ assert.equal(hacknetPayoffLimit(1800,livePlan,reset,1500,true),1800);
+ assert.equal(hacknetPayoffLimit(7200,livePlan,{...reset,currentNode:9},1500,true),7200);
+ assert.equal(hacknetPayoffLimit(7200,livePlan,reset,1500,false),7200);
+ assert.equal(hacknetPayoffLimit(7200,{...livePlan,expiresAt:1200},reset,1500,true),7200);
+ assert.equal(hacknetPayoffLimit(7200,{...livePlan,signals:{bottleneck:'ram'}},reset,1500,true),7200);
+});
+

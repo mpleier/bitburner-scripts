@@ -89,14 +89,16 @@ export function upgradeHacknet(ns,maxSpend,maxPayoffTimeSeconds=3600,options={})
   add({kind:'cores',index:i,cost:ns.hacknet.getCoreUpgradeCost(i,1)},hacknetProduction({...stats,cores:stats.cores+1},servers,multiplier)-current);
  }
  if(count<ns.hacknet.maxNumNodes())add({kind:'node',cost:ns.hacknet.getPurchaseNodeCost()},hacknetProduction({level:1,ram:1,cores:1,ramUsed:0},servers,multiplier));
- let payoffLimit=maxPayoffTimeSeconds;
+ let payoffLimit=maxPayoffTimeSeconds,isCashBottleneck=false;
  if(!options['disable-adaptive-spending']) {
   let plan;try{plan=JSON.parse(ns.read('tasks/spending-plan.json'));}catch{}
-  payoffLimit=hacknetPayoffLimit(maxPayoffTimeSeconds,plan,ns.getResetInfo(),Date.now(),!!plan?.ownerPid&&ns.ps('home').some(p=>p.pid===plan.ownerPid));
+  const reset=ns.getResetInfo(), now=Date.now(), ownerAlive=!!plan?.ownerPid&&ns.ps('home').some(p=>p.pid===plan.ownerPid);
+  payoffLimit=hacknetPayoffLimit(maxPayoffTimeSeconds,plan,reset,now,ownerAlive);
+  isCashBottleneck=payoffLimit<maxPayoffTimeSeconds||(reset.currentNode!==9&&ownerAlive&&plan?.reset===reset.lastAugReset&&plan?.expiresAt>now&&plan?.epoch<=now&&plan?.signals?.bottleneck==='cash');
  }
  const useful=candidates.filter(c=>c.payoff<=payoffLimit).sort((a,b)=>a.payoff-b.payoff);
  const best=useful.find(c=>c.cost<=funds);
- if(!best){setStatus(ns,useful.length?'Hacknet waiting for funds or spending limit.':`No production upgrades meet the ${formatDuration(payoffLimit*1000)} payoff limit${payoffLimit<maxPayoffTimeSeconds?' (cash bottleneck)':''}.`);return useful.some(c=>c.cost<=maxSpend)?0:false;}
+ if(!best){setStatus(ns,useful.length?'Hacknet waiting for funds or spending limit.':`No production upgrades meet the ${formatDuration(payoffLimit*1000)} payoff limit${isCashBottleneck?' (cash bottleneck)':''}.`);return useful.some(c=>c.cost<=maxSpend)?0:false;}
  if(!claimSpending(ns,'hacknet',best.cost))return 0;
  const success=best.kind==='node'?ns.hacknet.purchaseNode()>=0:best.kind==='level'?ns.hacknet.upgradeLevel(best.index,1):best.kind==='ram'?ns.hacknet.upgradeRam(best.index,1):ns.hacknet.upgradeCore(best.index,1);
  const message=success?`Purchased Hacknet ${best.kind} for ${formatMoney(best.cost)}; payoff ${formatDuration(best.payoff*1000)}`:'Hacknet purchase failed; will recheck costs and funds.';

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {productInvestment,acceptVentureOffer,rescueShareIssue,shareSale,shareBuyback,recipeInputPlan,researchParents,investmentDecision,estimateShareProceeds,corporationDividendRate} from '../corporation-lifecycle.js';
+import {productInvestment,acceptVentureOffer,rescueShareIssue,shareSale,shareBuyback,recipeInputPlan,researchParents,investmentDecision,estimateShareProceeds,corporationDividendRate,corporationLiquidityTarget} from '../corporation-lifecycle.js';
 test('venture funding preserves the configured ownership floor across all rounds',()=>{
  const info={public:false,funds:1e9,numShares:900e6,totalShares:1e9};
  assert.equal(acceptVentureOffer(info,{round:2,funds:2e9,shares:350e6}),true);
@@ -75,3 +75,36 @@ test('invalid buyback inputs cannot produce a NaN or spend reserved funds',()=>{
 test('product capital rejects invalid or negative cash and reserve inputs',()=>{
  for(const args of [[NaN,0],[Infinity,0],[100,-1],[100,0,NaN],[100,0,-1]])assert.equal(productInvestment(...args),0);
 });
+
+test('liquidity targets reject invalid, mismatched or expired augmentation snapshots',()=>{
+ const fallback=corporationLiquidityTarget(null,{augReset:1,wallet:1e9,reserve:1e8,maxProceeds:1e10});
+ assert.equal(fallback.targetCash,1.1e9);assert.deepEqual(fallback.priorityShortfalls,[]);
+ const expired=corporationLiquidityTarget({augReset:1,at:1000,worth:1e9},{now:70000,augReset:1,wallet:1e9,reserve:1e9,maxProceeds:1e10});
+ assert.equal(expired.targetCash,2e9);assert.deepEqual(expired.priorityShortfalls,[]);
+ const mismatched=corporationLiquidityTarget({augReset:2,at:1000,worth:1e9},{now:2000,augReset:1,wallet:1e9,reserve:1e9,maxProceeds:1e10});
+ assert.equal(mismatched.targetCash,2e9);assert.deepEqual(mismatched.priorityShortfalls,[]);
+});
+
+test('liquidity target selects affordable priority milestone and respects standalone pricing',()=>{
+ const snapshot={augReset:1,at:1000,worth:10e9,reputation:{Bladeburners:5000},targets:[
+  {name:"The Blade's Simulacrum",priority:0,cost:500e9,standaloneCost:400e9,rep:3750,factions:['Bladeburners'],donationCost:0},
+  {name:"Neuroreceptor Management Implant",priority:1,cost:100e9,standaloneCost:50e9,rep:1000,factions:['Bladeburners'],donationCost:0}
+ ]};
+ const decision=corporationLiquidityTarget(snapshot,{now:2000,augReset:1,wallet:10e9,reserve:0,maxProceeds:500e9});
+ assert.equal(decision.augmentation,"The Blade's Simulacrum");
+ assert.equal(decision.targetCash,10e9+390e9);
+ assert.ok(Array.isArray(decision.priorityShortfalls));
+ assert.equal(decision.priorityShortfalls[0].name,"The Blade's Simulacrum");
+ assert.equal(decision.priorityShortfalls[0].reputationReady,true);
+
+ const partial=corporationLiquidityTarget(snapshot,{now:2000,augReset:1,wallet:10e9,reserve:0,maxProceeds:100e9});
+ assert.equal(partial.augmentation,"Neuroreceptor Management Implant");
+ assert.equal(partial.targetCash,10e9+40e9);
+ assert.ok(Array.isArray(partial.priorityShortfalls));
+
+ const unfundable=corporationLiquidityTarget(snapshot,{now:2000,augReset:1,wallet:10e9,reserve:1e9,maxProceeds:10e9});
+ assert.equal(unfundable.targetCash,2e9);
+ assert.equal(unfundable.augmentation,undefined);
+ assert.equal(unfundable.priorityShortfalls.length,2);
+});
+

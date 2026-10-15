@@ -5,10 +5,12 @@ export function homeRamHeadroom(maximum,configured=0) {
  return Math.min(maximum,Math.max(adaptive,Number.isFinite(configured)?Math.max(0,configured):0));
 }
 export function homeRamReserve(ns) {
+ if(typeof ns.disableLog==='function'){ns.disableLog('disableLog');ns.disableLog('getServerMaxRam');}
  return homeRamHeadroom(ns.getServerMaxRam('home'),Number(ns.read('home-ram-reserve.txt'))||0);
 }
 /** Reclaim only known disposable workers on home. Never stop controllers or connectivity. */
 export function reclaimHomeRam(ns,required=0,reserve=0) {
+ if(typeof ns.disableLog==='function'){ns.disableLog('disableLog');ns.disableLog('getServerMaxRam');ns.disableLog('getServerUsedRam');}
  const maximum=ns.getServerMaxRam('home'),target=Math.max(0,required,reserve);
  if(!Number.isFinite(target)||target>maximum)return false;
  const free=()=>maximum-ns.getServerUsedRam('home');

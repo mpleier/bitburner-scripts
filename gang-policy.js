@@ -35,17 +35,21 @@ export function wantedRecoveryOrder(names,assignments,rates,reductionTask,focus)
     return {name,cost:Math.max(0,value(current)-value(recovery))/(current.wanted-recovery.wanted)};
   }).filter(Boolean).sort((a,b)=>a.cost-b.cost).map(item=>item.name);
 }
-export function purchaseGangEquipment(ns,orders,reserve,budget,claim = () => true, allowed = () => true) {
+export function purchaseGangEquipment(ns,orders,reserve,budget,claim = () => true, allowed = () => true,detailed=false) {
   let remaining=Math.max(0,budget);
+  const result=(success,reason,price=0)=>detailed?{success,reason,price}:success;
   return orders.map(order=>{
-    if(!allowed(ns))return false;
+    if(!allowed(ns))return result(false,'controller-paused');
     const price=ns.gang.getEquipmentCost(order.equipmentName);
     const hold=Math.max(0,reserve,Number(ns.read('reserve.txt'))||0);
-    if(!(price>0)||!Number.isFinite(price)||(Number.isFinite(order.cost)&&price>order.cost)||price>remaining||ns.getPlayer().money<price+hold)return false;
-    if(!claim(ns,"gang",price))return false;
+    if(!(price>0)||!Number.isFinite(price))return result(false,'invalid-price');
+    if(Number.isFinite(order.cost)&&price>order.cost)return result(false,'price-increased',price);
+    if(price>remaining)return result(false,'batch-budget',price);
+    if(ns.getPlayer().money<price+hold)return result(false,'cash-reserve',price);
+    if(!claim(ns,"gang",price))return result(false,'shared-budget',price);
     const success=ns.gang.purchaseEquipment(order.member,order.equipmentName);
     if(success)remaining-=price;
-    return success;
+    return result(success,success?'purchased':'game-rejected',price);
   });
 }
 

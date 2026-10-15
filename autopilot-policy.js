@@ -49,7 +49,8 @@ export function autopilotStockReserve(money,stocksValue,hours,stockApiAvailable)
 
 /** Priority augmentations can be affordable or already purchased, but must still await installation. */
 export function priorityAugmentationReady(priority, summary) {
-  const installed = new Set(summary.installed_augs || []);
-  const ready = new Set([...(summary.affordable_augs || []), ...(summary.awaiting_install_augs || [])]);
-  return priority.some(name => !installed.has(name) && ready.has(name));
+  const installed = new Set(summary?.installed_augs || []);
+  const ready = new Set([...(summary?.affordable_augs || []), ...(summary?.awaiting_install_augs || [])]);
+  return (priority || []).some(name => !installed.has(name) && ready.has(name));
 }
+

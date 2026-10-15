@@ -89,12 +89,11 @@ export function corporationDividendRate(info,cycleSeconds=10){
 
 /** Sell equity only for a fresh, reputation-ready augmentation milestone that this sale can fully fund. */
 export function corporationLiquidityTarget(snapshot,{now=Date.now(),augReset,wallet,reserve=0,maxProceeds=0}={}) {
- const fallback={targetCash:reserve+1e9,reason:'Maintain emergency player liquidity'};
+ const fallback={targetCash:reserve+1e9,reason:'Maintain emergency player liquidity',priorityShortfalls:[]};
  if(!snapshot||snapshot.augReset!==augReset||!Number.isFinite(snapshot.at)||snapshot.at>now||now-snapshot.at>60000||
     !Number.isFinite(snapshot.worth)||!Number.isFinite(wallet)||!Number.isFinite(maxProceeds))return fallback;
  const worth=Math.max(wallet,snapshot.worth),priority=["The Red Pill","The Blade's Simulacrum","Neuroreceptor Management Implant"];
  const choices=[];
- fallback.priorityShortfalls=[];
  for(const target of snapshot.targets||[]){
   if(!Number.isFinite(target.cost)||target.cost<=0||!Number.isFinite(target.rep)||!Array.isArray(target.factions))continue;
   const repReady=target.factions.some(f=>Number.isFinite(snapshot.reputation?.[f])&&snapshot.reputation[f]>=target.rep);
@@ -104,7 +103,7 @@ export function corporationLiquidityTarget(snapshot,{now=Date.now(),augReset,wal
   const standalone=Number.isInteger(target.priority)&&target.priority>=0&&Number.isFinite(target.standaloneCost)&&target.standaloneCost>0;
   const cost=(standalone?target.standaloneCost:target.cost)+donation,gap=cost-worth;
   if(!(gap>0)||gap>maxProceeds)continue;
-  choices.push({targetCash:Math.max(reserve+1e9,wallet+gap),reason:'Fund augmentation milestone: '+target.name,augmentation:target.name,cost,priority:priority.includes(target.name)?priority.indexOf(target.name):priority.length});
+  choices.push({targetCash:Math.max(reserve+1e9,wallet+gap),reason:'Fund augmentation milestone: '+target.name,augmentation:target.name,cost,priority:priority.includes(target.name)?priority.indexOf(target.name):priority.length,priorityShortfalls:fallback.priorityShortfalls});
  }
  return choices.filter(c=>c.targetCash-wallet<=maxProceeds).sort((a,b)=>a.priority-b.priority||a.targetCash-b.targetCash)[0]||fallback;
 }

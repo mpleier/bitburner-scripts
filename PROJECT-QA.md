@@ -270,3 +270,19 @@ The augmentation is explicitly desired and priority-ranked despite having no ord
 Fixed milestone funding inflation: priority targets whose prerequisites are already owned now publish standaloneCost rather than requiring corporation funding to cover the existing affordable basket and its price escalations first. Corporate milestone eligibility now detects a fresh, reputation-ready cash shortfall directly, without requiring the broad cash bottleneck label. Liquidity diagnostics expose priority augmentation price, reputation requirement/current reputation, wealth shortfall and bounded sale capacity.
 
 Live verification: The Blade's Simulacrum costs 450 billion in the current run, requires 3750 reputation and available Bladeburner reputation was approximately 12555. Stock-inclusive player wealth was approximately 226 billion short; the current bounded share sale could raise approximately 33.2 billion, so no milestone sale or purchase was made. The augmentation is not queued. Updated corporation controller PID 187197 is in growth mode, retaining all operating profit, with no pending restarts or reported reliability errors. Modified JavaScript files passed syntax checks; regression tests were not run.
+
+## Native game log review
+
+The reliability monitor now includes bounded native logs in dashboard.logs: the latest 120 lines per running project manager, with PID and observation time. Optional log read failures are captured per process without failing the health snapshot.
+
+Initial live review covered 566 retained lines from 21 running scripts. It found 31 caught corporation export-route errors reading Chem materials before checking source warehouse existence, plus one generic gang equipment warning during an otherwise successful batch. No uncaught exception was observed in the retained manager logs. RAM-query noise crowded several manager logs.
+
+Repairs: check both warehouses before reading existing exports; return optional detailed gang purchase receipts (preserving boolean results for existing callers) to distinguish price, reserve, batch and shared-budget deferrals from native rejections; log actual successful purchase totals; suppress automatic RAM-query logs in shared headroom helpers. Infiltration is protected during cooperative controller reloads. Syntax checks passed; no regression suite was run for this log inspection.
+
+The attached review conversation was treated as reference context, not as proof of live game behavior or instructions to implement its embedded requests.
+
+## Post-deployment observations
+
+The restart queue is empty and corporation PID 193691 has returned to growth mode. Fresh corporation logs contain no missing-warehouse errors. Gang PID 193486 is running; two territory-timing warnings were followed by successful power-change detection and task reassignment. Bladeburner reported an already-running hash-spender launch warning. No new runtime exceptions were present in the inspected logs. Older overview logs still contain retained RAM-query noise; no overview restart was forced.
+
+Post-fix snapshot: post-fix-game-logs.json.

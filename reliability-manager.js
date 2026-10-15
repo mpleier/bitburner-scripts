@@ -42,7 +42,12 @@ export async function main(ns){
     if(replacement){pending.delete(pid);ns.print('Activated '+job.filename+' (pid '+replacement+').');}else if(job.history.count>=3){pending.delete(pid);ns.print('Could not restore '+job.filename+'; recovery limit reached.');}
     break; // One restart per pass leaves room for startup and priority work.
    }
-   const dashboard={at:now,ownerPid:ns.pid,node:reset.currentNode,recovery:rows,pending:[...pending.values()].map(p=>p.filename),managers:dashboardRows(ns.ps('home'),readStatus,now),achievements:readStatus('tasks/achievement-status.json')&&{known:readStatus('tasks/achievement-status.json').known,unlocked:readStatus('tasks/achievement-status.json').unlocked?.length},contracts:read('tasks/contracts-status.json'),validation:read('tasks/contract-validation.json'),speed:read('tasks/progression-speed.json'),budgets:read('tasks/spending-plan.json'),backup:read('tasks/reset-backup-status.json')};
+   // Retain bounded native logs for API diagnostics, including caught errors hidden by health summaries.
+   const logs=ns.ps('home').filter(p=>runtimeScripts.includes(p.filename.replace(/^\//,''))||['remote-api-agent.js','stats.js','reliability-manager.js'].includes(p.filename.replace(/^\//,''))).map(p=>{
+    try{return {script:p.filename,pid:p.pid,args:p.args,at:now,lines:ns.getScriptLogs(p.pid).slice(-120).map(line=>String(line).slice(0,2048))};}
+    catch(error){return {script:p.filename,pid:p.pid,at:now,error:String(error),lines:[]};}
+   });
+   const dashboard={logs,at:now,ownerPid:ns.pid,node:reset.currentNode,recovery:rows,pending:[...pending.values()].map(p=>p.filename),managers:dashboardRows(ns.ps('home'),readStatus,now),achievements:readStatus('tasks/achievement-status.json')&&{known:readStatus('tasks/achievement-status.json').known,unlocked:readStatus('tasks/achievement-status.json').unlocked?.length},contracts:read('tasks/contracts-status.json'),validation:read('tasks/contract-validation.json'),speed:read('tasks/progression-speed.json'),budgets:read('tasks/spending-plan.json'),backup:read('tasks/reset-backup-status.json')};
    ns.rm('tasks/reliability-error.json');
    ns.write('tasks/dashboard.json',JSON.stringify(dashboard),'w');
   }catch(error){ns.write('tasks/reliability-error.json',JSON.stringify({at:Date.now(),error:String(error)}),'w');}

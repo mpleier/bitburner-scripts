@@ -2,7 +2,7 @@ import {homeRamReserve} from './home-ram-policy.js';
 import {runtimeScripts} from './runtime-policy.js';
 import {
     log, disableLogs, instanceCount, getConfiguration, getNsDataThroughFile, getActiveSourceFiles,
-    getStocksValue, formatNumberShort, formatMoney, formatRam, getFilePath
+    getStocksValue, formatNumberShort, formatMoney, formatRam, formatDuration, getFilePath
 } from './helpers.js'
 
 const argsSchema = [
@@ -20,6 +20,7 @@ export function autocomplete(data, args) {
 let doc, hook0, hook1;
 let serverCache = null, serverCacheAt = 0;
 let playerInBladeburner = false, nodeMap = {}
+let lastBbRank = 0, lastBbRankAt = 0, bbRankRate = 0;
 
 /** @param {NS} ns **/
 export async function main(ns) {
@@ -35,6 +36,7 @@ export async function main(ns) {
     playerInBladeburner = false;
     nodeMap = {};
     serverCache = null;serverCacheAt = 0;
+    lastBbRank = 0; lastBbRankAt = 0; bbRankRate = 0;
     try { doc = eval('document'); }
     catch { ns.tprint('Overview display needs the in-game interface.');return; }
     // Remove only rows owned by this script; stockmaster has its own overview elements.
@@ -46,7 +48,7 @@ export async function main(ns) {
         try {
             const nextHook0=doc.getElementById('overview-extra-hook-0'),nextHook1=doc.getElementById('overview-extra-hook-1');
             if(!nextHook0||!nextHook1){await ns.sleep(1000);continue;}
-            const hudData = await getHudData(ns, bitNode, dictSourceFiles, options);
+            const hudData = await getHudData(ns, bitNode, dictSourceFiles, options, resetInfo);
             if(hook0!==nextHook0||hook1!==nextHook1||!Object.values(nodeMap).length||Object.values(nodeMap).some(nodes=>!nodes[2].isConnected)) {
                 cleanupHudElements();hook0=nextHook0;hook1=nextHook1;prepareHudElements(hudData);
             }
@@ -388,6 +390,146 @@ const css = (rootStyle) => `<style id="statsCSS">
         background-color: ${rootStyle?.backgroundColor || "#900C"};
     }
 </style>`;
+
+/** Formats milliseconds into a compact human-readable duration for the HUD.
+ * @param {number} ms
+ * @returns {string} */
+export function formatEta(ms) {
+    if (!Number.isFinite(ms) || ms < 0) return 'Unknown';
+    if (ms === 0) return '0s';
+    const totalSeconds = Math.floor(ms / 1000);
+    const days = Math.floor(totalSeconds / 86400);
+    const hours = Math.floor((totalSeconds % 86400) / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+    if (days > 0) return `${days}d ${hours}h`;
+    if (hours > 0) return `${hours}h ${minutes}m`;
+    if (minutes > 0) return `${minutes}m ${seconds}s`;
+    return `${seconds}s`;
+}
+
+/** Estimates the remaining time to complete the current BitNode across completion phases.
+ * @param {object} options
+ * @returns {{text: string, etaMs: number|null, tooltip: string}} */
+export function estimateNodeCompletion({
+    bitNode = 1,
+    elapsedMs = 0,
+    hasRedPill = false,
+    wdHack = null,
+    currentHack = 0,
+    currentExp = 0,
+    expRate = 0,
+    hackMult = 1,
+    daemonRooted = false,
+    completedHook = false,
+    departureActive = false,
+    inBladeburner = false,
+    remainingBlackOps = null,
+    bladeburnerRank = 0,
+    rankRate = 0,
+    installedAugsCount = 0,
+    readyAugsCount = 0,
+    targetAugsCount = 31,
+} = {}) {
+    const fmtDuration = typeof formatDuration === 'function' ? formatDuration : (ms => Math.round(ms / 1000) + 's');
+    const fmtShort = typeof formatNumberShort === 'function' ? formatNumberShort : ((n, min, max) => Number(n).toLocaleString('en', { maximumFractionDigits: max || 1 }));
+
+    // Phase 1: Victory / Ready to Depart
+    if (completedHook || departureActive || (daemonRooted && Number.isFinite(wdHack) && wdHack > 0 && currentHack >= wdHack) || (inBladeburner && remainingBlackOps === 0)) {
+        return {
+            text: 'Ready',
+            etaMs: 0,
+            tooltip: 'BitNode victory achieved! Ready to destroy BitNode or depart.'
+        };
+    }
+
+    // Phase 2: w0r1d_d43m0n Backdoor Ready
+    const targetHack = Number.isFinite(wdHack) && wdHack > 0 ? wdHack : 3000;
+    if ((hasRedPill || (Number.isFinite(wdHack) && wdHack > 0)) && currentHack >= targetHack) {
+        return {
+            text: 'Backdoor WD',
+            etaMs: 0,
+            tooltip: `Target hacking level reached (${currentHack}/${targetHack}). Backdoor w0r1d_d43m0n to finish the BitNode.`
+        };
+    }
+
+    // Phase 3: Hacking w0r1d_d43m0n
+    let hackingEstimate = null;
+    if (hasRedPill || (Number.isFinite(wdHack) && wdHack > 0)) {
+        const safeMult = Math.max(0.0001, hackMult || 1);
+        // Formula: skill = Math.floor(mult * (32 * Math.log(exp + 534.6) - 200))
+        // Inverted: exp = Math.exp((skill / mult + 200) / 32) - 534.6
+        const expRequired = Math.exp((targetHack / safeMult + 200) / 32) - 534.6;
+        const expNeeded = Math.max(0, expRequired - (currentExp || 0));
+        if (expRate > 0) {
+            const etaMs = Math.round((expNeeded / expRate) * 1000);
+            hackingEstimate = {
+                text: formatEta(etaMs),
+                etaMs,
+                tooltip: `Hacking w0r1d_d43m0n: ${currentHack}/${targetHack} hack (${fmtShort(expNeeded, 3, 2)} exp needed at ${fmtShort(expRate, 3, 2)} exp/s)`
+            };
+        } else {
+            hackingEstimate = {
+                text: 'Need Exp',
+                etaMs: null,
+                tooltip: `Hacking w0r1d_d43m0n: ${currentHack}/${targetHack} hack (${fmtShort(expNeeded, 3, 2)} exp needed, no active script exp)`
+            };
+        }
+    }
+
+    // Phase 4: Bladeburner Route
+    let bladeburnerEstimate = null;
+    if (inBladeburner && remainingBlackOps !== null && remainingBlackOps > 0) {
+        let rankEtaMs = 0;
+        if (bladeburnerRank < 400000 && rankRate > 0) {
+            rankEtaMs = Math.max(0, Math.round(((400000 - bladeburnerRank) / rankRate) * 1000));
+        }
+        const opsEtaMs = remainingBlackOps * 600000;
+        const etaMs = Math.max(rankEtaMs, opsEtaMs);
+        bladeburnerEstimate = {
+            text: formatEta(etaMs),
+            etaMs,
+            tooltip: `Bladeburner: ${remainingBlackOps} Black Ops remaining (~${formatEta(etaMs)}). Rank: ${fmtShort(bladeburnerRank, 3, 1)}/400k${rankRate > 0 ? ` (+${fmtShort(rankRate, 3, 1)}/s)` : ''}`
+        };
+    }
+
+    if (hackingEstimate && bladeburnerEstimate) {
+        if (Number.isFinite(hackingEstimate.etaMs) && Number.isFinite(bladeburnerEstimate.etaMs)) {
+            return hackingEstimate.etaMs <= bladeburnerEstimate.etaMs ? hackingEstimate : bladeburnerEstimate;
+        }
+        return Number.isFinite(hackingEstimate.etaMs) ? hackingEstimate : bladeburnerEstimate;
+    }
+    if (hackingEstimate) return hackingEstimate;
+    if (bladeburnerEstimate && ([6, 7].includes(bitNode) || remainingBlackOps <= 3)) {
+        return bladeburnerEstimate;
+    }
+
+    // Phase 5: Augmentation Accumulation Phase (working toward Daedalus & TRP)
+    const targetAugs = targetAugsCount || 31;
+    const effectiveAugs = (installedAugsCount || 0) + (readyAugsCount || 0);
+    if (effectiveAugs >= targetAugs) {
+        return {
+            text: '~1h',
+            etaMs: 3600000,
+            tooltip: `Target augmentations reached (${effectiveAugs}/${targetAugs}). Working to join Daedalus and obtain The Red Pill.`
+        };
+    }
+    if (elapsedMs >= 120000 && effectiveAugs > 0) {
+        const msPerAug = elapsedMs / effectiveAugs;
+        const remainingAugs = targetAugs - effectiveAugs;
+        const totalEstimatedMs = Math.round(remainingAugs * msPerAug + 3600000);
+        return {
+            text: formatEta(totalEstimatedMs),
+            etaMs: totalEstimatedMs,
+            tooltip: `Pacing: ${effectiveAugs}/${targetAugs} augs in ${fmtDuration(elapsedMs)} (~${fmtDuration(Math.round(msPerAug))}/aug). Est. remaining: ${formatEta(totalEstimatedMs)} (includes ~1h Daedalus/WD buffer).`
+        };
+    }
+    return {
+        text: 'Pacing...',
+        etaMs: null,
+        tooltip: `Gathering progression pace (${effectiveAugs}/${targetAugs} augs, ${fmtDuration(elapsedMs)} elapsed).`
+    };
+}
 
 
 async function optionalHudRead(ns,expression,file,args,fallback) {

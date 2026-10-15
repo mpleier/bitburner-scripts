@@ -493,3 +493,7 @@ After TRP is installed, non-NeuroFlux augmentation resets remain possible only w
 ### 32 GB casino startup
 
 Running `autopilot.js` on a home server with at most 32 GB now prioritizes a $300,000 cash seed. It uses a short-lived Singularity worker to choose a short crime by expected money per second, focuses that crime, and leaves repeating crimes intact between checks. Other managers and spending wait; $300,000 is reserved for travel and betting. Once funded, the casino starts immediately without the normal one-minute income observation. After casino earnings reach the existing completion threshold, normal automation resumes. Disabled or paused casino settings are respected; without Singularity the startup status explains that the seed must be earned manually.
+
+### Dark Net Mastermind and yes’nt feedback
+
+`DeepGreen` (Mastermind) now discovers character multiplicities with uniform probes, then bisects unresolved positions using native exact/misplaced counts. It handles repeated characters without enumerating exponential candidate sets. `NIL` (yes’nt) locks confirmed positions and accepts straight/curly apostrophes and both negative-token spellings. Both retain pending guesses across temporary authentication/Heartbleed failures, reject malformed feedback, seed progress from structured native logs, and retain progress after bounded work. The manager deploys `darknet-feedback.js` alongside every scout. Existing model fixtures now use the native duplicate-counting rules; no test suite was run for this change.

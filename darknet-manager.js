@@ -1,7 +1,7 @@
 import {registerAutomation,automationHeartbeat,maintenanceRequested} from './runtime-policy.js';
 import { isScriptPaused } from './automation-control.js';
 /** Darknet coordinator. Tries supplied exact-match candidates on discovered servers. */
-import { solveFeedbackPassword, supportsFeedbackModel, modelCandidates, isStalledScout, dictionaryWords } from './darknet-solvers.js';
+import { isBlankPassword, parsePasswordEntries, solveFeedbackPassword, supportsFeedbackModel, modelCandidates, isStalledScout, dictionaryWords } from './darknet-solvers.js';
 import { frontierFile } from './darknet-migration-policy.js';
 export async function main(ns) {
  registerAutomation(ns);
@@ -16,7 +16,7 @@ export async function main(ns) {
   const lootFile = "darknet-loot.js";
   const stasisFile = "darknet-stasis.js";
   const cacheFile = "darknet-cache.js";
-  const codeFiles = [nodeFile, lootFile, stasisFile, cacheFile, "darknet-solvers.js", "darknet-advanced.js", "darknet-dictionaries.js", "darknet-promote.js", "darknet-stock-policy.js", "darknet-migrate.js", "darknet-migration-policy.js"];
+  const codeFiles = [nodeFile, lootFile, stasisFile, cacheFile, "darknet-solvers.js", "darknet-feedback.js", "darknet-advanced.js", "darknet-dictionaries.js", "darknet-promote.js", "darknet-stock-policy.js", "darknet-migrate.js", "darknet-migration-policy.js"];
   // Every ns call is logged by default (scp, probe, getServerMaxRam...), which
   // buried the useful lines. Keep only what this script prints itself.
   ns.disableLog("ALL");
@@ -49,12 +49,7 @@ export async function main(ns) {
     const result = new Map();
     const files = [passwordFile, ...ns.ls("home", "darknet-passwords-")];
     for (const file of files) {
-      for (const line of ns.read(file).split(/\r?\n/)) {
-        const row = line.trim();
-        if (!row || row.startsWith("#")) continue;
-        const i = row.indexOf("=");
-        if (i > 0) result.set(row.slice(0, i).trim(), row.slice(i + 1).trim());
-      }
+      for (const [host, password] of parsePasswordEntries(ns.read(file))) result.set(host, password);
     }
     return result;
   };
@@ -82,9 +77,7 @@ export async function main(ns) {
     // Servers with no password (hint "There is no password", length 0, or the
     // ZeroLogon model) accept the empty string. The length filter below would
     // otherwise discard every candidate and leave nothing to try.
-    const noPassword = details.passwordLength === 0 || details.modelId === "ZeroLogon"
-      || /no password/i.test(String(details.passwordHint ?? ""));
-    if (noPassword) return [""];
+    if (isBlankPassword(details)) return [""];
     const clue = typeof details.data === "string" ? details.data.trim() : "";
     // "Type the numbers to prove you are human": the clue is the password with
     // other characters mixed in, so the password is the clue's digits alone.
@@ -131,7 +124,7 @@ export async function main(ns) {
 
   const authenticate = async (host, details, saved, candidates) => {
     if (details.hasSession) return true;
-    if (supportsFeedbackModel(details)) {
+    if (!isBlankPassword(details) && supportsFeedbackModel(details)) {
       if (!nilProgress.has(host)) nilProgress.set(host, {});
       const progress = nilProgress.get(host);
       // Reuse a verified password without requiring Heartbleed after a restart.
@@ -159,10 +152,10 @@ export async function main(ns) {
       note(`${host}:nil`, `${host}: ${details.modelId} solved using feedback; saved to ${reportFile}.`);
       return true;
     }
-    const signature = `${saved || ""}\0${candidates.join("\0")}`;
+    const signature = JSON.stringify([typeof saved === "string" ? saved : null, candidates]);
     const previous = attemptedInputs.get(host);
     if (previous && previous.signature === signature && Date.now() - previous.at < RETRY_AFTER_MS) return false;
-    if (saved) {
+    if (typeof saved === "string") {
       const result = await tryPassword(host, saved);
       if (result.success) return true;
       if (Number(result.code) !== AUTH_FAILURE) {

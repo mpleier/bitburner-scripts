@@ -34,8 +34,20 @@ test('number feedback uses logarithmic search', async () => {
   assert.ok(f.guesses.length <= 18);
 });
 
-test('DeepGreen solves using exact-position counts despite misleading misplaced matches', async () => {
-  const f = simulation('DeepGreen', '506', (guess, password) => ({ data: `${[...guess].filter((char, i) => char === password[i]).length},1` }));
+function mastermindFeedback(guess, password) {
+  const exact = [...guess].filter((char, i) => char === password[i]).length;
+  const remaining = [...password].filter((char, i) => char !== guess[i]);
+  let misplaced = 0;
+  for (const [i, char] of [...guess].entries()) {
+    if (char === password[i]) continue;
+    const at = remaining.indexOf(char);
+    if (at >= 0) { remaining.splice(at, 1); misplaced++; }
+  }
+  return {data:`${exact},${misplaced}`};
+}
+
+test('DeepGreen uses native exact and misplaced counts', async () => {
+  const f = simulation('DeepGreen', '506', mastermindFeedback);
   const result = await solveFeedbackPassword(f.details, f.attempt, f.readLogs);
   assert.equal(result.password, '506');
   assert.equal(new Set(f.guesses).size, f.guesses.length);
@@ -49,13 +61,13 @@ test('timing model advances the confirmed prefix from mismatch indices', async (
 });
 
 test('longer character searches resume after their bounded probe allowance', async () => {
-  const f = simulation('DeepGreen', '99999999', (guess, password) => ({ data: `${[...guess].filter((char, i) => char === password[i]).length},0` }));
+  const f = simulation('DeepGreen', 'z9Y8x7W6', mastermindFeedback, 'alphanumeric');
   const state = {};
   const first = await solveFeedbackPassword(f.details, f.attempt, f.readLogs, state);
   assert.equal(first.success, false);
   assert.match(first.reason, /progress retained/);
   const second = await solveFeedbackPassword(f.details, f.attempt, f.readLogs, state);
-  assert.equal(second.password, '99999999');
+  assert.equal(second.password, 'z9Y8x7W6');
   assert.equal(new Set(f.guesses).size, f.guesses.length);
 });
 

@@ -1,80 +1,12 @@
+import {isBlankPassword,authenticateEmptyPassword,feedbackModelId,nilFeedbackFromLogs,solveNilPassword,mastermindFeedbackFromLogs,solveMastermindPassword} from './darknet-feedback.js';
 // darknet-solvers.js — deterministic password solvers for darknet models.
-// Mirrors the decode logic in DarknetServerOptions.ts.
+// Mirrors the native Dark Net authentication feedback and password formats.
 import { solveAdvancedPassword } from './darknet-advanced.js';
 import { defaultSettingsDictionary, dogNameDictionary, EUCountries, commonPasswordDictionary } from './darknet-dictionaries.js';
 
 const CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"; // numbers + lettersUppercase
 
-/** Parse only structured authentication feedback; ignore unrelated heartbeat/lore logs. */
-export function nilFeedbackFromLogs(logs, length) {
-  const records = [];
-  for (const line of logs || []) {
-    try {
-      const record = typeof line === "string" ? JSON.parse(line) : line;
-      if (Number(record?.code) !== 401 || typeof record.passwordAttempted !== "string" ||
-          record.passwordAttempted.length !== length || typeof record.data !== "string") continue;
-      const tokens = record.data.split(",").map(token => token.trim());
-      if (tokens.length === length && tokens.every(token => token === "yes" || token === "yesn't"))
-        records.push({ password: record.passwordAttempted, tokens });
-    } catch { /* Heartbeat and narrative logs are not JSON authentication records. */ }
-  }
-  return records;
-}
-
-/** Solve NIL using per-position feedback; readLogs returns a non-consuming Heartbleed result.
- * Progress persists in state across temporary network/Charisma failures.
- * authenticate must run on a server adjacent to the target, in the same script PID.
- */
-export async function solveNilPassword(details, authenticate, readLogs, state = {}) {
-  const length = details.passwordLength;
-  if (details.modelId !== "NIL" || !Number.isInteger(length) || length < 1 || length > 64)
-    return { success: false, reason: "unsupported NIL details" };
-  const letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
-  const format = String(details.passwordFormat || "").toLowerCase();
-  const alphabet = format === "numeric" ? "0123456789" :
-    format === "alphabetic" ? letters : format === "alphanumeric" ? `0123456789${letters}` :
-    Array.from({ length: 95 }, (_, index) => String.fromCharCode(index + 32)).join("");
-  const signature = JSON.stringify([details.modelId, length, format, details.passwordHint, details.data]);
-  if (state.signature !== signature || !Array.isArray(state.choices)) {
-    state.signature = signature;
-    state.choices = Array.from({ length }, () => [...alphabet]);
-  }
-  const apply = ({ password, tokens }) => {
-    const next = state.choices.map((choices, index) => tokens[index] === "yes"
-      ? choices.filter(char => char === password[index])
-      : choices.filter(char => char !== password[index]));
-    if (next.some(choices => !choices.length)) return false;
-    state.choices = next;
-    return true;
-  };
-  // Existing logs can seed known positions, including guesses made manually.
-  let scraped = await readLogs();
-  if (!scraped?.success) return { success: false, reason: "Heartbleed unavailable", code: scraped?.code };
-  for (const record of nilFeedbackFromLogs(scraped.logs, length)) {
-    if (!apply(record)) {
-      state.signature = null;
-      return { success: false, reason: "contradictory feedback; resetting progress" };
-    }
-  }
-  // Uniform guesses test each still-unknown position in parallel. Numeric
-  // passwords need at most ten probes plus one final confirmation, not 10^length guesses.
-  for (let attempts = 0; attempts <= alphabet.length; attempts++) {
-    const password = state.choices.map(choices => choices[0]).join("");
-    const result = await authenticate(password);
-    if (result?.success) return { success: true, password, attempts: attempts + 1 };
-    if (Number(result?.code) !== 401)
-      return { success: false, reason: "authentication interrupted", code: result?.code };
-    scraped = await readLogs();
-    if (!scraped?.success) return { success: false, reason: "Heartbleed unavailable", code: scraped?.code };
-    const feedback = nilFeedbackFromLogs(scraped.logs, length).find(record => record.password === password);
-    if (!feedback) return { success: false, reason: "matching authentication feedback not found" };
-    if (!apply(feedback)) {
-      state.signature = null;
-      return { success: false, reason: "contradictory feedback; resetting progress" };
-    }
-  }
-  return { success: false, reason: "NIL probe limit reached" };
-}
+export { isBlankPassword, nilFeedbackFromLogs, solveNilPassword, mastermindFeedbackFromLogs, solveMastermindPassword };
 
 export const romanNumeralDecoder = (input) => {
   if (!input || String(input).toLowerCase() === "nulla") return 0;
@@ -193,6 +125,7 @@ export const permutationsNoLeadingZero = (sorted) => {
 };
 
 export function modelCandidates(details) {
+  if (isBlankPassword(details)) return [''];
   const data = String(details.data ?? '');
   const length = details.passwordLength;
   let value = null;
@@ -235,7 +168,7 @@ export function dictionaryWords(ns) {
 }
 
 export function supportsFeedbackModel(details) {
-  return ['NIL', 'DeepGreen', 'AccountsManager_4.2', '2G_cellular', 'RateMyPix.Auth', 'BigMo%od',
+  return ['NIL', 'DeepGreen'].includes(feedbackModelId(details)) || [ 'AccountsManager_4.2', '2G_cellular', 'RateMyPix.Auth', 'BigMo%od',
     'Factori-Os', 'KingOfTheHill', 'OpenWebAccessPoint', '(The Labyrinth)'].includes(details.modelId) ||
     (details.modelId === 'PHP 5.4' && details.passwordLength >= 5) ||
     (details.modelId === 'BellaCuore' && String(details.data).includes(','));
@@ -248,7 +181,9 @@ export function isStalledScout(process, status, now = Date.now()) {
 
 /** Stateful bounded solver; feedback comes from the exact attempt's Heartbleed log. */
 export async function solveFeedbackPassword(details, authenticate, readLogs, state = {}, readLabReport = null) {
-  if (details.modelId === 'NIL') return solveNilPassword(details, authenticate, readLogs, state);
+  if (isBlankPassword(details)) return authenticateEmptyPassword(authenticate);
+  if (feedbackModelId(details) === 'NIL') return solveNilPassword(details, authenticate, readLogs, state);
+  if (feedbackModelId(details) === 'DeepGreen') return solveMastermindPassword(details, authenticate, readLogs, state);
   const length = details.passwordLength;
   if (!supportsFeedbackModel(details) || !Number.isInteger(length) || length < 1 || length > 64)
     return { success: false, reason: 'unsupported feedback details' };
@@ -329,8 +264,7 @@ export async function solveFeedbackPassword(details, authenticate, readLogs, sta
       } else {
         if (details.modelId === 'RateMyPix.Auth' && !new RegExp(`^(?:0|(?:🌶️)+)/${length}$`, 'u').test(String(result.feedback.data)))
           return { success: false, reason: 'invalid spice feedback' };
-        const exact = details.modelId === 'DeepGreen' ? Number(String(result.feedback.data).split(',')[0]) :
-          (String(result.feedback.data).match(/🌶️/gu) || []).length;
+        const exact = (String(result.feedback.data).match(/🌶️/gu) || []).length;
         if (!Number.isInteger(exact) || exact < position || exact > position + 1) return { success: false, reason: 'invalid positional feedback' };
         if (exact === position + 1) { state.prefix += alphabet[state.index]; state.index = 0; }
         else state.index++;
@@ -338,4 +272,17 @@ export async function solveFeedbackPassword(details, authenticate, readLogs, sta
     }
   }
   return { success: false, reason: 'probe budget reached; progress retained' };
+}
+
+/** Parse hostname=password records without discarding empty or whitespace credentials. */
+export function parsePasswordEntries(text) {
+  const entries = new Map();
+  for (const row of String(text || '').split(/\r\n|\n|\r/)) {
+    if (!row.trim() || row.trimStart().startsWith('#')) continue;
+    const separator = row.indexOf('=');
+    if (separator < 1) continue;
+    const host = row.slice(0, separator).trim();
+    if (host) entries.set(host, row.slice(separator + 1));
+  }
+  return entries;
 }

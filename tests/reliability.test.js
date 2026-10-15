@@ -30,7 +30,7 @@ test('dashboard exposes current manager state and waiting reasons',()=>{
  const rows=dashboardRows([{pid:1,filename:'sleeve.js'}],f=>f==='tasks/sleeve-status.json'?{at:10,status:'waiting',reason:'shock'}:null,100);const row=rows.find(r=>r.script==='sleeve.js');assert.equal(row.state,'waiting');assert.equal(row.reason,'shock');assert.equal(row.ageMs,90);
 });
 test('supervisor restores original arguments, defers protected work and uses bounded recovery',async()=>{
- const s=await readFile(new URL('../reliability-manager.js',import.meta.url),'utf8');assert.ok(s.includes('ns.run(job.filename,job.threads,...job.args)'));assert.ok(s.includes('if(!protectedWork)'));assert.ok(s.includes('job.history.count>=3'));assert.ok(s.includes('if(activityRecord(ns))break'));
+ const s=await readFile(new URL('../reliability-manager.js',import.meta.url),'utf8');assert.ok(s.includes('ns.run(job.filename,job.threads,...job.args)'));assert.ok(s.includes("if(!protectedWork||[...pending.values()].some(p=>p.filename==='stats.js'))"));assert.ok(s.includes("if(protectedWork&&job.filename!=='stats.js')continue;"));assert.ok(s.includes('job.history.count>=3'));assert.ok(s.includes("if(activityRecord(ns)&&job.filename!=='stats.js')break;"));
 });
 test('infiltration, grafting and Bladeburner cooperate before starting new protected work',async()=>{
  for(const file of ['infiltration-manager.js','grafting-manager.js','bladeburner.js'])assert.ok((await readFile(new URL('../'+file,import.meta.url),'utf8')).includes('maintenanceRequested(ns)'));

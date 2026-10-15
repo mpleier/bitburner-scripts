@@ -1,5 +1,5 @@
 /** Runs on authenticated darknet servers, scouts outward, and tries exact-match candidates. */
-import { solveFeedbackPassword, supportsFeedbackModel, modelCandidates, isStalledScout, dictionaryWords } from './darknet-solvers.js';
+import { isBlankPassword, parsePasswordEntries, solveFeedbackPassword, supportsFeedbackModel, modelCandidates, isStalledScout, dictionaryWords } from './darknet-solvers.js';
 import { stockSignalFile, chooseStockPromotion } from './darknet-stock-policy.js';
 import { frontierFile, chooseMigrationTarget } from './darknet-migration-policy.js';
 export async function main(ns) {
@@ -13,7 +13,7 @@ export async function main(ns) {
   const cacheFile = "darknet-cache.js";
   const promoteFile = 'darknet-promote.js';
   const migrateFile = 'darknet-migrate.js';
-  const codeFiles = [nodeFile, lootFile, stasisFile, cacheFile, "darknet-solvers.js", "darknet-advanced.js", "darknet-dictionaries.js", promoteFile, "darknet-stock-policy.js", migrateFile, "darknet-migration-policy.js"];
+  const codeFiles = [nodeFile, lootFile, stasisFile, cacheFile, "darknet-solvers.js", "darknet-feedback.js", "darknet-advanced.js", "darknet-dictionaries.js", promoteFile, "darknet-stock-policy.js", migrateFile, "darknet-migration-policy.js"];
   let lastMigration = 0;
   const reportedHints = new Map();
   // Retry when the shared credential or candidate files change, not on every mutation.
@@ -54,11 +54,7 @@ export async function main(ns) {
     const map = new Map();
     const files = [passwordFile, ...ns.ls(ns.getHostname(), "darknet-passwords-")];
     for (const file of files) {
-      for (const row of ns.read(file).split(/\r?\n/).map(x => x.trim())) {
-        if (!row || row.startsWith("#")) continue;
-        const i = row.indexOf("=");
-        if (i > 0) map.set(row.slice(0, i).trim(), row.slice(i + 1).trim());
-      }
+      for (const [host, password] of parsePasswordEntries(ns.read(file))) map.set(host, password);
     }
     return map;
   };
@@ -77,9 +73,7 @@ export async function main(ns) {
     // Servers with no password (hint "There is no password", length 0, or the
     // ZeroLogon model) accept the empty string. The length filter below would
     // otherwise discard every candidate and leave nothing to try.
-    const noPassword = info.passwordLength === 0 || info.modelId === "ZeroLogon"
-      || /no password/i.test(String(info.passwordHint ?? ""));
-    if (noPassword) return [""];
+    if (isBlankPassword(info)) return [""];
     const clue = typeof info.data === "string" ? info.data.trim() : "";
     // "Type the numbers to prove you are human": the clue is the password with
     // other characters mixed in, so the password is the clue's digits alone.
@@ -115,7 +109,7 @@ export async function main(ns) {
   };
   const authenticate = async (host, info, saved, candidates) => {
     if (info.hasSession) return true;
-    if (supportsFeedbackModel(info)) {
+    if (!isBlankPassword(info) && supportsFeedbackModel(info)) {
       if (!nilProgress.has(host)) nilProgress.set(host, {});
       const progress = nilProgress.get(host);
       if (typeof saved === "string" && progress.rejectedSaved !== saved) {
@@ -143,10 +137,10 @@ export async function main(ns) {
       note(`${host}:nil`, `${host}: ${info.modelId} solved using feedback; saved to ${reportFile}.`);
       return true;
     }
-    const signature = `${saved || ""}\0${candidates.join("\0")}`;
+    const signature = JSON.stringify([typeof saved === "string" ? saved : null, candidates]);
     const previous = attemptedInputs.get(host);
     if (previous && previous.signature === signature && Date.now() - previous.at < RETRY_AFTER_MS) return false;
-    if (saved) {
+    if (typeof saved === "string") {
       const result = await tryPassword(host, saved);
       if (result.success) return true;
       if (Number(result.code) !== AUTH_FAILURE) {

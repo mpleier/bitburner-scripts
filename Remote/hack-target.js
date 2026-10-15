@@ -12,6 +12,8 @@ export async function main(ns) {
         /*args[6]*/ loopingMode = false
     ] = ns.args;
 
+    const owner=ns.args[7]||0;
+    if(!target||!Number.isFinite(start_time)||!Number.isFinite(duration)||duration<0)return ns.print('Invalid hacking schedule.');
     // We may need to sleep before we start the operation to align ourselves properly with other batch cycle (HGW) operations
     let sleepDuration = start_time - Date.now();
     if (sleepDuration < 0) {
@@ -30,13 +32,15 @@ export async function main(ns) {
 
     let firstLoop = true;
     do {
+        if(owner&&!ns.isRunning(owner))return;
+        // Keep the requested finish time / loop period as skill and security change.
+        if(duration>0)hgwOptions.additionalMsec=Math.max(0,(firstLoop?start_time-Date.now():0)+(loopingMode?duration*4:duration)-ns.getHackTime(target));
         const stolen = await ns.hack(target, hgwOptions);
         // If enabled, warn of any misfires
         if (stolen == 0 && !silentMisfires)
             ns.toast(`Misfire: Hack stole 0 money. ${JSON.stringify(ns.args)}`, 'warning');
         // (looping mode only) After the first loop, remove the initial sleep time used to align our start with other HGW operations
         if (firstLoop) {
-            hgwOptions.additionalMsec -= sleepDuration;
             firstLoop = false;
         }
     } while (loopingMode); // Keep going only if we were started in "looping mode"

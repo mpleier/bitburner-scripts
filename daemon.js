@@ -1,3 +1,5 @@
+import {homeRamReserve,reclaimHomeRam} from './home-ram-policy.js';
+import {hackThreadsForFraction,canFitHackingJob,launchHackingBatch} from './hacking-policy.js';
 import {registerAutomation,automationHeartbeat,maintenanceRequested} from './runtime-policy.js';
 import {achievementActionAllowed} from './achievement-policy.js';
 import { canLaunchFactionWorker, studyCommand } from './automation-policy.js';
@@ -306,6 +308,8 @@ export async function main(ns) {
 
         // Process configuration
         options = runOptions;
+        if(options.i&&!(4 in dictSourceFiles)){options.i=false;log(ns,"Manual hacking requires SF4; continuing with ordinary hacking.",true);}
+
         hackOnly = options.h || options['hack-only'];
         xpOnly = options.x || options['xp-only'];
         stockMode = (options.s || options['stock-manipulation'] || options['stock-manipulation-focus']) && !options['disable-stock-manipulation'];
@@ -740,6 +744,8 @@ export async function main(ns) {
             automationHeartbeat(ns);
             loops++;
             if (loops > 0) await ns.sleep(loopInterval);
+            if(isScriptPaused(ns,ns.getScriptName()))return;
+            if(maintenanceRequested(ns)){await ns.sleep(Math.max(100,loopInterval));continue;}
             try {
                 let start = Date.now();
                 psCache = {}; // Clear the cache of the process list we update once per loop
@@ -1247,7 +1253,7 @@ export async function main(ns) {
         }
         getHackThreadsNeeded() {
             // Force rounding of low-precision digits before taking the floor, to avoid double imprecision throwing us way off.
-            return Math.floor((this.percentageToSteal / this.percentageStolenPerHackThread()).toPrecision(14));
+            return hackThreadsForFraction(this.percentageToSteal,this.percentageStolenPerHackThread());
         }
         getGrowThreadsNeeded() {
             return Math.max(0, Math.ceil(Math.min(this.getMaxMoney(),
@@ -1279,6 +1285,7 @@ export async function main(ns) {
             if (!ignoreReservedRam && (this.name == "home" ||
                 (this.name == backupServerName && dictServerMaxRam["home"] <= 16))) // Double-hack: When home RAM sucks (start of BN 1.1) reserve a server for helpers.
                 maxRam = Math.max(0, maxRam - Math.max(homeReservedRam, this.name === 'home' ? pendingRam(this.ns) : 0));
+            if(ignoreReservedRam&&this.name==='home')maxRam=Math.max(0,maxRam-homeRamReserve(this.ns));
             return maxRam;
         }
         usedRam() { return this.ns.getServerUsedRam(this.name); }
@@ -1439,8 +1446,8 @@ export async function main(ns) {
     async function performScheduling(ns, currentTarget, snapshot) {
         const start = Date.now();
         const scheduledTasks = [];
-        const maxCycles = Math.min(snapshot.optimalPacedCycles, snapshot.maxCompleteCycles);
         if (!snapshot) return;
+        const maxCycles = Math.min(snapshot.optimalPacedCycles, snapshot.maxCompleteCycles);
         if (maxCycles === 0)
             return log(ns, `WARNING: Attempt to schedule ${getTargetSummary(currentTarget)} returned 0 max cycles? ${JSON.stringify(snapshot)}`, false, 'warning');
         if (currentTarget.getHackThreadsNeeded() === 0)
@@ -1467,20 +1474,13 @@ export async function main(ns) {
         }
 
         for (const schedObj of scheduledTasks) {
-            for (const schedItem of schedObj.scheduleItems) {
+            const result=await launchHackingBatch(schedObj.scheduleItems,async(schedItem,pids)=>{
                 const discriminationArg = `Batch ${schedObj.batchNumber}-${schedItem.description}`;
-                // Args spec: [0: Target, 1: DesiredStartTime (used to delay tool start), 2: ExpectedEndTime (informational), 3: Duration (informational), 4: DoStockManipulation, 5: DisableWarnings]
-                const args = [currentTarget.name, schedItem.start.getTime(), schedItem.end - schedItem.start, discriminationArg];
-                args.push(...getFlagsArgs(schedItem.toolShortName, currentTarget.name));
-                if (options.i && currentTerminalServer?.name == currentTarget.name && schedItem.toolShortName == "hack")
-                    schedItem.toolShortName = "manualhack";
-                const result = await arbitraryExecution(ns, getTool(schedItem.toolShortName), schedItem.threadsNeeded, args)
-                if (result == false) { // If execution fails, we have probably run out of ram.
-                    log(ns, `WARNING: Scheduling failed for ${getTargetSummary(currentTarget)} ${discriminationArg} of ${cyclesScheduled} Took: ${Date.now() - start}ms`, false, 'warning');
-                    currentTarget.previousCycle = `INCOMPLETE. Tried: ${cyclesScheduled} x ${getTargetSummary(currentTarget)}`;
-                    return false;
-                }
-            }
+                const args=[currentTarget.name,schedItem.start.getTime(),schedItem.end-schedItem.start,discriminationArg,...getFlagsArgs(schedItem.toolShortName,currentTarget.name)];
+                const toolName=options.i&&currentTerminalServer?.name===currentTarget.name&&schedItem.toolShortName==='hack'?'manualhack':schedItem.toolShortName;
+                return await arbitraryExecution(ns,getTool(toolName),schedItem.threadsNeeded,args,null,false,null,pids);
+            },pids=>{for(const pid of pids)ns.kill(pid);});
+            if(!result){log(ns,`WARNING: Rolled back an incomplete batch for ${getTargetSummary(currentTarget)}.`,false,'warning');currentTarget.previousCycle=`INCOMPLETE. Tried: ${cyclesScheduled} x ${getTargetSummary(currentTarget)}`;return false;}
         }
         if (verbose)
             log(ns, `Scheduled ${cyclesScheduled} x ${getTargetSummary(currentTarget)} Took: ${Date.now() - start}ms`);
@@ -1502,10 +1502,11 @@ export async function main(ns) {
         const silentMisfires = options['silent-misfires'] ||
             // Must disable misfire alerts in BNs where hack income is disabled because the money gained will always return 0
             (toolName == "hack" && (bitNodeMults.ScriptHackMoneyGain * bitNodeMults.ScriptHackMoney == 0));
-        if (["hack", "grow"].includes(toolName)) // Push an arg used by remote hack/grow tools to determine whether it should manipulate the stock market
+        if (["hack", "grow", "manualhack"].includes(toolName)) // Push an arg used by remote hack/grow tools to determine whether it should manipulate the stock market
             args.push(stockMode && (toolName == "hack" && shouldManipulateHack[target] || toolName == "grow" && shouldManipulateGrow[target]) ? 1 : 0);
         args.push(overrideSilentMisfires ?? (silentMisfires ? 1 : 0)); // Optional arg to disable toast warnings about e.g. a failed hack or early grow/weaken
         args.push(allowLooping && loopingMode ? 1 : 0); // Argument to indicate whether the cycle should loop perpetually
+        args.push(runOnce?0:ns.pid); // Looping workers stop starting new operations after this daemon exits.
         return args;
     }
 
@@ -1611,7 +1612,11 @@ export async function main(ns) {
     // If it can't run all the threads at once, it runs as many as it can across the spectrum of daemons available.
     /** @param {NS} ns
      * @param {Tool} tool - An object representing the script being executed **/
-    async function arbitraryExecution(ns, tool, threads, args, preferredServerName = null, useSmallestServerPossible = false, allowThreadSplitting = null) {
+    async function arbitraryExecution(ns, tool, threads, args, preferredServerName = null, useSmallestServerPossible = false, allowThreadSplitting = null, launched = null) {
+        reclaimHomeRam(ns,0,homeRamReserve(ns));
+        if(isScriptPaused(ns,ns.getScriptName())||isScriptPaused(ns,tool.name)||maintenanceRequested(ns))return false;
+        if(!Number.isSafeInteger(threads)||threads<=0)return false;
+        const splitting=allowThreadSplitting??tool.isThreadSpreadingAllowed;
         // We will be using the list of servers that is sorted by most available ram
         const igRes = tool.ignoreReservedRam; // Whether this tool ignores "reserved ram"
         const rootedServersByFreeRam = getAllServersByFreeRam().filter(server => server.hasRoot() && server.totalRam(igRes) > 1.6);
@@ -1634,12 +1639,12 @@ export async function main(ns) {
         // Push all "hacknet servers" to the end of the preferred list, since they will lose productivity if used
         const anyHacknetNodes = [];
         let hnNodeIndex;
-        while (-1 !== (hnNodeIndex = preferredServerOrder.indexOf(s => s.name.startsWith('hacknet-server-') || s.name.startsWith('hacknet-node-'))))
+        while (-1 !== (hnNodeIndex = preferredServerOrder.findIndex(s => s.name.startsWith('hacknet-server-') || s.name.startsWith('hacknet-node-'))))
             anyHacknetNodes.push(...preferredServerOrder.splice(hnNodeIndex, 1));
         preferredServerOrder.push(...anyHacknetNodes.sort((a, b) => b.totalRam(igRes) != a.totalRam(igRes) ? b.totalRam(igRes) - a.totalRam(igRes) : a.name.localeCompare(b.name)));
 
         // Allow for an overriding "preferred" server to be used in the arguments, and slot it to the front regardless of the above
-        if (preferredServerName && preferredServerName != "home" /*home is handled above*/ && preferredServerOrder[0].name != preferredServerName) {
+        if (preferredServerName && preferredServerName != "home" /*home is handled above*/ && preferredServerOrder[0]?.name != preferredServerName) {
             const preferredServerIndex = preferredServerOrder.findIndex(i => i.name == preferredServerName);
             if (preferredServerIndex != -1)
                 preferredServerOrder.unshift(preferredServerOrder.splice(preferredServerIndex, 1)[0]);
@@ -1658,12 +1663,13 @@ export async function main(ns) {
             return Math.floor((ramAvailable / tool.cost)/*.toPrecision(14)*/);
         };
 
+        if(!splitting&&!canFitHackingJob(rootedServersByFreeRam.map(computeMaxThreads),threads,false))return false;
         let targetServer = null;
         let remainingThreads = threads;
         let splitThreads = false;
         for (let i = 0; i < rootedServersByFreeRam.length && remainingThreads > 0; i++) {
             targetServer = rootedServersByFreeRam[i];
-            const maxThreadsHere = Math.min(remainingThreads, computeMaxThreads(targetServer));
+            let maxThreadsHere = Math.min(remainingThreads, computeMaxThreads(targetServer));
             if (maxThreadsHere <= 0)
                 continue; //break; HACK: We don't break here because there are cases when sort order can change (e.g. we've reserved home RAM)
 
@@ -1693,20 +1699,26 @@ export async function main(ns) {
                     missing_scripts.push(getFilePath('/Tasks/contractor.js.solver.js'), getFilePath('/Tasks/run-with-delay.js'),getFilePath('contract-policy.js'),getFilePath('runtime-policy.js'),getFilePath('bitnode-fallbacks.js'))
                 if (verbose)
                     log(ns, `Copying ${tool.name} and ${missing_scripts.length - 1} dependencies from ${daemonHost} to ${targetServer.name} so that it can be executed remotely.`);
-                await getNsDataThroughFile(ns, `ns.scp(ns.args.slice(2), ns.args[0], ns.args[1])`, '/Temp/copy-scripts.txt', [targetServer.name, daemonHost, ...missing_scripts])
+                const copied=await getNsDataThroughFile(ns, `ns.scp(ns.args.slice(2), ns.args[0], ns.args[1])`, '/Temp/copy-scripts.txt', [targetServer.name, daemonHost, ...missing_scripts]);
+                if(!copied)return false;
+                tool.deployedHashes.set(targetServer.name,hashCode(ns.read(tool.name)));
                 missing_scripts.forEach(s => targetServer._files[s] = true); // Make note that these files now exist on the target server
                 //await ns.sleep(5); // Workaround for Bitburner bug https://github.com/danielyxie/bitburner/issues/1714 - newly created/copied files sometimes need a bit more time, even if awaited
             }
             // By default, tools executed in this way will be marked as "temporary" (not to be included in the save file or recent scripts history)
+            if(isScriptPaused(ns,ns.getScriptName())||isScriptPaused(ns,tool.name)||maintenanceRequested(ns))return false;
+            maxThreadsHere=Math.min(remainingThreads,computeMaxThreads(targetServer));
+            if(maxThreadsHere<=0||(!splitting&&maxThreadsHere<remainingThreads))return false;
             const pid = await exec(ns, tool.name, targetServer.name, { threads: maxThreadsHere, temporary: (tool.runOptions.temporary ?? true) }, ...(args || []));
             if (pid == 0) {
                 log(ns, `ERROR: Failed to exec ${tool.name} on server ${targetServer.name} with ${maxThreadsHere} threads`, false, 'error');
                 return false;
             }
+            if(launched)launched.push(pid);
             // Decrement the threads that have been successfully scheduled
             remainingThreads -= maxThreadsHere;
             if (remainingThreads > 0) {
-                if (!(allowThreadSplitting || tool.isThreadSpreadingAllowed)) break;
+                if (!splitting) break;
                 if (verbose) log(ns, `INFO: Had to split ${threads} ${tool.name} threads across multiple servers. ${maxThreadsHere} on ${targetServer.name}`);
                 splitThreads = true;
             }
@@ -2295,6 +2307,7 @@ export async function main(ns) {
         /** @param {({name: string; shortName: string; shouldRun: () => Promise<boolean>; args: string[]; shouldTail: boolean; threadSpreadingAllowed: boolean; ignoreReservedRam: boolean; minRamReq: number, runOptions: RunOptions; })} toolConfig
          * @param {Number} toolCost **/
         constructor(toolConfig, toolCost) {
+            this.deployedHashes=new Map();
             this.name = toolConfig.name;
             this.shortName = toolConfig.shortName;
             this.shouldTail = toolConfig.shouldTail ?? false;
@@ -2312,7 +2325,7 @@ export async function main(ns) {
         /** @param {Server} server
          * @returns {Promise<boolean>} true if the server has a copy of this tool. */
         async existsOnHost(server) {
-            return await server.hasFile(this.name);
+            return await server.hasFile(this.name) && (!(["hack","grow","weak","manualhack","share"].includes(this.shortName)) || this.deployedHashes.get(server.name)===hashCode(ns.read(this.name)));
         }
         /** @param {Server} server
          * @returns {Promise<boolean>} true if the server has this tool and enough ram to run it. */

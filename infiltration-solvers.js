@@ -67,7 +67,7 @@ export function recordInfiltrationOutcome(previous = {}, result, now = Date.now(
   if (result.status === 'completed') return { ...previous, successes: (previous.successes || 0) + 1,
     failureStreak: 0, retryAt: 0, durationMs: result.durationMs > 0 ?
       (previous.durationMs > 0 ? previous.durationMs * 0.7 + result.durationMs * 0.3 : result.durationMs) : previous.durationMs };
-  if (!['failed', 'missed-window', 'unsupported-ui', 'stage-timeout', 'unsupported-entry-ui', 'entry-ui-unavailable'].includes(result.status)) return previous;
+  if (!['failed', 'missed-window', 'unsupported-ui', 'stage-timeout', 'unsupported-entry-ui', 'entry-ui-unavailable', 'error'].includes(result.status)) return previous;
   const failureStreak = (previous.failureStreak || 0) + 1;
   return { ...previous, failures: (previous.failures || 0) + 1, failureStreak,
     retryAt: now + Math.min(600000, 30000 * 2 ** Math.min(5, failureStreak - 1)) };
@@ -146,4 +146,16 @@ export function infiltrationUiDetails(document) {
   }
   return { headings: [...document.querySelectorAll('h2,h3,h4,h5')].map(node => node.textContent.slice(0,100)).slice(0,20),
     buttons: [...document.querySelectorAll('button')].map(node => ({ text: node.textContent.trim().slice(0,100), disabled: !!node.disabled })).slice(-30), samples };
+}
+
+/** Self-contained so delayed workers recheck control before moving the player's UI. */
+export function infiltrationEntryAllowed(ns,ownerPid){
+ if(!Number.isInteger(ownerPid)||ownerPid<=0||!ns.isRunning(ownerPid)||ns.read('remote-control/paused/infiltration-manager.js.txt').trim()==='true')return false;
+ const now=Date.now();
+ const record=file=>{try{return JSON.parse(ns.read(file));}catch{return null;}};
+ const lease=record('tasks/activity-lock.json');
+ if(lease?.ownerPid!==ownerPid||!(lease.expiresAt>now))return false;
+ const maintenance=record('tasks/automation-maintenance.json'),transition=record('tasks/progression-transition.json');
+ if(maintenance?.expiresAt>now&&ns.isRunning(maintenance.ownerPid)||transition?.expiresAt>now&&ns.isRunning(transition.ownerPid))return false;
+ return !ns.ps('home').some(p=>/(^|\/)(casino|ascend)\.js$/.test(p.filename));
 }

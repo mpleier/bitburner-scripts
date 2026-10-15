@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
-import {gangFocus,warfareDecision,chooseGangAscensions,gangTaskTotals,wantedRecoveryOrder,purchaseGangEquipment,gangMutationAllowed,gangOptionsError,gangTrainingRequired,nextWantedDowngrade,betterGangPlan} from '../gang-policy.js';
+import {gangFocus,warfareDecision,chooseGangAscensions,gangTaskTotals,wantedRecoveryOrder,purchaseGangEquipment,gangMutationAllowed,gangOptionsError,gangTrainingRequired,nextWantedDowngrade,largestWantedDowngrade,improveGangPlan,betterGangPlan,ascendGangMemberSafely,restoreGangTraining,suspendGangWarfare} from '../gang-policy.js';
 test('gang focus prioritizes recruitment before money and retains explicit overrides',()=>{
  const data={members:10,factionRep:1e7,requiredRep:1,money:1e6,respect:1e5};
  assert.equal(gangFocus(data),'respect');assert.equal(gangFocus({...data,moneyFocus:true}),'money');
@@ -87,5 +87,98 @@ test('recruitment, tasks, ascensions and clashes recheck pause state in generate
  const s=await readFile(new URL('../gangs.js',import.meta.url),'utf8');
  assert.ok(s.includes('while (!isScriptPaused(ns,ns.getScriptName()))'));assert.ok(s.includes('if(!await doRecruitMember(ns))await ns.sleep(1000)'));
  assert.ok(s.includes('steps<myGangMembers.length*allTaskNames.length'));assert.ok(s.includes('const engage=allowed&&ns.args[0]&&'));
- assert.ok(s.includes('autopilotSourceFiles(resetInfo)'));assert.ok(s.includes("ns.gang.getMemberInformation(name).task==='Territory Warfare'"));
+ assert.ok(s.includes('autopilotSourceFiles(resetInfo)'));assert.ok(s.includes('suspendGangWarfare(ns,assignedTasks)'));
+});
+
+test('gang mutation workers respect only live, unexpired maintenance',()=>{
+ let alive=true;const ns={isRunning:()=>alive,read:file=>file.includes('maintenance')?JSON.stringify({ownerPid:2,expiresAt:Date.now()+10000}):'',getResetInfo:()=>({})};
+ assert.equal(gangMutationAllowed(ns,1),false);alive=false;assert.equal(gangMutationAllowed(ns),true);
+});
+test('equipment price increases cannot exceed a planned order allocation',()=>{
+ let bought=0;const ns={read:()=>'',getPlayer:()=>({money:1000}),gang:{getEquipmentCost:()=>20,purchaseEquipment:()=>{bought++;return true;}}};
+ assert.deepEqual(purchaseGangEquipment(ns,[{member:'A',equipmentName:'X',cost:10}],0,100),[false]);assert.equal(bought,0);
+ assert.deepEqual(purchaseGangEquipment(ns,[{member:'A',equipmentName:'X',cost:30}],0,100),[true]);
+});
+test('ascension disables warfare and immediately trains after a fresh eligibility check',()=>{
+ const calls=[],names=Array.from({length:12},(_,i)=>'M'+i);
+ const ns={gang:{getMemberNames:()=>names,getGangInformation:()=>({respect:10000,isHacking:false}),getAscensionResult:()=>({str:2,def:2,dex:2,agi:2,respect:1}),setTerritoryWarfare:v=>calls.push(['warfare',v]),ascendMember:n=>{calls.push(['ascend',n]);return {str:2};},setMemberTask:(n,t)=>calls.push(['task',n,t])}};
+ const candidate=chooseGangAscensions(Object.fromEntries(names.map(n=>[n,ns.gang.getAscensionResult()])),ns.gang.getGangInformation(),names,['str','def','dex','agi'])[0].name;
+ assert.ok(ascendGangMemberSafely(ns,candidate,['str','def','dex','agi'],1.05,.05,chooseGangAscensions,()=>true));
+ assert.deepEqual(calls,[['warfare',false],['ascend',candidate],['task',candidate,'Train Combat']]);
+ calls.length=0;assert.equal(ascendGangMemberSafely(ns,candidate,['str'],1.05,.05,chooseGangAscensions,()=>false),null);assert.deepEqual(calls,[]);
+ ns.gang.getAscensionResult=()=>({str:1,respect:1});assert.equal(ascendGangMemberSafely(ns,candidate,['str'],1.05,.05,chooseGangAscensions,()=>true),null);assert.deepEqual(calls,[]);
+});
+test('training survives restarts but rejects other resets, future times, and dead members',()=>{
+ const saved={nodeReset:1,augReset:2,members:{A:0,B:200,C:10}},reset={lastNodeReset:1,lastAugReset:2};
+ assert.deepEqual(restoreGangTraining(saved,reset,['A','B'],100),{A:0});
+ assert.deepEqual(restoreGangTraining(saved,{...reset,lastAugReset:3},['A'],100),{});
+});
+test('maintenance cleanup restores temporary warfare tasks without changing ordinary work',()=>{
+ const calls=[],ns={gang:{setTerritoryWarfare:v=>calls.push(v),getMemberInformation:n=>({task:n==='A'?'Territory Warfare':'Crime'}),setMemberTask:(n,t)=>calls.push([n,t])}};
+ suspendGangWarfare(ns,{A:'Train Combat',B:'Crime'});assert.deepEqual(calls,[false,['A','Train Combat']]);
+});
+
+
+test('wanted repair chooses production cost per reduction across all alternatives',()=>{
+ const a={name:'High',money:1000,respect:10,wanted:10},b={name:'Low',money:20,respect:100,wanted:2};
+ const rates={A:[a,{name:'Small drop',money:990,respect:9,wanted:9},{name:'Recovery',money:0,respect:0,wanted:-10}],B:[b,{name:'Recovery',money:0,respect:0,wanted:-10}]};
+ assert.equal(nextWantedDowngrade({A:a,B:b},rates,[],'money').name,'B');
+ assert.equal(nextWantedDowngrade({A:a,B:b},rates,[],'respect').name,'A');
+ assert.equal(nextWantedDowngrade({A:a,B:b},rates,['B'],'money').task.name,'Small drop');
+});
+
+test('gang refinement uses wanted headroom and preserves its input plan',()=>{
+ const a={name:'Low',money:10,respect:1,wanted:0},b={name:'Train',money:0,respect:0,wanted:0};
+ const plan={A:a,B:b},rates={A:[a,{name:'Better',money:50,respect:2,wanted:1},{name:'Too much',money:200,respect:3,wanted:2}],B:[b,{name:'Crime',money:100,respect:2,wanted:0}]};
+ const improved=improveGangPlan(plan,rates,'money',1,['B']);
+ assert.equal(improved.A.name,'Better');assert.equal(improved.B,b);assert.equal(plan.A,a);
+ assert.equal(gangTaskTotals(improved).wanted,1);
+});
+
+test('gang refinement leaves infeasible plans to wanted recovery',()=>{
+ const task={name:'Crime',money:10,respect:1,wanted:2};
+ assert.deepEqual(improveGangPlan({A:task},{A:[{name:'More',money:100,respect:1,wanted:3}]},'money',0),{A:task});
+});
+
+test('gang refinement supports the mixed objective used by the controller',()=>{
+ const mixed='both money and respect';
+ const a={name:'A',money:1000,respect:1,wanted:0,[mixed]:2};
+ const b={name:'B',money:0,respect:5,wanted:0,[mixed]:5};
+ assert.equal(improveGangPlan({M:a},{M:[a,b]},mixed,0).M.name,'B');
+});
+
+test('gang refinement preserves feasibility and objective across seeded rate tables',()=>{
+ let seed=7;const random=()=>((seed=Math.imul(seed,1664525)+1013904223>>>0)/2**32);
+ for(let sample=0;sample<100;sample++){
+  const rates={},plan={};
+  for(let i=0;i<12;i++){
+   const name='M'+i,train={name:'Train',wanted:0,money:0,respect:0};
+   rates[name]=[train,...Array.from({length:8},(_,j)=>({name:'Task'+j,wanted:random()*4-2,money:random()*1000,respect:random()*10}))];plan[name]=train;
+  }
+  const result=improveGangPlan(plan,rates,'money',0,['M0']);
+  assert.equal(result.M0,plan.M0);assert.ok(gangTaskTotals(result).wanted<=1e-9);
+  assert.ok(gangTaskTotals(result).money>=gangTaskTotals(plan).money);
+ }
+});
+
+test('gang integration recruits promptly, starts training immediately, and respects explicit budgets',async()=>{
+ const source=await readFile(new URL('../gangs.js',import.meta.url),'utf8');
+ assert.match(source,/nextRecruitCheck = Date.now\(\) \+ 2000/);
+ assert.match(source,/for\(let slots=0;slots<12&&myGangMembers.length<12;slots\+\+\)/);
+ assert.match(source,/recruitMember\(ns.args\[0\]\).*setMemberTask\(ns.args\[0\],ns.args\[2\]\)/);
+ assert.doesNotMatch(source,/has4SDataTixApi|is4sBought/);
+ assert.match(source,/options\['equipment-budget'\] === null/);
+ assert.match(source,/options\['augmentations-budget'\] === null/);
+ assert.match(source,/selectDowngrade\(candidateTasks,memberTaskRates,trainingMembers,optStat\)/);
+ assert.match(source,/\[nextWantedDowngrade,largestWantedDowngrade\]/);
+ assert.match(source,/bestTaskAssignments=improveGangPlan/);
+});
+
+
+test('gang planner retains the prior recovery candidate when ratio repair overshoots',()=>{
+ const a={name:'A',money:100,respect:10,wanted:10},b={name:'B',money:20,respect:2,wanted:1};
+ const rates={A:[a,{name:'Small',money:95,respect:9,wanted:9}],B:[b,{name:'Large',money:0,respect:0,wanted:-100}]};
+ assert.equal(nextWantedDowngrade({A:a,B:b},rates,[],'money').name,'B');
+ assert.equal(largestWantedDowngrade({A:a,B:b},rates).name,'A');
+ assert.equal(largestWantedDowngrade({A:a,B:b},rates,['A']).name,'B');
 });

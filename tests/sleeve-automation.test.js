@@ -1,7 +1,8 @@
+import vm from 'node:vm';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { bestSleeveCrime,sleeveCrimeChance,bestFactionWork,sleeveRepAssignments,purchaseSleeveAugBatch,sleeveTaskMatches,maximumSleeves,sleeveReserves } from '../sleeve-policy.js';
+import { bestSleeveCrime,sleeveCrimeChance,bestFactionWork,sleeveRepAssignments,purchaseSleeveAugBatch,sleeveTaskMatches,maximumSleeves,sleeveReserves,sleeveControlAllowed,sleeveOptionsError,sleeveAugSpendingBudget } from '../sleeve-policy.js';
 import { expandSleeves } from '../sleeve-expansion.js';
 const sleeve=(extra={})=>({shock:0,sync:100,skills:{hacking:100,strength:100,defense:100,dexterity:100,agility:100,charisma:100,intelligence:0},mults:{crime_success:1},...extra});
 test('sleeve crime choice accounts for its own chance and expected money per second',()=>{
@@ -99,4 +100,60 @@ test('the follow sleeve can change employers when its target is free',()=>{
  const targets=[{type:'FACTION',name:'CyberSec',workTypes:['hacking']},{type:'FACTION',name:'NiteSec',workTypes:['hacking']}];
  const result=sleeveRepAssignments([sleeve(),sleeve()],targets,{type:'FACTION',factionName:'NiteSec'},0,false,[{type:'FACTION',factionName:'CyberSec'},null]);
  assert.equal(result[0].name,'NiteSec');assert.equal(result[1].name,'CyberSec');
+});
+
+
+test('sleeve settings reject invalid ratios, thresholds and purchase batch sizes',()=>{
+ const o={'min-shock-recovery':0,'shock-recovery':.05,'homicide-chance-threshold':.5,'aug-budget':.1,'min-aug-batch':1,reserve:null,'training-reserve':null};
+ for(const key of ['buy-cooldown','training-cap-seconds','failed-bladeburner-contract-cooldown','train-to-strength','train-to-defense','train-to-dexterity','train-to-agility','study-to-hacking','study-to-charisma'])o[key]=10;
+ assert.equal(sleeveOptionsError(o),null);
+ for(const patch of [{'aug-budget':2},{'training-cap-seconds':-1},{'min-aug-batch':.5},{'min-shock-recovery':101}])assert.ok(sleeveOptionsError({...o,...patch}));
+});
+
+test('augmentation batches recheck control and shock before every purchase',()=>{
+ let shock=0,calls=0;
+ const ns={read:()=>'',getPlayer:()=>({money:100}),sleeve:{getSleeve:()=>({shock}),getSleevePurchasableAugs:()=>[{name:'A',cost:5},{name:'B',cost:5}],purchaseSleeveAug:()=>{calls++;shock=1;return true;}}};
+ assert.equal(purchaseSleeveAugBatch(ns,0,['A','B'],100,0,()=>true,()=>false).spent,0);
+ assert.equal(purchaseSleeveAugBatch(ns,0,['A','B'],100,0).spent,5);assert.equal(calls,1);
+});
+
+test('native sleeve guards reject paused, orphaned and maintenance commands',()=>{
+ const ns={isRunning:()=>true,read:()=>''};assert.equal(sleeveControlAllowed(ns,1,'sleeve.js'),true);
+ assert.equal(sleeveControlAllowed({...ns,isRunning:()=>false},1,'sleeve.js'),false);
+ assert.equal(sleeveControlAllowed({...ns,read:()=> 'true'},1,'sleeve.js'),false);
+ assert.equal(sleeveControlAllowed({...ns,read:f=>f.includes('maintenance')?JSON.stringify({ownerPid:2,expiresAt:Date.now()+60000}):''},1,'sleeve.js'),false);
+});
+
+test('expansion checks persistent pauses even when called without its main loop',()=>{
+ assert.deepEqual(expandSleeves({getResetInfo:()=>({currentNode:10}),read:f=>f.includes('paused/')?'true':''}),{available:false,bought:0,upgraded:0});
+});
+
+test('queued sleeve task assignment rechecks pause inside its native worker',async()=>{
+ const source=await readFile(new URL('../sleeve.js',import.meta.url),'utf8');let calls=0;
+ const ns={pid:1,read:f=>f.includes('paused/')?'true':'',isRunning:()=>true,sleeve:{setToCommitCrime:()=>{calls++;return true;}}};
+ const context={sleeveControlAllowed,achievementActionAllowed:()=>true,log:()=>{},getNsDataThroughFile:async(ns,expression,file,args)=>{assert.ok(args.every(a=>['number','string','boolean'].includes(typeof a)));ns.args=args;return vm.runInNewContext(expression,{ns});}};
+ vm.runInNewContext(source.replace(/^import[\s\S]*?from\s+['"][^'"]+['"];?\r?$/gm,'').replaceAll('export async function','async function').replaceAll('export function','function')+';task=[];lastRerollTime=[];workByFaction={};globalThis.assign=setSleeveTask;',context);
+ assert.equal(await context.assign(ns,0,'crime Mug','ns.sleeve.setToCommitCrime(ns.args[0],ns.args[1])',[0,'Mug']),false);assert.equal(calls,0);
+});
+
+test('training cap uses BitNode time and disabled augmentation modes skip purchases',async()=>{
+ const source=await readFile(new URL('../sleeve.js',import.meta.url),'utf8');assert.match(source,/Date.now\(\) - reset.lastNodeReset/);
+ assert.match(source,/sleeve.shock == 0 && !reset.bitNodeOptions\?\.disableSleeveExpAndAugmentation/);
+ assert.match(source,/if\(receipt.purchased.length\)lastPurchaseTime/);assert.match(source,/actualTask:currentTasks\[i\]/);
+});
+
+
+test('sleeve augmentation planning respects current shared allowances and spending epochs',()=>{
+ const plan={epoch:2,reset:5,ownerPid:1,expiresAt:Date.now()+60000,allowances:{sleeves:195e6}},files={'tasks/spending-plan.json':JSON.stringify(plan),'tasks/spending-usage.json':JSON.stringify({epoch:2,spent:{sleeves:50e6}})};
+ const ns={read:f=>files[f]||'',isRunning:()=>true,getResetInfo:()=>({lastAugReset:5})};
+ assert.equal(sleeveAugSpendingBudget(ns,550e6),145e6);
+ files['tasks/spending-usage.json']=JSON.stringify({epoch:1,spent:{sleeves:195e6}});assert.equal(sleeveAugSpendingBudget(ns,550e6),195e6);
+ assert.equal(sleeveAugSpendingBudget({...ns,isRunning:()=>false},550e6),550e6);
+});
+
+test('sleeve purchase diagnostics distinguish allocator deferrals from native rejections',()=>{
+ const ns={read:()=>'',getPlayer:()=>({money:1e9}),sleeve:{getSleeve:()=>({shock:0}),getSleevePurchasableAugs:()=>[{name:'A',cost:550e6}],purchaseSleeveAug:()=>false}};
+ const deferred=purchaseSleeveAugBatch(ns,6,['A'],600e6,0,()=>false,()=>true,true);
+ assert.equal(deferred.spent,0);assert.match(deferred.skipped[0].reason,/shared spending allowance/);
+ const rejected=purchaseSleeveAugBatch(ns,6,['A'],600e6,0,()=>true,()=>true,true);assert.equal(rejected.skipped[0].reason,'native purchase rejected');
 });

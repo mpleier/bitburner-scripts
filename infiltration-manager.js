@@ -3,7 +3,7 @@ import { getNsDataThroughFile, getActiveSourceFiles } from './helpers.js';
 import { isScriptPaused } from './automation-control.js';
 import { activityBusy, claimActivity, releaseActivity, compatibleFocusWorkers } from './activity-coordination.js';
 import { transitionActive, transitionFile } from './progression-coordination.js';
-import { infiltrationInput, chooseInfiltration, findInfiltrationState, selectRewardFaction, selectedRewardFaction, infiltrationUiDetails, enterInfiltration, marketRecoveryDelay, recordInfiltrationOutcome } from './infiltration-solvers.js';
+import { infiltrationInput, chooseInfiltration, findInfiltrationState, selectRewardFaction, selectedRewardFaction, infiltrationUiDetails, enterInfiltration, marketRecoveryDelay, recordInfiltrationOutcome, infiltrationEntryAllowed } from './infiltration-solvers.js';
 
 export const infiltrationStatusFile = 'tasks/infiltration-status.json';
 function transitionBusy(ns) {
@@ -18,13 +18,16 @@ function button(document, pattern) {
 export async function playInfiltration(ns, document, state, faction = null, minDemand = 2 / 3, manuallyStarted = false) {
   let lastLease = 0, emptyStageSince = 0, lastStage;
   const startedAt = Date.now();
+  const controlAllowed=()=>!isScriptPaused(ns,ns.getScriptName?.()||'infiltration-manager.js')&&!transitionBusy(ns)&&!activityBusy(ns);
   while (findInfiltrationState(document) === state) {
-    if (isScriptPaused(ns,ns.getScriptName?.()||'infiltration-manager.js') || transitionBusy(ns) || Date.now() - startedAt > 10 * 60_000) {
+    if (!controlAllowed() || Date.now() - startedAt > 10 * 60_000) {
       state.cancel(); return { status: 'interrupted' };
     }
     // Keep file writes out of the guard's short reaction window. Its full sequence is under five seconds.
     if (Date.now() - lastLease > 3000 && !Number.isFinite(state.stage.guardingEndTime)) {
       if (!(await claimActivity(ns, 'infiltration'))) { state.cancel(); return { status: 'interrupted' }; }
+      if(!controlAllowed()||findInfiltrationState(document)!==state)return {status:'interrupted'};
+      automationHeartbeat(ns);
       lastLease = Date.now();
       await ns.write(infiltrationStatusFile, JSON.stringify({ at: Date.now(), pid: ns.pid, status: 'running',
         manuallyStarted,location: state.location?.name, level: state.level, maxLevel: state.maxLevel, stage: state.stage.constructor?.name }), 'w');
@@ -35,9 +38,10 @@ export async function playInfiltration(ns, document, state, faction = null, minD
     const victory = button(document, /^Sell for\b/i);
     if (victory && /Infiltration successful!/i.test(document.body.textContent)) {
       if (faction && selectRewardFaction(document, faction)) await ns.sleep(100);
+      if(!controlAllowed()){state.cancel();return {status:'interrupted'};}
       const trade = faction && selectedRewardFaction(document, faction) && button(document, /^Trade for\b/i);
-      (trade || victory).click();
-      await ns.sleep(150);
+      (trade || button(document, /^Sell for\b/i) || victory).click();
+      for(let retry=0;retry<30&&findInfiltrationState(document)===state;retry++)await ns.sleep(50);
       if (findInfiltrationState(document) === state) throw new Error('Reward selection did not leave the infiltration');
       return { status: 'completed', reward: trade ? 'reputation' : 'money', faction: trade ? faction : null, durationMs: Date.now() - startedAt };
     }
@@ -98,6 +102,7 @@ export async function main(ns) {
       if(manual&&!activityBusy(ns)&&!transitionBusy(ns)){
         if(!(await claimActivity(ns,'infiltration'))){result.status='activity-busy';continue;}
         active=manual;
+        if(active.location?.name)target={location:{name:active.location.name}};
         const player=ns.getPlayer();
         const faction=!options['money-only']&&player.factions.includes(options.faction)?options.faction:null;
         result=await playInfiltration(ns,document,active,faction,minDemand,true);
@@ -115,7 +120,7 @@ export async function main(ns) {
       if (!compatibleFocusWorkers(ns, ns.ps('home'))) { result.status = 'waiting-for-worker-update'; continue; }
       const work = await getNsDataThroughFile(ns, 'ns.singularity.getCurrentWork()', '/Temp/infiltration-work.txt');
       if (['GRAFTING', 'CREATE_PROGRAM'].includes(work?.type)) { result.status = work.type === 'GRAFTING' ? 'graft-active' : 'program-creation-active'; continue; }
-      const blackOp = sourceFiles[7] && await getNsDataThroughFile(ns,
+      const blackOp = (sourceFiles[6] || sourceFiles[7]) && await getNsDataThroughFile(ns,
         'ns.bladeburner.inBladeburner() && /black/i.test(ns.bladeburner.getCurrentAction()?.type || "")', '/Temp/infiltration-blackop.txt');
       if (blackOp) { result.status = 'blackop-active'; continue; }
       if (ns.getPlayer().hp.current < ns.getPlayer().hp.max * 0.9) { result.status = 'needs-healing'; continue; }
@@ -132,15 +137,17 @@ export async function main(ns) {
       if (previousWorker) ns.kill(previousWorker.pid);
       await ns.sleep(500);
       const entered = await getNsDataThroughFile(ns,
-        '(() => { if(["GRAFTING","CREATE_PROGRAM"].includes(ns.singularity.getCurrentWork()?.type) || (ns.args[2] && ns.bladeburner.inBladeburner() && /black/i.test(ns.bladeburner.getCurrentAction()?.type || ""))) return false; ns.singularity.stopAction(); const p=ns.getPlayer(); if(p.city!==ns.args[0] && (p.money<200000 + Math.max(0,Number(ns.read("reserve.txt"))||0) || !ns.singularity.travelToCity(ns.args[0]))) return false; return ns.singularity.goToLocation(ns.args[1]); })()',
-        '/Temp/infiltration-enter.txt', [target.location.city, target.location.name, !!sourceFiles[7]]);
+        `(() => { if(!(${infiltrationEntryAllowed.toString()})(ns,ns.args[3]))return false; if(["GRAFTING","CREATE_PROGRAM"].includes(ns.singularity.getCurrentWork()?.type) || (ns.args[2] && ns.bladeburner.inBladeburner() && /black/i.test(ns.bladeburner.getCurrentAction()?.type || ""))) return false; ns.singularity.stopAction(); const p=ns.getPlayer(); if(p.city!==ns.args[0] && (p.money<200000 + Math.max(0,Number(ns.read("reserve.txt"))||0) || !ns.singularity.travelToCity(ns.args[0]))) return false; return ns.singularity.goToLocation(ns.args[1]); })()`,
+        '/Temp/infiltration-enter.txt', [target.location.city, target.location.name, !!(sourceFiles[6] || sourceFiles[7]),ns.pid]);
       if (!entered) continue;
-      if (sourceFiles[7]) {
+      if (sourceFiles[6] || sourceFiles[7]) {
         const combat = await getNsDataThroughFile(ns,
-          'ns.bladeburner.inBladeburner() ? (/black/i.test(ns.bladeburner.getCurrentAction()?.type || "") ? "blackop-active" : (ns.bladeburner.stopBladeburnerAction(), "stopped")) : "inactive"', '/Temp/infiltration-stop-combat.txt');
+          `!(${infiltrationEntryAllowed.toString()})(ns,ns.args[0]) ? "interrupted" : ns.bladeburner.inBladeburner() ? (/black/i.test(ns.bladeburner.getCurrentAction()?.type || "") ? "blackop-active" : (ns.bladeburner.stopBladeburnerAction(), "stopped")) : "inactive"`, '/Temp/infiltration-stop-combat.txt',[ns.pid]);
+        if (combat === 'interrupted') {result.status='interrupted';continue;}
         if (combat === 'blackop-active') { result.status = 'blackop-active'; continue; }
       }
       await ns.sleep(150);
+      if(!infiltrationEntryAllowed(ns,ns.pid)){result.status='interrupted';continue;}
       const enter = button(document, /infiltrate/i);
       if (!enter) { result = { status: 'entry-ui-unavailable' }; continue; }
       if (!enterInfiltration(enter)) { result = { status: 'unsupported-entry-ui', ui: infiltrationUiDetails(document) }; continue; }
@@ -149,11 +156,11 @@ export async function main(ns) {
       if (!active) { result = { status: 'unsupported-ui', ui: infiltrationUiDetails(document) }; continue; }
       result = await playInfiltration(ns, document, active, faction, minDemand);
       result.location = target.location.name;
-    } catch (error) { result = { status: 'waiting', error: String(error) }; }
+    } catch (error) { result = { status: 'error', error: String(error) }; }
     finally {
       try {
         if (active&&findInfiltrationState(document)===active) active.cancel();
-        else if (enteredUi) button(document, /^Cancel(?: Infiltration)?$/i)?.click();
+        else if (!active&&enteredUi&&!activityBusy(ns)&&!transitionBusy(ns)) button(document, /^Cancel(?: Infiltration)?$/i)?.click();
       } catch { }
       active = null;
       releaseActivity(ns);

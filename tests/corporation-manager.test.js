@@ -4,7 +4,7 @@ import { main } from '../corporation-manager.js';
 
 /** Run a real manager cycle against a minimal game API, then stop at nextUpdate. */
 async function cycle({ exportCost = 20e9, cash = 3e12, wallet = 100, nodeCost = 3,
-    products = [], upgradeCosts = {}, lastProductAt = 0, playerReserve = 0, office = null, expenses = 0, phases = [], advertCost = Infinity, salePrice = 'MP', extraDivision = null, material = {}, warehouse = {}, warehouseCost = Infinity, smartSupply = true, researchPoints = 0, researchCost = Infinity, researched = [], researchNames = [],industryCosts = {} } = {}) {
+    products = [], upgradeCosts = {}, lastProductAt = 0, playerReserve = 0, office = null, expenses = 0, revenue = 0, phases = [], advertCost = Infinity, salePrice = 'MP', extraDivision = null, material = {}, warehouse = {}, warehouseCost = Infinity, smartSupply = true, researchPoints = 0, researchCost = Infinity, researched = [], researchNames = [],industryCosts = {}, maintaining = false, industryNames = [], savedGrowthBank = null, officeStepCost=Infinity, omitDivisions=[] } = {}) {
   const stop = new Error('test cycle complete');
   const calls = { inputs: [], research: [], expanded: [], industries: [], exports: [], products: [], retired: [], nodes: 0, upgrades: [], logs: [], unlocks: [], tea: [], parties: [], jobs: [], adverts: [], sales: [] };
   const unlocked = new Set(['Warehouse API', 'Smart Supply']);
@@ -16,17 +16,18 @@ async function cycle({ exportCost = 20e9, cash = 3e12, wallet = 100, nodeCost = 
     name, industry: name === 'Agri' ? 'Agriculture' : name === 'Chem' ? 'Chemical' : 'Restaurant', cities, products: name === 'Dining' ? [...products] : [], researchPoints,
     makesProducts: name === 'Dining', maxProducts: 3,
   }]));
+  for(const name of omitDivisions)delete divisions[name];
   if (extraDivision) divisions[extraDivision.name] = { cities, products: [], researchPoints, maxProducts: 3, ...extraDivision };
   let funds = cash, money = wallet;
   const researchByDivision=new Map();
   const researchSet=division=>{if(!researchByDivision.has(division))researchByDivision.set(division,new Set(researched));return researchByDivision.get(division);};
   const c = {
-    getConstants: () => ({ dividendMaxRate: 1, researchNamesBase: researchNames }),
+    getConstants: () => ({industryNames, dividendMaxRate: 1, researchNamesBase: researchNames }),
     hasCorporation: () => true,
-    getCorporation: () => ({ name: 'Test Corp', funds, divisions: Object.keys(divisions), valuation: 0, public: false, expenses, prevState: phases[phaseIndex] }),
+    getCorporation: () => ({ name: 'Test Corp', funds, divisions: Object.keys(divisions), valuation: 0, public: false, revenue, expenses, prevState: phases[phaseIndex] }),
     getDivision: name => ({ ...divisions[name], products: [...divisions[name].products] }),
     expandIndustry: (industry,name)=>{funds-=industryCosts[industry]||0;divisions[name]={name,industry,cities:['Sector-12'],products:[],maxProducts:3,makesProducts:industry==='Tobacco',researchPoints:0};calls.industries.push({industry,name});},
-    getIndustryData: industry => ({ startingCost:industryCosts[industry]||0,requiredMaterials: industry === 'Agriculture' ? { Water: 0.5, Chemicals: 0.2 } : industry === 'Chemical' ? { Water: 0.5, Plants: 1 } : industry === 'Restaurant' ? { Food: 1, Water: 0.5 } : { Water: 0.2 }, producedMaterials: industry === 'Water Utilities' ? ['Water'] : industry === 'Chemical' ? ['Chemicals'] : industry === 'Agriculture' ? ['Plants','Food'] : [] }),
+    getIndustryData: industry => ({ advertisingFactor:.2,startingCost:industryCosts[industry]||0,requiredMaterials: industry === 'Agriculture' ? { Water: 0.5, Chemicals: 0.2 } : industry === 'Chemical' ? { Water: 0.5, Plants: 1 } : industry === 'Restaurant' ? { Food: 1, Water: 0.5 } : { Water: 0.2 }, producedMaterials: industry === 'Water Utilities' ? ['Water'] : industry === 'Chemical' ? ['Chemicals'] : industry === 'Agriculture' ? ['Plants','Food'] : [] }),
     hasUnlock: name => unlocked.has(name),
     getUnlockCost: name => name === 'Export' ? exportCost : Infinity,
     purchaseUnlock: name => {
@@ -41,7 +42,9 @@ async function cycle({ exportCost = 20e9, cash = 3e12, wallet = 100, nodeCost = 
     getMaterial: () => ({ stored: 1e9, marketPrice: 1, productionAmount: 1, desiredSellPrice: salePrice, ...material }),
     getMaterialData: () => ({ size: 1, baseMarkup: 3.75 }),
     buyMaterial: (...args) => calls.inputs.push(args), sellMaterial: (...args) => calls.sales.push(args), sellProduct: () => {},
-    getOffice: () => office ? {...office} : null, getOfficeSizeUpgradeCost: () => Infinity,
+    getOffice: () => office ? {...office} : null, getOfficeSizeUpgradeCost: (_d,_c,add) => add===3?officeStepCost:Infinity,
+    upgradeOfficeSize: (division,city,add) => {funds-=officeStepCost;office.size+=add;calls.upgrades.push('office:'+division+'/'+city+':'+add);},
+    hireEmployee:()=>{if(office.numEmployees>=office.size)return false;office.numEmployees++;return true;},
     setJobAssignment: (...args) => { calls.jobs.push(args); return true; },
     buyTea: (division,city) => { const cost=office.numEmployees*500000;if(cost>funds)throw new Error('unaffordable tea');funds-=cost;calls.tea.push({division,city,cost});return true; },
     throwParty: (division,city,cost) => {if(cost*office.numEmployees>funds)throw new Error('unaffordable party');funds-=cost*office.numEmployees;calls.parties.push(cost);return 1+cost/1e7;},
@@ -74,7 +77,8 @@ async function cycle({ exportCost = 20e9, cash = 3e12, wallet = 100, nodeCost = 
     corporation: c, pid: 1, ps: () => [],
     getResetInfo: () => ({ currentNode: 3, ownedSF: new Map([[9, 1]]), lastNodeReset: 1 }),
     getScriptName: () => 'corporation-manager.js',
-    read: file => file === 'reserve.txt' ? String(playerReserve) : JSON.stringify({ at: lastProductAt, nodeReset: 1, corporation: 'Test Corp' }),
+    isRunning: () => true,
+    read: file => file==='tasks/corporation-lifecycle.json'&&savedGrowthBank!==null?JSON.stringify({nodeReset:1,corporation:'Test Corp',growthBank:savedGrowthBank}):file === 'tasks/automation-maintenance.json' && maintaining ? JSON.stringify({ownerPid:2,expiresAt:Date.now()+10000}) : file === 'reserve.txt' ? String(playerReserve) : JSON.stringify({ at: lastProductAt, nodeReset: 1, corporation: 'Test Corp' }),
     write: async () => {},
     getPlayer: () => ({ money }),
     format: { number: String },
@@ -114,7 +118,7 @@ test('unaffordable Export waits without repeatedly attempting illegal routes', a
 test('a division-wide product is created once despite six active cities', async () => {
   const { calls } = await cycle();
   assert.equal(calls.products.length, 1);
-  assert.equal(calls.products[0].cost, 20e9);
+  assert.equal(calls.products[0].cost, 29.95e9);
   assert.ok(!calls.logs.some(line => /duplicate product/.test(line)));
 });
 
@@ -241,4 +245,73 @@ test('market research is purchased as a pair without draining its quality reserv
 test('Tobacco is bootstrapped before opening additional Restaurant capacity',async()=>{
  const {calls}=await cycle({cash:100e9,industryCosts:{Tobacco:20e9,Restaurant:10e9}});
  assert.ok(calls.industries.some(d=>d.industry==='Tobacco'));
+});
+
+test('maintenance clears persistent orders before starting a corporation growth cycle',async()=>{
+ const {calls}=await cycle({maintaining:true});
+ assert.equal(calls.products.length,0);assert.equal(calls.unlocks.length,0);assert.equal(calls.nodes,0);
+ assert.ok(calls.inputs.length>0);assert.ok(calls.inputs.every(args=>args[3]===0));
+});
+test('self-funded corporation creation cannot consume the player reserve',async()=>{
+ const stop=Error('stop'),calls=[];
+ const ns={pid:1,ps:()=>[],getScriptName:()=> 'corporation-manager.js',getResetInfo:()=>({currentNode:1,ownedSF:new Map([[3,1]])}),read:f=>f==='reserve.txt'?'5000000000':'',write:async()=>{},print:()=>{},tprint:()=>{},disableLog:()=>{},getPlayer:()=>({money:152e9}),sleep:async()=>{throw stop;},corporation:{getConstants:()=>({}),hasCorporation:()=>false,getCorporation:()=>null,canCreateCorporation:self=>self?'Success':'Use seed money outside BN3',createCorporation:()=>calls.push('created')}};
+ await assert.rejects(main(ns),e=>e===stop);assert.deepEqual(calls,[]);
+});
+
+test('useful automatic upkeep research is bought after TA.II instead of being skipped',async()=>{
+ const {calls}=await cycle({office:{size:30,numEmployees:30,avgEnergy:75,avgMorale:75,employeeJobs:{}},researchPoints:100,researchCost:10,researched:['Hi-Tech R&D Laboratory','Market-TA.I','Market-TA.II']});
+ assert.ok(calls.research.some(r=>r.name==='AutoBrew'));
+});
+test('custom product creation uses escaped names and shared growth capital',async()=>{
+ const {calls}=await cycle({extraDivision:{name:'A+B [works]',industry:'Tobacco',makesProducts:true,products:['A+B [works] Auto 2']}});
+ assert.ok(calls.products.some(p=>p.name==='A+B [works] Auto 3'));
+});
+
+test('selective expansion supplies an unmet recipe instead of opening a cheaper unrelated industry',async()=>{
+ const {calls}=await cycle({revenue:1e9,industryNames:['Real Estate','Water Utilities'],industryCosts:{'Real Estate':1e9,'Water Utilities':20e9},extraDivision:{name:'Tobacco',industry:'Tobacco',makesProducts:true},researched:['Hi-Tech R&D Laboratory','Market-TA.I','Market-TA.II']});
+ assert.ok(calls.industries.some(x=>x.industry==='Water Utilities'));assert.ok(!calls.industries.some(x=>x.industry==='Real Estate'));
+});
+test('shared growth budget leaves product slots intact when replacement cannot be funded',async()=>{
+ const {calls}=await cycle({savedGrowthBank:1,products:['Apex Dining 1','Apex Dining 2','Apex Dining 3']});
+ assert.equal(calls.retired.length,0);assert.equal(calls.products.length,0);assert.equal(calls.upgrades.length,0);
+});
+
+test('controller preserves material R&D while its pricing research is pending',async()=>{
+ const {calls}=await cycle({office:{size:15,numEmployees:15,avgEnergy:100,avgMorale:100,employeeJobs:{}},researched:['Hi-Tech R&D Laboratory']});
+ const assignments=calls.jobs.filter(args=>args[0]==='Agri'&&args[2]==='Research & Development'&&args[3]>0);
+ assert.ok(assignments.length>0);assert.ok(assignments.every(args=>args[3]>=3));
+});
+
+test('Tobacco and custom product divisions receive adverts through the shared planner',async()=>{
+ for(const name of ['Tobacco','Custom Products']){
+  const {calls}=await cycle({advertCost:1,extraDivision:{name,industry:'Tobacco',makesProducts:true}});
+  assert.ok(calls.adverts.includes(name));
+ }
+});
+
+import {readFile} from 'node:fs/promises';
+
+test('upgrade ranking sees storage pressure from every existing division',async()=>{
+ const source=await readFile(new URL('../corporation-manager.js',import.meta.url),'utf8');
+ assert.ok(source.indexOf('for (const division of divisions().filter')<source.indexOf('if (Date.now() - lastUpgrade >= 30_000)'));
+});
+
+test('Tobacco starts before Chemical and laboratory research when retained capital is sufficient',async()=>{
+ const {calls}=await cycle({cash:30e9,savedGrowthBank:1,omitDivisions:['Chem','Dining'],industryCosts:{Tobacco:20e9,Chemical:70e9}});
+ assert.ok(calls.industries.some(d=>d.industry==='Tobacco'));assert.ok(!calls.industries.some(d=>d.industry==='Chemical'));
+});
+test('Chemical starts below the old four-times-cost gate without a laboratory',async()=>{
+ const {calls}=await cycle({cash:90e9,savedGrowthBank:1,omitDivisions:['Chem'],extraDivision:{name:'Tobacco',industry:'Tobacco',makesProducts:true},industryCosts:{Chemical:70e9}});
+ assert.ok(calls.industries.some(d=>d.industry==='Chemical'));assert.ok(!calls.research.some(r=>r.name==='Hi-Tech R&D Laboratory'));
+});
+
+test('office growth plans affordable increments when the full target exceeds startup capital',async()=>{
+ const source=await readFile(new URL('../corporation-manager.js',import.meta.url),'utf8');
+ assert.ok(source.includes('if(add>3&&cost>growthBank){add=3;'));
+ assert.ok(source.includes('(office.size+add)/Math.max(1,office.size)'));
+});
+
+test('a development office can use retained setup cash for an affordable three-person expansion',async()=>{
+ const {calls}=await cycle({cash:12e9,savedGrowthBank:1,officeStepCost:4e9,office:{size:3,numEmployees:3,avgEnergy:100,avgMorale:100,employeeJobs:{}}});
+ assert.ok(calls.upgrades.some(name=>name.startsWith('office:Dining/')));
 });

@@ -1,4 +1,4 @@
-import { casinoOptionsError, casinoHookArgs, casinoWager, casinoRoundDelta, blackjackShouldHit, parseDealerRank, casinoUiEvent, stopCasinoCompetitors } from './casino-policy.js';
+import { casinoOptionsError, casinoHookArgs, casinoWager, casinoRoundDelta, blackjackShouldHit, parseDealerRank, performCasinoUiAction, stopCasinoCompetitors,casinoControlAllowed,reloadCasinoWindow,launchCasinoHook } from './casino-policy.js';
 import { isScriptPaused } from './automation-control.js';
 import { beginTransition, endTransition } from './progression-coordination.js';
 import {
@@ -35,9 +35,14 @@ export async function main(ns) {
     let doc;
     try { doc = eval("document"); }
     catch (error) { ns.tprint('Casino automation needs the in-game UI: '+String(error));return; }
+    const elementPaths = new WeakMap();
     let options;
     let verbose = false;
     let stoppedAutomation = false, casinoCompleted = false, reloading = false;
+    let failureReason;
+    function assertControl() {
+        if(!casinoControlAllowed(ns,ns.pid)){const error=new Error('Casino paused or transition ownership changed.');error.name='CasinoControlLost';throw error;}
+    }
     async function reportCasino(mode, details = {}) {
         await ns.write('tasks/casino-status.json', JSON.stringify({at:Date.now(),pid:ns.pid,augReset:ns.getResetInfo().lastAugReset,mode,...details}), 'w');
     }
@@ -113,21 +118,23 @@ export async function main(ns) {
          * @param {int?} retries (default 10) how many times to check for each element before deciding they aren't there
          * @returns {Promise<boolean>} true if there is an open dialog telling us we've been kicked out of the casino */
         async function checkForKickedOut(retries = 10) {
-            let closeModal;
+            let closeModal,closed=0;
             do {
+                assertControl();
+                if(closed++>=20)throw new Error("Casino modal closing did not settle after 20 attempts.");
                 const kickedOut = await tryfindElement("//span[contains(text(), 'Alright cheater get out of here')]", retries);
                 if (kickedOut !== null) return true; // Success: We've been kicked out
                 // If there are any other modals, they may need to be closed before we can see the kicked out alert.
                 closeModal = await tryfindElement("//button[contains(@class,'closeButton')]", retries);
                 if (!closeModal) break; // There appears to be no other modals blocking in the way
                 log(ns, "Found a modal that needs to be closed.")
-                await click(closeModal); // Click the close button on this modal so we can see others behind it
+                await click(closeModal, true); // Click the close button on this modal so we can see others behind it
             } while (closeModal !== null);
             return false;
         }
 
         // Casino has priority over grafting. Standalone launches also stop an active graft when SF4 permits.
-        try { await getNsDataThroughFile(ns, 'ns.singularity.getCurrentWork()?.type === "GRAFTING" ? (ns.singularity.stopAction(), true) : true', '/Temp/casino-stop-graft.txt', [], false, 1, 0, true); }
+        try { await getNsDataThroughFile(ns, `(${casinoControlAllowed.toString()})(ns,ns.args[0])&&ns.singularity.getCurrentWork()?.type === "GRAFTING" ? (ns.singularity.stopAction(), true) : false`, '/Temp/casino-stop-graft.txt', [ns.pid], false, 1, 0, true); }
         catch { /* UI navigation remains available without Singularity. */ }
 
         // Run this to try and pre-emptively clear away any modals that pop up when we restart.
@@ -166,7 +173,7 @@ export async function main(ns) {
                         throw new Error("Sorry, you need at least 200k to travel to the casino.");
                     let travelled = false;
                     try {
-                        travelled = await getNsDataThroughFile(ns, 'ns.singularity.travelToCity(ns.args[0])', null, ["Aevum"]);
+                        travelled = await getNsDataThroughFile(ns, `(${casinoControlAllowed.toString()})(ns,ns.args[1]) ? ns.singularity.travelToCity(ns.args[0]) : false`, null, ["Aevum",ns.pid]);
                     } catch { }
                     if (!travelled) // Note: While it would be nice to confirm whether we have SF4 for the message, it's not worth the cost.
                         log(ns, "INFO: Canot use singularity travel to Aevum via singularity. We will try to go there manually for now.", true);
@@ -191,8 +198,10 @@ export async function main(ns) {
                         `Couldn't find the "🏙 City" menu button. Is your \"World\" nav menu collapsed?`));
                     await click(await findRequiredElement("//span[@aria-label = 'Iker Molina Casino']"));
                 } catch (err) { // Try to use SF4 as a fallback (if available) - it's more reliable.
+                    if(err?.name==='CasinoUiUnavailable')throw err;
+            if(err?.name==='CasinoControlLost')throw err;
                     let success = false, err2;
-                    try { success = await getNsDataThroughFile(ns, 'ns.singularity.goToLocation(ns.args[0])', null, ["Iker Molina Casino"]); }
+                    try { success = await getNsDataThroughFile(ns, `(${casinoControlAllowed.toString()})(ns,ns.args[1]) ? ns.singularity.goToLocation(ns.args[0]) : false`, null, ["Iker Molina Casino",ns.pid]); }
                     catch (singErr) { err2 = singErr; }
                     if (!success)
                         throw new Error("Failed to travel to the casino both using UI navigation and using SF4 as a fall-back." +
@@ -216,6 +225,7 @@ export async function main(ns) {
                         log(ns, `INFO: We've previously earned ${formatMoney(priorCasinoEarnings)} from the casino, which should mean we've already been kicked out, ` +
                             `but we can double-check anyway by attempting to play a game, since you bothered running this script, and I've bothered scripting the check :)`, true)
                     await setText(inputWager, `1`); // Bet just a dollar and quick the game right away, no big deal
+                    btnStartGame=await findRequiredElement("//button[text() = 'Start']");
                     await click(btnStartGame);
                     if (await tryfindElement("//p[contains(text(), 'Count:')]", 10)) { // If this works, we're still allowed in
                         const btnStay = await tryfindElement("//button[text() = 'Stay']");
@@ -236,6 +246,8 @@ export async function main(ns) {
                 }
                 break; // We achieved everthing we wanted, we can exit the retry loop.
             } catch (err) {
+                if(err?.name==='CasinoUiUnavailable')throw err;
+            if(err?.name==='CasinoControlLost')throw err;
                 // The first 5 errors that occur, we will start over and retry
                 if (++priorAttempts < 5) {
                     if (options['enable-logging']) tail(ns, undefined, true);
@@ -274,7 +286,8 @@ export async function main(ns) {
                    #4 (annoying) The user, or another script, left the casino page (stole focus)
                    #5 (even more annoying) The "click" event didn't "take effect" and we should retry it
                 The seemingly-excessive logic below tries to distinguish between those cases and handle them appropriately */
-                await click(btnStartGame);
+                btnStartGame=await findRequiredElement("//button[text() = 'Start']");
+                    await click(btnStartGame);
                 let winLoseTie = null; // For storing a string indicating the game state after each card is dealt
 
                 // Step 4.3: Look for the "hit" and "stay" buttons, or alternatively the "start" button
@@ -322,6 +335,7 @@ export async function main(ns) {
                 let midGameRetries = 0;
                 const roundStarted = Date.now();
                 while (winLoseTie == null) {
+                    assertControl();
                     try {
                         if (Date.now() - roundStarted > 30000) throw new Error('Blackjack hand did not finish within 30 seconds.');
                         // Step 4.5.1: Get the current card count
@@ -339,6 +353,8 @@ export async function main(ns) {
                         midGameRetries = 0;
                     }
                     catch (err) {
+                        if(err?.name==='CasinoUiUnavailable')throw err;
+            if(err?.name==='CasinoControlLost'||Date.now()-roundStarted>30000)throw err;
                         // We can't get kicked out mid-game, so no need to check for that. See if we left the casino.
                         await checkStillAtCasino(); // Will throw another error with a best guess at how we were interrupted
                         // Any other errors must be transient failures to pick up certain UI elements, so try again
@@ -367,7 +383,7 @@ export async function main(ns) {
                             await saveGame();
                         }
                         // Quick pre-emptive test after each win to see if we've been kicked out
-                        if (await checkForKickedOut(1)) // Only 1 retry should be very fast
+                        if (casinoEarnings()>1e10 || await checkForKickedOut(1)) // Only 1 retry should be very fast
                             return await onCompletion();
                         continue;
                     case "lose":
@@ -384,6 +400,8 @@ export async function main(ns) {
             }
         }
         catch (err) {
+            if(err?.name==='CasinoUiUnavailable')throw err;
+            if(err?.name==='CasinoControlLost'||isScriptPaused(ns,ns.getScriptName()))return;
             if (options['enable-logging']) tail(ns, undefined, true);
             log(ns, `ERROR: casino.js Caught a fatal error while playing blackjack:\n${getErrorInfo(err)}\n${supportMsg}`, true, 'error');
         }
@@ -417,24 +435,9 @@ export async function main(ns) {
     async function reload() {
         reloading = true;
         await reportCasino('reloading');
-        let attempts = 0;
-        let errMessage = '';
-        while (attempts++ <= 5) {
-            const win = eval("window");
-            win.onbeforeunload = null; // Disable the unsaved changes warning before reloading
-            await ns.sleep(options['save-sleep-time']); // Yield execution for an instant incase the game needs to finish a save or something
-            if (attempts < 2)
-                win.location = win.location; // Force refresh the page without saving
-            else if (attempts < 3)
-                win.location.reload(); // Another approach that may work when the above does not.
-            else
-                win.location.reload();
-            await ns.sleep(10000); // Keep the script alive to be safe. Presumably the page reloads before this completes.
-            errMessage = `casino.js asked the game to reload ${attempts} times, but it didn't.`
-            log(ns, `WARNING: ${errMessage} Trying again...`, true, 'warning');
-        }
-        reloading = false;
-        throw new Error(`${errMessage} Giving up.`);
+        try { await reloadCasinoWindow(ns,eval('window'),options['save-sleep-time'],()=>casinoControlAllowed(ns,ns.pid)); }
+        finally { reloading=false; }
+
     }
 
     /** @param {NS} ns
@@ -487,22 +490,26 @@ export async function main(ns) {
         if (!completionScript) return;
         let completionArgs = options['on-completion-script-args'];
         endTransition(ns);
-        if (ns.ps('home').some(process=>process.filename===completionScript)) return;
-        if (ns.run(completionScript, 1, ...completionArgs))
+        const outcome=launchCasinoHook(ns,completionScript,completionArgs);
+        if(outcome==='already-running')return;
+        if(outcome!=='failed')
             log(ns, `INFO: casino.js shutting down and launching ${completionScript}...`, false, 'info');
         else
             log(ns, `WARNING: casino.js shutting down, but failed to launch ${completionScript}...`, false, 'warning');
     }
 
     // Some DOM helpers (partial credit to @ShamesBond)
-    async function click(button) {
+    async function click(button, optional = false) {
         if (button === null || button === undefined)
             throw new Error("click was called on a null reference. This means the prior button detection failed, but was assumed to have succeeded.");
         // Sleep before clicking, if so configured
         let sleepDelay = options['click-sleep-time'];
         if (sleepDelay > 0) await ns.sleep(sleepDelay);
         if (verbose) log(ns, `Clicking the button.`);
-        await casinoUiEvent(button, 'onClick');
+        assertControl();
+        const xpath = elementPaths.get(button);
+        await performCasinoUiAction(() => xpath ? internalFind(xpath) : button, 'onClick', undefined,
+            {assertControl, wait: ms => ns.sleep(ms), optional});
         // Sleep after clicking, if so configured
         if (sleepDelay > 0) await ns.sleep(sleepDelay);
     }
@@ -513,7 +520,10 @@ export async function main(ns) {
         let sleepDelay = options['click-sleep-time'];
         if (sleepDelay > 0) await ns.sleep(sleepDelay);
         if (verbose) log(ns, `Setting text: ${text} on input.`);
-        await casinoUiEvent(input, 'onChange', text);
+        assertControl();
+        const xpath = elementPaths.get(input);
+        await performCasinoUiAction(() => xpath ? internalFind(xpath) : input, 'onChange', text,
+            {assertControl, wait: ms => ns.sleep(ms)});
         if (sleepDelay > 0) await ns.sleep(sleepDelay);
     }
 
@@ -535,7 +545,11 @@ export async function main(ns) {
     }
 
     /* Used to search for an element in the document. This can fail if the dom isn't fully re-rendered yet. */
-    function internalFind(xpath) { return doc.evaluate(xpath, doc, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue; }
+    function internalFind(xpath) {
+        const element = doc.evaluate(xpath, doc, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
+        if (element) elementPaths.set(element, xpath);
+        return element;
+    }
 
     /** Try to find an element, with retries.
      * This is tricky - in some cases we are just checking if the element exists, but expect that it might not
@@ -560,7 +574,8 @@ export async function main(ns) {
             if (options['find-sleep-time'])
                 await ns.sleep(options['find-sleep-time']);
             let attempts = 0, retryDelayMs = 1; // starting retry delay (ms), will be increased with each attempt
-            while (attempts++ <= maxRetries) {
+            while (attempts++ < maxRetries) {
+                assertControl();
                 // Sleep between attempts
                 if (attempts > 1) {
                     if (verbose || !expectFailure)
@@ -583,7 +598,7 @@ export async function main(ns) {
                 throw new Error(errMessage, true, 'error');
             }
         } catch (e) {
-            if (!expectFailure) throw e;
+            if(e?.name==='CasinoControlLost'||!expectFailure)throw e;
         }
         return null;
     }
@@ -598,16 +613,18 @@ export async function main(ns) {
 
     // Run the program
     try { await start(); }
+    catch(error){if(error?.name==='CasinoUiUnavailable'){failureReason=error.message;ns.print('Casino interface unavailable; stopping safely and allowing a later retry: '+failureReason);}
+        else if(error?.name!=='CasinoControlLost')throw error;}
     finally {
         if (options && !casinoCompleted && !reloading) {
-            await reportCasino('failed', {retryAt:Date.now()+60000});
+            await reportCasino(isScriptPaused(ns,ns.getScriptName())?'paused':'failed',isScriptPaused(ns,ns.getScriptName())?{reason:'Persistent pause'}:{retryAt:Date.now()+60000,...(failureReason?{reason:failureReason}:{})});
             endTransition(ns);
             const recovery = options['on-completion-script'];
             // Resume only the configured autopilot on failure; other hooks require completion.
             if (stoppedAutomation && /(^|\/)autopilot\.js$/.test(recovery || '') &&
                 !ns.ps('home').some(process=>process.filename===recovery)) {
-                const pid = ns.run(recovery, 1, ...options['on-completion-script-args']);
-                if (!pid) ns.print('Casino failed and autopilot could not restart: check available RAM.');
+                const outcome = launchCasinoHook(ns,recovery,options['on-completion-script-args']);
+                if (outcome==='failed') ns.print('Casino failed and autopilot could not restart: check available RAM.');
             }
         }
     }

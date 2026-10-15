@@ -20,18 +20,18 @@ test('bounded Stanek optimizer produces legal current-grid layouts',async()=>{co
 
 test('generated spending workers remain expressions inside JSON.stringify',async()=>{
  const {readFile}=await import('node:fs/promises');
- const {purchaseSleeveAugBatch}=await import('../sleeve-policy.js');const {purchaseGangEquipment,gangMutationAllowed}=await import('../gang-policy.js');
+ const {purchaseSleeveAugBatch,sleeveControlAllowed}=await import('../sleeve-policy.js');const {achievementActionAllowed}=await import('../achievement-policy.js');const {purchaseGangEquipment,gangMutationAllowed}=await import('../gang-policy.js');
  for(const [file,purchase] of [['sleeve.js',purchaseSleeveAugBatch],['gangs.js',purchaseGangEquipment]]){
   const source=await readFile(new URL('../'+file,import.meta.url),'utf8');
   const raw=source.match(/`\(\(\) => \{ const claimSpending=\$\{claimSpending\.toString\(\)\}; return \([\s\S]*?\}\)\(\)`/)[0].slice(1,-1);
-  const rendered=raw.replace('${claimSpending.toString()}',claimSpending.toString()).replace(/\$\{purchase\w+\.toString\(\)\}/,purchase.toString()).replace('${gangMutationAllowed.toString()}',gangMutationAllowed.toString());
+  const rendered=raw.replace('${claimSpending.toString()}',claimSpending.toString()).replace(/\$\{purchase\w+\.toString\(\)\}/,purchase.toString()).replace('${gangMutationAllowed.toString()}',gangMutationAllowed.toString()).replace('${sleeveControlAllowed.toString()}',sleeveControlAllowed.toString()).replace('${achievementActionAllowed.toString()}',achievementActionAllowed.toString());
   assert.doesNotThrow(()=>new Function('ns','return JSON.stringify('+rendered+');'));
  }
 });
 test('current Go status and all newly managed scripts use the narrow remote policy',async()=>{const {managedScripts,renderCommandJob}=await import('../remote-api-command.js');assert.ok(managedScripts.includes('soa-manager.js'));assert.ok(managedScripts.includes('go.js'));assert.ok(renderCommandJob({id:'test',expiresAt:Date.now()+1000,method:'automation.status',args:[]}).includes('tasks/reset-backup-status.json'));});
 
 test('sleeve and gang purchases consult the injected shared cash allocator',async()=>{
- const {purchaseSleeveAugBatch}=await import('../sleeve-policy.js');const {purchaseGangEquipment}=await import('../gang-policy.js');
+ const {purchaseSleeveAugBatch,sleeveControlAllowed}=await import('../sleeve-policy.js');const {achievementActionAllowed}=await import('../achievement-policy.js');const {purchaseGangEquipment}=await import('../gang-policy.js');
  const bought=[];const ns={getPlayer:()=>({money:100}),read:()=>'',sleeve:{getSleeve:()=>({shock:0}),getSleevePurchasableAugs:()=>[{name:'a',cost:10}],purchaseSleeveAug:()=>{bought.push('sleeve');return true;}},gang:{getEquipmentCost:()=>10,purchaseEquipment:()=>{bought.push('gang');return true;}}};
  assert.equal(purchaseSleeveAugBatch(ns,0,['a'],100,0,()=>false).spent,0);
  assert.deepEqual(purchaseGangEquipment(ns,[{member:'m',equipmentName:'a'}],0,100,()=>false),[false]);assert.deepEqual(bought,[]);

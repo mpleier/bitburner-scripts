@@ -5,9 +5,10 @@ export const researchParents = {
  'uPgrade: Capacity.II':'uPgrade: Capacity.I','uPgrade: Dashboard':'uPgrade: Fulcrum',
 };
 export const extraResearch = ['Automatic Drug Administration','Go-Juice','CPH4 Injections','HRBuddy-Recruitment','HRBuddy-Training'];
-export function productInvestment(cash,reserve) {
+export function productInvestment(cash,reserve,budget=Infinity) {
+ if(!Number.isFinite(cash)||!Number.isFinite(reserve)||cash<0||reserve<0||!(Number.isFinite(budget)||budget===Infinity)||budget<0)return 0;
  const free=Math.max(0,cash-reserve);
- return free>20e6?Math.min(10e9,Math.max(10e6,free*0.005)):0;
+ return free>20e6?Math.min(Math.max(0,budget)*.25,Math.max(10e6,free*0.005)):0;
 }
 export function acceptVentureOffer(info,offer,minOwnership=0.5) {
  const profit=Math.max(0,(Number(info.revenue)||0)-(Number(info.expenses)||0));
@@ -46,7 +47,7 @@ export function rescueShareIssue(info,reserve,minOwnership=0.5) {
  const units=Math.max(0,Math.floor(cap/10e6));if(!units)return 0;
  const needed=Math.max(0,reserve*1.5-info.funds);
  const proceeds=count=>{
-  const target=info.valuation>0?info.valuation*(.5+Math.sqrt(info.numShares/(info.totalShares+count)))/(info.totalShares+count):info.sharePrice*.6;
+  const target=info.valuation>0?info.valuation*(.5+Math.sqrt(info.numShares/(info.totalShares+count)))/info.totalShares:info.sharePrice*.6;
   return count*(info.sharePrice+target)/2;
  };
  let low=1,high=units;while(low<high){const mid=Math.floor((low+high)/2);if(proceeds(mid*10e6)>=needed)high=mid;else low=mid+1;}
@@ -55,8 +56,7 @@ export function rescueShareIssue(info,reserve,minOwnership=0.5) {
 export function shareSale(info,wallet,playerReserve,minOwnership=0.5,targetCash=playerReserve+1e9) {
  if(!info.public||info.shareSaleCooldown>0||!(info.sharePrice>0)||!Number.isFinite(info.sharePrice)||![wallet,playerReserve,targetCash,info.numShares,info.totalShares,minOwnership].every(Number.isFinite)||!(minOwnership>0&&minOwnership<=1))return 0;
  const gap=Math.max(0,targetCash-wallet);if(!gap)return 0;
- const profit=Math.max(0,(Number(info.revenue)||0)-(Number(info.expenses)||0));
- const dividends=profit*Math.max(0,Number(info.dividendRate)||0)*(info.numShares/info.totalShares)*Math.max(0,1-(Number(info.tributeModifier)||0));
+ const dividends=corporationDividendRate(info);
  if(dividends>0&&gap/dividends<=300)return 0; // Prefer a short dividend wait over selling permanent income.
  const cap=Math.max(0,Math.min(1e12,Math.floor(info.numShares-info.totalShares*minOwnership),Math.floor(info.totalShares*.01),Math.floor(info.numShares)-1));
  if(!cap)return 0;
@@ -64,7 +64,7 @@ export function shareSale(info,wallet,playerReserve,minOwnership=0.5,targetCash=
  return low;
 }
 export function shareBuyback(info,wallet,playerReserve,minOwnership=0.5) {
- if(!info.public||!(info.sharePrice>0)||!Number.isFinite(info.sharePrice)||!(info.issuedShares>0)||info.numShares/info.totalShares>=minOwnership+0.15)return 0;
+ if(![wallet,playerReserve,minOwnership,info.numShares,info.totalShares,info.issuedShares].every(Number.isFinite)||wallet<0||playerReserve<0||!(minOwnership>0&&minOwnership<=1)||!(info.totalShares>0)||!info.public||!(info.sharePrice>0)||!Number.isFinite(info.sharePrice)||!(info.issuedShares>0)||info.numShares/info.totalShares>=minOwnership+0.15)return 0;
  const budget=Math.max(0,wallet-playerReserve-1e9)*.01;
  return Math.max(0,Math.min(1e6,info.issuedShares,Math.floor(budget/(info.sharePrice*1.25))));
 }
@@ -77,4 +77,12 @@ export function recipeInputPlan(recipe,items,production,budget,cycleSeconds=10) 
  const cost=plan.reduce((sum,item)=>sum+item.amount*item.price,0);
  const scale=cost>0?Math.max(0,Math.min(1,budget/cost)):0;
  return {cost:cost*scale,orders:plan.map(item=>({name:item.name,rate:item.amount*scale/cycleSeconds}))};
+}
+
+/** Source getCycleDividends applies tribute to the full cycle payout as an exponent. */
+export function corporationDividendRate(info,cycleSeconds=10){
+ const profit=Number(info.revenue)-Number(info.expenses),rate=Number(info.dividendRate),shares=Number(info.numShares),total=Number(info.totalShares),tribute=Number(info.tributeModifier??0);
+ if(![profit,rate,shares,total,tribute,cycleSeconds].every(Number.isFinite)||profit<=0||rate<=0||rate>1||shares<=0||total<=0||shares>total||tribute<0||tribute>=1||cycleSeconds<=0)return 0;
+ const value=(profit*cycleSeconds*rate*shares/total)**(1-tribute)/cycleSeconds;
+ return Number.isFinite(value)&&value>0?value:0;
 }

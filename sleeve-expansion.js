@@ -1,3 +1,5 @@
+import { achievementActionAllowed } from './achievement-policy.js';
+import { registerAutomation, automationHeartbeat, maintenanceRequested } from './runtime-policy.js';
 import { claimSpending } from './spending-policy.js';
 import { isScriptPaused } from './automation-control.js';
 import { maximumSleeves } from './sleeve-policy.js';
@@ -5,6 +7,8 @@ import { maximumSleeves } from './sleeve-policy.js';
 export function expandSleeves(ns, fraction = 1) {
   const reset = ns.getResetInfo();
   if (reset.currentNode !== 10) return { available: false, bought: 0, upgraded: 0 };
+  if(isScriptPaused(ns,'sleeve-expansion.js')||maintenanceRequested(ns)||!achievementActionAllowed(ns,'sleeve'))return {available:false,bought:0,upgraded:0};
+
   const reserve = Math.max(0, Number(ns.read('reserve.txt')) || 0);
   let remaining = Math.max(0, ns.getPlayer().money - reserve) * (Number.isFinite(fraction) ? Math.max(0, Math.min(1, fraction)) : 0);
   let bought = 0, upgraded = 0;
@@ -41,9 +45,13 @@ export async function main(ns) {
     if (isScriptPaused(ns, ns.getScriptName())) return;
   ns.disableLog('ALL');
   const options = ns.flags([['budget-fraction', 1]]);
+  const fraction=Number(options['budget-fraction']);
+  if(!Number.isFinite(fraction)||fraction<0||fraction>1)return ns.tprint('Sleeve expansion: budget-fraction must be between 0 and 1.');
   if (ns.ps('home').some(process => process.filename === ns.getScriptName() && process.pid !== ns.pid)) return;
   if (ns.getResetInfo().currentNode !== 10) return;
-  while (true) {
+  registerAutomation(ns);
+  while (!isScriptPaused(ns,ns.getScriptName())) {
+    automationHeartbeat(ns);
     try {
       const result = expandSleeves(ns, Number(options['budget-fraction']));
       if (result.bought || result.upgraded) ns.print(`Sleeves: ${result.bought} purchased, ${result.upgraded} memory upgrades.`);

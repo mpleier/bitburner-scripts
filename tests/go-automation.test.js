@@ -81,3 +81,34 @@ test('failed reset results do not publish a successful opponent selection',async
  const ns=nsMock(),h=await controller(ns);ns.go.resetBoardState=()=>undefined;h.set(['..','..'],[[true,true],[true,true]],1);
  await assert.rejects(h.checkNewGame(ns,{type:'gameOver'}),/No available/);
 });
+
+
+test('Go captures remove stones before counting new liberties and do not mutate the board',()=>{
+ const board=['.X.','XOX','...'],before=[...board];
+ const result=policy.goMoveOutcome(board,2,1);
+ assert.equal(result.captured,1);assert.ok(result.liberties>=2);assert.deepEqual(board,before);
+});
+
+test('Go counts a captured chain touching a move on two sides only once',()=>{
+ const result=policy.goMoveOutcome(['OOX','O.X','XXX'],1,1);
+ assert.equal(result.captured,3);
+});
+
+test('Go rescue counts a threatened friendly group once and rejects occupied coordinates',()=>{
+ const board=['XXO..','X....','O.O..','.....','.....'];
+ const result=policy.goMoveOutcome(board,1,1);assert.equal(result.saved,3);assert.equal(result.size,4);
+ assert.equal(policy.goMoveOutcome(['XXOOO','X.OOO','OOOOO','OOOOO','OOOO.'],1,1).liberties,0);
+ assert.equal(policy.goMoveOutcome(board,0,0),null);
+ assert.equal(policy.goMoveOutcome(board,-1,0),null);
+});
+
+test('Go tactical move selection rejects non-capturing self-atari and follows native legality',()=>{
+ const board=['..','..'],valid=[[true,true],[false,false]],outcomes=new Map([
+  ['0,0',{captured:0,liberties:1,size:4,saved:0}],['0,1',{captured:2,liberties:3,size:1,saved:0}],['1,0',{captured:100,liberties:3,size:1,saved:0}]]);
+ assert.deepEqual(policy.goTacticalMove(board,valid,outcomes,()=>0).coords,[0,1]);
+});
+
+test('Go pause guard also stops moves during maintenance',async()=>{
+ const ns=nsMock(),h=await controller(ns,{maintenanceRequested:()=>true});
+ await assert.rejects(h.go_passTurn(ns),e=>typeof e==='symbol');
+});

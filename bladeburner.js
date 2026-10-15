@@ -1,5 +1,5 @@
 import {registerAutomation,automationHeartbeat,maintenanceRequested} from './runtime-policy.js';
-import {isBlackOp,nextSkill,raidCities,recoveryRequired,optionsError,requiredBladeburnerTeam,prepareBladeburnerTeam} from './bladeburner-policy.js';
+import {isBlackOp,nextSkill,raidCities,recoveryRequired,optionsError,requiredBladeburnerTeam,prepareBladeburnerTeam,bladeburnerRecruitmentBudget,bladeburnerRankRate,rankBladeburnerActions,spendBladeburnerSkills,bladeburnerRecruitmentDecision,planBladeburnerLevels,startBladeburnerPlannedAction} from './bladeburner-policy.js';
 import {isScriptPaused} from './automation-control.js';
 import {achievementActionAllowed} from './achievement-policy.js';
 import { activityBusy, markActivitySupport, activityGuard } from './activity-coordination.js';
@@ -9,7 +9,7 @@ const cityNames = ["Sector-12", "Aevum", "Volhaven", "Chongqing", "New Tokyo", "
 const antiChaosOperation = "Stealth Retirement Operation"; // Note: Faster and more effective than Diplomacy at reducing city chaos
 const simulacrumAugName = "The Blade's Simulacrum"; // This augmentation lets you do bladeburner actions while busy
 // Recheck ownership in the temporary worker immediately before a mutation.
-const bbMutationGuard=`!${activityGuard} && ns.read("remote-control/paused/bladeburner.js.txt").trim()!=="true" && (${achievementActionAllowed.toString()})(ns,"bladeburner") && !/black/i.test(ns.bladeburner.getCurrentAction()?.type||"")`;
+const bbMutationGuard=`!(${maintenanceRequested.toString()})(ns) && !${activityGuard} && ns.read("remote-control/paused/bladeburner.js.txt").trim()!=="true" && (${achievementActionAllowed.toString()})(ns,"bladeburner") && !/black/i.test(ns.bladeburner.getCurrentAction()?.type||"")`;
 
 
 // In general, we buy the affordable skill upgrade with the lowest adjusted cost, but to tweak the priority of various skills,
@@ -32,11 +32,12 @@ let inFaction, haveSimulacrum, lastBlackOpComplete, lowStaminaTriggered, lowHeal
 let ownedSourceFiles;
 let player = (/**@returns{Player}*/() => undefined)();
 let resetInfo = (/**@returns{ResetInfo}*/() => undefined)(); // Information about the current bitnode
-let options,teamBudget,teamLastTick;
+let options,teamBudget,teamLastTick,lastAssignedCount,ownsRecruitment=false;
 const teamStatusFile='tasks/bladeburner-team.json';
 
 const argsSchema = [
     ['disable-recruitment', false],
+    ['disable-level-optimization',false], // Retain native action levels and autolevel settings.
     ['team-cap',30], // Maximum squad needed to bridge a Black Op success threshold.
     ['recruitment-budget-minutes',10], // At most this many minutes recruiting per rolling hour.
     ['success-threshold', 0.99], // Attempt the best action whose minimum chance of success exceeds this threshold
@@ -67,13 +68,16 @@ export async function main(ns) {
     const runOptions = getConfiguration(ns, argsSchema);
     if (!runOptions || await instanceCount(ns) > 1) return; // Prevent multiple instances of this script from being started, even with different args.
     const invalid=optionsError(runOptions);if(invalid)return log(ns,'ERROR: '+invalid,true,'error');
+    ownsRecruitment=false;
     options = runOptions; // We don't set the global "options" until we're sure this is the only running instance
     disableLogs(ns, ['sleep'])
     player = await getNsDataThroughFile(ns, 'ns.getPlayer()');
     resetInfo = await getNsDataThroughFile(ns, 'ns.getResetInfo()');
-    teamBudget={nodeReset:resetInfo.lastNodeReset,windowAt:Date.now(),spentMs:0};
-    try{const saved=JSON.parse(ns.read(teamStatusFile));if(saved.nodeReset===resetInfo.lastNodeReset&&Number.isFinite(saved.windowAt)&&Date.now()-saved.windowAt<3600000&&Number.isFinite(saved.spentMs))teamBudget={nodeReset:saved.nodeReset,windowAt:saved.windowAt,spentMs:Math.max(0,saved.spentMs)};}catch{}
-    teamLastTick=Date.now();
+    let savedTeamBudget;try{savedTeamBudget=JSON.parse(ns.read(teamStatusFile));}catch{}
+    const teamStartup=Date.now();
+    teamLastTick=savedTeamBudget?.nodeReset===resetInfo.lastNodeReset&&savedTeamBudget.recruiting&&Number.isFinite(savedTeamBudget.at)&&savedTeamBudget.at<=teamStartup?savedTeamBudget.at:teamStartup;
+    teamBudget=bladeburnerRecruitmentBudget(savedTeamBudget,resetInfo.lastNodeReset,teamStartup);
+    ns.atExit(()=>{try{if(ownsRecruitment&&ns.bladeburner.getCurrentAction()?.name==='Recruitment')ns.bladeburner.stopBladeburnerAction();}catch{}});
     // Ensure we have access to bladeburner
     ownedSourceFiles = await getActiveSourceFiles(ns);
     if (!(7 in ownedSourceFiles) && !(6 in ownedSourceFiles))
@@ -135,6 +139,7 @@ async function gatherBladeburnerInfo(ns) {
         await getNsDataThroughFile(ns, `ns.singularity.getOwnedAugmentations().includes("${simulacrumAugName}")`, '/Temp/bladeburner-hasSimulacrum.txt');
     // Initialize some flags that may change over time
     lastAssignedTask = null;
+    lastAssignedCount = null;
     lastBlackOpComplete = false; // Flag will track whether we've notified the user that the last black-op is ready
     lowHealthTriggered = false;
     lowStaminaTriggered = false; // Flag will track whether we've previously switched to stamina recovery to reduce noise
@@ -160,10 +165,17 @@ async function mainLoop(ns) {
     await spendSkillPoints(ns);
     // Preserve every active Black Op before choosing a city or a replacement action.
     const observedAction=await getBBInfo(ns,'getCurrentAction()');
+    const teamNow=Date.now();
+    teamBudget=bladeburnerRecruitmentBudget(teamBudget,resetInfo.lastNodeReset,teamNow,teamLastTick,observedAction?.name==='Recruitment');
+    teamLastTick=teamNow;
+    // Persist accounting even while Black Ops, maintenance, or other activity owns the player.
+    await ns.write(teamStatusFile,JSON.stringify({at:teamNow,pid:ns.pid,...teamBudget,state:isBlackOp(observedAction)?'protected-black-op':'observing',budgetMinutes:options['recruitment-budget-minutes'],recruiting:observedAction?.name==='Recruitment'}),'w');
     if(isBlackOp(observedAction)){lastAssignedTask=observedAction.name;return;}
-    const teamNow=Date.now();if(teamNow-teamBudget.windowAt>=3600000)teamBudget={nodeReset:resetInfo.lastNodeReset,windowAt:teamNow,spentMs:0};
-    if(observedAction?.name==='Recruitment')teamBudget.spentMs+=Math.max(0,Math.min(teamNow-teamLastTick,options['update-interval']*3));teamLastTick=teamNow;
-    if(maintenanceRequested(ns))return;
+    if(maintenanceRequested(ns)) {
+        if(ownsRecruitment&&observedAction?.name==='Recruitment')
+            await getNsDataThroughFile(ns,'ns.isRunning(ns.args[0])&&ns.bladeburner.getCurrentAction()?.name==="Recruitment"?ns.bladeburner.stopBladeburnerAction():false','/Temp/bladeburner-stop-recruitment.txt',[ns.pid]);
+        return;
+    }
     // See if we are able to do bladeburner work
     if (!(await canDoBladeburnerWork(ns))) return;
 
@@ -251,15 +263,26 @@ async function mainLoop(ns) {
     if (currentCity != goToCity && Date.now() > currentTaskEndTime && (await switchToCity(ns, goToCity, travelReason)))
         currentCity = goToCity;
 
-    let teamPlan={state:'not-needed'};
-    if(!options['disable-recruitment']&&options['team-cap']>0&&nextBlackOp&&rank>=blackOpsRanks[nextBlackOp]){
-      try{teamPlan=await getNsDataThroughFile(ns,`(${bbMutationGuard}) ? (${prepareBladeburnerTeam.toString()})({getTeamSize:(...a)=>ns.bladeburner.getTeamSize(...a),setTeamSize:(...a)=>ns.bladeburner.setTeamSize(...a),getActionEstimatedSuccessChance:(...a)=>ns.bladeburner.getActionEstimatedSuccessChance(...a)},ns.args[0],ns.args[1],ns.args[2],(${requiredBladeburnerTeam.toString()})) : {state:"protected-work"}`,'/Temp/bladeburner-team-plan.txt',[nextBlackOp,options['success-threshold'],options['team-cap']]);}
+    let teamPlan={state:'not-needed',reason:!nextBlackOp?'All Black Ops are complete':options['team-cap']===0?'Team use disabled by team cap':rank<blackOpsRanks[nextBlackOp]?'More rank is required before the next Black Op':'No recruitment target'};
+    if(options['team-cap']>0&&nextBlackOp&&rank>=blackOpsRanks[nextBlackOp]){
+      try{teamPlan=await getNsDataThroughFile(ns,`ns.isRunning(ns.args[3])&&(${bbMutationGuard}) ? (${prepareBladeburnerTeam.toString()})({getTeamSize:(...a)=>ns.bladeburner.getTeamSize(...a),setTeamSize:(...a)=>ns.bladeburner.setTeamSize(...a),getActionEstimatedSuccessChance:(...a)=>ns.bladeburner.getActionEstimatedSuccessChance(...a)},ns.args[0],ns.args[1],ns.args[2],(${requiredBladeburnerTeam.toString()})) : {state:"protected-work"}`,'/Temp/bladeburner-team-plan.txt',[nextBlackOp,options['success-threshold'],options['team-cap'],ns.pid]);}
       catch(error){teamPlan={state:'unavailable',error:String(error)};}
     }
-    await ns.write(teamStatusFile,JSON.stringify({at:Date.now(),pid:ns.pid,...teamBudget,...teamPlan,target:nextBlackOp,budgetMinutes:options['recruitment-budget-minutes']}),'w');
+    await ns.write(teamStatusFile,JSON.stringify({at:Date.now(),pid:ns.pid,...teamBudget,...teamPlan,target:nextBlackOp,budgetMinutes:options['recruitment-budget-minutes'],recruiting:observedAction?.name==='Recruitment'}),'w');
+    let levelPlans={};
+    if(!options['disable-level-optimization'])try {
+        const actions=limitedActions.filter(name=>getCount(name)>0&&name!==nextBlackOp).map(name=>[name,contractNames.includes(name)?'Contracts':'Operations']);
+        levelPlans=await getNsDataThroughFile(ns,`(${planBladeburnerLevels.toString()})(ns.bladeburner,JSON.parse(ns.args[0]),ns.args[1],(${bladeburnerRankRate.toString()}),()=>ns.isRunning(ns.args[2])&&(${bbMutationGuard}))`,'/Temp/bladeburner-level-plan.txt',[JSON.stringify(actions),options['success-threshold'],ns.pid]);
+    } catch(error) {ns.print('Level planning unavailable; retaining native levels: '+String(error));}
+    await ns.write('tasks/bladeburner-levels.json',JSON.stringify({at:Date.now(),pid:ns.pid,city:currentCity,plans:levelPlans}),'w');
+
     // Gather the success chance of contracts (based on our current city)
     const contractChances = await getBBDictByActionType(ns, 'getActionEstimatedSuccessChance', "Contracts", contractNames);
     const operationChances = await getBBDictByActionType(ns, 'getActionEstimatedSuccessChance', "Operations", operationNames);
+    for(const [name,plan]of Object.entries(levelPlans)) {
+        if(contractNames.includes(name))contractChances[name]=plan.chance;
+        else operationChances[name]=plan.chance;
+    }
     const blackOpsChance = nextBlackOp === null || rank < blackOpsRanks[nextBlackOp] ? [0, 0] : // Insufficient rank for blackops means chance is zero
         (await getBBDictByActionType(ns, 'getActionEstimatedSuccessChance', "Black Operations", [nextBlackOp]))[nextBlackOp];
     // Define some helpers for determining min/max chance for each action
@@ -268,6 +291,17 @@ async function mainLoop(ns) {
             generalActionNames.includes(actionName) ? [1, 1] : nextBlackOp == actionName ? blackOpsChance : [0, 0];
     const minChance = actionName => getChance(actionName)[0];
     const maxChance = actionName => getChance(actionName)[1];
+
+    // Fetch live action rewards and durations together. Older APIs can retain list-order selection.
+    let actionMetrics={};
+    try {
+        const actions=limitedActions.map(name=>[name,name===nextBlackOp?'Black Operations':contractNames.includes(name)?'Contracts':'Operations']);
+        actionMetrics=await getNsDataThroughFile(ns,
+            'Object.fromEntries(JSON.parse(ns.args[0]).map(([name,type])=>[name,{time:ns.bladeburner.getActionTime(type,name),gain:ns.bladeburner.getActionRankGain(type,name),loss:ns.bladeburner.getActionRankLoss(type,name)}]))',
+            '/Temp/bladeburner-action-metrics.txt',[JSON.stringify(actions)]);
+    } catch { /* Reward APIs unavailable: keep the existing ordering. */ }
+    for(const [name,plan]of Object.entries(levelPlans))actionMetrics[name]=plan.metrics;
+    const actionChances={...contractChances,...operationChances,...(nextBlackOp?{[nextBlackOp]:blackOpsChance}:{})};
 
     // NEXT STEP: Pick the action we should be working on.
     let bestActionName, reason;
@@ -286,6 +320,9 @@ async function mainLoop(ns) {
     } else if (lowStaminaTriggered) {
         bestActionName = chaosByCity[currentCity] > options['max-chaos'] ? "Diplomacy" : "Hyperbolic Regeneration Chamber";
         reason = `Stamina is low: ${(100 * staminaPct).toFixed(1)}% < ${(100 * options['low-stamina-pct']).toFixed(1)}%`
+    } else if(nextBlackOp&&rank>=blackOpsRanks[nextBlackOp]&&minChance(nextBlackOp)>=options['success-threshold']) {
+        bestActionName=nextBlackOp;
+        reason='Black Op ready: '+actionSummaryString(nextBlackOp);
     } // If current city chaos is greater than our threshold, keep it low with "Stealth Retirement" if odds are good
     else if (chaosByCity[currentCity] > options['chaos-recovery-threshold'] && getCount(antiChaosOperation) > 0 && minChance(antiChaosOperation) > 0.99) {
         bestActionName = antiChaosOperation;
@@ -298,8 +335,7 @@ async function mainLoop(ns) {
     else if (goingRaiding && maxChance("Raid") > options['success-threshold']) { // Special-case: Ignore min-chance. Population estimate turns bad as we decimate it, but doesn't seem to affect success.
         bestActionName = "Raid";
         reason = `Only remaining Operations. ${actionSummaryString(bestActionName)}`;
-    } else { // Otherwise, pick the "highest-tier" action we can confidently perform, which should lead to the fastest rep-gain.
-        // Note: Candidate actions will be maintained in order of highest-rep to lowest-rep earning, so we can pick the first after filtering.
+    } else { // Prefer reliable actions with the highest expected net rank per second.
         let candidateActions = limitedActions;
         // We should deal with population uncertainty if its causing some mission to be on the verge of our success threshold
         let populationUncertain = unreservedActions.some(a => getCount(a)>0 && maxChance(a) >= options['success-threshold'] && minChance(a) < options['success-threshold']);
@@ -312,13 +348,10 @@ async function mainLoop(ns) {
         candidateActions = candidateActions.filter(a => getCount(a) > 0);
         //log(ns, `The following actions are available: ${candidateActions}`); // Debug log to see what candidate actions are
 
-        // Pick the first candidate action with a minimum chance of success that exceeds our --success-threshold
-        if (!populationUncertain)
-            bestActionName = candidateActions.filter(a => minChance(a) >= options['success-threshold'] && getCount(a) >= 1)[0];
-        else // Special case for when population uncertainty is high - proceed so long as max chance is high enough
-            bestActionName = candidateActions.filter(a => maxChance(a) >= options['success-threshold'] && getCount(a) >= 1)[0];
-
-        if (!bestActionName) // If there were none, allow us to fall-back to an action with a minimum chance >50%, and maximum chance > threshold
+        const reliableCandidates=candidateActions.filter(a=>minChance(a)>=options['success-threshold']&&getCount(a)>=1);
+        bestActionName=rankBladeburnerActions(reliableCandidates,actionChances,actionMetrics,nextBlackOp,bladeburnerRankRate)[0];
+        // When estimates are uncertain, use Field Analysis rather than trusting the upper bound.
+        if (!populationUncertain && !bestActionName)
             bestActionName = candidateActions.filter(a => a!==nextBlackOp && minChance(a) > 0.5 && maxChance(a) >= options['success-threshold'] && getCount(a) >= 1)[0];
         if (bestActionName) // If we found something to do, log details about its success chance range
             reason = actionSummaryString(bestActionName);
@@ -351,10 +384,13 @@ async function mainLoop(ns) {
 
     }
 
-    if(teamPlan?.state==='needs-recruitment'&&!lowHealthTriggered&&!lowStaminaTriggered&&chaosByCity[currentCity]<=options['chaos-recovery-threshold']&&teamBudget.spentMs<options['recruitment-budget-minutes']*60000&&generalActionNames.includes('Recruitment')){
-      const recruitmentChance=await getBBInfo(ns,'getActionEstimatedSuccessChance(ns.args[0],ns.args[1])','General','Recruitment');
-      if(Array.isArray(recruitmentChance)&&recruitmentChance[0]>=.5){bestActionName='Recruitment';reason=`Recruiting ${teamPlan.required-teamPlan.available} members to reach the success threshold for ${nextBlackOp}`;}
-    }
+    let recruitmentDecision={recruit:false,reason:teamPlan.reason||teamPlan.state};
+    if(!options['disable-recruitment']&&teamPlan?.state==='needs-recruitment'&&!lowHealthTriggered&&!lowStaminaTriggered&&chaosByCity[currentCity]<=options['chaos-recovery-threshold']&&generalActionNames.includes('Recruitment')){
+      const estimate=await getNsDataThroughFile(ns,'(() => {let supportingSleeves=null;try{supportingSleeves=Array.from({length:ns.sleeve.getNumSleeves()},(_,i)=>ns.sleeve.getTask(i)).filter(task=>task?.type==="SUPPORT").length;}catch{}return {chance:ns.bladeburner.getActionEstimatedSuccessChance("General","Recruitment"),duration:ns.bladeburner.getActionTime("General","Recruitment"),progress:ns.bladeburner.getCurrentAction()?.name==="Recruitment"?ns.bladeburner.getActionCurrentTime():0,supportingSleeves,bonusMs:ns.bladeburner.getBonusTime()};})()','/Temp/bladeburner-recruitment-estimate.txt');
+      recruitmentDecision=bladeburnerRecruitmentDecision(teamPlan,estimate.chance,estimate.duration,options['recruitment-budget-minutes']*60000-teamBudget.spentMs,estimate.progress,estimate.supportingSleeves,estimate.bonusMs);
+      if(recruitmentDecision.recruit){bestActionName='Recruitment';reason=recruitmentDecision.reason+' for '+nextBlackOp;}
+    } else if(teamPlan?.state==='needs-recruitment')recruitmentDecision.reason=options['disable-recruitment']?'Recruitment disabled by option':'Waiting for health, stamina, or city chaos recovery';
+    await ns.write(teamStatusFile,JSON.stringify({at:Date.now(),pid:ns.pid,...teamBudget,...teamPlan,target:nextBlackOp,budgetMinutes:options['recruitment-budget-minutes'],recruiting:observedAction?.name==='Recruitment',reason:recruitmentDecision.reason,expectedRecruitmentMs:recruitmentDecision.expectedMs}),'w');
     // Detect our current action (API returns an object like { "type":"Operations", "name":"Investigation" })
     const currentAction = await getBBInfo(ns, `getCurrentAction()`);
     // Special case: If the user has manually kicked off the last BlackOps, don't interrupt it, let it be our last task
@@ -374,21 +410,28 @@ async function mainLoop(ns) {
         }
         // Preserve an assigned action until its first completion; recovery may interrupt ordinary combat.
         const interrupted=lastAssignedTask!==currentAction.name;
-        const urgent=lowHealthTriggered||lowStaminaTriggered;
-        if(bestActionName===currentAction.name||!urgent&&!interrupted&&Date.now()<currentTaskEndTime)return;
+        const count=getCount(currentAction.name);
+        if(!interrupted&&operationNames.includes(currentAction.name)&&Number.isFinite(lastAssignedCount)&&count<lastAssignedCount)currentTaskEndTime=0;
+        lastAssignedCount=count;
+        const urgent=lowHealthTriggered||lowStaminaTriggered||currentAction.name==='Recruitment'&&(teamBudget.spentMs>=options['recruitment-budget-minutes']*60000||bestActionName!=='Recruitment');
+        const levelChange=levelPlans[bestActionName]&&(levelPlans[bestActionName].level!==levelPlans[bestActionName].currentLevel||levelPlans[bestActionName].autoLevel);
+        if(bestActionName===currentAction.name&&!levelChange||!urgent&&!interrupted&&Date.now()<currentTaskEndTime)return;
     } // Otherwise prior action was stopped or ended and no count remain, so we should start a new one regardless of expected currentTaskEndTime
 
     // Change actions if we're not currently doing the desired action
     const bestActionType = nextBlackOp == bestActionName ? "Black Operations" : contractNames.includes(bestActionName) ? "Contracts" :
         operationNames.includes(bestActionName) ? "Operations" : "General";
-    const success = await getNsDataThroughFile(ns, `(${bbMutationGuard}) ? ns.bladeburner.startAction(ns.args[0],ns.args[1]) : false`,null,[bestActionType,bestActionName]);
+    const success = await getNsDataThroughFile(ns, `(${startBladeburnerPlannedAction.toString()})(ns.bladeburner,ns.args[0],ns.args[1],JSON.parse(ns.args[6]),ns.args[3],ns.args[2],ns.args[4],()=>ns.isRunning(ns.args[5])&&(${bbMutationGuard}))`,null,[bestActionType,bestActionName,blackOpsRanks[bestActionName]||0,options['success-threshold'],teamPlan.required||0,ns.pid,JSON.stringify(levelPlans[bestActionName]||null)]);
     const expectedDuration = await getBBInfo(ns, `getActionTime(ns.args[0], ns.args[1])`, bestActionType, bestActionName);
-    log(ns, (success ? `INFO: Switched to Bladeburner ${bestActionType} "${bestActionName}" (${reason}). ETA: ${formatDuration(expectedDuration)}` :
+    log(ns, (success ? `INFO: Switched to Bladeburner ${bestActionType} "${bestActionName}" (${reason}${levelPlans[bestActionName]?', level '+levelPlans[bestActionName].level:''}). ETA: ${formatDuration(expectedDuration)}` :
         `ERROR: Failed to switch to Bladeburner ${bestActionType} "${bestActionName}" (Count: ${getCount(bestActionName)}, ` +
         `ETA: ${formatDuration(expectedDuration)}, Details: ${reason})`),
         !success, success ? (options['toast-operations'] ? 'info' : undefined) : 'error');
     // Ensure we perform this new action at least once before interrupting it
     lastAssignedTask = success ? bestActionName : null;
+    lastAssignedCount = success ? getCount(bestActionName) : null;
+    if(success)ownsRecruitment=bestActionName==='Recruitment';
+    if(success)await ns.write(teamStatusFile,JSON.stringify({at:Date.now(),pid:ns.pid,...teamBudget,...teamPlan,target:nextBlackOp,budgetMinutes:options['recruitment-budget-minutes'],recruiting:bestActionName==='Recruitment',reason:recruitmentDecision.reason,expectedRecruitmentMs:recruitmentDecision.expectedMs}),'w');
     currentTaskEndTime = !success ? 0 : Date.now() + expectedDuration + 10; // Pad this a little to ensure we don't interrupt it.
 }
 
@@ -405,23 +448,12 @@ async function switchToCity(ns, city, reason) {
  * Decides how to spend skill points. */
 async function spendSkillPoints(ns) {
     try{const goal=JSON.parse(ns.read('tasks/achievement-goals.json'));if(goal.nodeReset===resetInfo.lastNodeReset&&goal.expiresAt>Date.now()&&ns.isRunning(goal.ownerPid)&&goal.bankBladeburnerPoints)return;}catch{}
-    for(let purchases=0;purchases<100;purchases++) { // Bound spending so actions are still monitored.
-        if(isScriptPaused(ns,ns.getScriptName()))return;
-        const unspent = await getBBInfo(ns, 'getSkillPoints()');
-        if (!(unspent>0)) return;
-        const skillLevels = await getBBDict(ns, 'getSkillLevel(%)', skillNames);
-        const skillCosts = await getBBDict(ns, 'getSkillUpgradeCost(%)', skillNames);
-        const skillToUpgrade=nextSkill(skillNames,skillLevels,skillCosts,unspent,costAdjustments);
-        if(!skillToUpgrade)return;
-        // Otherwise, purchase the upgrade
-        if (await getBBInfo(ns, `upgradeSkill(ns.args[0])`, skillToUpgrade))
-            log(ns, `SUCCESS: Upgraded Bladeburner skill ${skillToUpgrade}`, false, options['toast-upgrades'] ? 'success' : undefined);
-        else {
-            log(ns, `WARNING: Something went wrong while trying to upgrade Bladeburner skill ${skillToUpgrade}. ` +
-                `Currently have ${unspent} SP, upgrade should cost ${skillCosts[skillToUpgrade]} SP.`, false, 'warning');
-            return; // Retry after the normal update interval, rather than looping forever.
-        }
-        await ns.sleep(10);
+    const purchased=await getNsDataThroughFile(ns,
+        `(${spendBladeburnerSkills.toString()})(ns.bladeburner,JSON.parse(ns.args[1]),JSON.parse(ns.args[2]),(${nextSkill.toString()}),()=>ns.isRunning(ns.args[0])&&(${bbMutationGuard})&&(()=>{try{const goal=JSON.parse(ns.read("tasks/achievement-goals.json"));return !(goal.nodeReset===ns.args[3]&&goal.expiresAt>Date.now()&&ns.isRunning(goal.ownerPid)&&goal.bankBladeburnerPoints);}catch{return true;}})())`,
+        '/Temp/bladeburner-skill-purchases.txt',[ns.pid,JSON.stringify(skillNames),JSON.stringify(costAdjustments),resetInfo.lastNodeReset]);
+    if(purchased.length) {
+        const summary=Object.entries(purchased.reduce((counts,name)=>(counts[name]=(counts[name]||0)+1,counts),{})).map(([name,count])=>`${name} +${count}`).join(', ');
+        log(ns,'SUCCESS: Upgraded Bladeburner skills: '+summary,false,options['toast-upgrades']?'success':undefined);
     }
 }
 

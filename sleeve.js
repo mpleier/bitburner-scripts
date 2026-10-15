@@ -3,7 +3,7 @@ import {achievementActionAllowed} from './achievement-policy.js';
 import { claimSpending } from './spending-policy.js';
 import { chooseSleeveCrime } from './automation-policy.js';
 import { isScriptPaused } from './automation-control.js';
-import { bestSleeveCrime, sleeveCrimeChance, sleeveRepAssignments, purchaseSleeveAugBatch, sleeveTaskMatches, sleeveReserves } from './sleeve-policy.js';
+import { bestSleeveCrime, sleeveCrimeChance, sleeveRepAssignments, purchaseSleeveAugBatch, sleeveTaskMatches, sleeveReserves, sleeveControlAllowed, sleeveOptionsError, sleeveAugSpendingBudget } from './sleeve-policy.js';
 import { log, getConfiguration, instanceCount, disableLogs, getActiveSourceFiles, getNsDataThroughFile, formatMoney, formatDuration } from './helpers.js'
 
 const argsSchema = [
@@ -65,6 +65,8 @@ export async function main(ns) {
     if (isScriptPaused(ns, ns.getScriptName())) return;
     const runOptions = getConfiguration(ns, argsSchema);
     if (!runOptions || await instanceCount(ns) > 1) return; // Prevent multiple instances of this script from being started, even with different args.
+    const invalid=sleeveOptionsError(runOptions);if(invalid)return ns.tprint('Sleeves: '+invalid);
+    if(runOptions.crime){const name=String(runOptions.crime).replaceAll('_',' ').toLowerCase();const crime=Object.values(ns.enums.CrimeType).find(c=>c.toLowerCase()===name);if(!crime)return ns.tprint('Sleeves: unknown crime '+runOptions.crime);runOptions.crime=crime;}
     options = runOptions; // We don't set the global "options" until we're sure this is the only running instance
     disableLogs(ns, ['getServerMoneyAvailable']);
     // Ensure the global state is reset (e.g. after entering a new bitnode)
@@ -80,8 +82,10 @@ export async function main(ns) {
     // Start the main loop
     while (!isScriptPaused(ns,ns.getScriptName())) {
  automationHeartbeat(ns);
+        if(maintenanceRequested(ns)){await ns.write('tasks/sleeve-status.json',JSON.stringify({at:Date.now(),pid:ns.pid,state:'waiting',reason:'Automation maintenance'}),'w');await ns.sleep(interval);continue;}
         try { await mainLoop(ns); }
         catch (err) {
+            await ns.write('tasks/sleeve-status.json',JSON.stringify({at:Date.now(),pid:ns.pid,state:'recovering',error:String(err)}),'w');
             log(ns, `WARNING: sleeve.js Caught (and suppressed) an unexpected error in the main loop:\n` +
                 (err?.stack || '') + (typeof err === 'string' ? err : err.message || JSON.stringify(err)), false, 'warning');
         }
@@ -92,6 +96,7 @@ export async function main(ns) {
 /** @param {NS} ns
  * Purchases augmentations for sleeves */
 async function manageSleeveAugs(ns, i, budget, reserve) {
+    budget=sleeveAugSpendingBudget(ns,budget);
     // Retrieve and cache the set of available sleeve augs (cached temporarily, but not forever, in case rules around this change)
     if (availableAugs[i] == null || Date.now() > cacheExpiry[i]) {
         cacheExpiry[i] = Date.now() + 60000;
@@ -111,14 +116,18 @@ async function manageSleeveAugs(ns, i, budget, reserve) {
         let strAction = `Purchase ${batchCount}/${availableAugs[i].length} augmentations for sleeve ${i} at total cost of ${formatMoney(batchCost)}`;
         const toPurchase = availableAugs[i].slice(0, batchCount);
         const receipt = await getNsDataThroughFile(ns,
-            `(() => { const claimSpending=${claimSpending.toString()}; return (${purchaseSleeveAugBatch.toString()})(ns,ns.args[0],JSON.parse(ns.args[1]),ns.args[2],ns.args[3],claimSpending); })()`,
-            '/Temp/sleeve-purchase.txt', [i, JSON.stringify(toPurchase.map(a => a.name)), budget, reserve]);
+            `(() => { const claimSpending=${claimSpending.toString()}; return (${purchaseSleeveAugBatch.toString()})(ns,ns.args[0],JSON.parse(ns.args[1]),ns.args[2],ns.args[3],claimSpending,()=>(${sleeveControlAllowed.toString()})(ns,ns.args[4],"sleeve.js")&&(${achievementActionAllowed.toString()})(ns,"sleeve"),true); })()`,
+            '/Temp/sleeve-purchase.txt', [i, JSON.stringify(toPurchase.map(a => a.name)), budget, reserve,ns.pid]);
         availableAugs[i] = null;
         if (receipt.purchased.length) {
-            log(ns, `SUCCESS: ${strAction}`, true, 'success');
+            log(ns, `SUCCESS: Sleeve ${i} purchased ${receipt.purchased.length} augmentations for ${formatMoney(receipt.spent)}.`, true, 'success');
             [lastSleeveHp[i], lastSleeveShock[i]] = [undefined, undefined]; // Sleeve stats are reset on installation of augs, so forget saved health info
-        } else log(ns, `ERROR: Failed to ${strAction}`, true, 'error');
-        lastPurchaseTime[i] = Date.now();
+        } else {
+            const reasons=[...new Set((receipt.skipped||[]).map(s=>s.reason))].join('; ')||'no augmentation purchased';
+            const rejected=(receipt.skipped||[]).some(s=>s.reason==='native purchase rejected');
+            log(ns, `${rejected?'WARNING: Native rejection':'INFO: Deferred'} sleeve ${i} augmentation purchase: ${reasons}.`,false,rejected?'warning':undefined);
+        }
+        if(receipt.purchased.length)lastPurchaseTime[i] = Date.now();
         return receipt.spent;
     }
     return 0;
@@ -150,8 +159,9 @@ async function mainLoop(ns) {
     // Update info
     numSleeves = await getNsDataThroughFile(ns, `ns.sleeve.getNumSleeves()`);
     const playerInfo = await getPlayerInfo(ns);
+    const reset=await getNsDataThroughFile(ns,'ns.getResetInfo()');
     // If we have not yet detected that we are in bladeburner, do that now (unless disabled)
-    if (!options['disable-bladeburner'] && (7 in ownedSourceFiles) && !playerInBladeburner)
+    if (!options['disable-bladeburner'] && ((7 in ownedSourceFiles) || reset.currentNode===6) && !playerInBladeburner)
         try { playerInBladeburner = await getNsDataThroughFile(ns, 'ns.bladeburner.inBladeburner()'); } catch { }
     let playerWorkInfo = {};
     if (4 in ownedSourceFiles) try { playerWorkInfo = await getCurrentWorkInfo(ns); } catch { }
@@ -163,8 +173,8 @@ async function mainLoop(ns) {
     // Estimate the cost of sleeves training over the next time interval to see if (ignoring income) we would drop below our reserve.
     const costByNextLoop = interval / 1000 * numSleeves * 12000;
     // Get time in current bitnode (to cap how long we'll train sleeves)
-    const timeInBitnode = Date.now() - (await getNsDataThroughFile(ns, 'ns.getResetInfo()')).lastAugReset;
-    let canTrain = !options['disable-training'] &&
+    const timeInBitnode = Date.now() - reset.lastNodeReset;
+    let canTrain = !reset.bitNodeOptions?.disableSleeveExpAndAugmentation && !options['disable-training'] &&
         // To avoid training forever when mults are crippling, stop training if we've been in the bitnode a certain amount of time
         (options['training-cap-seconds'] * 1000 > timeInBitnode) &&
         // Don't train if we have no money (unless player has given permission to train into debt)
@@ -173,12 +183,12 @@ async function mainLoop(ns) {
     budget = Math.max(0, playerInfo.money - augmentationReserve) * Math.max(0,Math.min(1,Number(options['aug-budget'])||0));
     // If any sleeve is training at the gym, see if we can purchase a gym upgrade to help them
     if ((9 in ownedSourceFiles) && canTrain && task.some(t => t?.startsWith("train")) && !options['disable-spending-hashes-for-gym-upgrades'])
-        if (await getNsDataThroughFile(ns, `(${achievementActionAllowed.toString()})(ns,"hashSpending") && ns.hacknet.spendHashes("Improve Gym Training")`, '/Temp/spend-hashes-on-gym.txt'))
+        if (await getNsDataThroughFile(ns, `(${sleeveControlAllowed.toString()})(ns,ns.args[0],"sleeve.js")&&(${achievementActionAllowed.toString()})(ns,"sleeve")&&(${achievementActionAllowed.toString()})(ns,"hashSpending") && ns.hacknet.spendHashes("Improve Gym Training")`, '/Temp/spend-hashes-on-gym.txt',[ns.pid]))
             log(ns, `SUCCESS: Bought "Improve Gym Training" to speed up Sleeve training.`, false, 'success');
     if ((9 in ownedSourceFiles) && canTrain && task.some(t => t?.startsWith("study")) && !options['disable-spending-hashes-for-study-upgrades'])
-        if (await getNsDataThroughFile(ns, `(${achievementActionAllowed.toString()})(ns,"hashSpending") && ns.hacknet.spendHashes("Improve Studying")`, '/Temp/spend-hashes-on-study.txt'))
+        if (await getNsDataThroughFile(ns, `(${sleeveControlAllowed.toString()})(ns,ns.args[0],"sleeve.js")&&(${achievementActionAllowed.toString()})(ns,"sleeve")&&(${achievementActionAllowed.toString()})(ns,"hashSpending") && ns.hacknet.spendHashes("Improve Studying")`, '/Temp/spend-hashes-on-study.txt',[ns.pid]))
             log(ns, `SUCCESS: Bought "Improve Studying" to speed up Sleeve studying.`, false, 'success');
-    if (playerInBladeburner && (7 in ownedSourceFiles)) {
+    if (playerInBladeburner && ((7 in ownedSourceFiles) || reset.currentNode===6)) {
         const bladeburnerCity = await getNsDataThroughFile(ns, `ns.bladeburner.getCity()`);
         bladeburnerCityChaos = await getNsDataThroughFile(ns, `ns.bladeburner.getCityChaos(ns.args[0])`, null, [bladeburnerCity]);
         bladeburnerContractChances = await getNsDataThroughFile(ns,
@@ -221,9 +231,10 @@ async function mainLoop(ns) {
     }
 
     for (let i = 0; i < numSleeves; i++) {
+        if(isScriptPaused(ns,ns.getScriptName())||maintenanceRequested(ns))return;
         let sleeve = sleeveInfo[i]; // For convenience, merge all sleeve stats/info into one object
         // Manage sleeve augmentations (if available)
-        if (sleeve.shock == 0) // No augs are available augs until shock is 0
+        if (sleeve.shock == 0 && !reset.bitNodeOptions?.disableSleeveExpAndAugmentation) // No augs are available augs until shock is 0
         {
             const spent = await manageSleeveAugs(ns, i, budget, augmentationReserve);
             budget = Math.max(0, budget - spent);
@@ -253,7 +264,8 @@ async function mainLoop(ns) {
             lastStatusUpdateTime[i] = Date.now();
         }
     }
-    await ns.write('tasks/sleeve-status.json', JSON.stringify({at:Date.now(),pid:ns.pid,sleeves:sleeveInfo.map((s,i)=>({index:i,shock:s.shock,sync:s.sync,memory:s.memory,task:task[i]||'waiting',actualTask:actualTasks[i]})),remainingAugBudget:budget}), 'w');
+    const currentTasks = await getNsDataThroughFile(ns,'ns.args.map(i=>ns.sleeve.getTask(i))','/Temp/sleeve-tasks-final.txt',[...Array(numSleeves).keys()]);
+    await ns.write('tasks/sleeve-status.json', JSON.stringify({at:Date.now(),pid:ns.pid,state:'managing',sleeves:sleeveInfo.map((s,i)=>({index:i,shock:s.shock,sync:s.sync,memory:s.memory,task:task[i]||'waiting',actualTask:currentTasks[i]})),remainingAugBudget:budget,sharedAugBudgetRemaining:sleeveAugSpendingBudget(ns,budget)}), 'w');
 }
 
 /** Picks the best task for a sleeve, and returns the information to assign and give status updates for that task.
@@ -296,7 +308,7 @@ async function pickSleeveTask(ns, playerInfo, playerWorkInfo, i, sleeve, canTrai
         if (untrainedStats.length > 0) {
             if (sleeve.city != ns.enums.CityName.Sector12) {
                 log(ns, `Moving Sleeve ${i} from ${sleeve.city} to Sector-12 so that they can study at Powerhouse Gym.`);
-                const traveled = await getNsDataThroughFile(ns, 'ns.getPlayer().money>=200000+Math.max(0,Number(ns.read("reserve.txt"))||0,Number(ns.args[2])||0) ? ns.sleeve.travel(ns.args[0],ns.args[1]) : false', null, [i,ns.enums.CityName.Sector12,trainingReserve]);
+                const traveled = await getNsDataThroughFile(ns, `(${sleeveControlAllowed.toString()})(ns,ns.args[3],"sleeve.js")&&(${achievementActionAllowed.toString()})(ns,"sleeve")&&ns.getPlayer().money>=200000+Math.max(0,Number(ns.read("reserve.txt"))||0,Number(ns.args[2])||0) ? ns.sleeve.travel(ns.args[0],ns.args[1]) : false`, null, [i,ns.enums.CityName.Sector12,trainingReserve,ns.pid]);
                 if (!traveled) return await crimeTask(ns,'Mug',i,sleeve,'training travel is unaffordable');
             }
             var trainStat = untrainedStats.reduce((min, s) => sleeve.skills[s] < sleeve.skills[min] ? s : min, untrainedStats[0]);
@@ -311,7 +323,7 @@ async function pickSleeveTask(ns, playerInfo, playerWorkInfo, i, sleeve, canTrai
         } else if (untrainedSmarts.length > 0) {
             if (sleeve.city != ns.enums.CityName.Volhaven) {
                 log(ns, `Moving Sleeve ${i} from ${sleeve.city} to Volhaven so that they can study at ZB Institute.`);
-                const traveled = await getNsDataThroughFile(ns, 'ns.getPlayer().money>=200000+Math.max(0,Number(ns.read("reserve.txt"))||0,Number(ns.args[2])||0) ? ns.sleeve.travel(ns.args[0],ns.args[1]) : false', null, [i,ns.enums.CityName.Volhaven,trainingReserve]);
+                const traveled = await getNsDataThroughFile(ns, `(${sleeveControlAllowed.toString()})(ns,ns.args[3],"sleeve.js")&&(${achievementActionAllowed.toString()})(ns,"sleeve")&&ns.getPlayer().money>=200000+Math.max(0,Number(ns.read("reserve.txt"))||0,Number(ns.args[2])||0) ? ns.sleeve.travel(ns.args[0],ns.args[1]) : false`, null, [i,ns.enums.CityName.Volhaven,trainingReserve,ns.pid]);
                 if (!traveled) return await crimeTask(ns,'Mug',i,sleeve,'study travel is unaffordable');
             }
             var trainSmart = untrainedSmarts.reduce((min, s) => sleeve.skills[s] < sleeve.skills[min] ? s : min, untrainedSmarts[0]);
@@ -441,8 +453,10 @@ async function setSleeveTask(ns, i, designatedTask, command, args) {
     let strAction = `Set sleeve ${i} to ${designatedTask}`;
     if (/setToGymWorkout|setToUniversityCourse/.test(command))
         command = `ns.getPlayer().money>Math.max(0,Number(ns.read("reserve.txt"))||0,${trainingReserve})+${12000*numSleeves} ? (${command}) : false`;
+    const parentIndex=args.length;
+    command = `(${sleeveControlAllowed.toString()})(ns,ns.args[${parentIndex}],"sleeve.js")&&(${achievementActionAllowed.toString()})(ns,"sleeve") ? (${command}) : false`;
     try { // Assigning a task can throw an error rather than simply returning false. We must suppress this
-        if (await getNsDataThroughFile(ns, command, `/Temp/sleeve-${command.slice(10, command.indexOf("("))}.txt`, args)) {
+        if (await getNsDataThroughFile(ns, command, '/Temp/sleeve-set-task.txt', [...args,ns.pid])) {
             task[i] = designatedTask;
             log(ns, `SUCCESS: ${strAction}`);
             return true;

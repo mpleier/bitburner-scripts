@@ -1,3 +1,4 @@
+import {homeRamReserve} from './home-ram-policy.js';
 /** Short-lived UI ownership. Casino and BitNode transitions take priority. */
 export const activityFile = 'tasks/activity-lock.json';
 export const ramReserveFile = 'tasks/automation-ram-reserve.json';
@@ -39,7 +40,7 @@ export function pendingRam(ns, now = Date.now()) {
     if (record.expiresAt > now && ns.isRunning(record.ownerPid)) ram = Math.max(0, Number(record.ram) || 0);
   } catch { }
   const activity = activityRecord(ns);
-  return Math.max(ram, activity?.reserveRam > 0 ? activity.reserveRam + 8 : 0);
+  return homeRamReserve(ns)+Math.max(ram, activity?.reserveRam > 0 ? activity.reserveRam + 8 : 0);
 }
 /** Fresh check for RAM-dodged actions; no import is needed in their generated script. */
 export const activityGuard = '(() => { try { const r=JSON.parse(ns.read("tasks/activity-lock.json")); return r.expiresAt>Date.now() && ns.isRunning(r.ownerPid); } catch { return false; } })()';

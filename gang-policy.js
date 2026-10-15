@@ -41,7 +41,7 @@ export function purchaseGangEquipment(ns,orders,reserve,budget,claim = () => tru
     if(!allowed(ns))return false;
     const price=ns.gang.getEquipmentCost(order.equipmentName);
     const hold=Math.max(0,reserve,Number(ns.read('reserve.txt'))||0);
-    if(!(price>0)||!Number.isFinite(price)||price>remaining||ns.getPlayer().money<price+hold)return false;
+    if(!(price>0)||!Number.isFinite(price)||(Number.isFinite(order.cost)&&price>order.cost)||price>remaining||ns.getPlayer().money<price+hold)return false;
     if(!claim(ns,"gang",price))return false;
     const success=ns.gang.purchaseEquipment(order.member,order.equipmentName);
     if(success)remaining-=price;
@@ -53,6 +53,7 @@ export function purchaseGangEquipment(ns,orders,reserve,budget,claim = () => tru
 export function gangMutationAllowed(ns,ownerPid=null) {
  if(ownerPid!==null&&!ns.isRunning(ownerPid))return false;
  if(ns.read('remote-control/paused/gangs.js.txt').trim()==='true')return false;
+ try{const r=JSON.parse(ns.read('tasks/automation-maintenance.json'));if(r.expiresAt>Date.now()&&ns.isRunning(r.ownerPid))return false;}catch{}
  try{const p=JSON.parse(ns.read('tasks/achievement-profile.json'));if(p.active&&p.nodeReset===ns.getResetInfo().lastNodeReset&&p.deniedActions?.includes('gang'))return false;}catch{}
  return true;
 }
@@ -68,17 +69,75 @@ export function gangTrainingRequired(lastReset,now,ticks,tickTime=20000) {
  return Number.isFinite(lastReset)&&now-lastReset<ticks*tickTime;
 }
 /** Only strict wanted reductions can advance recovery; mandatory training stays intact. */
-export function nextWantedDowngrade(assignments,rates,locked=[]) {
+export function nextWantedDowngrade(assignments,rates,locked=[],focus='respect') {
+ const lock=new Set(locked);let best=null;
+ const value=task=>Math.max(0,Number(task[focus])||0);
+ for(const [name,current]of Object.entries(assignments)) {
+  if(lock.has(name))continue;
+  for(const next of rates[name]||[]) {
+   if(!Number.isFinite(next.wanted)||next.wanted>=current.wanted)continue;
+   const reduction=current.wanted-next.wanted;
+   const cost=Math.max(0,value(current)-value(next))/reduction;
+   if(!best||cost<best.cost||cost===best.cost&&reduction>best.reduction)best={name,task:next,cost,reduction};
+  }
+ }
+ return best?{name:best.name,task:best.task}:null;
+}
+/** Keep the prior recovery path as a candidate: cost ratios alone can overshoot a small deficit. */
+export function largestWantedDowngrade(assignments,rates,locked=[]) {
  const lock=new Set(locked);let best=null;
  for(const [name,current]of Object.entries(assignments)) {
   if(lock.has(name))continue;
-  const next=rates[name]?.find(t=>Number.isFinite(t.wanted)&&t.wanted<current.wanted);
+  const next=rates[name]?.find(task=>Number.isFinite(task.wanted)&&task.wanted<current.wanted);
   if(next&&(!best||current.wanted>assignments[best.name].wanted))best={name,task:next};
  }
  return best;
+}
+/** Use spare wanted capacity after recovery, without undoing mandatory training. */
+export function improveGangPlan(assignments,rates,focus,tolerance,locked=[]) {
+ const plan={...assignments},lock=new Set(locked);
+ let wanted=gangTaskTotals(plan).wanted;
+ if(wanted>tolerance)return plan;
+ // Each accepted change strictly increases the objective; the bound also limits CPU work.
+ const limit=Object.values(rates).reduce((sum,tasks)=>sum+tasks.length,0);
+ for(let step=0;step<limit;step++) {
+  let best=null;
+  for(const [name,current]of Object.entries(plan)) {
+   if(lock.has(name))continue;
+   for(const task of rates[name]||[]) {
+    const gain=(Number(task[focus])||0)-(Number(current[focus])||0);
+    const nextWanted=wanted+task.wanted-current.wanted;
+    if(gain>0&&Number.isFinite(nextWanted)&&nextWanted<=tolerance&&(!best||gain>best.gain))best={name,task,gain,wanted:nextWanted};
+   }
+  }
+  if(!best)break;
+  plan[best.name]=best.task;wanted=best.wanted;
+ }
+ return plan;
 }
 export function betterGangPlan(wanted,gain,previousWanted,previousGain,tolerance) {
  const feasible=wanted<=tolerance,previousFeasible=previousWanted<=tolerance;
  if(feasible!==previousFeasible)return feasible;
  return feasible?gain>previousGain:wanted<previousWanted||wanted===previousWanted&&gain>previousGain;
+}
+
+/** Recheck the candidate against fresh respect, then remove combat exposure before resetting stats. */
+export function ascendGangMemberSafely(ns,name,stats,base,spacing,choose,allowed){
+ if(!allowed(ns))return null;
+ const names=ns.gang.getMemberNames(),gang=ns.gang.getGangInformation();
+ const results=Object.fromEntries(names.map(n=>[n,ns.gang.getAscensionResult(n)]));
+ if(choose(results,gang,names,stats,base,spacing)[0]?.name!==name)return null;
+ ns.gang.setTerritoryWarfare(false);
+ const result=ns.gang.ascendMember(name);
+ if(result)ns.gang.setMemberTask(name,'Train '+(gang.isHacking?'Hacking':'Combat'));
+ return result;
+}
+export function restoreGangTraining(saved,reset,names,now=Date.now()){
+ if(saved?.nodeReset!==reset.lastNodeReset||saved?.augReset!==reset.lastAugReset)return {};
+ return Object.fromEntries(names.filter(name=>Number.isFinite(saved.members?.[name])&&saved.members[name]>=0&&saved.members[name]<=now).map(name=>[name,saved.members[name]]));
+}
+/** Safe cleanup during maintenance and exit; leave ordinary assignments alone. */
+export function suspendGangWarfare(ns,assignments){
+ try{ns.gang.setTerritoryWarfare(false);}catch{}
+ for(const [name,task]of Object.entries(assignments))try{if(task!=='Territory Warfare'&&ns.gang.getMemberInformation(name).task==='Territory Warfare')ns.gang.setMemberTask(name,task);}catch{}
 }

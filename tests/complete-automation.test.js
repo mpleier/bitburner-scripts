@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { infiltrationInput, chooseInfiltration, findInfiltrationState, selectRewardFaction, selectedRewardFaction, enterInfiltration, marketRecoveryDelay, recordInfiltrationOutcome } from '../infiltration-solvers.js';
+import { infiltrationInput, chooseInfiltration, findInfiltrationState, selectRewardFaction, selectedRewardFaction, enterInfiltration, marketRecoveryDelay, recordInfiltrationOutcome, infiltrationEntryAllowed } from '../infiltration-solvers.js';
 import { playInfiltration } from '../infiltration-manager.js';
 import { activityBusy, claimActivity, releaseActivity, pendingRam, markActivitySupport, compatibleFocusWorkers } from '../activity-coordination.js';
 import { needsHealing } from '../health-manager.js';
@@ -109,7 +109,7 @@ test('the infiltration runner cancels an unknown model without dispatching keybo
   let cancelled=false;
   const model={maxLevel:3,startInfiltration(){},cancel(){cancelled=true;},results:'',stage:stage({unknown:true})};
   const files=new Map();
-  const ns={pid:1,read:file=>files.get(file)||'',ps:()=>[],isRunning:()=>true,write:async(file,data)=>files.set(file,data),sleep:async()=>{}};
+  const ns={pid:1,getServerMaxRam:()=>512,read:file=>files.get(file)||'',ps:()=>[],isRunning:()=>true,write:async(file,data)=>files.set(file,data),sleep:async()=>{}};
   const result=await playInfiltration(ns,fakeDocument(model),model);
   assert.equal(result.status,'unsupported-ui'); assert.equal(cancelled,true);
 });
@@ -120,7 +120,7 @@ test('health recovery recognizes missing HP and ignores healthy saves', () => {
 });
 test('activity ownership expires and dead owners cannot block managers', async () => {
   const files=new Map(); let alive=true;
-  const ns={pid:1,read:file=>files.get(file)||'',isRunning:()=>alive,write:async(file,data)=>files.set(file,data),rm:file=>files.delete(file)};
+  const ns={pid:1,getServerMaxRam:()=>512,read:file=>files.get(file)||'',isRunning:()=>alive,write:async(file,data)=>files.set(file,data),rm:file=>files.delete(file)};
   assert.equal(await claimActivity(ns,'infiltration'),true);
   assert.equal(activityBusy(ns,2),true); assert.equal(activityBusy(ns,1),false);
   assert.equal(await claimActivity({...ns,pid:2},'other'),false);
@@ -128,7 +128,7 @@ test('activity ownership expires and dead owners cannot block managers', async (
   alive=false; assert.equal(activityBusy(ns,2),false);
   alive=true; releaseActivity(ns); assert.equal(activityBusy(ns,2),false);
   files.set('tasks/automation-ram-reserve.json',JSON.stringify({ownerPid:1,expiresAt:200,ram:731}));
-  assert.equal(pendingRam(ns,100),731); assert.equal(pendingRam(ns,200),0); alive=false; assert.equal(pendingRam(ns,100),0);
+  assert.equal(pendingRam(ns,100),859); assert.equal(pendingRam(ns,200),128); alive=false; assert.equal(pendingRam(ns,100),128);
 });
 test('infiltration waits for running focus workers to support activity ownership', async () => {
   const files=new Map(),processes=[{filename:'bladeburner.js',pid:5}];
@@ -140,11 +140,11 @@ test('infiltration waits for running focus workers to support activity ownership
 });
 test('UI ownership preserves the paused faction worker RAM allowance during refreshes', async () => {
   const files=new Map();
-  const ns={pid:1,read:file=>files.get(file)||'',isRunning:()=>true,write:async(file,data)=>files.set(file,data),rm:file=>files.delete(file)};
+  const ns={pid:1,getServerMaxRam:()=>512,read:file=>files.get(file)||'',isRunning:()=>true,write:async(file,data)=>files.set(file,data),rm:file=>files.delete(file)};
   await claimActivity(ns,'infiltration',60);
-  assert.equal(pendingRam(ns),68);
-  await claimActivity(ns,'infiltration'); assert.equal(pendingRam(ns),68);
-  releaseActivity(ns); assert.equal(pendingRam(ns),0);
+  assert.equal(pendingRam(ns),196);
+  await claimActivity(ns,'infiltration'); assert.equal(pendingRam(ns),196);
+  releaseActivity(ns); assert.equal(pendingRam(ns),128);
 });
 test('stock promotions require fresh owned exposure and a reliable favorable forecast', () => {
   const stocks=[{sym:'LONG',prob:.8,sharesLong:100,sharesShort:0,price:10},{sym:'SHORT',prob:.2,sharesLong:0,sharesShort:200,price:10}];
@@ -256,4 +256,45 @@ test('infiltration combat cleanup converts the void API result into a readable r
   const source=await readFile(new URL('../infiltration-manager.js',import.meta.url),'utf8');
   assert.match(source,/stopBladeburnerAction\(\), "stopped"/);
   assert.match(source,/if \(combat === 'blackop-active'\)/);
+});
+
+
+test('serialized infiltration entry guard requires a live owner and unexpired UI lease',()=>{
+ const files=new Map(),alive=new Set([1]);let processes=[];
+ const ns={read:f=>files.get(f)||'',isRunning:pid=>alive.has(pid),ps:()=>processes};
+ const allowed=Function('return ('+infiltrationEntryAllowed.toString()+')')();
+ assert.equal(allowed(ns,1),false);
+ files.set('tasks/activity-lock.json',JSON.stringify({ownerPid:1,expiresAt:Date.now()+10000}));assert.equal(allowed(ns,1),true);
+ files.set('remote-control/paused/infiltration-manager.js.txt','true');assert.equal(allowed(ns,1),false);files.delete('remote-control/paused/infiltration-manager.js.txt');
+ for(const file of ['tasks/automation-maintenance.json','tasks/progression-transition.json']){
+  files.set(file,JSON.stringify({ownerPid:2,expiresAt:Date.now()+10000}));assert.equal(allowed(ns,1),true);
+  alive.add(2);assert.equal(allowed(ns,1),false);alive.delete(2);files.delete(file);
+ }
+ processes=[{filename:'/casino.js'}];assert.equal(allowed(ns,1),false);processes=[{filename:'ascend.js'}];assert.equal(allowed(ns,1),false);processes=[];
+ alive.delete(1);assert.equal(allowed(ns,1),false);
+});
+test('reward completion tolerates delayed rendering without clicking twice',async()=>{
+ let ended=false,pending=false,sleeps=0,clicks=0;
+ const model={maxLevel:3,startInfiltration(){},cancel(){ended=true;},results:'',stage:stage({})};
+ const sell={textContent:'Sell for $100',click(){clicks++;pending=true;}};
+ const document=fakeDocument(model,[sell]);document.body.textContent='Infiltration successful!';
+ const query=document.querySelectorAll;document.querySelectorAll=selector=>ended?[]:query(selector);
+ const files=new Map(),ns={pid:1,read:f=>files.get(f)||'',ps:()=>[],isRunning:()=>true,write:async(f,v)=>files.set(f,v),sleep:async()=>{if(pending&&++sleeps===3)ended=true;}};
+ const result=await playInfiltration(ns,document,model);assert.equal(result.status,'completed');assert.equal(clicks,1);assert.equal(sleeps,3);
+});
+test('losing the activity lease prevents puzzle input',async()=>{
+ let cancelled=false,pressed=false;
+ const model={maxLevel:3,startInfiltration(){},cancel(){cancelled=true;},results:'',stage:stage({answer:'A',guess:'',onKey(){pressed=true;}})};
+ const files=new Map([['tasks/activity-lock.json',JSON.stringify({ownerPid:2,expiresAt:Date.now()+10000})]]);
+ const ns={pid:1,read:f=>files.get(f)||'',ps:()=>[],isRunning:()=>true,write:async(f,v)=>files.set(f,v),sleep:async()=>{}};
+ const result=await playInfiltration(ns,fakeDocument(model),model);assert.equal(result.status,'interrupted');assert.equal(cancelled,true);assert.equal(pressed,false);
+});
+test('runner heartbeat remains fresh inside active infiltration and delayed entry uses fresh guards',async()=>{
+ const source=await readFile(new URL('../infiltration-manager.js',import.meta.url),'utf8');
+ const runner=source.slice(source.indexOf('export async function playInfiltration'),source.indexOf('export async function main'));
+ assert.ok(runner.includes('automationHeartbeat(ns)'));
+ assert.ok(source.includes('infiltrationEntryAllowed.toString()'));
+ assert.ok(source.includes('sourceFiles[6] || sourceFiles[7]'));
+ assert.ok(source.includes("else if (!active&&enteredUi&&!activityBusy(ns)&&!transitionBusy(ns))"));
+ assert.equal(recordInfiltrationOutcome({}, {status:'error'},100).retryAt,30100);
 });

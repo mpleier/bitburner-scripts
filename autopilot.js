@@ -1,3 +1,4 @@
+import {homeRamReserve,reclaimHomeRam} from './home-ram-policy.js';
 import {progressionSpeed} from './progression-speed-policy.js';
 import {registerAutomation,automationHeartbeat,maintenanceRequested} from './runtime-policy.js';
 import {challengeProfile,achievementNode,achievementActionAllowed} from './achievement-policy.js';
@@ -606,14 +607,14 @@ export async function main(ns) {
                 log_once(ns, 'WARNING: corporation-manager.js is missing from home; sync the project to enable corporation automation.', true, 'warning');
             else {
                 const requiredRam = ns.getScriptRam(script, 'home');
-                if (requiredRam > 0 && homeRam - ns.getServerUsedRam('home') >= requiredRam)
+                if (requiredRam > 0 && reclaimHomeRam(ns,requiredRam+homeRamReserve(ns)))
                     launchScriptHelper(ns, 'corporation-manager.js');
             }
         }
 
         for (const manager of ['reliability-manager.js', 'contract-validation.js', 'achievement-manager.js', 'soa-manager.js', 'health-manager.js', 'go.js', 'infiltration-manager.js']) {
             const status = managerStatus.find(item => item.script === manager);
-            if (status?.state === 'waiting-for-ram' && ns.getServerUsedRam('home') + status.ram <= homeRam)
+            if (status?.state === 'waiting-for-ram' && reclaimHomeRam(ns,status.ram+homeRamReserve(ns)))
                 launchScriptHelper(ns, manager);
         }
 
@@ -1242,6 +1243,9 @@ export async function main(ns) {
         if (activityBusy(ns) && /(^|\/)(work-for-factions|grafting-manager)\.js$/.test(baseScriptName)) return 0;
         if (!options['no-tail-windows'])
             tail(ns); // If we're going to be launching scripts, show our tail window so that we can easily be killed if the user wants to interrupt.
+        const script=convertFileName?getFilePath(baseScriptName):baseScriptName;
+        const required=ns.getScriptRam(script,'home');
+        if(!(required>0)||!reclaimHomeRam(ns,required+homeRamReserve(ns)))return 0;
         let pid, err;
         try { pid = ns.run(convertFileName ? getFilePath(baseScriptName) : baseScriptName, 1, ...args); }
         catch (e) { err = e; }

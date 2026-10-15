@@ -1,3 +1,4 @@
+import {reclaimHomeRam} from './home-ram-policy.js';
 import {fallbackBitNodeMultipliers} from './bitnode-fallbacks.js';
 /**
  * Return a formatted representation of the monetary amount using scale symbols (e.g. $6.50M)
@@ -375,6 +376,7 @@ export async function runCommand_Custom(ns, fnRun, command, fileName, args = [],
         }
         // NEW! We can inject "RunOptions" as the middle arg (rather than an integer thread count)
         // Run the script, now that we're sure it is in place
+        if(ns.getHostname()==='home')reclaimHomeRam(ns,ns.getScriptRam(fileName,'home'));
         return fnRun(fileName, { temporary: true }, ...args);
     }, pid => Number.isInteger(pid)&&pid>0,
         async () => {

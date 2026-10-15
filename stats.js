@@ -1,9 +1,12 @@
+import {homeRamReserve} from './home-ram-policy.js';
+import {runtimeScripts} from './runtime-policy.js';
 import {
     log, disableLogs, instanceCount, getConfiguration, getNsDataThroughFile, getActiveSourceFiles,
     getStocksValue, formatNumberShort, formatMoney, formatRam, getFilePath
 } from './helpers.js'
 
 const argsSchema = [
+    ['hide-automation', false], // Hide manager, priority, corporation, sleeve and IPvGO summaries.
     ['show-peoplekilled', false],
     ['hide-stocks', false],
     ['hide-RAM-utilization', false],
@@ -15,6 +18,7 @@ export function autocomplete(data, args) {
 }
 
 let doc, hook0, hook1;
+let serverCache = null, serverCacheAt = 0;
 let playerInBladeburner = false, nodeMap = {}
 
 /** @param {NS} ns **/
@@ -30,21 +34,22 @@ export async function main(ns) {
     // Globals need to reset at startup. Otherwise, they can survive e.g. flumes and new BNs and return stale results
     playerInBladeburner = false;
     nodeMap = {};
-    doc = eval('document');
-    hook0 = doc.getElementById('overview-extra-hook-0');
-    hook1 = doc.getElementById('overview-extra-hook-1');
-
-    // Hook script exit to clean up after ourselves.
-    ns.atExit(() => hook1.innerHTML = hook0.innerHTML = "")
-
+    serverCache = null;serverCacheAt = 0;
+    try { doc = eval('document'); }
+    catch { ns.tprint('Overview display needs the in-game interface.');return; }
+    // Remove only rows owned by this script; stockmaster has its own overview elements.
+    ns.atExit(cleanupHudElements);
     addCSS(doc);
-
-    prepareHudElements(await getHudData(ns, bitNode, dictSourceFiles, options))
 
     // Main stats update loop
     while (true) {
         try {
-            const hudData = await getHudData(ns, bitNode, dictSourceFiles, options)
+            const nextHook0=doc.getElementById('overview-extra-hook-0'),nextHook1=doc.getElementById('overview-extra-hook-1');
+            if(!nextHook0||!nextHook1){await ns.sleep(1000);continue;}
+            const hudData = await getHudData(ns, bitNode, dictSourceFiles, options);
+            if(hook0!==nextHook0||hook1!==nextHook1||!Object.values(nodeMap).length||Object.values(nodeMap).some(nodes=>!nodes[2].isConnected)) {
+                cleanupHudElements();hook0=nextHook0;hook1=nextHook1;prepareHudElements(hudData);
+            }
 
             // update HUD elements with info collected above.
             for (const [header, show, formattedValue, toolTip] of hudData) {
@@ -66,7 +71,8 @@ export async function main(ns) {
 function prepareHudElements(hudData) {
     const newline = (id, txt, toolTip = "") => {
         const p = doc.createElement("p");
-        p.className = "tooltip hidden";
+        p.className = "bb-stats-row hidden";
+        p.dataset.bbStats = 'true';
         const text = doc.createElement("span");
         text.textContent = txt;
         p.appendChild(text);
@@ -80,13 +86,14 @@ function prepareHudElements(hudData) {
 
     for (const [header, _, value, toolTip] of hudData) {
         const id = makeID(header)
+        if(nodeMap[id+'-title'])continue;
         hook0.appendChild(newline(id + "-title", header.padEnd(9, " "), toolTip))
         hook1.appendChild(newline(id + "-value", value, toolTip))
     }
 }
 
 function makeID(header) {
-    return header.replace(" ", "") ?? "empty-header"
+    return String(header||'empty-header').replace(/\s/g,'')
 }
 
 /** Creates the new UI elements which we will be adding custom HUD data to.
@@ -94,6 +101,11 @@ function makeID(header) {
  * @param {boolean} visible - Indicates whether the current HUD row should be displayed (true) or hidden (false)
  * @param {string} value - The value to display in the second column of the custom HUD row
  * @param {string} toolTip - The tooltip to display if the user hovers over this HUD row with their cursor. */
+function cleanupHudElements() {
+    for(const nodes of Object.values(nodeMap))try{nodes[2].remove();}catch{}
+    nodeMap = {};
+}
+
 function updateHudElement(header, visible, value, toolTip) {
     const id = makeID(header),
         valId = id + "-value",
@@ -109,6 +121,8 @@ function updateHudElement(header, visible, value, toolTip) {
         maybeUpdate(titleId, 1, toolTip)
         nodeMap[titleId][2].classList.remove("hidden")
         nodeMap[valId][2].classList.remove("hidden")
+        const warning=header==='Attention'||header==='Automation'&&String(value).trim()==='0 active'||header==='Corp Profit'&&String(value).includes('-');
+        nodeMap[valId][2].style.color=warning?'#ffb74d':'';
     } else {
         nodeMap[titleId][2].classList.add("hidden")
         nodeMap[valId][2].classList.add("hidden")
@@ -128,6 +142,8 @@ function updateHudElement(header, visible, value, toolTip) {
 async function getHudData(ns, bitNode, dictSourceFiles, options) {
     const hudData = (/**@returns {HudRowConfig[]}*/() => [])();
 
+    if(!options['hide-automation'])hudData.push(...getAutomationHudData(ns));
+
     // Show what bitNode we're currently playing in
     {
         const val = ["BitNode", true, `${bitNode}.${1 + (dictSourceFiles[bitNode] || 0)}`,
@@ -140,7 +156,7 @@ async function getHudData(ns, bitNode, dictSourceFiles, options) {
         const val1 = ["Hashes"];
         const val2 = [" "]; // Blank line placeholder for when hashes are being liquidated
         if (9 in dictSourceFiles || 9 == bitNode) { // Section not relevant if you don't have access to hacknet servers
-            const hashes = await getNsDataThroughFile(ns, '[ns.hacknet.numHashes(), ns.hacknet.hashCapacity()]', '/Temp/hash-stats.txt')
+            const hashes = await optionalHudRead(ns, '[ns.hacknet.numHashes(), ns.hacknet.hashCapacity()]', '/Temp/hash-stats.txt', [], [0,0])
             if (hashes[1] > 0) {
                 val1.push(true, `${formatNumberShort(hashes[0], 3, 1)}/${formatNumberShort(hashes[1], 3, 1)}`,
                     `Current Hashes ${hashes[0].toLocaleString('en')} / Current Hash Capacity ${hashes[1].toLocaleString('en')}`)
@@ -167,7 +183,7 @@ async function getHudData(ns, bitNode, dictSourceFiles, options) {
         const val = ["Stock"]
         // Show Stocks (only if stockmaster.js isn't already doing the same)
         if (!options['hide-stocks'] && !doc.getElementById("stock-display-1")) {
-            const stkPortfolio = await getStocksValue(ns);
+            let stkPortfolio=0;try{stkPortfolio=await getStocksValue(ns);}catch{}
             // Also, don't bother showing a section for stock if we aren't holding anything
             if (stkPortfolio > 0) val.push(true, formatMoney(stkPortfolio))
             else val.push(false)
@@ -192,7 +208,8 @@ async function getHudData(ns, bitNode, dictSourceFiles, options) {
     }
 
     // needed for gang and karma
-    const gangInfo = await getGangInfo(ns);
+    let gangInfo=false;
+    if(2 in dictSourceFiles||bitNode===2)try{gangInfo=await getGangInfo(ns);}catch{}
 
     // Show gang income and territory
     {
@@ -249,18 +266,19 @@ async function getHudData(ns, bitNode, dictSourceFiles, options) {
     {
         const val1 = ["BB Rank"]
         const val2 = ["BB SP"]
-        // Bladeburner API unlocked
-        if ((7 in dictSourceFiles || 7 == bitNode)
-            // Check if we're in bladeburner. Once we find we are, we don't have to check again.
-            && (playerInBladeburner = playerInBladeburner || await getNsDataThroughFile(ns, 'ns.bladeburner.inBladeburner()'))) {
-            const bbRank = await getNsDataThroughFile(ns, 'ns.bladeburner.getRank()');
-            const bbSP = await getNsDataThroughFile(ns, 'ns.bladeburner.getSkillPoints()');
-            val1.push(true, formatSixSigFigs(bbRank), "Your current bladeburner rank");
-            val2.push(true, formatSixSigFigs(bbSP), "Your current unspent bladeburner skill points");
-        } else {
-            val1.push(false)
-            val2.push(false)
-        }
+        // Both SF6 and SF7 grant access. Keep unavailable APIs from blocking other rows.
+        let bb=null;
+        if (6 in dictSourceFiles||7 in dictSourceFiles||bitNode===6||bitNode===7)
+            bb=await optionalHudRead(ns,'(() => {if(!ns.bladeburner.inBladeburner())return null;const action=ns.bladeburner.getCurrentAction();return {rank:ns.bladeburner.getRank(),points:ns.bladeburner.getSkillPoints(),action,stamina:ns.bladeburner.getStamina(),team:ns.bladeburner.getTeamSize(),assigned:action?ns.bladeburner.getTeamSize(action.type,action.name):0};})()','/Temp/overview-bladeburner.txt',[],null);
+        playerInBladeburner=!!bb;
+        if(bb) {
+            val1.push(true,formatSixSigFigs(bb.rank),'Your current Bladeburner rank');
+            val2.push(true,formatSixSigFigs(bb.points),'Your current unspent Bladeburner skill points');
+        } else {val1.push(false);val2.push(false);}
+        hudData.push(['BB Action',!!bb,bb?.action?.name||'Idle',bb?'Stamina '+(100*bb.stamina[0]/Math.max(1,bb.stamina[1])).toFixed(1)+'%':'']);
+        let teamPlan=null;try{const saved=JSON.parse(ns.read('tasks/bladeburner-team.json'));if(saved?.at<=Date.now()+5000&&Date.now()-saved.at<120000&&ns.ps('home').some(p=>p.pid===saved.pid&&p.filename.replace(/^\//,'')==='bladeburner.js'))teamPlan=saved;}catch{}
+        const teamDetails=teamPlan?'\n'+(teamPlan.reason||teamPlan.state)+(teamPlan.required!==undefined?'\nTarget team: '+teamPlan.required:'')+'\nRecruitment budget: '+Math.max(0,teamPlan.budgetMinutes-teamPlan.spentMs/60000).toFixed(1)+' min left this hour':'';
+        hudData.push(['BB Team',!!bb,bb?formatSixSigFigs(bb.team):'',bb?'Total team members: '+bb.team+'\nAssigned to '+(bb.action?.name||'current action')+': '+bb.assigned+teamDetails:'']);
         hudData.push(val1, val2)
     }
 
@@ -298,6 +316,7 @@ async function getHudData(ns, bitNode, dictSourceFiles, options) {
             if (hMax > 0) toolTip +=
                 `\nUsing ${formatRam(sUsed, true)} of ${formatRam(sMax, true)} (${formatRam(sMax - sUsed, true)} free) excluding  hacknet` +
                 `\nUsing ${formatRam(hUsed, true)} of ${formatRam(hMax, true)} (${formatRam(hMax - hUsed, true)} free) of hacknet servers`;
+            hudData.push(['RAM Hold',true,formatRam(homeRamReserve(ns)),'Home RAM kept available for automation and temporary helpers. Override upward with home-ram-reserve.txt (GB).']);
             // Add Total Network RAM and Utilization
             val3.push(true, statText, toolTip);
         } else {
@@ -340,8 +359,11 @@ async function getGangInfo(ns) {
 /** @param {NS} ns
  * @returns {Promise<Server[]>} **/
 async function getAllServersInfo(ns) {
+    const now=Date.now();
+    if(serverCache&&now-serverCacheAt<5000)return serverCache;
     const serverNames = await getNsDataThroughFile(ns, 'scanAllServers(ns)');
-    return await getNsDataThroughFile(ns, 'ns.args.map(ns.getServer)', '/Temp/getServers.txt', serverNames);
+    serverCache=await getNsDataThroughFile(ns, 'ns.args.map(ns.getServer)', '/Temp/getServers.txt', serverNames);serverCacheAt=now;
+    return serverCache;
 }
 
 /** Inject the CSS that controls how custom HUD elements are displayed. */
@@ -349,20 +371,53 @@ function addCSS(doc) {
     let priorCss = doc.getElementById("statsCSS");
     if (priorCss) priorCss.parentNode.removeChild(priorCss); // Remove old CSS to facilitate tweaking css above
     // Hopefully this logic remains valid for detecting which element is the HUD draggable window
-    const hudParent = doc.getElementsByClassName(`MuiCollapse-root`)[0].parentElement;
+    const hudParent = doc.getElementsByClassName(`MuiCollapse-root`)[0]?.parentElement;
     if (hudParent) hudParent.style.zIndex = 1E4; // Tail windows start around 1500, this should keep the HUD above them
     doc.head.insertAdjacentHTML('beforeend', css(hudParent ? eval('window').getComputedStyle(hudParent) : null));
 }
 const css = (rootStyle) => `<style id="statsCSS">
     .MuiTooltip-popper { z-index: 10001 } /* Sadly, not parented by its owners, so must be updated with MuiCollapse-root's parent */
-    .tooltip  { margin: 0; position: relative; }
-    .tooltip.hidden { display: none; }
-    .tooltip:hover .tooltiptext { visibility: visible; opacity: 0.85; }
-    .tooltip .tooltiptext {
+    .bb-stats-row  { margin: 0; position: relative; }
+    .bb-stats-row.hidden { display: none; }
+    .bb-stats-row:hover .tooltiptext { visibility: visible; opacity: 0.85; }
+    .bb-stats-row .tooltiptext {
         visibility: hidden; position: absolute; z-index: 1;
         right: 20px; top: 19px; padding: 2px 10px;
-        text-align: right; white-space: pre;
+        text-align: left; white-space: pre-wrap; width: max-content; max-width: min(460px, 75vw); overflow-wrap: anywhere;
         border-radius: 6px; border: ${rootStyle?.border || "inherit"};
         background-color: ${rootStyle?.backgroundColor || "#900C"};
     }
 </style>`;
+
+
+async function optionalHudRead(ns,expression,file,args,fallback) {
+    try{return await getNsDataThroughFile(ns,expression,file,args);}catch{return fallback;}
+}
+
+/** Read local manager records only while their owner is alive and the record is fresh. */
+function getAutomationHudData(ns) {
+    const now=Date.now(),processes=ns.ps('home'),active=processes.filter(p=>runtimeScripts.includes(p.filename.replace(/^\//,'')));
+    const read=file=>{try{return JSON.parse(ns.read(file));}catch{return null;}};
+    const live=(file,script)=>{const record=read(file),owner=record?.pid??record?.ownerPid;return owner&&processes.some(p=>p.pid===owner&&p.filename.replace(/^\//,'')===script)&&Number.isFinite(record.at)&&record.at>0&&record.at<=now+5000&&now-record.at<120000?record:null;};
+    const detail=active.map(p=>p.filename.replace(/\.js$/,'')).join('\n')||'No automation managers are running.';
+    const lock=read('tasks/activity-lock.json'),priority=lock?.expiresAt>now&&processes.some(p=>p.pid===lock.ownerPid)?lock.kind:null;
+    const maintenance=read('tasks/automation-maintenance.json');
+    const maintenanceActive=maintenance?.expiresAt>now&&processes.some(p=>p.pid===maintenance.ownerPid);
+    const corp=live('tasks/corporation-status.json','corporation-manager.js'),sleeves=live('tasks/sleeve-status.json','sleeve.js'),go=live('tasks/go-status.json','go.js');
+    const rows=[['Automation',true,active.length+' active',detail],
+        ['Priority',true,maintenanceActive?'Updating':priority||'Normal',maintenanceActive?'Applying pending automation updates':priority?'Current activity owner: '+priority:'No exclusive activity owns the player.']];
+    const corpRunning=active.some(p=>p.filename.replace(/^\//,'')==='corporation-manager.js');
+    const profit=corp&&Number.isFinite(corp.revenue)&&Number.isFinite(corp.expenses)?corp.revenue-corp.expenses:null;
+    rows.push(['Corp Profit',corpRunning,profit===null?'Waiting':formatMoney(profit)+'/sec',corp?'Funds '+(Number.isFinite(corp.funds)?formatMoney(corp.funds):'?')+' · Reserve '+(Number.isFinite(corp.reserve)?formatMoney(corp.reserve):'?')+'\n'+corp.mode+' · '+(corp.divisions?.length??0)+' divisions':'Waiting for fresh corporation data.']);
+    const sleeveList=Array.isArray(sleeves?.sleeves)?sleeves.sleeves:[];
+    rows.push(['Sleeves',active.some(p=>p.filename.replace(/^\//,'')==='sleeve.js'),sleeves?sleeveList.length+' managed':'Waiting',sleeveList.map(s=>'#'+s.index+' '+(s.task||'Idle')+' · Shock '+Number(s.shock).toFixed(1)+' · Sync '+Number(s.sync).toFixed(1)+'%').join('\n')||'Waiting for fresh sleeve data.']);
+    rows.push(['IPvGO',active.some(p=>p.filename.replace(/^\//,'')==='go.js'),go?go.state==='recovering'?'Recovering':'Turn '+(go.turn??0):'Waiting',go?(go.opponent||go.selected?.name||'Selecting opponent')+' · '+(go.boardSize||'?')+'×'+(go.boardSize||'?')+(go.error?'\n'+go.error:''):'Waiting for fresh IPvGO data.']);
+    const alerts=[];
+    if(corp?.mode==='cash recovery')alerts.push('Corporation is recovering cash');
+    if(go?.state==='recovering')alerts.push('IPvGO: '+(go.error||'recovering'));
+    if(sleeves?.state==='recovering')alerts.push('Sleeves: '+(sleeves.error||'recovering'));
+    const paused=runtimeScripts.filter(script=>ns.read('remote-control/paused/'+script+'.txt').trim()==='true');
+    if(paused.length)alerts.push('Paused: '+paused.join(', '));
+    rows.push(['Attention',alerts.length>0,alerts.length+' notice'+(alerts.length===1?'':'s'),alerts.join('\n')]);
+    return rows;
+}

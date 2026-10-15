@@ -49,7 +49,7 @@ export function officeJobCounts(employees, productDivision) {
 
 /** Approximate marginal return; storage relief receives priority when production is blocked. */
 export function upgradeReturn(name, level, cost, storagePressure) {
-  const increments = { 'Smart Factories': 0.03, 'Smart Storage': 0.10, 'Project Insight': 0.05, 'ABC SalesBots': 0.01 };
+  const increments = { 'Wilson Analytics': 0.005, 'Smart Factories': 0.03, 'Smart Storage': 0.10, 'Project Insight': 0.05, 'ABC SalesBots': 0.01 };
   const increment = increments[name] || 0.10;
   const weight = name === 'Smart Storage' ? (storagePressure ? 5 : 0.5) : name === 'Smart Factories' ? 2 : 1;
   return weight * increment / (1 + Math.max(0, level) * increment) / cost;

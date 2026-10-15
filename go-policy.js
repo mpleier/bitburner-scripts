@@ -35,3 +35,50 @@ export function attemptGoFailure(goal,attempts,enabled) {return !!(enabled&&goal
 
 export function goCheatChanceAllowed(chance,threshold){return Number.isFinite(chance)&&chance>=0&&chance<=1&&chance>=threshold;}
 export function validGoBoard(board){return Array.isArray(board)&&board.length>0&&board.every(row=>typeof row==='string'&&row.length===board.length&&/^[XO.#]+$/.test(row));}
+
+
+/** Orthogonal chain traversal; liberties and stones are counted once per connected group. */
+function goGroup(board,x,y) {
+ const color=board[x]?.[y],size=board.length,stones=[],seen=new Set(),liberties=new Set(),pending=[[x,y]];
+ while(pending.length) {
+  const [a,b]=pending.pop(),key=a*size+b;
+  if(seen.has(key))continue;seen.add(key);stones.push([a,b]);
+  for(const [c,d]of [[a-1,b],[a+1,b],[a,b-1],[a,b+1]]) {
+   if(c<0||d<0||c>=size||d>=size)continue;
+   if(board[c][d]==='.')liberties.add(c*size+d);
+   else if(board[c][d]===color&&!seen.has(c*size+d))pending.push([c,d]);
+  }
+ }
+ return {stones,liberties};
+}
+/** Simulate captures before counting the new group's liberties. Native legal moves still enforce ko. */
+export function goMoveOutcome(board,x,y) {
+ if(!Number.isInteger(x)||!Number.isInteger(y)||x<0||y<0||board[x]?.[y]!=='.')return null;
+ const next=board.map(row=>row.split('')),size=board.length;
+ const neighbors=[[x-1,y],[x+1,y],[x,y-1],[x,y+1]].filter(([a,b])=>a>=0&&b>=0&&a<size&&b<size);
+ const savedStones=new Set();
+ for(const [a,b]of neighbors)if(board[a][b]==='X') {
+  const group=goGroup(board,a,b);
+  if(group.liberties.size===1)for(const [c,d]of group.stones)savedStones.add(c*size+d);
+ }
+ next[x][y]='X';let captured=0;
+ for(const [a,b]of neighbors)if(next[a][b]==='O') {
+  const group=goGroup(next,a,b);
+  if(group.liberties.size===0){captured+=group.stones.length;for(const [c,d]of group.stones)next[c][d]='.';}
+ }
+ const own=goGroup(next,x,y),liberties=own.liberties.size;
+ return {captured,liberties,size:own.stones.length,saved:liberties>=2?savedStones.size:0};
+}
+export function goTacticalMove(board,valid,outcomes,random=Math.random) {
+ let bestScore=0,best=[];
+ for(let x=0;x<board.length;x++)for(let y=0;y<board.length;y++) {
+  if(valid[x]?.[y]!==true)continue;
+  const move=outcomes.get(x+','+y);
+  if(!move||move.liberties===0||move.liberties===1&&move.captured<move.size)continue;
+  const score=move.saved*120+move.captured*100;
+  if(score>bestScore){bestScore=score;best=[[x,y]];}else if(score===bestScore&&score>0)best.push([x,y]);
+ }
+ if(!best.length)return null;
+ const coords=best[Math.floor(random()*best.length)],outcome=outcomes.get(coords.join(','));
+ return {coords,msg:'Tactical move: capture '+outcome.captured+', protect '+outcome.saved};
+}

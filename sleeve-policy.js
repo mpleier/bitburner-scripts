@@ -42,19 +42,29 @@ export function sleeveRepAssignments(sleeves, targets, work, followIndex, bladeb
     for(const target of targets)if(!used.has(target.type+':'+target.name)){assign(i,target);if(assignments[i])break;}
   return assignments;
 }
-export function purchaseSleeveAugBatch(ns,index,names,budget,reserve,claim = () => true) {
-  let spent=0;const purchased=[];
-  if (!Number.isFinite(budget) || budget <= 0) return {spent,purchased};
+export function purchaseSleeveAugBatch(ns,index,names,budget,reserve,claim = () => true,allowed = () => true,diagnostics=false) {
+  let spent=0;const purchased=[],skipped=[];
+  const receipt=()=>diagnostics?{spent,purchased,skipped}:{spent,purchased};
+  const skip=(name,reason)=>skipped.push({name,reason});
+  if (!Number.isFinite(budget) || budget <= 0) return receipt();
   reserve = Math.max(0, Number(reserve) || 0);
-  if(ns.sleeve.getSleeve(index).shock>0)return {spent,purchased};
+  if(ns.sleeve.getSleeve(index).shock>0){skip(null,'shock recovery required');return receipt();}
   for(const name of names){
+    if(!allowed()){skip(name,'control paused or maintenance active');break;}
+    if(ns.sleeve.getSleeve(index).shock>0){skip(name,'shock recovery required');break;}
     const item=ns.sleeve.getSleevePurchasableAugs(index).find(aug=>aug.name===name);
     const currentReserve=Math.max(0,reserve,Number(ns.read('reserve.txt'))||0);
-    if(!item || !(item.cost>0) || !Number.isFinite(item.cost) || item.cost>budget-spent || ns.getPlayer().money<item.cost+currentReserve)continue;
-    if(claim(ns,"sleeves",item.cost)&&ns.sleeve.purchaseSleeveAug(index,name)){spent+=item.cost;purchased.push(name);}
+    if(!item){skip(name,'augmentation no longer offered');continue;}
+    if(!(item.cost>0)||!Number.isFinite(item.cost)){skip(name,'invalid price');continue;}
+    if(item.cost>budget-spent){skip(name,'batch budget exhausted');continue;}
+    if(ns.getPlayer().money<item.cost+currentReserve){skip(name,'cash reserve');continue;}
+    if(!claim(ns,'sleeves',item.cost)){skip(name,'shared spending allowance or cash-spending restriction');continue;}
+    if(ns.sleeve.purchaseSleeveAug(index,name)){spent+=item.cost;purchased.push(name);}
+    else skip(name,'native purchase rejected');
   }
-  return {spent,purchased};
+  return receipt();
 }
+
 export function sleeveTaskMatches(actual, command, args) {
   if(!actual)return false;
   if(command.includes('setToShockRecovery'))return actual.type==='RECOVERY';
@@ -82,4 +92,30 @@ export function sleeveReserves(options, globalReserve) {
   const finite = value => Number.isFinite(Number(value)) ? Math.max(0, Number(value)) : 0;
   const reserve = Math.max(finite(globalReserve), finite(options.reserve));
   return {reserve, trainingReserve:Math.max(reserve,finite(options['training-reserve']))};
+}
+
+
+export function sleeveControlAllowed(ns,parent,script) {
+ if(!ns.isRunning(parent)||ns.read('remote-control/paused/'+script+'.txt').trim()==='true')return false;
+ try{const r=JSON.parse(ns.read('tasks/automation-maintenance.json'));if(r.expiresAt>Date.now()&&ns.isRunning(r.ownerPid))return false;}catch{}
+ return true;
+}
+export function sleeveOptionsError(o) {
+ for(const name of ['min-shock-recovery'])if(!Number.isFinite(o[name])||o[name]<0||o[name]>100)return name+' must be between 0 and 100';
+ for(const name of ['shock-recovery','homicide-chance-threshold','aug-budget'])if(!Number.isFinite(o[name])||o[name]<0||o[name]>1)return name+' must be between 0 and 1';
+ for(const name of ['buy-cooldown','training-cap-seconds','failed-bladeburner-contract-cooldown','train-to-strength','train-to-defense','train-to-dexterity','train-to-agility','study-to-hacking','study-to-charisma'])if(!Number.isFinite(o[name])||o[name]<0)return name+' must be finite and nonnegative';
+ for(const name of ['reserve','training-reserve'])if(o[name]!=null&&(!Number.isFinite(o[name])||o[name]<0))return name+' must be finite and nonnegative';
+ if(!Number.isSafeInteger(o['min-aug-batch'])||o['min-aug-batch']<1)return 'min-aug-batch must be a positive integer';
+ return null;
+}
+
+
+/** Match the allocator's current epoch and reset rules before planning a batch. */
+export function sleeveAugSpendingBudget(ns,requested) {
+ const budget=Math.max(0,Number(requested)||0);
+ let plan;try{plan=JSON.parse(ns.read('tasks/spending-plan.json'));}catch{return budget;}
+ if(!plan||!Number.isFinite(plan.expiresAt)||!plan.allowances||plan.expiresAt<=Date.now()||!ns.isRunning(plan.ownerPid)||plan.reset!==ns.getResetInfo().lastAugReset)return budget;
+ let usage;try{usage=JSON.parse(ns.read('tasks/spending-usage.json'));}catch{}
+ const used=usage?.epoch===plan.epoch?Math.max(0,Number(usage.spent?.sleeves)||0):0;
+ return Math.min(budget,Math.max(0,(Number(plan.allowances.sleeves)||0)-used));
 }

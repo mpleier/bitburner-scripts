@@ -83,7 +83,7 @@ Fresh expansion prioritizes Agriculture, Chemical, and Tobacco. Existing Restaur
 
 Before native TA.II, material pricing uses public business productivity, awareness/popularity, industry advertising factor, demand/competition, and the actual 1% SalesBots bonus to calculate potential sales and a markup premium. Missing market data falls back to safe quality-based pricing. Product markup is hidden by the API; the controller infers it from penalized, uncapped sales only after two consistent observations with stable public inputs, then uses the same pricing formula. Otherwise bounded feedback search remains active. The next-cycle sales quantity is forecast from previous production plus remaining stock; this is not an exact forecast of changing production or export consumption. Native TA.II remains preferred. Market-data unlocks are bought within the growth budget when a product division can use them.
 
-Wilson upgrades now require a product division, are no longer stopped at an arbitrary level 17, and precede queued advert purchases because their effects are not retroactive. Material divisions stop routine adverts at eight unless an active achievement goal requests finance growth. Product adverts are prioritized, and saturated awareness/popularity stops further advertising. Optional research skips automation-only purchases for energy, morale, recruitment, training, and the dashboard; scripted office upkeep already covers those roles. SalesBots upgrade ranking now uses its actual 1% increment.
+Wilson upgrades now require a product division, are no longer stopped at an arbitrary level 17, and precede queued advert purchases because their effects are not retroactive. Material divisions stop routine adverts at eight unless an active achievement goal requests finance growth. Product adverts are prioritized, and saturated awareness/popularity stops further advertising. Automatic energy/morale research is now evaluated for useful offices after TA.II; recruitment, training, and dashboard research remain skipped. See the growth optimization implementation below. SalesBots upgrade ranking now uses its actual 1% increment.
 
 Formula policies and a Tobacco bootstrap path have local regression coverage. Game files are synced automatically. At the final live inspection only the Remote API agent was running; the automation changes are deployed for the next controller launch, not confirmed running. No controller was forcibly started over that stopped state.
 
@@ -162,3 +162,239 @@ Faction work registers with runtime supervision, refreshes its heartbeat during 
 Augmentation purchase workers recheck each native price and available money after the latest global reserve. Reset preparation already clears that reserve deliberately in ascend.js. Donations recalculate the remaining reputation shortfall with current reputation and faction-reputation multiplier, bounded by the planned donation; zero-gain and unaffordable donations are skipped. Purchases and donations honor persistent pauses and the achievement cash-spending restriction. Native membership, prerequisites, and donation eligibility remain authoritative. Formula reference: [official donation calculation](https://github.com/bitburner-official/bitburner-src/blob/dev/src/Faction/formulas/donation.ts).
 
 Verification: 354 project tests, 15 Remote API tests, and 141 JavaScript syntax checks passed. Native RAM checks report 4.3 GB for faction-manager.js and work-for-factions.js. Remote API sync reports 110 game files with no pending uploads or errors. Faction work was running at inspection; no donation, augmentation purchase, or reset was forced for testing. Local tests cover default invitations, fresh spending checks, protected work, and serialized native worker execution.
+
+
+## Hacknet review
+
+Production upgrade selection uses separate [money-node formulas](https://github.com/bitburner-official/bitburner-src/blob/dev/src/Hacknet/formulas/HacknetNodes.ts) and [server hash formulas](https://github.com/bitburner-official/bitburner-src/blob/dev/src/Hacknet/formulas/HacknetServers.ts), including current server RAM occupation. These calculations work without Formulas.exe. A newly purchased node is valued at its actual starting production rather than the weakest upgraded node's output or an unlimited first-node estimate. The selector considers affordable alternatives that meet the configured payoff limit. Cache upgrades are handled by the capacity manager because they do not directly increase production. Hash ROI continues to use the conservative cash conversion value of $250,000 per hash; progression benefits are not priced by this estimate.
+
+The upgrade manager honors pause, maintenance, achievement restrictions, global reserves, shared Hacknet allowances, and its total spending limit. Empty-fleet server detection respects Source File overrides and the disable-server BitNode option. It registers with runtime supervision and reports `tasks/hacknet-upgrade-status.json`. Daemon startup checks measured script RAM plus temporary-worker headroom.
+
+Hash overflow prediction allows for a full 200 ms game tick even with shorter polling intervals. Bulk cash exchanges count their actual quantities against the configured batch limit. Spending rechecks pause, maintenance, and achievement restrictions after yields and before each action. Parameterized server purchases require a valid target. Capacity upgrades choose among valid finite cache/new-node costs, honor the shared spending allowance, and treat native node index zero as success. Cheap capacity purchases no longer bypass global reserves by default. The legacy percentage option cannot bypass shared spending enforcement. Hash status is throttled, stays fresh while balances are unchanged, and reports recovery errors in `tasks/hacknet-hash-status.json`. Invalid settings now produce a readable error instead of a startup logging exception.
+
+Verification: 364 project tests, 15 Remote API tests, and 143 JavaScript syntax checks passed. Native RAM checks report 11 GB for hacknet-upgrade-manager.js and 9.1 GB for spend-hacknet-hashes.js. All 111 game files are synced without errors. Native inspection found production upgrading and three hash-spending configurations running; no extra purchases or spending actions were forced for testing. Long-run payoff performance has not been benchmarked.
+
+
+## Stockmaster follow-up review
+
+Market quotes, forecasts, volatility, and positions are now collected in one synchronous native snapshot rather than separate workers that could observe different market ticks. Mock mode maintains an independent simulated wallet: purchases debit cash, sales credit their actual simulated proceeds, and repeated refreshes cannot reuse the player's real cash. Mock order budgets and reserves apply before changing the simulated portfolio.
+
+Cycle agreement increases only to its intended cap of 14 stocks. Empty or single-price histories produce a neutral forecast rather than NaN; estimated probability uncertainty uses the actual number of observed transitions. Windows larger than the retained 151 observations are rejected, and an explicit zero blackout option is preserved. Empty symbol lists stop with a readable message.
+
+Ordinary native transactions and access purchases check maintenance as well as persistent pauses and parent ownership. Explicit liquidation can still override the trading pause/maintenance for reset preparation. Runs with disabled 4S skip its purchase/liquidation path. Any partial 4S access purchase or attempted liquidation requests a portfolio refresh before trading from the prior cash/positions. Native quotes remain the authoritative spending check; [official transaction calculations](https://github.com/bitburner-official/bitburner-src/blob/dev/src/StockMarket/StockMarketHelpers.ts) include spread and commission.
+
+Verification: 370 project tests, 15 Remote API tests, and 143 JavaScript syntax checks passed. Updated stockmaster compiles in game at 12.9 GB. All 111 game files are synced without errors. Stockmaster was running at inspection (PID 482004); no trade or restart was forced for verification. The tests validate selected trading and forecasting behavior; future profit is not guaranteed or benchmarked.
+
+
+## Sleeve follow-up review
+
+Sleeve settings validate recovery ratios, training targets, reserve amounts, cooldowns, and augmentation batch sizes. Explicit crime overrides normalize underscores/case and reject unknown crime names. The training time limit now uses BitNode time as documented. Paid training and augmentation purchases are skipped when sleeve experience/augmentation is disabled. BN6 Bladeburner access is recognized without requiring prior SF7 ownership; contracts remain an explicit opt-in because player success estimates do not prove sleeve safety.
+
+Queued task assignments, travel, training hash purchases, and augmentation batches check parent ownership, persistent pauses, maintenance, and sleeve achievement permissions immediately before execution. Augmentation batches also recheck shock before each purchase. Failed or deferred purchases do not start the full purchase cooldown, and success logs report the actual number bought and money spent. Native [sleeve purchase rules](https://github.com/bitburner-official/bitburner-src/blob/dev/src/PersonObjects/Sleeve/Sleeve.ts) remain authoritative.
+
+Main-loop maintenance and recovery status are visible, and reported actual tasks are refreshed after assignments. Existing native tasks remain assigned while control is paused; the new guards prevent additional changes or purchases. Sleeve expansion checks pauses throughout its lifetime, honors maintenance/achievement restrictions when called directly, validates its budget fraction, and registers with runtime supervision. Outside BN10 it exits before requiring expansion APIs.
+
+Verification: 376 project tests, 15 Remote API tests, and 143 JavaScript syntax checks passed. Native compilation reports 17 GB for sleeve.js and 27.4 GB for sleeve-expansion.js. All 111 game files are synced without errors. Sleeve management was running at inspection (PID 502901); expansion was not running. No extra purchases, memory upgrades, or task changes were forced for testing. Long-run Bladeburner sleeve safety has not been benchmarked.
+
+
+## Hacking automation review
+
+Fixed manual-hack workers to use the same argument order as ordinary hack workers. Manual workers verify the connected terminal target before each operation and report unavailable Singularity access gracefully; daemon falls back to ordinary hacking when manual mode lacks SF4. Worker delays are recalculated against requested finish times and loop periods as native operation durations change. The [official timing ratios](https://github.com/bitburner-official/bitburner-src/blob/dev/src/Hacking.ts) remain hack:grow:weaken = 1:3.2:4. Looping workers stop starting new operations when their launching daemon exits, while already-started operations may finish. Run-once scheduling deliberately omits that owner restriction.
+
+Fixed Hacknet-host ordering and empty preferred-host handling. Unsplittable jobs require enough RAM on one host before any launch, explicit splitting overrides are respected, and invalid thread counts are rejected. RAM and control checks are repeated after remote-copy waits. Copy failures do not mark files as deployed. Remote hacking/share scripts are refreshed from their authoritative daemon source on first use and when their source hash changes, without killing existing worker instances.
+
+Batch launch failures roll back only the worker PIDs recorded for that batch; completed operations cannot be undone, so targets still require normal preparation/recovery afterward. Scheduling handles missing snapshots before dereferencing them. Zero or invalid per-thread hack production yields zero requested hack threads instead of Infinity/NaN. Daemon targeting and worker launch paths honor pause/maintenance. Existing target-profitability formulas remain intact.
+
+Verification: 383 project tests, 15 Remote API tests, and 145 JavaScript syntax checks passed. Native RAM checks report daemon 5.85 GB, hack worker 1.85 GB, grow/weaken workers 1.9 GB, and manual-hack worker 5.7 GB with current SF4 access. All 112 game files are synced without errors. Daemon was running in XP mode at inspection (PID 537028); no live batch, restart, or hacking-mode switch was forced for testing. Tests exercise the actual executor with mock servers plus rollback and worker timing behavior. Long-run income and lag-sensitive batch timing have not been benchmarked.
+
+
+## Runtime error repair and sleeve purchase review
+
+Fixed two regressions reported in the attached game log: stock purchase quotes now pass native PositionType values `L`/`S`, and daemon initializes its options before checking manual-hack mode. Stock test doubles now reject invalid enum values so this API mismatch cannot silently pass again; daemon startup order has regression coverage.
+
+The reported $550 million sleeve augmentation was within the local cash-fraction budget but exceeded the current shared sleeve allowance (approximately $195 million at initial inspection). Batch planning now caps its budget to the allocator's remaining allowance for the matching epoch and augmentation reset. Purchase receipts can report whether a purchase was deferred by control, shock, reserve, batch budget, shared allowance, or a native rejection. Ordinary deferrals are informational rather than false purchase errors. Live sleeve status exposes the remaining shared augmentation allowance. These checks preserve the global reserve and shared spending rules.
+
+Verification: 387 project tests, 15 Remote API tests, and 145 syntax checks passed. All 112 game files are synced. Daemon restarted under existing supervision; sleeve and stockmaster were explicitly reloaded through the narrow API so the repairs take effect. Sleeve augmentations still wait when the shared allowance is below their cost; no forced augmentation purchase or liquidation was used to bypass it.
+
+
+## Casino follow-up review
+
+Casino actions and UI lookup retries now check persistent pause, parent ownership, and active transition ownership. Optional element searches cannot swallow cancellation. Mid-hand cancellation exits quietly, and paused runs report a pause rather than a retryable failure. Modal dismissal is bounded at 20 attempts; expired hand deadlines stop retrying immediately. Queued Singularity travel/location/graft cancellation actions also verify control before acting. Start controls are reacquired after wager changes.
+
+Reloads make at most five attempts, check cancellation while waiting, and restore the previous unload warning when refresh fails or is cancelled. Winning rounds check recorded casino earnings directly after saving instead of waiting for the kick-out dialog to appear. The strict greater-than-$10-billion threshold and 100-million maximum blackjack wager match the [native casino limit](https://github.com/bitburner-official/bitburner-src/blob/dev/src/Casino/Game.ts) and [blackjack implementation](https://github.com/bitburner-official/bitburner-src/blob/dev/src/Casino/Blackjack.tsx).
+
+Completion/recovery hooks avoid duplicate launches. If the configured hook cannot start while casino occupies RAM, it can use spawn to release casino RAM first, provided the measured script fits afterward. Casino priority over grafting and preservation of Remote API connectivity remain in force; automatic tails still require explicit logging.
+
+Verification: 392 project tests, 15 Remote API tests, and 145 JavaScript syntax checks passed. Updated casino compiles in game at 18.75 GB. All 112 game files are synced without errors. Native status already reported casino completion this augmentation with approximately $10.07 billion earned, and casino was not running. Gambling, page reload, and actual completion-hook spawning were not forced during this review; local tests simulate these paths.
+
+
+## Bladeburner team follow-up
+
+The recruitment allowance is now a true rolling-hour ledger of merged activity intervals rather than a fixed hourly reset. Usage survives restarts, and exhausted recruiting can be interrupted promptly. Existing legacy records are migrated conservatively. Enforcement follows the controller polling interval.
+
+Squad preparation now verifies both the native assigned size and the post-assignment success estimate, restoring the former assignment after rejection or an ineffective squad. Maintenance is checked again within the mutation worker. The [official team bonus implementation](https://github.com/bitburner-official/bitburner-src/blob/dev/src/Bladeburner/Actions/Operation.ts) and [casualty handling](https://github.com/bitburner-official/bitburner-src/blob/dev/src/Bladeburner/Actions/TeamCasualties.ts) support retaining minimal squads and replanning after losses.
+
+Verification: 397 project tests, 15 Remote API tests, and 145 syntax checks passed. In-game controller RAM: 16.3 GB. Bladeburner was performing Undercover Operation during inspection; no recruitment or Black Op was forced. All 112 game files synced.
+
+
+## Infiltration reliability follow-up
+
+The [official infiltration UI](https://github.com/bitburner-official/bitburner-src/blob/dev/src/Infiltration/ui/InfiltrationRoot.tsx) still uses the supported eight puzzle models. Automatic entry now has a serialized fresh control guard for delayed workers, protecting pauses, maintenance, UI ownership, and casino/reset transitions. Bladeburner protection recognizes BN6/SF6 access too.
+
+Long runs refresh their supervisor heartbeat outside guard reaction windows. A reward click now has a bounded rendering wait; control is checked again after faction selection. Unexpected errors participate in per-location backoff, and cleanup avoids cancelling a replacement infiltration. Manual-start assistance remains enabled, including while automatic entry is cooling down.
+
+Verification: 401 project tests, 15 API tests, and 145 syntax checks passed. All 112 game files synced. Updated native manager RAM is 45.6 GB; supervision reloaded it normally, and it reported waiting-for-entry. Existing live history includes 19 successful NWO runs. No run was forced for testing.
+
+
+## Gang reliability follow-up
+
+The [official gang formulas](https://github.com/bitburner-official/bitburner-src/blob/dev/src/Gang/formulas/formulas.ts) match the controller's fallback calculations. Delayed mutation workers now respect maintenance. Maintenance safely disables clashes and restores temporary warfare assignments.
+
+Ascension now rechecks live eligibility and respect, disables clashes before the reset, and immediately assigns training. Training records survive controller restarts within the same augmentation and BitNode run. Dead-member caches are pruned, equipment orders retain their individual spending limits when prices rise, and status includes actual native tasks.
+
+Verification: 406 project tests, 15 API tests, and 145 syntax checks passed. All 112 game files synced. The updated controller reloaded normally at 27.1 GB native RAM; live status showed 12 members with about a 0.26% wanted penalty and warfare disabled. No irreversible mutation was forced for verification.
+
+
+## Corporation finance and maintenance follow-up
+
+Dividend liquidity waits now match the [official corporation dividend implementation](https://github.com/bitburner-official/bitburner-src/blob/dev/src/Corporation/Corporation.ts): tribute applies as an exponent to the full cycle payout. Emergency share-issue pricing matches the [native action order](https://github.com/bitburner-official/bitburner-src/blob/dev/src/Corporation/Actions.ts), which calculates the new share price before increasing total shares. Buyback inputs reject nonfinite values.
+
+Corporation maintenance now suspends new actions and clears persistent boost/manual recipe purchase rates. Error and exit cleanup handles each material independently. Self-funded creation preserves the player reserve and shared corporation allowance. Awaited faction-support work is followed by another control check.
+
+Verification: 411 project tests, 15 API tests, and 145 syntax checks passed; all 112 game files synced. The standalone controller is running at 853 GB native RAM. Live corporation status showed profitable growth and approximately 60% ownership. No finance action or purchase was forced for verification.
+
+
+## Corporation growth optimizer
+
+New staffing uses bounded local search based on the [official office production and development formulas](https://github.com/bitburner-official/bitburner-src/blob/dev/src/Corporation/Division.ts). Development offices receive a different allocation and larger growth targets than production cities. Managed creation cities and observed development times are persisted; unknown externally started projects keep development support across cities.
+
+Offices, warehouses, city expansion, boost inventory, products, adverts, and upgrades share the growth ledger. Core foundations have priority; remaining purchases use estimated benefit per dollar and report budget waits. Deferred material purchases are charged to the ledger as commitments. Product investment scales with capital rather than a fixed $10b cap. Replacement uses development duration and improvements in funding, research, or staffing, with a bounded stagnation fallback. It preserves custom brands and requires enough budget before retiring a managed product.
+
+AutoBrew and AutoPartyManager are evaluated after TA.II for larger offices that need recovery, while retaining research reserves. Selective supply-chain expansion is now the default. Use `run corporation-manager.js --expand-all-industries` to enable broad diversification, including opening Restaurant after Tobacco. Existing divisions and active Real Estate achievement goals remain managed.
+
+Verification: 424 project tests, including 66 corporation checks; 15 API tests; and 145 syntax checks passed. All 112 game files synced. The controller runs at 853 GB native RAM. Live status shows positive operating profit and 59% ownership. Purchase ranking and staffing objectives are estimates; long-run income improvement has not been benchmarked.
+
+
+## Research milestones and material quality
+
+The staffing optimizer now protects baseline R&D headcount before the laboratory and Market-TA.II milestones, with stronger early research weighting. Targets match retained research pools, and status exposes points and progress. This addresses the earlier benchmark's reduced research throughput.
+
+Material staffing now accounts for the [native material-quality calculation](https://github.com/bitburner-official/bitburner-src/blob/dev/src/Corporation/Division.ts), which includes engineering output, research points, AI cores, and input quality. Material offices retain a conservative engineering minimum, and recovery intern counts stay intact.
+
+Verification: 428 project tests, 15 API tests, and 145 syntax checks passed. All 112 game files synced; controller RAM remains 853 GB. Live Agriculture reported pricing research at 17,794 / 100,000 RP; its Sector-12 office assigned 3 R&D employees, compared with 2 before this change. Operating profit remained positive. Long-run income and milestone timing remain unbenchmarked.
+
+
+## Corporation pipeline follow-up
+
+Tobacco and custom product divisions now receive adverts through the common growth planner. All division warehouses are inspected before upgrade scoring. Deferred boost commitments update the reserve seen by subsequent purchase decisions, rather than relying on the reserve captured before the execution pass.
+
+Verification: 431 project tests, 15 API tests, and 145 syntax checks passed. All 112 game files synced, with 853 GB native controller RAM. Live status remains profitable with 59% ownership. No purchase or financial action was forced to verify these changes.
+
+
+## Faster corporation development
+
+Tobacco can now start as soon as Agriculture exists and creation plus a $5b setup allowance and operating reserves are funded. The [official industry recipe](https://github.com/bitburner-official/bitburner-src/blob/dev/src/Corporation/data/IndustryData.ts) requires Plants; Chemical is not a prerequisite. Chemical creation no longer waits for a laboratory or four times its starting cost. Core launches can draw on retained corporation cash instead of only the profit-funded growth ledger.
+
+Development-office upgrades receive higher priority. Speed-focused product staffing is enabled by default through the development-speed option, preserving baseline R&D and recovery floors. Source-formula comparisons estimate roughly 9–12% shorter development across tested office sizes; this can trade product quality and excess research generation for speed. Live completion-time improvement remains unbenchmarked.
+
+Material quality now uses the public industry scienceFactor property, correctly including accumulated RP. Verification: 436 project tests, 15 API tests, and 145 syntax checks passed. All 112 files synced; native controller RAM is 853 GB.
+
+
+## Development-office funding activation
+
+Core launch funding now makes the $5b setup allocation usable for the initial product and staffing. Unaffordable full office targets are replaced by three-person upgrade steps. Dedicated development offices receive retained-capital funding and priority while speed focus is active, with operating reserves preserved.
+
+On retry, the controller was stopped and its status was stale. The latest controller was started through the API. Live verification confirmed Tobacco Sector-12 expanding from 9 to 12 fully staffed seats with speed focus enabled. Latest inspected funds were about $4.20b versus a $0.50b reserve. Verification: 438 project tests, 15 API tests, and 145 syntax checks passed. A complete live product-development benchmark remains outstanding.
+
+
+## Gang recruitment and task allocation
+
+Recruitment now checks every two seconds outside the territory preparation window and fills every currently eligible slot. Each recruit starts training in the same worker that recruits it; recruitment no longer waits for the next territory cycle.
+
+Wanted recovery evaluates every lower-wanted alternative by production lost per unit of wanted reduction, using the selected money/respect objective. After selecting a plan, a bounded improvement pass uses spare wanted capacity to increase production. Mandatory post-recruitment and post-ascension training stays protected.
+
+Gang equipment budgets no longer depend on buying the stock 4S API. Existing cash reserves, shared spending limits and fresh purchase checks remain enforced. BN8 still reduces default budgets, while explicit budget flags take precedence. This can spend more on useful gang equipment earlier in a run.
+
+Implementation reviewed against the official Gang and GangMember source. No new tests or benchmarks were run for this change; runtime income improvement is unmeasured.
+
+
+### Gang benchmark follow-up
+
+The production-loss-per-wanted heuristic now competes with the previous largest-wanted recovery path for each candidate plan. This repairs 18 synthetic benchmark regressions caused by greedy recovery overshooting a deficit. Refinement runs once after candidate selection.
+
+Verification: 451 project tests, including 26 gang checks; 15 API service tests; and 145 syntax checks passed. Across 810 paired synthetic evaluations, 113 improved and none regressed; all retained wanted feasibility and mandatory training. Median planner time was 0.342 ms versus 0.260 ms before. Live income improvement is unmeasured because the gang controller was stopped. Detailed benchmark artifacts are in C:/Users/mplei/Documents/Codex/gang-benchmarks/.
+
+
+## Bladeburner action throughput and skill spending
+
+Reliable ordinary actions now compete by conservative expected net rank per second: lower-bound success chance times rank gain, minus expected failure loss, divided by action duration. Qualified Black Ops retain progression priority. Native reward APIs are queried in one worker, with the existing action order retained if reward data is unavailable. The final Black Op start worker rechecks rank and the minimum success chance immediately before starting.
+
+Population-analysis missions now require their lower success estimate to meet the threshold; Field Analysis handles unresolved uncertainty. The controller no longer starts an analysis mission solely because its upper success estimate is high.
+
+Skill spending now uses one bounded worker for up to 100 purchases, refreshing levels, prices and points for each purchase. Pause, maintenance, activity ownership, achievements and live Black Ops are checked inside the worker, including fresh achievement point-banking requests. Upgrade logs are summarized per batch.
+
+Operation count decreases release the first-completion wait when bonus time finishes operations early. Contract counts are excluded because sleeves can consume them independently. Recruitment can stop promptly when a useful team is ready, even before a conservative action-duration estimate expires.
+
+Reviewed against the official Bladeburner Netscript implementation. No tests or live action benchmark were run for this change.
+
+
+## IPvGO tactical move screening
+
+IPvGO now simulates each native-legal single move before applying existing pattern strategies. Captures are removed before new-group liberties are counted. Connected groups and liberties are deduplicated, so a group touching the move on multiple sides is counted once. A tactical pass prioritizes immediate captures and rescuing endangered groups ahead of openings and pattern heuristics.
+
+Non-capturing self-atari is screened out by default: a move leaving the played group with one liberty is skipped. Use --allow-self-atari to permit such sacrifices through the existing heuristics. Native move validation remains authoritative for legality and ko; this is a bounded tactical heuristic, not a full Go search.
+
+Board, control, legality, liberties and chains are read together in one worker rather than five separate workers. Ordinary moves retain fresh native legality checks before submission. Maintenance is now respected both in the controller and in queued cheat workers.
+
+Reviewed against the official Go API and board implementation. No tests or win-rate benchmarks were run for this change.
+
+
+## Overview automation summaries
+
+stats.js now shows active automation count, current activity priority, corporation operating profit, sleeve task summaries and IPvGO state. An Attention row surfaces paused managers, cash recovery and fresh controller recovery errors; hover details provide context. Use --hide-automation for the resource-only display. Manager records require a matching live process and a fresh timestamp before values are displayed.
+
+Bladeburner now supports both SF6 and SF7 access and shows the current action with stamina in its tooltip. Optional gang, stock, hash and Bladeburner API failures no longer suppress the rest of the overview. Network/RAM discovery is cached for five seconds.
+
+Overview rows rebuild when the native hooks are replaced and tolerate temporarily missing hooks. Script cleanup removes only its own rows, preserving stockmaster displays. Styles are scoped to these rows, and tooltip text wraps to the available screen width.
+
+No tests or visual UI checks were run for this change. The synced script takes effect when stats.js is next started or restarted.
+
+
+## Bladeburner recruitment review
+
+Removed the arbitrary two-percentage-point uncertainty restriction from squad sizing. The minimum success estimate now determines the team requirement directly, retaining the configured cap. Existing team members can be assigned even with --disable-recruitment; that option prevents acquiring new members.
+
+Replaced the fixed 50% recruitment-chance cutoff with an expected-time check against the remaining rolling-hour allowance. The estimate uses current recruitment chance and duration, subtracts progress on the current attempt, and is refreshed each pass. Current chance can decline as team size increases, so this estimate does not guarantee completing the whole shortfall within the budget.
+
+Recruiting state is persisted for restart accounting. Owned recruitment is stopped during maintenance or controller exit. Queued team preparation and action-start workers now check that the parent controller is alive; recruitment starts also recheck the current shortfall.
+
+The BB Team tooltip includes the current decision, required team and remaining hourly recruitment allowance. Recruitment remains aimed at pending Black Ops, rather than building an arbitrary standing army. Defaults remain a 30-member cap and 10 minutes per rolling hour. Tests were not run for this review.
+
+
+## Bladeburner action-level planning
+
+The controller now compares safe action levels by conservative expected net rank per second using native reward, loss, chance and duration APIs. Contracts and operations are eligible; Black Ops retain progression priority and protection. Temporary level probes run synchronously and restore the original level before returning. Plans commit at action start with fresh success checks, and a failed start restores the previous level and autolevel setting.
+
+The planner evaluates every safe level up to 64, then uses bounded sampling for larger ranges, always retaining the current level when safe. Plans are exposed in tasks/bladeburner-levels.json and the chosen level is included in action-switch logs. Use --disable-level-optimization to retain native levels and autolevel behavior.
+
+Verification: 476 project tests, 15 service tests and 146 syntax checks passed. Go tactical moves, overview cleanup/staleness, and recruitment behavior now have focused regression coverage. A 500-case synthetic level benchmark found no regression relative to initially safe levels; this does not establish live progression gains. The updated controller synced successfully and has a native RAM cost of 75.5 GB.
+
+
+## Native team sizing and recruitment forecast follow-up
+
+Available Black Op teams are now sized using the game's actual success estimates: test the available squad within the configured cap, then binary-search the smallest squad that meets the success threshold. The prior formula remains an estimate for members not yet recruited. Existing assignments are restored if the team cannot help or an API call fails.
+
+Recruitment forecasts now sum expected attempts for each additional member rather than assuming constant success probability. Supporting sleeves are excluded from the human-recruit denominator, matching the native recruitment calculation. If sleeve information is unavailable, the forecast uses a conservative zero-human baseline. Stored bonus time is credited only when it covers the entire forecast plus a full action allowance.
+
+The existing recruitment budget regression fixture was adjusted for declining chance. These follow-up changes have not been tested or benchmarked yet; the prior 476-test result predates them. No live actions were forced.
+
+
+## Shared home RAM headroom
+
+The project now protects a shared adaptive home reserve for automation and temporary helpers. Hacking and Stanek allocations honor the reserve; autopilot launches managers only when they fit alongside it. Known disposable workers on home can be reclaimed in this order: sharing, Stanek charging, hacking/growing/weakening. Managers, the Remote API and unknown scripts are preserved.
+
+On a 4096 GB home the default reserve is 128 GB. Small homes reserve up to a quarter of their RAM, while larger homes scale toward 2% capped at 2048 GB. Set home-ram-reserve.txt to a larger GB value to increase the reserve. Pending manager and activity reservations remain additional allowances for background allocators.
+
+The reliability monitor enforces the floor periodically, and temporary helper launches reclaim RAM on demand. Interrupted hacking batches recover through normal scheduling. The overview adds a RAM Hold row on its next restart. Essential and manual allocations can still exhaust physical RAM; the project does not kill those scripts to manufacture space.
+
+Verification: 481 project tests, 15 API service tests and 148 syntax checks passed. The updated monitor is active in-game; live free RAM was 195.2 GB with a 128 GB baseline reserve. All 113 deployable files synced.

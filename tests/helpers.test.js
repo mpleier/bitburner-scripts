@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import * as h from '../helpers.js';
 import {fallbackBitNodeMultipliers} from '../bitnode-fallbacks.js';
-const basic=()=>({args:[],pid:1,print(){},tprint(){},toast(){},disableLog(){},getScriptName:()=> 'demo.js',read:()=>'',sleep:async()=>{}});
+const basic=()=>({args:[],pid:1,print(){},tprint(){},toast(){},disableLog(){},getHostname:()=> 'test-server',getScriptName:()=> 'demo.js',read:()=>'',sleep:async()=>{}});
 test('short numbers preserve case-sensitive large scales and reject partial numbers',()=>{
  for(const [s,n]of [['1q',1e15],['1Q',1e18],['2s',2e21],['2S',2e24],[' 3M ',3e6],['-2b',-2e9]])assert.equal(h.parseShortNumber(s),n);
  for(const s of ['1junkm','q','bad'])assert.ok(Number.isNaN(h.parseShortNumber(s)));

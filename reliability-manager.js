@@ -1,3 +1,4 @@
+import {homeRamReserve,reclaimHomeRam} from './home-ram-policy.js';
 import {runtimeScripts,statusFiles,scriptSignature,recoveryDecision,dashboardRows} from './runtime-policy.js';
 import {isScriptPaused} from './automation-control.js';
 import {activityRecord} from './activity-coordination.js';
@@ -10,6 +11,7 @@ export async function main(ns){
  ns.atExit(()=>{try{if(read('tasks/automation-maintenance.json')?.ownerPid===ns.pid)ns.rm('tasks/automation-maintenance.json');}catch{}});
  while(!isScriptPaused(ns,ns.getScriptName())){
   try{
+   reclaimHomeRam(ns,0,homeRamReserve(ns));
    const now=Date.now(),processes=ns.ps('home'),sourceCache=new Map(),statusCache=new Map();
    const readStatus=file=>{if(!file)return null;if(!statusCache.has(file))statusCache.set(file,read(file));return statusCache.get(file);};
    const livePids=new Set(processes.map(p=>p.pid));for(const pid of seen.keys())if(!livePids.has(pid))seen.delete(pid);for(const [key,history]of failures)if(now-history.at>15*60000)failures.delete(key);
@@ -34,7 +36,7 @@ export async function main(ns){
     if(activityRecord(ns))break;
     if(isScriptPaused(ns,job.filename)){pending.delete(pid);continue;}
     const ram=ns.getScriptRam(job.filename,'home'),free=ns.getServerMaxRam('home')-ns.getServerUsedRam('home');
-    if(!(ram>0)||free+(job.stopped?0:ram*job.threads)<ram*job.threads+8)continue;
+    if(!(ram>0)||free+(job.stopped?0:ram*job.threads)<ram*job.threads+homeRamReserve(ns))continue;
     if(!job.stopped&&!ns.kill(pid))continue;job.stopped=true;
     const replacement=ns.run(job.filename,job.threads,...job.args);job.history.count++;failures.set(job.key,job.history);
     if(replacement){pending.delete(pid);ns.print('Activated '+job.filename+' (pid '+replacement+').');}else if(job.history.count>=3){pending.delete(pid);ns.print('Could not restore '+job.filename+'; recovery limit reached.');}

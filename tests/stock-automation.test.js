@@ -2,12 +2,12 @@ import {readFile} from 'node:fs/promises';
 import vm from 'node:vm';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {stockTradeReceipt,stockReserve,holdYoungStock,stockOptionsError} from '../stock-policy.js';
+import {stockTradeReceipt,stockReserve,holdYoungStock,stockOptionsError,stockControlAllowed,stockCycleAgreement,stockHistoryForecast,stockSnapshotExpression} from '../stock-policy.js';
 function market({money=2e6,position=[0,0,0,0],fail=false,forecast=.7}={}){
  let cash=money,p=position.slice(),calls=0;
  const buy=(long,count)=>{calls++;if(fail)return 0;cash-=count*100+100000;p[long?0:2]+=count;p[long?1:3]=100;return 101;};
  const sell=(long,count)=>{calls++;if(fail)return 0;cash+=count*(long?110:2*p[3]-110)-100000;p[long?0:2]-=count;return 111;};
- return {wallet:()=>cash,calls:()=>calls,api:{getPosition:()=>p.slice(),getMaxShares:()=>1e6,getPurchaseCost:(_s,n)=>n*100+100000,has4SDataTixApi:()=>true,getForecast:()=>forecast,buyStock:(_s,n)=>buy(true,n),buyShort:(_s,n)=>buy(false,n),sellStock:(_s,n)=>sell(true,n),sellShort:(_s,n)=>sell(false,n)}};
+ return {wallet:()=>cash,calls:()=>calls,api:{getPosition:()=>p.slice(),getMaxShares:()=>1e6,getPurchaseCost:(_s,n,type)=>{assert.ok(['L','S'].includes(type),'invalid native PositionType '+type);return n*100+100000;},has4SDataTixApi:()=>true,getForecast:()=>forecast,buyStock:(_s,n)=>buy(true,n),buyShort:(_s,n)=>buy(false,n),sellStock:(_s,n)=>sell(true,n),sellShort:(_s,n)=>sell(false,n)}};
 }
 test('trade receipts use actual fill and cash rather than shifted API return prices',()=>{
  const m=market();const r=stockTradeReceipt(m.api,m.wallet,'AAA',1000,'buyStock',0,()=>true);assert.equal(r.shares,1000);assert.equal(r.cash,200000);assert.equal(r.price,100);
@@ -38,7 +38,7 @@ test('invalid stock options reject impossible cash fractions',()=>{
 test('serialized stock worker uses fresh reserves and valid native argument types',async()=>{
  const source=await readFile(new URL('../stockmaster.js',import.meta.url),'utf8');
  const m=market(),ns={pid:1,read:()=> '1950000',getPlayer:()=>({money:m.wallet()}),isRunning:()=>true,stock:m.api};
- const context={stockTradeReceipt,stockReserve,achievementActionAllowed:()=>true,getNsDataThroughFile:async(ns,expression,file,args)=>{assert.ok(args.every(a=>['string','number','boolean'].includes(typeof a)));ns.args=args;return vm.runInNewContext(expression,{ns});}};
+ const context={stockTradeReceipt,stockReserve,stockControlAllowed,stockHistoryForecast,achievementActionAllowed:()=>true,getNsDataThroughFile:async(ns,expression,file,args)=>{assert.ok(args.every(a=>['string','number','boolean'].includes(typeof a)));ns.args=args;return vm.runInNewContext(expression,{ns});}};
  vm.runInNewContext(source.replace(/^import[\s\S]*?from\s+['"][^'"]+['"];?\r?$/gm,'').replaceAll('export function','function').replace('export async function','async function')+';globalThis.trade=transactStock;',context);
  const result=await context.trade(ns,'AAA',1000,'buyStock');assert.equal(result.shares,0);assert.equal(m.calls(),0);
 });
@@ -60,11 +60,60 @@ test('serialized workers preserve order allocations and explicit liquidation pau
  const source=await readFile(new URL('../stockmaster.js',import.meta.url),'utf8');
  const make=async(position=[0,0,0,0],paused=false)=>{
   const m=market({position}),ns={pid:1,read:path=>path==='reserve.txt'?'0':paused?'true':'',getPlayer:()=>({money:m.wallet()}),isRunning:()=>true,stock:m.api};
-  const context={stockTradeReceipt,stockReserve,achievementActionAllowed:()=>true,getNsDataThroughFile:async(ns,expression,file,args)=>{ns.args=args;return vm.runInNewContext(expression,{ns});}};
+  const context={stockTradeReceipt,stockReserve,stockControlAllowed,stockHistoryForecast,achievementActionAllowed:()=>true,getNsDataThroughFile:async(ns,expression,file,args)=>{ns.args=args;return vm.runInNewContext(expression,{ns});}};
   vm.runInNewContext(source.replace(/^import[\s\S]*?from\s+['"][^'"]+['"];?\r?$/gm,'').replaceAll('export function','function').replace('export async function','async function')+';globalThis.trade=transactStock;',context);
   return {m,trade:(...args)=>context.trade(ns,'AAA',1000,...args)};
  };
  const buy=await make();assert.equal((await buy.trade('buyStock',false,199999)).shares,0);assert.equal(buy.m.calls(),0);
  const sale=await make([1000,100,0,0],true);assert.equal((await sale.trade('sellStock')).shares,0);assert.equal(sale.m.calls(),0);
  assert.equal((await sale.trade('sellStock',true)).shares,1000);
+});
+
+
+test('cycle agreement stays monotonic within its intended cap and sparse history is neutral',()=>{
+ assert.equal(stockCycleAgreement(6,10),10);assert.equal(stockCycleAgreement(10,8),10);assert.equal(stockCycleAgreement(10,20),14);
+ assert.equal(stockHistoryForecast([]),.5);assert.equal(stockHistoryForecast([100]),.5);assert.equal(stockHistoryForecast([102,101,100]),1);
+});
+
+test('stock maintenance blocks ordinary commands but permits explicit liquidation',()=>{
+ const ns={isRunning:()=>true,read:f=>f.includes('maintenance')?JSON.stringify({ownerPid:3,expiresAt:Date.now()+60000}):''};
+ assert.equal(stockControlAllowed(ns,1),false);assert.equal(stockControlAllowed(ns,1,true),true);
+ assert.equal(stockControlAllowed({...ns,isRunning:()=>false},1,true),false);
+});
+
+test('one synchronous snapshot collects consistent quotes, forecasts and positions',()=>{
+ let calls=[];const ns={args:['AAA'],stock:Object.fromEntries(['getAskPrice','getBidPrice','getVolatility','getForecast','getPosition'].map((name,i)=>[name,()=>{calls.push(name);return i;}]))};
+ const snapshot=vm.runInNewContext(stockSnapshotExpression(true,false),{ns});assert.equal(snapshot.AAA.ask,0);assert.equal(snapshot.AAA.position,4);assert.equal(calls.length,5);
+ calls=[];const mockSnapshot=vm.runInNewContext(stockSnapshotExpression(false,true),{ns});assert.equal(mockSnapshot.AAA.position,null);assert.deepEqual(calls,['getAskPrice','getBidPrice']);
+});
+
+function stockContext(source,context,append){context.stockHistoryForecast=stockHistoryForecast;vm.runInNewContext(source.replace(/^import[\s\S]*?from\s+['"][^'"]+['"];?\r?$/gm,'').replaceAll('export function','function').replace('export async function','async function')+append,context);}
+
+test('mock trades debit and credit a separate wallet instead of reusing real cash',async()=>{
+ const source=await readFile(new URL('../stockmaster.js',import.meta.url),'utf8'),ns={read:()=>'',getScriptName:()=> 'stockmaster.js',print:()=>{}},context={stockReserve,achievementActionAllowed:()=>true,isScriptPaused:()=>false,formatMoney:String,getNsDataThroughFile:async()=>({money:2e6})};
+ stockContext(source,context,';mock=true;mockCash=null;options={reserve:0};globalThis.buy=doBuy;globalThis.sell=doSellAll;globalThis.player=getPlayerInfo;');
+ const stk={sym:'AAA',ask_price:100,bid_price:110,sharesLong:0,sharesShort:0,bullish:()=>true,owned(){return this.sharesLong+this.sharesShort>0;}};
+ assert.equal((await context.player(ns)).money,2e6);
+ assert.equal(await context.buy(ns,stk,1000,199999),0);
+ assert.equal(await context.buy(ns,stk,1000,200000),200000);assert.equal((await context.player(ns)).money,1800000);
+ await context.sell(ns,stk);assert.equal((await context.player(ns)).money,1810000);
+});
+
+test('disabled 4S does not liquidate or attempt access purchases',async()=>{
+ const source=await readFile(new URL('../stockmaster.js',import.meta.url),'utf8'),context={achievementActionAllowed:()=>true,getNsDataThroughFile:async()=>{throw Error('Unexpected API call');}};
+ stockContext(source,context,';resetInfo={bitNodeOptions:{disable4SData:true}};globalThis.access=tryGet4SApi;');
+ assert.equal(await context.access({}, {money:30e9},30e9),false);
+});
+
+test('partial 4S access purchases request a portfolio refresh even if API purchase fails',async()=>{
+ const source=await readFile(new URL('../stockmaster.js',import.meta.url),'utf8');
+ const ns={pid:1,read:()=>'',print:()=>{},tprint:()=>{},toast:()=>{}},context={stockReserve,stockControlAllowed,achievementActionAllowed:()=>true,formatMoney:String,formatDuration:String,getNsDataThroughFile:async(_ns,expression)=>expression.includes('purchase4SMarketData()')};
+ stockContext(source,context,';resetInfo={lastNodeReset:Date.now()};bitNodeMults={FourSigmaMarketDataCost:1,FourSigmaMarketDataApiCost:1};options={reserve:0};globalThis.access=tryGet4SApi;');
+ assert.equal(await context.access(ns,{money:30e9},30e9),true);
+});
+
+
+test('short purchase quotes use the native S enum value',()=>{
+ const m=market({forecast:.3});const receipt=stockTradeReceipt(m.api,m.wallet,'AAA',1000,'buyShort',0,()=>true);
+ assert.equal(receipt.shares,1000);assert.equal(receipt.cash,200000);
 });

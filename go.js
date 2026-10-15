@@ -14,13 +14,14 @@ import {achievementActionAllowed} from './achievement-policy.js';
  */
 
 import { isScriptPaused } from './automation-control.js';
-import { rankGoOpponents, goOpponents, goOptionsError, goCheatsEnabled, validGoPair, shuffleGoMoves, liveGoGoals, attemptGoFailure,goCheatChanceAllowed,validGoBoard } from './go-policy.js';
+import { rankGoOpponents, goOpponents, goOptionsError, goCheatsEnabled, validGoPair, shuffleGoMoves, liveGoGoals, attemptGoFailure,goCheatChanceAllowed,validGoBoard,goMoveOutcome,goTacticalMove } from './go-policy.js';
 import {
     getConfiguration, instanceCount, log, getErrorInfo, getActiveSourceFiles, getNsDataThroughFile, formatTime
 } from './helpers.js'
 
 const argsSchema = [
     ['goal','auto'], // auto, money, speed, hacking, reputation, combat, crime, hacknet
+    ['allow-self-atari',false], // Permit non-capturing moves that leave the played group with only one liberty.
     ['board-size',13], // Supported native sizes: 5, 7, 9, 13.
     ['opponent',''], // Optional explicit opponent override
     ['cheats', true], // (Now true by default - but still an option for backwards compatibility) This is only possible if you have BN14.2
@@ -44,7 +45,7 @@ export async function main(ns) {
     if(isScriptPaused(ns,ns.getScriptName()))return;
     let goOptions, unavailableOpponents=new Map();
     const stopPlaying=Symbol('Go stopped');let failureAttempts=0,startedGame=false,lastStatusAt=0,goStatus={};
-    const ensurePlaying=()=>{if(isScriptPaused(ns,ns.getScriptName())||!achievementActionAllowed(ns,'go'))throw stopPlaying;};
+    const ensurePlaying=()=>{if(isScriptPaused(ns,ns.getScriptName())||maintenanceRequested(ns)||!achievementActionAllowed(ns,'go'))throw stopPlaying;};
     let cheats = false;
     let cheatChanceThreshold = 1.0;
     let logtime = false;
@@ -54,6 +55,7 @@ export async function main(ns) {
     let turn = 0;
     let START = performance.now();
     // Global variables initialized in this way get strong typing throughout
+    let moveOutcomes = new Map();
     let board = (/**@returns{string[]}*/() => undefined)(); // The current board state
     let currentValidMoves = (/**@returns{number[][]}*/() => undefined)(); //All valid moves for this turn
     let currentValidContestedMoves = (/**@returns{number[][]}*/() => undefined)(); //All valid moves that occupy a contested space
@@ -163,7 +165,7 @@ export async function main(ns) {
      * @returns {Promise<{type: "move" | "pass" | "gameOver";x: number;y: number;}>} */
     async function go_cheat_playTwoMoves(ns, x1, y1, x2, y2) {
         ensurePlaying();
-        return await getNsDataThroughFile(ns, `await (() => {if(!ns.isRunning(ns.args[4])||ns.read("remote-control/paused/go.js.txt").trim()==="true"||!(${achievementActionAllowed.toString()})(ns,"go"))return null;const coords=ns.args.slice(0,4);if(!(${validGoPair.toString()})(ns.go.analysis.getValidMoves(),coords))return null;return ns.go.cheat.playTwoMoves(...coords);})()`, null, [x1,y1,x2,y2,ns.pid]);
+        return await getNsDataThroughFile(ns, `await (() => {if(!ns.isRunning(ns.args[4])||ns.read("remote-control/paused/go.js.txt").trim()==="true"||(${maintenanceRequested.toString()})(ns)||!(${achievementActionAllowed.toString()})(ns,"go"))return null;const coords=ns.args.slice(0,4);if(!(${validGoPair.toString()})(ns.go.analysis.getValidMoves(),coords))return null;return ns.go.cheat.playTwoMoves(...coords);})()`, null, [x1,y1,x2,y2,ns.pid]);
     }
     /** @param {NS} ns @param {number} x1 @param {number} y1 @param {number} x2 @param {number} y2
      * @returns {Promise<{type: "move" | "pass" | "gameOver";x: number;y: number;}>} */
@@ -184,7 +186,9 @@ export async function main(ns) {
 
     /** @param {NS} ns */
     async function playGo(ns) {
+        ensurePlaying();
         const startBoard = await go_getBoardState(ns)
+        if(!validGoBoard(startBoard))throw new Error('Malformed Go board; waiting for native state.');
         let inProgress = false
         turn = 0
         START = performance.now()
@@ -206,14 +210,19 @@ export async function main(ns) {
         while (true) {
             automationHeartbeat(ns);ensurePlaying();currentValidMovesTurn=-1;
             turn++; if(turn===1)playStyle=getStyle(ns);
-            board = await go_getBoardState(ns);
+            const snapshot=await getNsDataThroughFile(ns,'({board:ns.go.getBoardState(),contested:ns.go.analysis.getControlledEmptyNodes(),valid:ns.go.analysis.getValidMoves(),liberties:ns.go.analysis.getLiberties(),chains:ns.go.analysis.getChains()})','/Temp/go-board-snapshot.txt');
+            ensurePlaying();
+            board = snapshot.board;
             if(!validGoBoard(board))throw new Error('Malformed Go board; waiting for native state.');
             startedGame=true;
             if(Date.now()-lastStatusAt>=5000){goStatus={...goStatus,at:Date.now(),pid:ns.pid,state:'playing',error:null,opponent:ns.go.getOpponent(),turn,boardSize:board.length,cheats};await ns.write('tasks/go-status.json',JSON.stringify(goStatus),'w');lastStatusAt=Date.now();}
-            contested = await go_analysis_getControlledEmptyNodes(ns);
-            validMove = await go_analysis_getValidMoves(ns);
-            validLibMoves = await go_analysis_getLiberties(ns);
-            chains = await go_analysis_getChains(ns);
+            contested = snapshot.contested;
+            validMove = snapshot.valid;
+            validLibMoves = snapshot.liberties;
+            chains = snapshot.chains;
+            moveOutcomes = new Map();
+            for(let x=0;x<board.length;x++)for(let y=0;y<board.length;y++)if(validMove[x]?.[y]===true)
+                moveOutcomes.set(x+','+y,goMoveOutcome(board,x,y));
             const size = board[0].length
             //Build a test board with walls
             let testWall = "W".repeat(size + 2);
@@ -231,6 +240,7 @@ export async function main(ns) {
                 if(moves.length>=2){failureAttempts++;results=await go_cheat_playTwoMoves(ns,...moves[0],...moves[1]);}
                 if(results?.type==='gameOver'){await checkNewGame(ns,results);continue;}
             }
+            if (!results)results=await movePiece(ns,goTacticalMove(board,validMove,moveOutcomes));
             if (!results && turn < 3)
                 results = await movePiece(ns, getOpeningMove(ns))
 
@@ -409,7 +419,7 @@ export async function main(ns) {
             if(!selected)throw new Error('No available Go opponent; retrying after cooldown.');
             goStatus={at:Date.now(),pid:ns.pid,state:'starting',error:null,selected,ranked,stats,boardSize:goOptions['board-size']??13};
             await ns.write('tasks/go-status.json',JSON.stringify(goStatus),'w');
-            turn = 0;currentValidMovesTurn=-1;failureAttempts=0;
+            turn = 0;currentValidMovesTurn=-1;failureAttempts=0;moveOutcomes=new Map();
             ns.clearLog()
         }
     }
@@ -1349,6 +1359,8 @@ export async function main(ns) {
         if (!attack?.coords) return false
         const [x, y] = attack.coords
         if (x === undefined) return false
+        const outcome=moveOutcomes.get(x+','+y)||goMoveOutcome(board,x,y);
+        if(!outcome||outcome.liberties===0||!goOptions?.['allow-self-atari']&&outcome.liberties===1&&outcome.captured===0)return false;
         let mid = performance.now()
         ns.printf("%s", attack.msg)
         const results = await go_makeMove(ns, x, y);
@@ -1384,6 +1396,8 @@ export async function main(ns) {
         for (let x = 0; x < board[0].length; x++)
             for (let y = 0; y < board[0].length; y++) {
                 if (validMove[x][y]) {
+                    const outcome=moveOutcomes.get(x+','+y)||goMoveOutcome(board,x,y);
+                    if(!outcome||outcome.liberties===0||!goOptions?.['allow-self-atari']&&outcome.liberties===1&&outcome.captured===0)continue;
                     if (["O", "?"].includes(contested[x][y])) contestedMoves.push([x, y])
                     moves.push([x, y])
                 }

@@ -32,8 +32,11 @@ export function blackjackShouldHit(text,dealer,basic=false) {
   if(soft)return total<18||(total===18&&dealer>=9);
   return total<12||(total===12&&!(dealer>=4&&dealer<=6))||(total>=13&&total<17&&dealer>6);
 }
+export class CasinoUiUnavailable extends Error {
+  constructor(message) { super(message);this.name='CasinoUiUnavailable'; }
+}
 export function casinoReactHandler(element,eventName) {
-  if(!element||element.isConnected===false||element.disabled)throw new Error('Casino control is missing, stale, or disabled.');
+  if(!element||element.isConnected===false||element.disabled)throw new CasinoUiUnavailable('Casino control is missing, stale, or disabled.');
   for(const key of Object.keys(element))if(key.startsWith('__reactProps$')) {
     const handler=element[key]?.[eventName];if(typeof handler==='function')return handler;
   }
@@ -42,12 +45,34 @@ export function casinoReactHandler(element,eventName) {
     if(fiber?.stateNode===element)for(const props of [fiber.memoizedProps,fiber.pendingProps])
       if(typeof props?.[eventName]==='function')return props[eventName];
   }
-  throw new Error('Casino control has no current '+eventName+' handler.');
+  throw new CasinoUiUnavailable('Casino control has no current '+eventName+' handler.');
+}
+function dispatchCasinoEvent(element,handler,eventName,value) {
+  const target=eventName==='onChange'?{value:String(value)}:element;
+  return handler({isTrusted:true,target,currentTarget:element,nativeEvent:{isTrusted:true},preventDefault(){},stopPropagation(){}});
 }
 export async function casinoUiEvent(element,eventName,value) {
-  const handler=casinoReactHandler(element,eventName);
-  const target=eventName==='onChange'?{value:String(value)}:element;
-  return await handler({isTrusted:true,target,currentTarget:element,nativeEvent:{isTrusted:true},preventDefault(){},stopPropagation(){}});
+  return await dispatchCasinoEvent(element,casinoReactHandler(element,eventName),eventName,value);
+}
+/** Retry only before dispatch: repeating a dispatched handler could place a second bet. */
+export async function performCasinoUiAction(resolve,eventName,value,{assertControl,wait,optional=false,attempts=5}) {
+  let lastError;
+  for(let attempt=0;attempt<attempts;attempt++) {
+    assertControl();
+    const element=resolve();
+    if(!element&&optional)return false;
+    let handler;
+    try { handler=casinoReactHandler(element,eventName); }
+    catch(error) {
+      if(error?.name!=='CasinoUiUnavailable')throw error;
+      lastError=error;
+      if(attempt+1<attempts)await wait(Math.min(200,25*2**attempt));
+      continue;
+    }
+    await dispatchCasinoEvent(element,handler,eventName,value);
+    return true;
+  }
+  throw lastError||new CasinoUiUnavailable('Casino interface remained unavailable.');
 }
 /** Self-contained helper: preserve the casino, this helper and the Remote API worker. */
 export function stopCasinoCompetitors(ns,casinoPid) {
@@ -69,4 +94,33 @@ export function casinoHookArgs(input) {
     if(typeof arg==='boolean'||(typeof arg==='number'&&Number.isFinite(arg)))return arg;
     throw new Error('Completion arguments must be strings, numbers, or booleans.');
   });
+}
+
+
+export function casinoControlAllowed(ns,parent) {
+ if(!ns.isRunning(parent)||ns.read('remote-control/paused/casino.js.txt').trim()==='true')return false;
+ try{const r=JSON.parse(ns.read('tasks/progression-transition.json'));if(r.expiresAt>Date.now()&&r.ownerPid!==parent&&ns.isRunning(r.ownerPid))return false;}catch{}
+ return true;
+}
+export async function reloadCasinoWindow(ns,win,delay,allowed,maxAttempts=5) {
+ const previous=win.onbeforeunload;
+ try{
+  for(let attempt=1;attempt<=maxAttempts;attempt++){
+   if(!allowed())throw new Error('Casino control lost before reload');
+   win.onbeforeunload=null;await ns.sleep(delay);
+   if(!allowed())throw new Error('Casino control lost before reload');
+   win.location.reload();
+   for(let tick=0;tick<50;tick++){await ns.sleep(200);if(!allowed())throw new Error('Casino control lost while waiting for reload');}
+   ns.print('Casino reload attempt '+attempt+' did not finish.');
+  }
+  throw new Error('Casino reload failed after '+maxAttempts+' attempts.');
+ }finally{win.onbeforeunload=previous;}
+}
+export function launchCasinoHook(ns,script,args) {
+ if(ns.ps('home').some(p=>p.filename===script))return 'already-running';
+ if(ns.run(script,1,...args))return 'started';
+ const host=ns.getHostname(),needed=ns.getScriptRam(script,host);
+ const released=ns.getScriptRam(ns.getScriptName(),host),free=ns.getServerMaxRam(host)-ns.getServerUsedRam(host)+released;
+ if(needed>0&&needed<=free){ns.spawn(script,{threads:1,spawnDelay:1},...args);return 'spawned';}
+ return 'failed';
 }

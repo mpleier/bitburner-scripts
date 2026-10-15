@@ -119,3 +119,17 @@ export function sleeveAugSpendingBudget(ns,requested) {
  const used=usage?.epoch===plan.epoch?Math.max(0,Number(usage.spent?.sleeves)||0):0;
  return Math.min(budget,Math.max(0,(Number(plan.allowances.sleeves)||0)-used));
 }
+
+
+/** Keep support stable and add only enough healthy sleeves to cover a live Black Op shortfall. */
+export function sleeveBladeburnerSupport(sleeves,actualTasks,plan) {
+ const ready=i=>sleeves[i]?.shock===0&&sleeves[i]?.sync>=100;
+ const existing=sleeves.map((_,i)=>i).filter(i=>actualTasks[i]?.type==='SUPPORT');
+ if(plan?.state==='protected-black-op')return existing.filter(ready);
+ if(!['needs-recruitment','ready'].includes(plan?.state)||!Number.isInteger(plan.required)||!Number.isInteger(plan.available)||plan.required<0||plan.available<0)return [];
+ const humans=Math.max(0,plan.available-existing.length),needed=Math.max(0,plan.required-humans);
+ const cost=i=>['FACTION','COMPANY'].includes(actualTasks[i]?.type)?2:actualTasks[i]?.type==='BLADEBURNER'&&actualTasks[i]?.actionType==='Contracts'?1:0;
+ const available=sleeves.map((_,i)=>i).filter(i=>ready(i)&&!existing.includes(i)).sort((a,b)=>cost(a)-cost(b)||a-b);
+ const eligible=[...existing.filter(ready),...available];
+ return eligible.slice(0,needed);
+}

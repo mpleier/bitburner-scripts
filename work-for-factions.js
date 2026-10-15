@@ -8,7 +8,7 @@ import {
     formatDuration, formatMoney, formatNumberShort, disableLogs, log, getErrorInfo, tail
 } from './helpers.js'
 
-let options, activeNs, lastWorkStatusAt=0, lastWorkStatusKey="";
+let options, activeNs, lastWorkStatusAt=0, lastWorkStatusKey="",lastSimulacrumCheck=0;
 const argsSchema = [
     ['first', []], // Grind rep with these factions first. Also forces a join of this faction if we normally wouldn't (e.g. no desired augs or all augs owned)
     ['skip', []], // Don't work for these factions
@@ -217,6 +217,7 @@ async function loadStartupData(ns) {
     hasFocusPenalty = !installedAugmentations.includes("Neuroreceptor Management Implant"); // Check if we have an augmentation that lets us not have to focus at work (always nicer if we can background it)
     shouldFocus = !options['no-focus'] && hasFocusPenalty; // Focus at work for the best rate of rep gain, unless focus activities are disabled via command line
     hasSimulacrum = installedAugmentations.includes("The Blade's Simulacrum");
+    lastSimulacrumCheck=Date.now();
 
     // Find out if we're in a gang
     const gangInfo = await getGangInfo(ns);
@@ -865,13 +866,18 @@ async function isValidInterruption(ns, currentWork = null) {
     if (isScriptPaused(ns,ns.getScriptName())||maintenanceRequested(ns)||activityBusy(ns)) return true;
     let interruptionNotice = "";
     currentWork ??= await getCurrentWorkInfo(ns); // Retrieve current work (unless it was passed in)
+    // Grafting can install Simulacrum without restarting this manager. Refresh before the pause decision.
+    if(!hasSimulacrum&&Date.now()-lastSimulacrumCheck>=5000) {
+        try{hasSimulacrum=await getNsDataThroughFile(ns,'ns.singularity.getOwnedAugmentations(false).includes("The Blade\'s Simulacrum")','/Temp/faction-simulacrum-installed.txt');}catch{}
+        lastSimulacrumCheck=Date.now();
+    }
     // Never interrupt grafting
     if (["GRAFTING","CREATE_PROGRAM"].includes(currentWork.type)) {
         interruptionNotice = currentWork.type+" in progress. Waiting before changing player work.";
         wasGrafting = currentWork.type === "GRAFTING";
     }
     // If bladeburner is currently active, but we do not yet have The Blade's Simulacrum, we may choose to we pause working.
-    else if (7 in dictSourceFiles && !hasSimulacrum && !options['no-bladeburner-check']) {
+    else if ((6 in dictSourceFiles || 7 in dictSourceFiles || [6,7].includes(currentBitnode)) && !hasSimulacrum && !options['no-bladeburner-check']) {
         // Heuristic: If we're in a gang, its rep will give us access to most augs, we can take a break from working in favour of bladeburner progress
         //       Also, if we're done all "priority" work (scope >= 2), consider letting Bladeburner take over
         // TODO: Are there other situations we want to prioritize bladeburner over normal work? Perhaps if we're in a Bladeburner BN? (6 or 7)

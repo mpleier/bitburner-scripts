@@ -1,5 +1,5 @@
 import {registerAutomation,automationHeartbeat,maintenanceRequested} from './runtime-policy.js';
-import {isBlackOp,nextSkill,raidCities,recoveryRequired,optionsError,requiredBladeburnerTeam,prepareBladeburnerTeam,bladeburnerRecruitmentBudget,bladeburnerRankRate,rankBladeburnerActions,spendBladeburnerSkills,bladeburnerRecruitmentDecision,planBladeburnerLevels,startBladeburnerPlannedAction} from './bladeburner-policy.js';
+import {isBlackOp,nextSkill,raidCities,recoveryRequired,optionsError,requiredBladeburnerTeam,prepareBladeburnerTeam,bladeburnerRecruitmentBudget,bladeburnerRankRate,rankBladeburnerActions,spendBladeburnerSkills,bladeburnerRecruitmentDecision,planBladeburnerLevels,startBladeburnerPlannedAction,bladeburnerWorkAllowed} from './bladeburner-policy.js';
 import {isScriptPaused} from './automation-control.js';
 import {achievementActionAllowed} from './achievement-policy.js';
 import { activityBusy, markActivitySupport, activityGuard } from './activity-coordination.js';
@@ -135,8 +135,8 @@ async function gatherBladeburnerInfo(ns) {
         remainingBlackOpsNames.map(n => `${n} (${blackOpsRanks[n]})`).join(", "));
     maxRankNeeded = Math.max(1,...Object.values(blackOpsRanks));
     // Check if we have the aug that lets us do bladeburner while otherwise busy
-    haveSimulacrum = !(4 in ownedSourceFiles) ? true : // If player doesn't have SF4, we cannot check, so hope for the best.
-        await getNsDataThroughFile(ns, `ns.singularity.getOwnedAugmentations().includes("${simulacrumAugName}")`, '/Temp/bladeburner-hasSimulacrum.txt');
+    haveSimulacrum = null; // Refreshed before work decisions, including after grafting.
+    lastCanWorkCheckIdle = true;
     // Initialize some flags that may change over time
     lastAssignedTask = null;
     lastAssignedCount = null;
@@ -169,15 +169,21 @@ async function mainLoop(ns) {
     teamBudget=bladeburnerRecruitmentBudget(teamBudget,resetInfo.lastNodeReset,teamNow,teamLastTick,observedAction?.name==='Recruitment');
     teamLastTick=teamNow;
     // Persist accounting even while Black Ops, maintenance, or other activity owns the player.
-    await ns.write(teamStatusFile,JSON.stringify({at:teamNow,pid:ns.pid,...teamBudget,state:isBlackOp(observedAction)?'protected-black-op':'observing',budgetMinutes:options['recruitment-budget-minutes'],recruiting:observedAction?.name==='Recruitment'}),'w');
+    let previousTeamPlan;try{const saved=JSON.parse(ns.read(teamStatusFile));if(saved.nodeReset===resetInfo.lastNodeReset)previousTeamPlan=saved;}catch{}
+    await ns.write(teamStatusFile,JSON.stringify({...previousTeamPlan,at:teamNow,pid:ns.pid,...teamBudget,state:isBlackOp(observedAction)?'protected-black-op':previousTeamPlan?.state||'observing',budgetMinutes:options['recruitment-budget-minutes'],recruiting:observedAction?.name==='Recruitment'}),'w');
     if(isBlackOp(observedAction)){lastAssignedTask=observedAction.name;return;}
     if(maintenanceRequested(ns)) {
+        await ns.write(teamStatusFile,JSON.stringify({at:teamNow,pid:ns.pid,...teamBudget,state:'maintenance',reason:'Controller maintenance',budgetMinutes:options['recruitment-budget-minutes'],recruiting:observedAction?.name==='Recruitment'}),'w');
         if(ownsRecruitment&&observedAction?.name==='Recruitment')
             await getNsDataThroughFile(ns,'ns.isRunning(ns.args[0])&&ns.bladeburner.getCurrentAction()?.name==="Recruitment"?ns.bladeburner.stopBladeburnerAction():false','/Temp/bladeburner-stop-recruitment.txt',[ns.pid]);
         return;
     }
     // See if we are able to do bladeburner work
-    if (!(await canDoBladeburnerWork(ns))) return;
+    if (!(await canDoBladeburnerWork(ns))) {
+        // A prior recruitment target cannot reserve sleeves while player work prevents using the team.
+        await ns.write(teamStatusFile,JSON.stringify({at:Date.now(),pid:ns.pid,...teamBudget,state:'waiting-for-player',reason:'Player activity prevents Bladeburner work',budgetMinutes:options['recruitment-budget-minutes'],recruiting:false}),'w');
+        return;
+    }
 
     // NEXT STEP: Gather data needed to determine what and where to work
     // If any blackops have been completed, remove them from the list of remaining blackops
@@ -421,7 +427,7 @@ async function mainLoop(ns) {
     // Change actions if we're not currently doing the desired action
     const bestActionType = nextBlackOp == bestActionName ? "Black Operations" : contractNames.includes(bestActionName) ? "Contracts" :
         operationNames.includes(bestActionName) ? "Operations" : "General";
-    const success = await getNsDataThroughFile(ns, `(${startBladeburnerPlannedAction.toString()})(ns.bladeburner,ns.args[0],ns.args[1],JSON.parse(ns.args[6]),ns.args[3],ns.args[2],ns.args[4],()=>ns.isRunning(ns.args[5])&&(${bbMutationGuard}))`,null,[bestActionType,bestActionName,blackOpsRanks[bestActionName]||0,options['success-threshold'],teamPlan.required||0,ns.pid,JSON.stringify(levelPlans[bestActionName]||null)]);
+    const success = await getNsDataThroughFile(ns, `(${startBladeburnerPlannedAction.toString()})(ns.bladeburner,ns.args[0],ns.args[1],JSON.parse(ns.args[6]),ns.args[3],ns.args[2],ns.args[4],()=>ns.isRunning(ns.args[5])&&(${bbMutationGuard})&&(${bladeburnerWorkAllowed.toString()})({getCurrentWork:()=>ns.singularity.getCurrentWork(),getOwnedAugmentations:q=>ns.singularity.getOwnedAugmentations(q)},ns.args[7]))`,null,[bestActionType,bestActionName,blackOpsRanks[bestActionName]||0,options['success-threshold'],teamPlan.required||0,ns.pid,JSON.stringify(levelPlans[bestActionName]||null),options['ignore-busy-status']]);
     const expectedDuration = await getBBInfo(ns, `getActionTime(ns.args[0], ns.args[1])`, bestActionType, bestActionName);
     log(ns, (success ? `INFO: Switched to Bladeburner ${bestActionType} "${bestActionName}" (${reason}${levelPlans[bestActionName]?', level '+levelPlans[bestActionName].level:''}). ETA: ${formatDuration(expectedDuration)}` :
         `ERROR: Failed to switch to Bladeburner ${bestActionType} "${bestActionName}" (Count: ${getCount(bestActionName)}, ` +
@@ -474,15 +480,18 @@ let lastCanWorkCheckIdle = true;
  * Helper to see if we are able to do bladeburner work */
 async function canDoBladeburnerWork(ns) {
     if (activityBusy(ns)) return false;
-    if (options['ignore-busy-status'] || haveSimulacrum) return true;
-    // Check if the player is busy doing something else
-    if(!(4 in ownedSourceFiles))return true;
-    const busy = await getNsDataThroughFile(ns, 'ns.singularity.isBusy()');
-    if (!busy) return lastCanWorkCheckIdle = true;
-    if (lastCanWorkCheckIdle)
-        log(ns, `WARNING: Cannot perform Bladeburner actions because the player is busy ` +
-            `and hasn't installed the augmentation "${simulacrumAugName}"...`, false, 'warning');
-    return lastCanWorkCheckIdle = false;
+    let state={known:false,installed:null,busy:null,queued:null};
+    if(4 in ownedSourceFiles)try {
+        state=await getNsDataThroughFile(ns,'(() => {const installed=ns.singularity.getOwnedAugmentations(false).includes("The Blade\'s Simulacrum");return {known:true,installed,busy:!!ns.singularity.getCurrentWork()?.type,queued:!installed&&ns.singularity.getOwnedAugmentations(true).includes("The Blade\'s Simulacrum")};})()','/Temp/bladeburner-work-state.txt');
+    }catch{}
+    haveSimulacrum=state.installed;
+    const allowed=options['ignore-busy-status']||state.known&&(!state.busy||state.installed);
+    await ns.write('tasks/bladeburner-work.json',JSON.stringify({at:Date.now(),pid:ns.pid,...state,allowed:!!allowed}),'w');
+    if(allowed)return lastCanWorkCheckIdle=true;
+    if(lastCanWorkCheckIdle)log(ns,state.known?
+        `INFO: Bladeburner waiting for player work; ${simulacrumAugName} is ${state.queued?'purchased but not installed':'not installed'}.`:
+        'INFO: Bladeburner cannot verify player work without Singularity access; waiting. --ignore-busy-status explicitly permits overriding this check.',false,'info');
+    return lastCanWorkCheckIdle=false;
 }
 
 /** @param {NS} ns

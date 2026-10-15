@@ -2,7 +2,7 @@ import vm from 'node:vm';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { bestSleeveCrime,sleeveCrimeChance,bestFactionWork,sleeveRepAssignments,purchaseSleeveAugBatch,sleeveTaskMatches,maximumSleeves,sleeveReserves,sleeveControlAllowed,sleeveOptionsError,sleeveAugSpendingBudget } from '../sleeve-policy.js';
+import { bestSleeveCrime,sleeveCrimeChance,bestFactionWork,sleeveRepAssignments,purchaseSleeveAugBatch,sleeveTaskMatches,maximumSleeves,sleeveReserves,sleeveControlAllowed,sleeveOptionsError,sleeveAugSpendingBudget,sleeveBladeburnerSupport } from '../sleeve-policy.js';
 import { expandSleeves } from '../sleeve-expansion.js';
 const sleeve=(extra={})=>({shock:0,sync:100,skills:{hacking:100,strength:100,defense:100,dexterity:100,agility:100,charisma:100,intelligence:0},mults:{crime_success:1},...extra});
 test('sleeve crime choice accounts for its own chance and expected money per second',()=>{
@@ -156,4 +156,41 @@ test('sleeve purchase diagnostics distinguish allocator deferrals from native re
  const deferred=purchaseSleeveAugBatch(ns,6,['A'],600e6,0,()=>false,()=>true,true);
  assert.equal(deferred.spent,0);assert.match(deferred.skipped[0].reason,/shared spending allowance/);
  const rejected=purchaseSleeveAugBatch(ns,6,['A'],600e6,0,()=>true,()=>true,true);assert.equal(rejected.skipped[0].reason,'native purchase rejected');
+});
+
+
+test('Bladeburner support fills only a useful shortfall with healthy synchronized sleeves',()=>{
+ const ready=[sleeve(),sleeve({shock:1}),sleeve({sync:99}),sleeve(),sleeve()];
+ assert.deepEqual(sleeveBladeburnerSupport(ready,[],{state:'needs-recruitment',required:5,available:3}),[0,3]);
+});
+
+test('Bladeburner support retains existing sleeves and subtracts human team members',()=>{
+ const ready=Array.from({length:5},()=>sleeve()),actual=[null,null,{type:'SUPPORT'},null,{type:'SUPPORT'}];
+ assert.deepEqual(sleeveBladeburnerSupport(ready,actual,{state:'ready',required:4,available:5}),[2]);
+ assert.deepEqual(sleeveBladeburnerSupport(ready,actual,{state:'ready',required:3,available:5}),[]);
+});
+
+test('active Black Ops keep existing healthy support without assigning unnecessary extras',()=>{
+ const ready=[sleeve(),sleeve(),sleeve({shock:2})],actual=[null,{type:'SUPPORT'},{type:'SUPPORT'}];
+ assert.deepEqual(sleeveBladeburnerSupport(ready,actual,{state:'protected-black-op'}),[1]);
+});
+
+test('missing or unusable Bladeburner plans never reserve support sleeves',()=>{
+ for(const plan of [null,{state:'observing'},{state:'needs-recruitment',required:NaN,available:0}])
+  assert.deepEqual(sleeveBladeburnerSupport([sleeve()],[],plan),[]);
+});
+
+test('sleeve priority retains recovery and explicit overrides before urgent team support',async()=>{
+ const source=await readFile(new URL('../sleeve.js',import.meta.url),'utf8'),pick=source.slice(source.indexOf('async function pickSleeveTask'));
+ assert.ok(pick.indexOf('if (sleeve.sync < 100)')<pick.indexOf('bladeburnerSupportSleeves.has(i)'));
+ assert.ok(pick.indexOf('if (options.crime)')<pick.indexOf('bladeburnerSupportSleeves.has(i)'));
+ assert.ok(pick.indexOf('bladeburnerSupportSleeves.has(i)')<pick.indexOf('if (canTrain)'));
+ assert.match(source,/getActionEstimatedSuccessChance\("Contracts",c,i\)/);
+ assert.match(source,/bladeburnerContractChances\[i\]\?\.\[contractName\]/);
+ assert.match(source,/6 in ownedSourceFiles/);assert.doesNotMatch(source,/Player chance is too low/);
+});
+
+
+test('new Bladeburner support prefers spare sleeves before faction workers',()=>{
+ assert.deepEqual(sleeveBladeburnerSupport([sleeve(),sleeve()],[{type:'FACTION'},{type:'INFILTRATE'}],{state:'needs-recruitment',required:1,available:0}),[1]);
 });

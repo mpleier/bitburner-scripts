@@ -28,3 +28,10 @@ export function hashCapacityChoice(api) {
  const cost=api.getPurchaseNodeCost();if(api.numNodes()<api.maxNumNodes()&&Number.isFinite(cost)&&cost>0)candidates.push({kind:'node',cost});
  return candidates.sort((a,b)=>a.cost-b.cost)[0]||null;
 }
+
+/** Cash bottlenecks favor upgrades that repay within an hour. BN9 keeps its primary-engine policy. */
+export function hacknetPayoffLimit(requested, plan, reset, now, ownerAlive) {
+ if (reset.currentNode === 9 || !ownerAlive || plan?.reset !== reset.lastAugReset ||
+     !(plan?.expiresAt > now) || plan?.epoch > now || plan?.signals?.bottleneck !== 'cash') return requested;
+ return Math.min(requested, 3600);
+}

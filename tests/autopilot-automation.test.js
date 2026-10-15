@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
-import {autopilotSourceFiles,installedAugmentationsFromReset,daemonArgumentsChanged,autopilotOptionsError,autopilotStockReserve} from '../autopilot-policy.js';
+import {autopilotSourceFiles,installedAugmentationsFromReset,daemonArgumentsChanged,autopilotOptionsError,autopilotStockReserve,priorityAugmentationReady} from '../autopilot-policy.js';
 test('autopilot reads owned Source Files without requiring SF4 and preserves disabled overrides',()=>{
  const reset={currentNode:3,ownedSF:new Map([[1,3],[4,1],[10,2]]),bitNodeOptions:{sourceFileOverrides:new Map([[4,0]])}};
  assert.deepEqual(autopilotSourceFiles(reset,false),{1:3,4:1,10:2});
@@ -43,4 +43,20 @@ test('autopilot preserves manager ownership, casino priority, Black Ops and purc
  assert.match(source,/autopilot-blackop.txt/);
  assert.match(source,/await ns.write\(configPath/);
  assert.match(source,/--disable-script', corporationScript/);
+});
+
+test('priority installation recognizes both affordable and already queued Simulacrum',()=>{
+ const priority=["The Blade's Simulacrum"];
+ assert.equal(priorityAugmentationReady(priority,{affordable_augs:priority}),true);
+ assert.equal(priorityAugmentationReady(priority,{awaiting_install_augs:priority}),true);
+ assert.equal(priorityAugmentationReady(priority,{installed_augs:priority,awaiting_install_augs:priority}),false);
+ assert.equal(priorityAugmentationReady(priority,{awaiting_install_augs:["The Shadow's Simulacrum"]}),false);
+ assert.equal(priorityAugmentationReady([], {awaiting_install_augs:priority}),false);
+ assert.equal(priorityAugmentationReady(priority,{}),false);
+});
+test('autopilot defaults to installing Simulacrum through the guarded reset path',async()=>{
+ const source=await readFile(new URL('../autopilot.js',import.meta.url),'utf8');
+ assert.ok(source.includes(`['install-for-augs', ["The Red Pill", "The Blade's Simulacrum"]]`));
+ assert.ok(source.includes("priorityAugmentationReady(options['install-for-augs'], facman)"));
+ assert.ok(source.includes('await shouldDelayInstall(ns, player, facman)'));
 });

@@ -203,3 +203,14 @@ export function startBladeburnerPlannedAction(api,type,name,plan,threshold,rankR
   if(restore){try{api.setActionLevel(type,name,previous.level);}finally{api.setActionAutolevel(type,name,previous.auto);}}
  }
 }
+
+
+/** A queued augmentation is not active. Unknown Singularity state must not cancel player work. */
+export function bladeburnerWorkAllowed(api,ignoreBusy=false) {
+ if(ignoreBusy)return true;
+ try {
+  const work=api.getCurrentWork();
+  if(!work?.type)return true;
+  return api.getOwnedAugmentations(false).includes("The Blade's Simulacrum");
+ }catch{return false;}
+}

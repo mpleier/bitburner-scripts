@@ -218,7 +218,7 @@ export async function main(ns) {
             ready:readyAugs.map(name=>({name,stats:augmentationData[name]?.stats||{}})),
             reputation:Object.fromEntries(Object.values(factionData).filter(f=>f.joined).map(f=>[f.name,f.reputation])),
             targets:Object.values(augmentationData).filter(a=>a.desired&&!a.owned&&!readySet.has(a.name)&&a.name!==strNF&&a.prereqs.every(p=>simulatedOwnedAugmentations.includes(p)||readySet.has(p))&&a.joinedFactionsWithAug().length)
-                .map(a=>({name:a.name,cost:totalPurchaseCost+a.price*augCountMult**purchaseableAugs.length,rep:a.reputation,factions:a.joinedFactionsWithAug().map(f=>f.name),donationCost:Math.min(...a.joinedFactionsWithAug().filter(f=>f.donationsUnlocked&&!options['disable-donations']).map(f=>getReqDonationForAug(a,f.name)))}))};
+                .map(a=>({name:a.name,cost:totalPurchaseCost+a.price*augCountMult**purchaseableAugs.length,priority:priorityAugs.indexOf(a.name),standaloneCost:priorityAugs.includes(a.name)&&a.prereqs.every(p=>simulatedOwnedAugmentations.includes(p))?a.price:null,rep:a.reputation,factions:a.joinedFactionsWithAug().map(f=>f.name),donationCost:Math.min(...a.joinedFactionsWithAug().filter(f=>f.donationsUnlocked&&!options['disable-donations']).map(f=>getReqDonationForAug(a,f.name)))}))};
         ns.write(output_file, JSON.stringify({
             speedSnapshot,
             // Augs we already have installed

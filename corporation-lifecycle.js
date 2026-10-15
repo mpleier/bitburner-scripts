@@ -86,3 +86,25 @@ export function corporationDividendRate(info,cycleSeconds=10){
  const value=(profit*cycleSeconds*rate*shares/total)**(1-tribute)/cycleSeconds;
  return Number.isFinite(value)&&value>0?value:0;
 }
+
+/** Sell equity only for a fresh, reputation-ready augmentation milestone that this sale can fully fund. */
+export function corporationLiquidityTarget(snapshot,{now=Date.now(),augReset,wallet,reserve=0,maxProceeds=0}={}) {
+ const fallback={targetCash:reserve+1e9,reason:'Maintain emergency player liquidity'};
+ if(!snapshot||snapshot.augReset!==augReset||!Number.isFinite(snapshot.at)||snapshot.at>now||now-snapshot.at>60000||
+    !Number.isFinite(snapshot.worth)||!Number.isFinite(wallet)||!Number.isFinite(maxProceeds))return fallback;
+ const worth=Math.max(wallet,snapshot.worth),priority=["The Red Pill","The Blade's Simulacrum","Neuroreceptor Management Implant"];
+ const choices=[];
+ fallback.priorityShortfalls=[];
+ for(const target of snapshot.targets||[]){
+  if(!Number.isFinite(target.cost)||target.cost<=0||!Number.isFinite(target.rep)||!Array.isArray(target.factions))continue;
+  const repReady=target.factions.some(f=>Number.isFinite(snapshot.reputation?.[f])&&snapshot.reputation[f]>=target.rep);
+  const donation=repReady?0:target.donationCost;
+  if(priority.includes(target.name))fallback.priorityShortfalls.push({name:target.name,price:target.standaloneCost??target.cost,reputationReady:repReady,repRequired:target.rep,repAvailable:Math.max(0,...target.factions.map(f=>Number(snapshot.reputation?.[f])||0)),cashGap:Math.max(0,(target.standaloneCost??target.cost)+(Number.isFinite(donation)?donation:0)-worth),maxShareProceeds:maxProceeds});
+  if(!Number.isFinite(donation)||donation<0)continue;
+  const standalone=Number.isInteger(target.priority)&&target.priority>=0&&Number.isFinite(target.standaloneCost)&&target.standaloneCost>0;
+  const cost=(standalone?target.standaloneCost:target.cost)+donation,gap=cost-worth;
+  if(!(gap>0)||gap>maxProceeds)continue;
+  choices.push({targetCash:Math.max(reserve+1e9,wallet+gap),reason:'Fund augmentation milestone: '+target.name,augmentation:target.name,cost,priority:priority.includes(target.name)?priority.indexOf(target.name):priority.length});
+ }
+ return choices.filter(c=>c.targetCash-wallet<=maxProceeds).sort((a,b)=>a.priority-b.priority||a.targetCash-b.targetCash)[0]||fallback;
+}

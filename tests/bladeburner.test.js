@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
-import {isBlackOp,nextSkill,raidCities,recoveryRequired,optionsError,requiredBladeburnerTeam,prepareBladeburnerTeam,bladeburnerRecruitmentBudget,bladeburnerRankRate,rankBladeburnerActions,spendBladeburnerSkills,bladeburnerRecruitmentDecision,planBladeburnerLevels,startBladeburnerPlannedAction} from '../bladeburner-policy.js';
+import {isBlackOp,nextSkill,raidCities,recoveryRequired,optionsError,requiredBladeburnerTeam,prepareBladeburnerTeam,bladeburnerRecruitmentBudget,bladeburnerRankRate,rankBladeburnerActions,spendBladeburnerSkills,bladeburnerRecruitmentDecision,planBladeburnerLevels,startBladeburnerPlannedAction,bladeburnerWorkAllowed} from '../bladeburner-policy.js';
 test('all Black Op type aliases are protected, including manual final operations',()=>{
  for(const type of ['BlackOps','Black Operations','BlackOp'])assert.equal(isBlackOp({type,name:'Operation Daedalus'}),true);
  assert.equal(isBlackOp(null),false);assert.equal(isBlackOp({type:'Operations'}),false);
@@ -188,4 +188,32 @@ test('controller probes before selecting actions and gates changed levels on com
  assert.ok(s.includes('bestActionName===currentAction.name&&!levelChange'));
  assert.ok(s.includes('Date.now()<currentTaskEndTime'));
  assert.ok(s.includes("tasks/bladeburner-levels.json"));
+});
+
+
+test('Simulacrum requires installation before concurrent player work is allowed',()=>{
+ let installed=false;const api={getCurrentWork:()=>({type:'FACTION'}),getOwnedAugmentations:queued=>queued||installed?["The Blade's Simulacrum"]:[]};
+ assert.equal(bladeburnerWorkAllowed(api),false);installed=true;assert.equal(bladeburnerWorkAllowed(api),true);
+ assert.equal(bladeburnerWorkAllowed({...api,getCurrentWork:()=>null}),true);
+});
+
+test('unknown Singularity state waits unless busy checks were explicitly overridden',()=>{
+ const api={getCurrentWork:()=>{throw Error('SF4 unavailable');}};
+ assert.equal(bladeburnerWorkAllowed(api),false);assert.equal(bladeburnerWorkAllowed(api,true),true);
+});
+
+test('serialized Simulacrum guard notices augmentation grafts without a script restart',()=>{
+ let installed=false;const guard=new Function('api','return ('+bladeburnerWorkAllowed.toString()+')(api)');
+ const api={getCurrentWork:()=>({type:'COMPANY'}),getOwnedAugmentations:()=>installed?["The Blade's Simulacrum"]:[]};
+ assert.equal(guard(api),false);installed=true;assert.equal(guard(api),true);
+});
+
+test('controller refreshes installed ownership and rechecks it before action start',async()=>{
+ const source=await readFile(new URL('../bladeburner.js',import.meta.url),'utf8');
+ assert.match(source,/bladeburnerWorkAllowed.toString\(\)/);
+ assert.match(source,/getOwnedAugmentations\(false\)/);
+ assert.match(source,/tasks\/bladeburner-work.json/);
+ assert.doesNotMatch(source,/haveSimulacrum = !\(4 in ownedSourceFiles\) \? true/);
+ const faction=await readFile(new URL('../work-for-factions.js',import.meta.url),'utf8');
+ assert.match(faction,/lastSimulacrumCheck>=5000/);assert.match(faction,/6 in dictSourceFiles \|\| 7 in dictSourceFiles/);
 });

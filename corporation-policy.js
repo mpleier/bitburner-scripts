@@ -62,7 +62,15 @@ export function productPriceStep(item,state={},cycleSeconds=10){
  if(clearing){low=current;if(high&&high<=low)high=null;}
  else if(blocked){high=current;if(low>=high)low=1;}
  else return {...state,multiplier:current,rating};
- const multiplier=blocked&&current<=1?1:high?Math.sqrt(low*high):Math.min(1e6,current*2);
+ let multiplier=blocked&&current<=1?1:high?Math.sqrt(low*high):Math.min(1e6,current*2);
+ // A large inventory needs sales above production. Invert the native square markup penalty
+ // using observed sell-through; keep the production-cost floor while draining over three cycles.
+ if(blocked&&stored>produced*cycleSeconds*2&&sold<produced*.9&&current>1){
+  const target=produced+stored/(cycleSeconds*3);
+  const recovery=1+(current-1)*(sold>0?Math.sqrt(sold/target):.25);
+  multiplier=Math.min(multiplier,recovery);
+  if(multiplier<low)low=1;
+ }
  return {multiplier:Math.max(1,Math.min(1e6,multiplier)),low,high,rating};
 }
 /** Leave RP in the pool for production quality; TA.I and II are bought together. */

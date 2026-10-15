@@ -7,12 +7,19 @@ export function spendingPlan({money,reserve=0,homeRam=0,node=1,epoch=Date.now(),
  if(signals.sleeveShockHigh){weights.sleeves*=0.5;reasons.push('Hold sleeve augmentation spending while shock recovers');}
  if(signals.sleeveExpansionNeeded&&node===10){weights.sleeveExpansion*=1.5;reasons.push('Sleeve expansion priority');}
  const priorities={ram:{home:3,servers:.5,graft:.5},hacking:{home:2,servers:1.5,graft:1.5},reputation:{sleeves:2,soa:2,graft:1.25},cash:{home:1.5,servers:2,hacknet:1.5,gang:1.5,graft:.5}};
+ // Preserve cash for augmentation progress rather than increasing hash reinvestment during a cash shortage.
+ if(signals.bottleneck==='cash'&&node!==9)priorities.cash.hacknet=.35;
  if(priorities[signals.bottleneck]){for(const [category,factor]of Object.entries(priorities[signals.bottleneck]))weights[category]*=factor;reasons.push('Progression bottleneck: '+signals.bottleneck);}
  for(const [category,active]of Object.entries(signals.activeCategories||{}))if(active===false&&category in weights)weights[category]=0;
  const total=Object.values(weights).reduce((a,b)=>a+b,0),free=Math.max(0,money-reserve);
  const startup=signals.corporationStartup&&free>=150e9?150e9:0;
  if(startup)reasons.push('Reserve an allowance for corporation creation');
  const allowances=Object.fromEntries(Object.entries(weights).map(([k,v])=>[k,(free-startup)*v/total]));allowances.corporation+=startup;
+ if(signals.bottleneck==='cash'&&node!==9){
+  allowances.hacknet=Math.min(allowances.hacknet,free*.02);
+  reasons.push('Limit Hacknet reinvestment to 2% of unreserved cash while augmentations need money');
+ }
+
  return {epoch,ownerPid,reset,expiresAt:epoch+60000,reserve,reasons,signals,allowances};
 }
 /** Self-contained for generated purchase workers. Native ns.write updates text synchronously.

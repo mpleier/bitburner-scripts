@@ -2,7 +2,7 @@
 
 ## Results
 
-- 481 project regression tests passed.
+- 493 project regression tests passed.
 - 15 Remote API service tests passed, including deployment/import resolution and native save backups.
 - Syntax checks passed for all 148 JavaScript files.
 - Remote API connected; 113 game files synced; no pending uploads or sync errors.
@@ -209,3 +209,64 @@ Verification: 438 project tests (80 corporation tests), 15 API tests, and 145 sy
 - All 481 project tests and syntax checks for 148 JavaScript files passed; 15 API service tests passed. Focused checks cover early-game scaling, configured reserves, eviction order, failed kills, protected processes and impossible requests.
 - Updated reliability-manager.js was activated through the Remote API (PID 82085). Live home had 4096 GB total, 3900.8 GB used and 195.2 GB free versus the 128 GB baseline reserve. All 113 game files were synced with no pending uploads or sync errors.
 - If essential or manually launched scripts consume all physical RAM, the policy waits rather than killing them; it cannot guarantee space for a script larger than the remaining physical capacity. Helpers may use the reserved headroom while running.
+
+
+## Sleeve Bladeburner priority review
+
+- Corrected SF6/SF7 and BN6/BN7 access detection. Contract probabilities now use each sleeve's native lower success estimate rather than the player's probability. Missing probability data leaves contract work disabled safely, and exactly 99% now meets the 99% threshold.
+- Healthy synchronized sleeves can fill a fresh live Black Op squad shortfall before optional training and reputation work. Synchronization, required shock recovery and explicit crime overrides remain higher priority. Existing supporting sleeves are retained to avoid churn, with spare/infiltration sleeves preferred before contract or faction/company workers.
+- Support allocation counts human recruits separately from currently supporting sleeves, adds only the shortfall, and releases unneeded support. Active Black Ops retain existing healthy support. The controller preserves its prior team plan during observation so sleeves do not drop support between planning steps.
+- --disable-bladeburner-team-support disables automatic support, and --disable-bladeburner disables sleeve Bladeburner use. Contract work remains opt-in through --enable-bladeburner-contracts. Ordinary Bladeburner tasks retain the existing lower priority after training, karma and reputation work.
+- All 487 project tests and syntax checks for 148 JavaScript files passed. The API disconnected during the final checks; the watcher remains enabled and will reconcile files when the game reconnects. Final deployment was not confirmed after the last edit.
+
+
+## The Blade's Simulacrum coordination
+
+- Confirmed Simulacrum is already a default priority augmentation in faction-manager.js.
+- Removed the optimistic assumption that Simulacrum is installed when SF4 is unavailable. Bladeburner now records known/unknown, installed, purchased-but-queued and player-work states, and waits safely when concurrency cannot be verified. The existing explicit --ignore-busy-status override is retained.
+- Installed ownership is refreshed before work decisions and checked again in the guarded action-start worker. Purchased but uninstalled augmentations never enable concurrent work. Installed ownership can be detected after grafting without a controller restart.
+- Faction work refreshes its missing-Simulacrum cache before deciding to pause, preventing a stale result from blocking work after grafting. Its Bladeburner access checks now include SF6 and BN6/BN7.
+- All 491 project tests and syntax checks for 148 JavaScript files passed. Tests cover installed versus queued ownership, unavailable Singularity, serialization, and post-graft refresh behavior.
+- Remote API remains disconnected. Current in-game augmentation ownership and deployment of these final changes could not be confirmed; the sync watcher remains enabled.
+
+## Simulacrum installation trigger follow-up
+
+Autopilot now includes The Blade's Simulacrum in its default install-for-augs list. Priority reset detection considers both affordable augmentations and purchases already queued, excluding installed augmentations. Custom trigger lists remain respected. Normal countdown, graft, Black Op, activity and progression guards still apply. Existing running autopilot instances adopt this logic on their next restart; no reset or purchase was forced during verification.
+
+Verification: all 493 project tests passed, including two new priority-install regression cases. Live Remote API queries confirmed The Blade's Simulacrum is neither installed nor queued; The Shadow's Simulacrum is a separate augmentation. Both changed game files synced with no pending uploads.
+
+## Live game follow-up: idle Bladeburner sleeve support
+
+Live inspection found seven healthy sleeves supporting an idle Bladeburner controller while infiltration owned player activity. The controller refreshed an old actionable team plan before returning for protected player work, keeping the obsolete sleeve allocation alive. It now publishes a non-actionable waiting-for-player or maintenance state before those early returns. Active Black Ops retain their existing protection.
+
+The updated controller was synced and restarted only after a native query confirmed no active Bladeburner action. Subsequent live status confirmed zero support allocations: four sleeves earned faction reputation and three infiltrated Synthoids during active player infiltration. JavaScript syntax validation passed for bladeburner.js. The regression suite was not rerun in this live inspection.
+
+## Cash bottleneck and product backlog improvements
+
+Cash-bottleneck spending plans now limit Hacknet allowance to at most 2% of unreserved cash per plan and reduce its allocation weight. Unallocated cash is retained. BN9 keeps its primary Hacknet development policy. Upgrade selection additionally caps requested repayment horizons at one hour when a current, live autopilot plan identifies a cash bottleneck; stale plans, different augmentation resets and dead owners do not apply this cap. The upgrade manager exposes --disable-adaptive-spending to retain its requested horizon.
+
+Corporation fallback pricing now reacts faster when inventory exceeds two production cycles and sales fall below 90% of production. It uses observed sales and the native inverse-square markup relationship to reduce the premium toward a three-cycle inventory drain target, retaining the MP floor and regular search behavior outside this backlog case. Market-TA.II and formula pricing remain authoritative when available. This is an adaptive price estimate, not a guaranteed clearance time.
+
+Deployment: four changed game files synced through the Remote API. Live controllers reload cooperatively after protected infiltration; no infiltration was interrupted. All 148 JavaScript files passed syntax checks. The regression suite and performance benchmarks were not run for this change.
+
+## Corporation profit extraction follow-up
+
+Review confirmed low-cash corporations previously paid zero dividends until corporate cash reached 10 trillion, unless the player wallet was below reserve plus 1 billion. Cash bottlenecks can now enable a 20% dividend when profitable, not recovering, and holding more than five times the operating reserve. Existing cash tiers and the native maximum still constrain the rate. Public share buybacks pause during fresh, live-owner, same-augmentation-reset cash bottlenecks. Share sales retain minimum ownership, native cooldown and five-minute dividend-wait checks. Dividend management now precedes share management so native sale checks see the current selected dividend rate; dividend updates compare against the actual native rate rather than a cached setting.
+
+Status includes playerCashBottleneck and estimatedDividendIncome using the native full-cycle tribute exponent. The corporation controller was restored after a transient RAM-related launch failure. Live verification confirmed PID 170691, growth mode, an empty restart queue, a native dividend rate of 20%, and native dividendEarnings of approximately 220018 per second; the independent policy estimate agreed. No reliability errors were reported. Syntax validation passed; the regression suite was not rerun.
+
+## Growth-first player liquidity (supersedes cash-shortage dividends in development mode)
+
+With development-speed enabled, dividends are now zero and share buybacks are disabled: all operating profit remains available to the corporation. Cash-shortage funding uses fresh augmentation planner evidence to select a reputation-ready or donation-eligible milestone that a bounded share sale can completely fund. Existing stock-inclusive worth counts toward the milestone, targets prioritize The Red Pill, The Blade's Simulacrum, then Neuroreceptor Management Implant, and the ordinary one-billion emergency wallet floor remains a fallback. Plans expire after one minute, must match the current augmentation reset, and cannot authorize milestone sales without a live cash bottleneck. The existing one-percent-per-sale limit, ownership floor, and native cooldown remain enforced.
+
+Equity sales do not debit corporate funds, but reduce CEO ownership and can affect share price and future funding. They cannot be described as having no economic tradeoff. Income mode (--development-speed false) retains tiered dividend behavior. Status exposes retainedProfitFraction and liquidityDecision.
+
+Live verification: controller PID 178619 is in growth mode with native dividendRate zero, retainedProfitFraction one, no pending reloads, and no reliability errors. No new milestone sale was authorized in the observed state; the player already had more than the emergency wallet target. Both modified JavaScript files passed syntax checks. Regression tests were not run.
+
+## Simulacrum purchase and funding review
+
+The augmentation is explicitly desired and priority-ranked despite having no ordinary stat multipliers. Bladeburners cannot accept reputation donations. Normal purchase checks use current prices, supported faction reputation and available cash; stock liquidation occurs during the coordinated ascend flow. Installed and queued ownership remain distinct.
+
+Fixed milestone funding inflation: priority targets whose prerequisites are already owned now publish standaloneCost rather than requiring corporation funding to cover the existing affordable basket and its price escalations first. Corporate milestone eligibility now detects a fresh, reputation-ready cash shortfall directly, without requiring the broad cash bottleneck label. Liquidity diagnostics expose priority augmentation price, reputation requirement/current reputation, wealth shortfall and bounded sale capacity.
+
+Live verification: The Blade's Simulacrum costs 450 billion in the current run, requires 3750 reputation and available Bladeburner reputation was approximately 12555. Stock-inclusive player wealth was approximately 226 billion short; the current bounded share sale could raise approximately 33.2 billion, so no milestone sale or purchase was made. The augmentation is not queued. Updated corporation controller PID 187197 is in growth mode, retaining all operating profit, with no pending restarts or reported reliability errors. Modified JavaScript files passed syntax checks; regression tests were not run.

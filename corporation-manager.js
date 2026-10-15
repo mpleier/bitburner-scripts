@@ -2,7 +2,7 @@ import {registerAutomation,automationHeartbeat,maintenanceRequested} from './run
 import {achievementActionAllowed} from './achievement-policy.js';
 import { claimSpending } from './spending-policy.js';
 import { treasuryPolicy, recoveryJobCounts, priorSaleMultiplier, partySpendPerEmployee, materialSalePrice, outputBacklog, boostPurchaseBudget, productPriceStep, researchAffordable, salesPotential, formulaSalePrice, inferProductMarkup, supportAdvertLimit, clearCorporationBuyRates, optimizedOfficeJobs, corporationDevelopmentCity, executeCorporationGrowth, usefulUpkeepResearch, productReplacementReady, corporationAdvertBenefit, corporationResearchGoal, corporationCoreFunding, corporationScienceFactor } from './corporation-policy.js';
-import { researchParents, extraResearch, productInvestment, investmentDecision, rescueShareIssue, shareSale, shareBuyback, recipeInputPlan } from './corporation-lifecycle.js';
+import { researchParents, extraResearch, productInvestment, investmentDecision, rescueShareIssue, shareSale, shareBuyback, recipeInputPlan, corporationDividendRate, corporationLiquidityTarget, estimateShareProceeds } from './corporation-lifecycle.js';
 import { getNsDataThroughFile } from './helpers.js';
 import { isScriptPaused } from './automation-control.js';
 /** Standalone corporation controller: recipe-based supply, research, products,
@@ -61,7 +61,7 @@ export async function main(ns) {
   const PAY_DIVIDENDS = true;
   const IPO_VALUATION = 1e12;
   const ACCEPT_INVESTMENT = true;
-  let lastDividendRate = -1,financeDecision=null,financeHistory=null,lastShareSaleAt=0;
+  let lastDividendRate = -1,financeDecision=null,financeHistory=null,lastShareSaleAt=0,liquidityDecision=null;
   const financeFile='tasks/corporation-finance.json';
 
   // ---- Hash spend plan --------------------------------------------------
@@ -238,15 +238,24 @@ export async function main(ns) {
       ns.print(`IPO at $${ns.format.number(valuation)} valuation; issued 0 shares.`);
   };
 
+  const playerCashBottleneck = () => {
+    try {
+      const plan = JSON.parse(ns.read('tasks/spending-plan.json'));
+      return plan.reset === ns.getResetInfo().lastAugReset && plan.expiresAt > Date.now() &&
+        Number.isFinite(plan.epoch) && plan.epoch <= Date.now() &&
+        plan.signals?.bottleneck === 'cash' && ns.ps('home').some(p => p.pid === plan.ownerPid);
+    } catch { return false; }
+  };
   const manageDividends = () => {
     if (!PAY_DIVIDENDS) return;
     const info = corp();
     if (!info?.public) return;
     const wallet = Number(ns.getPlayer().money) || 0;
     const playerReserve = Math.max(0, Number(ns.read('reserve.txt')) || 0);
-    const rate = recovering || Number(info.revenue) <= Number(info.expenses) ? 0 :
-      Math.min(DIVIDEND_MAX, Math.max(dividendRateFor(funds()), wallet < playerReserve + 1e9 && funds() > reserve * 5 ? 0.2 : 0));
-    if (rate === lastDividendRate) return;
+    const rate = options['development-speed'] || recovering || Number(info.revenue) <= Number(info.expenses) ? 0 :
+      Math.min(DIVIDEND_MAX, Math.max(dividendRateFor(funds()), (wallet < playerReserve + 1e9 || playerCashBottleneck()) && funds() > reserve * 5 ? 0.2 : 0));
+    const actualRate = Number.isFinite(info.dividendRate) ? info.dividendRate : lastDividendRate;
+    if (rate === actualRate) { lastDividendRate = rate; return; }
     if (attempt(`Set dividend rate ${(rate * 100).toFixed(0)}%`, () => c.issueDividends(rate)))
       lastDividendRate = rate;
   };
@@ -757,9 +766,12 @@ export async function main(ns) {
     if (issue > 0) { attempt('Issue emergency operating capital', () => c.issueNewShares(issue)); return; }
     const wallet = Number(ns.getPlayer().money) || 0;
     const playerReserve = Math.max(0, Number(ns.read('reserve.txt')) || 0);
-    const sale = shareSale(info, wallet, playerReserve, minOwnership);
-    if (sale > 0) {if(attempt('Sell shares for player liquidity',()=>c.sellShares(sale)))lastShareSaleAt=Date.now();return;}
-    const buyback = recovering || Date.now()-lastShareSaleAt<60*60000 ? 0 : shareBuyback(info, wallet, playerReserve, minOwnership);
+    const cap=Math.max(0,Math.min(1e12,Math.floor(info.numShares-info.totalShares*minOwnership),Math.floor(info.totalShares*.01),Math.floor(info.numShares)-1));
+    let snapshot;try{snapshot=JSON.parse(ns.read('/Temp/affordable-augs.txt')).speedSnapshot;}catch{}
+    liquidityDecision=corporationLiquidityTarget(snapshot,{augReset:ns.getResetInfo().lastAugReset,wallet,reserve:playerReserve,maxProceeds:estimateShareProceeds(info,cap)});
+    const sale = shareSale(info, wallet, playerReserve, minOwnership,liquidityDecision.targetCash);
+    if (sale > 0) {if(attempt('Sell shares for player liquidity',()=>c.sellShares(sale))){lastShareSaleAt=Date.now();liquidityDecision={...liquidityDecision,at:lastShareSaleAt,shares:sale,estimatedProceeds:estimateShareProceeds(info,sale)};}return;}
+    const buyback = options['development-speed'] || recovering || playerCashBottleneck() || Date.now()-lastShareSaleAt<60*60000 ? 0 : shareBuyback(info, wallet, playerReserve, minOwnership);
     if (buyback > 0 && claimSpending(ns,'corporation',buyback*info.sharePrice*1.25)) attempt('Recover public share ownership', () => c.buyBackShares(buyback));
   };
   let lastExpansion = 0, lastBribe = 0;
@@ -862,6 +874,7 @@ export async function main(ns) {
         financeHistory=financeDecision.history;
         if(financeDecision.accept&&attempt(`Accept round ${offer.round} investment`,()=>c.acceptInvestmentOffer()))financeHistory=null;
       }
+      manageDividends(); // Let share-sale policy consider the dividend rate selected for this cycle.
       manageShares();
 
       growthPlans.clear();growthDecisions=[];staffingGoals.clear();
@@ -1048,7 +1061,7 @@ export async function main(ns) {
         growthBank, growthDecisions, productMetrics, staffingGoals:Object.fromEntries(staffingGoals), mode: recovering ? 'cash recovery' : 'growth', funds: funds(), reserve, divisions: divisions(),
         revenue: liveStatus.revenue, expenses: liveStatus.expenses, public: liveStatus.public,
         ownership: liveStatus.totalShares > 0 ? liveStatus.numShares / liveStatus.totalShares : null,
-        minOwnership, developmentSpeed:options['development-speed'], financing:financeDecision?.reason, lastShareSaleAt, dividendRate: Math.max(0, lastDividendRate), expandAllIndustries: options['expand-all-industries'],
+        minOwnership, liquidityDecision, retainedProfitFraction:1-Number(liveStatus.dividendRate||0), playerCashBottleneck:playerCashBottleneck(), estimatedDividendIncome:corporationDividendRate(liveStatus,cycleSeconds), developmentSpeed:options['development-speed'], financing:financeDecision?.reason, lastShareSaleAt, dividendRate: Math.max(0, lastDividendRate), expandAllIndustries: options['expand-all-industries'],
       }), 'w');
       const now = Date.now();
       if (now - lastInvestmentCycle > 60_000) {

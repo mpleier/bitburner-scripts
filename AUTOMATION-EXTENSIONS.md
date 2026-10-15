@@ -398,3 +398,43 @@ On a 4096 GB home the default reserve is 128 GB. Small homes reserve up to a qua
 The reliability monitor enforces the floor periodically, and temporary helper launches reclaim RAM on demand. Interrupted hacking batches recover through normal scheduling. The overview adds a RAM Hold row on its next restart. Essential and manual allocations can still exhaust physical RAM; the project does not kill those scripts to manufacture space.
 
 Verification: 481 project tests, 15 API service tests and 148 syntax checks passed. The updated monitor is active in-game; live free RAM was 195.2 GB with a 128 GB baseline reserve. All 113 deployable files synced.
+
+
+## Sleeve priorities for Bladeburner
+
+Priority order: synchronization and shock recovery; explicit crime override; a useful live Black Op support shortfall; configured training; following player faction/company work; gang karma; useful reputation work; ordinary Bladeburner work; fallback crime.
+
+Automatic Black Op support uses only healthy, fully synchronized sleeves and a fresh team plan from the live Bladeburner controller. It retains existing supporters, prefers spare/infiltration sleeves, and allocates only the required shortfall. --disable-bladeburner-team-support disables this behavior. Regular Bladeburner tasks retain their prior position; contracts remain opt-in and now require each sleeve's own estimated success probability.
+
+Six new regression cases cover support sizing, stability, recovery priority, spare-sleeve preference, native contract probability lookup and source-file access. Verification: 487 project tests and 148 syntax checks passed. The Remote API disconnected during final verification; final sync after the last edit remains unconfirmed.
+
+
+## Simulacrum installation and concurrent player work
+
+The Blade's Simulacrum remains a priority purchase. Only an installed copy enables concurrent ordinary player work and Bladeburner; a queued purchase is insufficient. Bladeburner now refreshes this state before work decisions and verifies again immediately before starting an action. Unknown state without Singularity access waits safely, with --ignore-busy-status retained as an explicit override.
+
+Faction work refreshes its cached missing-augmentation result after grafting and recognizes both SF6 and SF7 access. Work-state diagnostics are written to tasks/bladeburner-work.json. Activity ownership and active Black Op protections remain enforced.
+
+Verification: 491 project tests and 148 syntax checks passed. The Remote API was disconnected, so live augmentation ownership and final deployment remain unconfirmed.
+
+## Simulacrum installation trigger follow-up
+
+Autopilot now includes The Blade's Simulacrum in its default install-for-augs list. Priority reset detection considers both affordable augmentations and purchases already queued, excluding installed augmentations. Custom trigger lists remain respected. Normal countdown, graft, Black Op, activity and progression guards still apply. Existing running autopilot instances adopt this logic on their next restart; no reset or purchase was forced during verification.
+
+Verification: all 493 project tests passed, including two new priority-install regression cases. Live Remote API queries confirmed The Blade's Simulacrum is neither installed nor queued; The Shadow's Simulacrum is a separate augmentation. Both changed game files synced with no pending uploads.
+
+## Cash bottleneck and product backlog improvements
+
+Cash-bottleneck spending plans now limit Hacknet allowance to at most 2% of unreserved cash per plan and reduce its allocation weight. Unallocated cash is retained. BN9 keeps its primary Hacknet development policy. Upgrade selection additionally caps requested repayment horizons at one hour when a current, live autopilot plan identifies a cash bottleneck; stale plans, different augmentation resets and dead owners do not apply this cap. The upgrade manager exposes --disable-adaptive-spending to retain its requested horizon.
+
+Corporation fallback pricing now reacts faster when inventory exceeds two production cycles and sales fall below 90% of production. It uses observed sales and the native inverse-square markup relationship to reduce the premium toward a three-cycle inventory drain target, retaining the MP floor and regular search behavior outside this backlog case. Market-TA.II and formula pricing remain authoritative when available. This is an adaptive price estimate, not a guaranteed clearance time.
+
+Deployment: four changed game files synced through the Remote API. Live controllers reload cooperatively after protected infiltration; no infiltration was interrupted. All 148 JavaScript files passed syntax checks. The regression suite and performance benchmarks were not run for this change.
+
+## Growth-first player liquidity (supersedes cash-shortage dividends in development mode)
+
+With development-speed enabled, dividends are now zero and share buybacks are disabled: all operating profit remains available to the corporation. Cash-shortage funding uses fresh augmentation planner evidence to select a reputation-ready or donation-eligible milestone that a bounded share sale can completely fund. Existing stock-inclusive worth counts toward the milestone, targets prioritize The Red Pill, The Blade's Simulacrum, then Neuroreceptor Management Implant, and the ordinary one-billion emergency wallet floor remains a fallback. Plans expire after one minute, must match the current augmentation reset, and cannot authorize milestone sales without a live cash bottleneck. The existing one-percent-per-sale limit, ownership floor, and native cooldown remain enforced.
+
+Equity sales do not debit corporate funds, but reduce CEO ownership and can affect share price and future funding. They cannot be described as having no economic tradeoff. Income mode (--development-speed false) retains tiered dividend behavior. Status exposes retainedProfitFraction and liquidityDecision.
+
+Live verification: controller PID 178619 is in growth mode with native dividendRate zero, retainedProfitFraction one, no pending reloads, and no reliability errors. No new milestone sale was authorized in the observed state; the player already had more than the emergency wallet target. Both modified JavaScript files passed syntax checks. Regression tests were not run.

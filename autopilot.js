@@ -3,7 +3,7 @@ import {progressionSpeed} from './progression-speed-policy.js';
 import {registerAutomation,automationHeartbeat,maintenanceRequested} from './runtime-policy.js';
 import {challengeProfile,achievementNode,achievementActionAllowed} from './achievement-policy.js';
 import {achievementWorkerSources} from './achievement-worker-sources.js';
-import { autopilotSourceFiles, installedAugmentationsFromReset, daemonArgumentsChanged, autopilotOptionsError, autopilotStockReserve } from './autopilot-policy.js';
+import { autopilotSourceFiles, installedAugmentationsFromReset, daemonArgumentsChanged, autopilotOptionsError, autopilotStockReserve, priorityAugmentationReady } from './autopilot-policy.js';
 import { spendingPlan,adaptiveBudgetSignals } from './spending-policy.js';
 import { prepareResetBackup } from './reset-backup.js';
 import { maximumSleeves } from './sleeve-policy.js';
@@ -29,7 +29,7 @@ const argsSchema = [ // The set of all command line arguments
     ['disable-auto-destroy-bn', false], // Set to true if you do not want to auto destroy this BN when done
     ['install-at-aug-count', 8], // Automatically install when we can afford this many new augmentations (with NF only counting as 1). Note: This number will automatically be increased by 1 for every level of SF11 you have (up to 3)
     ['install-at-aug-plus-nf-count', 12], // or... automatically install when we can afford this many augmentations including additional levels of Neuroflux.  Note: This number will automatically be increased by 1 for every level of SF11 you have (up to 3)
-    ['install-for-augs', ["The Red Pill"]], // or... automatically install as soon as we can afford one of these augmentations
+    ['install-for-augs', ["The Red Pill", "The Blade's Simulacrum"]], // or... install when one of these is affordable or purchased and awaiting installation
     ['disable-adaptive-resets', false], // Use only the existing augmentation count and countdown rules.
     ['disable-adaptive-spending', false], // Keep the base cash allowances.
     ['install-countdown', 5 * 60 * 1000], // If we're ready to install, wait this long first to see if more augs come online (we might just be gaining momentum)
@@ -993,7 +993,7 @@ export async function main(ns) {
             (pendingNfCount > 0 ? ` + ${pendingNfCount} levels of NeuroFlux.` : '.') +
             (pendingAugCount > 0 ? `\n    Augs: [\"${augsToInstall.join("\", \"")}\"]` : '');
         let resetStatus = `Reserving ${formatMoney(totalCost)} to install ${augSummary}`
-        let shouldReset = options['install-for-augs'].some(a => facman.affordable_augs.includes(a)) ||
+        let shouldReset = priorityAugmentationReady(options['install-for-augs'], facman) ||
             pendingAugCount >= augsNeeded || pendingAugInclNfCount >= augsNeededInclNf;
 
         if(!speedObservation)try{speedObservation=JSON.parse(ns.read('tasks/speed-observation.json'));}catch{}

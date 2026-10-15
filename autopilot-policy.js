@@ -46,3 +46,10 @@ export function autopilotStockReserve(money,stocksValue,hours,stockApiAvailable)
   const percent=Math.max(0,.8-.1*Math.max(0,Number(hours)||0));
   return Math.min(1e12,Math.max(0,money*percent,stockApiAvailable?8e9-stocksValue:0));
 }
+
+/** Priority augmentations can be affordable or already purchased, but must still await installation. */
+export function priorityAugmentationReady(priority, summary) {
+  const installed = new Set(summary.installed_augs || []);
+  const ready = new Set([...(summary.affordable_augs || []), ...(summary.awaiting_install_augs || [])]);
+  return priority.some(name => !installed.has(name) && ready.has(name));
+}

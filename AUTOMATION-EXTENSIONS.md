@@ -467,3 +467,29 @@ Autopilot now defaults to continuous daemon XP mode, including above the high-ha
 ## Default World Daemon route
 
 World Daemon is the default completion priority, even before Daedalus/Red Pill access or reliable finish estimates. Forecasts continue to report blockers and uncertainty. Conflicting faction work and hash spending favor WD; Bladeburner remains available in parallel with installed Simulacrum, and existing BlackOps finish before faction work takes over. Use `--adaptive-node-route` to restore ETA-driven route switching. Already-completed BitNode victory conditions retain their normal departure handling.
+
+
+## WD sleeve and overview coordination
+
+A fresh, live autopilot WD plan releases sleeve slots previously reserved for Bladeburner, disables default BB task/support assignments, and refreshes reputation targets when route priority changes. Recovery/synchronization, explicit crime overrides and cash reserves retain their precedence. A healthy sleeve is reserved for a critical Red Pill reputation target before ordinary company/faction allocations; remaining sleeves take distinct useful reputation tasks or earn cash. Missing/stale plans fall back to normal sleeve policy.
+
+When the selected route has no trustworthy ETA, Node ETA displays its actual blocker (Daedalus, Red Pill reputation/cash, installation, or XP sampling) instead of displaying a paused alternative route.
+
+
+## Automatic Red Pill milestone policy
+
+`red-pill-policy.js` evaluates native membership, installed/queued TRP, native offer/price/rep requirement, current favor/favor gain, donation eligibility, current conversion and measured cash/reputation rates. WD focuses on entry funding only after entry stats/augmentation requirements are met, then focuses on TRP rep/funding once Daedalus is joined. BN15's unavailable faction TRP is not treated as a free purchase.
+
+Infiltration candidates compare direct rep with cash converted at the native donation rate, using existing measured durations, failure history, travel restrictions and market-demand guards. Explicit faction and money-only overrides remain authoritative. Idle faction work targets Daedalus until its native requirement is met, including when donations are unlocked.
+
+The native TRP transaction checks requirements/costs again and donates only when the complete donation+purchase budget plus $1b buffer is available. It buys TRP separately from the augmentation basket. Existing stock investments can grow; liquidation occurs only to fund a complete ready purchase. Optional augmentation/NF resets are held while the milestone is active. Stale favor flag files no longer authorize a reset: donation-access resets require fresh native favor evidence, a fully funded post-reset bill, and a conservative ten-minute recovery forecast at least 25% faster than measured direct work.
+
+Queued TRP installs directly after existing graft, BlackOp, infiltration and achievement protections permit it. It bypasses unrelated 4S/basket/countdown waits and rechecks queued/native reset state before installation. Installed TRP protects WD XP from optional resets. Corporation equity funding still respects its sale cap and ownership floor; zero-price TRP uses its standalone donation bill, and an oversized savings reserve does not trigger partial ownership sales. Missing native APIs remain unknown and fail without purchases.
+
+Daedalus work selection also records the marginal player reputation rate, subtracting an idle baseline so sleeve/passive reputation is not counted as a benefit of player work. Infiltration uses its conservative demand floor, measured duration and reliability, and yields when it cannot beat that rate by 25%. Rate evidence expires after ten minutes and is invalidated by reset or material stat/multiplier changes. Manually started infiltrations use the same reward-value comparison while explicit reward overrides remain authoritative.
+
+After TRP is installed, non-NeuroFlux augmentation resets remain possible only when measured WD finish time exceeds both estimated augmentation payback and recovery of lost XP by at least 25%; unknown rates preserve the current run.
+
+### 32 GB casino startup
+
+Running `autopilot.js` on a home server with at most 32 GB now prioritizes a $300,000 cash seed. It uses a short-lived Singularity worker to choose a short crime by expected money per second, focuses that crime, and leaves repeating crimes intact between checks. Other managers and spending wait; $300,000 is reserved for travel and betting. Once funded, the casino starts immediately without the normal one-minute income observation. After casino earnings reach the existing completion threshold, normal automation resumes. Disabled or paused casino settings are respected; without Singularity the startup status explains that the seed must be earned manually.

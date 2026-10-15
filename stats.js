@@ -358,12 +358,27 @@ async function getHudData(ns, bitNode, dictSourceFiles, options, resetInfo) {
     if(routePlan) {
         const label=route=>route==='hacking'?'WD':'BB';
         const describe=(name,r)=>!r?name+': unavailable':name+': '+(Number.isFinite(r.etaMs)?formatDuration(r.etaMs):'Unknown')+' — '+r.reason;
-        const details=[routePlan.reason,describe('WD',routePlan.routes?.hacking),describe('BB',routePlan.routes?.bladeburner),...(routePlan.assumptions||[])].join('\n');
+        const details=[routePlan.reason,routePlan.redPill?.reason||'',describe('WD',routePlan.routes?.hacking),describe('BB',routePlan.routes?.bladeburner),...(routePlan.assumptions||[])].join('\n');
         hudData.push(['Node Route',true,routePlan.selected?label(routePlan.selected):routePlan.candidate?'Comparing '+label(routePlan.candidate):'Parallel',details]);
         const selected=routePlan.routes?.[routePlan.selected];
-        if(selected&&Number.isFinite(selected.etaMs))eta={text:label(routePlan.selected)+' ~'+formatDuration(selected.etaMs),etaMs:selected.etaMs,tooltip:details};
+        if(selected&&Number.isFinite(selected.etaMs))eta={text:selected.phase==='backdoor'?'Backdoor WD':label(routePlan.selected)+' ~'+formatDuration(selected.etaMs),etaMs:selected.etaMs,tooltip:details};
+        else if(routePlan.selected) {
+            // A selected route with unknown timing must show its own blocker, never the other route's state.
+            let phase='waiting';
+            if(routePlan.selected==='hacking') {
+                const first=selected?.stages?.[0];
+                if(routePlan.redPill?.stage==='install')phase='install TRP';
+                else if(routePlan.redPill?.stage==='buy')phase='buy Red Pill';
+                else if(routePlan.redPill?.stage==='favor-reset')phase='unlock donations';
+                else if(first?.name?.startsWith('Join Daedalus'))phase='Daedalus';
+                else if(first?.name?.startsWith('Install'))phase='install TRP';
+                else if(first?.name==='Buy The Red Pill')phase=first.cashMs===0&&first.repMs!==0?'Red Pill rep':first.repMs===0&&first.cashMs!==0?'Red Pill cash':'Red Pill';
+                else if(progress?.hasRedPill)phase='sample XP';
+            }else if(selected?.next)phase='prepare BlackOps';
+            eta={text:label(routePlan.selected)+': '+phase,etaMs:null,tooltip:details};
+        }
     }
-    hudData.push(['Node ETA',true,eta.text,eta.tooltip+'\nUses observed progress over a rolling 5-minute window (minimum 60 seconds), not instantaneous script XP.']);
+    hudData.push(['Node ETA',true,eta.text,eta.tooltip+'\nXP observations use a rolling five-minute window (minimum 60 seconds); unknown prerequisites are shown as blockers.']);
     if(Date.now()-etaStatusAt>=5000){etaStatusAt=Date.now();await ns.write('tasks/overview-status.json',JSON.stringify({at:etaStatusAt,pid:ns.pid,nodeEta:eta,routePlan,rates:{xp:rates.xp,rank:rates.rank,windowMs:rates.windowMs,sampling:rates.sampling},hasRedPill:progress?.hasRedPill,wdHack:progress?.wdHack}),'w');}
     return hudData
 }
@@ -461,7 +476,7 @@ export function sampleNodeEtaRates(history,sample){
  const empty={samples,xp:0,rank:0,windowMs:0,sampling:true};
  if(!sample||!Number.isFinite(sample.at)||!Number.isFinite(sample.exp)||sample.exp<0)return {...empty,samples:[]};
  const previous=samples.at(-1);
- if(previous&&(sample.augReset!==previous.augReset||sample.nodeReset!==previous.nodeReset||sample.hackMult!==previous.hackMult||sample.exp<previous.exp||sample.at-previous.at>30000||sample.at<previous.at||Number.isFinite(sample.rank)&&Number.isFinite(previous.rank)&&sample.rank<previous.rank))samples=[];
+ if(previous&&(sample.augReset!==previous.augReset||sample.nodeReset!==previous.nodeReset||Math.abs(sample.hackMult/previous.hackMult-1)>.01||sample.exp<previous.exp||sample.at-previous.at>30000||sample.at<previous.at||Number.isFinite(sample.rank)&&Number.isFinite(previous.rank)&&sample.rank<previous.rank))samples=[];
  if(samples.at(-1)?.at!==sample.at)samples=[...samples,sample];
  samples=samples.filter(p=>p.at>=sample.at-300000);
  const first=samples[0],windowMs=sample.at-first.at;

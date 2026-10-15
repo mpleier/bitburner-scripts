@@ -1,3 +1,4 @@
+import {readNodeRoutePlan} from './node-route-policy.js';
 import {registerAutomation,automationHeartbeat,maintenanceRequested} from './runtime-policy.js';
 import {achievementActionAllowed} from './achievement-policy.js';
 import { claimSpending } from './spending-policy.js';
@@ -768,7 +769,9 @@ export async function main(ns) {
     const playerReserve = Math.max(0, Number(ns.read('reserve.txt')) || 0);
     const cap=Math.max(0,Math.min(1e12,Math.floor(info.numShares-info.totalShares*minOwnership),Math.floor(info.totalShares*.01),Math.floor(info.numShares)-1));
     let snapshot;try{snapshot=JSON.parse(ns.read('/Temp/affordable-augs.txt')).speedSnapshot;}catch{}
-    liquidityDecision=corporationLiquidityTarget(snapshot,{augReset:ns.getResetInfo().lastAugReset,wallet,reserve:playerReserve,maxProceeds:estimateShareProceeds(info,cap)});
+    const pill=readNodeRoutePlan(ns)?.redPill;
+    liquidityDecision=corporationLiquidityTarget(snapshot,{augReset:ns.getResetInfo().lastAugReset,wallet,reserve:pill?.active?Math.min(playerReserve,1e9):playerReserve,maxProceeds:estimateShareProceeds(info,cap)});
+    if(pill?.active&&!liquidityDecision.augmentation)liquidityDecision={...liquidityDecision,targetCash:wallet,reason:'Preserve ownership until a complete Red Pill funding gap fits the share-sale cap'};
     const sale = shareSale(info, wallet, playerReserve, minOwnership,liquidityDecision.targetCash);
     if (sale > 0) {if(attempt('Sell shares for player liquidity',()=>c.sellShares(sale))){lastShareSaleAt=Date.now();liquidityDecision={...liquidityDecision,at:lastShareSaleAt,shares:sale,estimatedProceeds:estimateShareProceeds(info,sale)};}return;}
     const buyback = options['development-speed'] || recovering || playerCashBottleneck() || Date.now()-lastShareSaleAt<60*60000 ? 0 : shareBuyback(info, wallet, playerReserve, minOwnership);

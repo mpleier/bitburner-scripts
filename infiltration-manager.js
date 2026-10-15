@@ -1,3 +1,5 @@
+import {readNodeRoutePlan} from './node-route-policy.js';
+import {redPillInfiltrationChoices} from './red-pill-policy.js';
 import {registerAutomation,automationHeartbeat,maintenanceRequested} from './runtime-policy.js';
 import { getNsDataThroughFile, getActiveSourceFiles } from './helpers.js';
 import { isScriptPaused } from './automation-control.js';
@@ -104,7 +106,12 @@ export async function main(ns) {
         active=manual;
         if(active.location?.name)target={location:{name:active.location.name}};
         const player=ns.getPlayer();
-        const faction=!options['money-only']&&player.factions.includes(options.faction)?options.faction:null;
+        let faction=!options['money-only']&&player.factions.includes(options.faction)?options.faction:null;
+        if(!options['money-only']&&!options.faction&&active.location?.name)try {
+          const choices=redPillInfiltrationChoices([ns.infiltration.getInfiltration(active.location.name)],readNodeRoutePlan(ns)?.redPill);
+          const best=choices.sort((a,b)=>b.reward.tradeRep-a.reward.tradeRep)[0];
+          if(best)faction=best.redPillReward==='reputation'?'Daedalus':null;
+        }catch{}
         result=await playInfiltration(ns,document,active,faction,minDemand,true);
         result.manuallyStarted=true;result.location=active.location?.name;
         if(result.location)target={location:{name:result.location}};
@@ -126,11 +133,27 @@ export async function main(ns) {
       if (ns.getPlayer().hp.current < ns.getPlayer().hp.max * 0.9) { result.status = 'needs-healing'; continue; }
       const locations = ns.infiltration.getPossibleLocations().map(location => ns.infiltration.getInfiltration(location.name));
       const player = ns.getPlayer();
-      const faction = !options['money-only'] ? (options.faction || (work?.type === 'FACTION' ? work.factionName : null)) : null;
+      let faction = !options['money-only'] ? (options.faction || (work?.type === 'FACTION' ? work.factionName : null)) : null;
       if (options.faction && !options['money-only'] && !player.factions.includes(options.faction)) { result.status = 'faction-unavailable'; continue; }
-      target = chooseInfiltration(locations, player.city, Number(options['max-difficulty']), { history, reputation: !!faction, interval,
+      const pill=readNodeRoutePlan(ns)?.redPill;
+      if(pill?.active&&['buy','install','favor-reset'].includes(pill.stage)){result.status='waiting-for-red-pill';continue;}
+      const redChoices=!options['money-only']&&!options.faction?redPillInfiltrationChoices(locations,pill):[];
+      target = chooseInfiltration(redChoices.length?redChoices:locations, player.city, Number(options['max-difficulty']), { history, reputation: redChoices.length>0||!!faction, interval,
         canTravel: player.money >= 200000 + Math.max(0, Number(ns.read('reserve.txt')) || 0) });
       if (!target) { result.status = 'no-eligible-location'; continue; }
+      if(target.redPillReward) {
+        faction=target.redPillReward==='reputation'?'Daedalus':null;
+        let pace;try{pace=JSON.parse(ns.read('tasks/daedalus-work-rate.json'));}catch{}
+        const statSum=['hacking','strength','defense','dexterity','agility','charisma'].reduce((t,k)=>t+player.skills[k],0);
+        const valid=pace?.at<=Date.now()&&Date.now()-pace.at<600000&&pace.augReset===reset.lastAugReset&&pace.nodeReset===reset.lastNodeReset&&
+          Number.isFinite(pace.rate)&&pace.rate>0&&pace.statSum>0&&statSum/pace.statSum>=.8&&statSum/pace.statSum<=1.25&&
+          pace.factionMult>0&&Math.abs(player.mults.faction_rep/pace.factionMult-1)<.1;
+        const record=history[target.location.name]||{};
+        const seconds=(record.durationMs>0?record.durationMs:(target.maxClearanceLevel+5)*3000)/1000+interval/1000+(target.location.city===player.city?0:5);
+        const reliability=((record.successes||0)+2)/((record.successes||0)+(record.failures||0)+2);
+        const effectiveRate=target.reward.tradeRep*minDemand*reliability/seconds;
+        if(valid&&effectiveRate<pace.rate*1.25){result={status:'prioritizing-daedalus-work',workRepPerSecond:pace.rate,infiltrationRepPerSecond:effectiveRate};target=null;continue;}
+      }
       previousWorker = ns.ps('home').find(p => /(^|\/)work-for-factions\.js$/.test(p.filename));
       const resumeRam = previousWorker ? ns.getScriptRam(previousWorker.filename, 'home') : 0;
       if (!(await claimActivity(ns, 'infiltration', resumeRam))) { result.status = 'activity-busy'; continue; }

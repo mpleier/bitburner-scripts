@@ -1,3 +1,4 @@
+import {readNodeRoutePlan} from './node-route-policy.js';
 import { factionForcedJoins, factionControlAllowed, factionPurchaseBatch } from './faction-policy.js';
 import { isScriptPaused } from './automation-control.js';
 import { achievementActionAllowed } from './achievement-policy.js';
@@ -199,6 +200,12 @@ export async function main(ns) {
     bitNodeMults = await tryGetBitNodeMultipliers(ns);
 
     // Create the table of all augmentations, and the breakdown of what we can afford
+    const redPill=readNodeRoutePlan(ns)?.redPill;
+    let achievementQueue=false;try{const g=JSON.parse(ns.read('tasks/achievement-goals.json'));achievementQueue=g.expiresAt>Date.now()&&g.nodeReset===resetInfo.lastNodeReset&&ns.isRunning(g.ownerPid)&&g.minimumQueue>0;}catch{}
+    if(redPill?.active&&!['prepare','favor-reset'].includes(redPill.stage)&&!(redPill.stage==='install'&&achievementQueue)) {
+        options['neuroflux-disabled']=true;omitAugs.push(strNF);
+        for(const a of Object.values(augmentationData))if(a.name!=='The Red Pill'){a.desired=false;omitAugs.push(a.name);}
+    }
     await manageUnownedAugmentations(ns, omitAugs);
 
     if (options.purchase && ownedAugmentations.length <= 1 && 13 in ownedSourceFiles && !ownedAugmentations.includes(staneksGift) && !options['ignore-stanek'])

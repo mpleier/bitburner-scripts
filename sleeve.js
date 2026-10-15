@@ -1,3 +1,4 @@
+import {readNodeRoutePlan} from './node-route-policy.js';
 import {registerAutomation,automationHeartbeat,maintenanceRequested} from './runtime-policy.js';
 import {achievementActionAllowed} from './achievement-policy.js';
 import { claimSpending } from './spending-policy.js';
@@ -51,7 +52,7 @@ let cachedCrimeStats, workByFaction; // Cache of crime statistics and which fact
 let task, lastStatusUpdateTime, lastPurchaseTime, lastPurchaseStatusUpdate, availableAugs, cacheExpiry,
     shockChance, lastRerollTime, bladeburnerCooldown, lastSleeveHp, lastSleeveShock; // State by sleeve
 let numSleeves, ownedSourceFiles, playerInGang, playerInBladeburner, bladeburnerCityChaos, bladeburnerContractChances, bladeburnerContractCounts, followPlayerSleeve;
-let options;
+let options, worldDaemonPriority=false;
 let trainingReserve = 0;
 let reputationTargets = [], reputationAssignments = {}, nextRepRefresh = 0;
 let bladeburnerSupportSleeves = new Set();
@@ -77,7 +78,7 @@ export async function main(ns) {
     workByFaction = {}, cachedCrimeStats = {};
     reputationTargets = [], reputationAssignments = {}, nextRepRefresh = 0;
     bladeburnerSupportSleeves = new Set();
-    playerInGang = playerInBladeburner = false;
+    playerInGang = playerInBladeburner = false;worldDaemonPriority=false;
     // Ensure we have access to sleeves
     ownedSourceFiles = await getActiveSourceFiles(ns);
     if (!(10 in ownedSourceFiles))
@@ -163,6 +164,9 @@ async function mainLoop(ns) {
     numSleeves = await getNsDataThroughFile(ns, `ns.sleeve.getNumSleeves()`);
     const playerInfo = await getPlayerInfo(ns);
     const reset=await getNsDataThroughFile(ns,'ns.getResetInfo()');
+    const previousWdPriority=worldDaemonPriority;
+    worldDaemonPriority=readNodeRoutePlan(ns)?.selected==='hacking';
+    if(previousWdPriority!==worldDaemonPriority)nextRepRefresh=0;
     // If we have not yet detected that we are in bladeburner, do that now (unless disabled)
     if (!options['disable-bladeburner'] && ((6 in ownedSourceFiles)||(7 in ownedSourceFiles)||[6,7].includes(reset.currentNode)) && !playerInBladeburner)
         try { playerInBladeburner = await getNsDataThroughFile(ns, 'ns.bladeburner.inBladeburner()'); } catch { }
@@ -210,7 +214,7 @@ async function mainLoop(ns) {
     // If not disabled, set the "follow player" sleeve to be the first sleeve with 0 shock
     followPlayerSleeve = options['disable-follow-player'] ? -1 : undefined;
     for (let i = 0; i < numSleeves; i++) // Hack below: Prioritize sleeves doing bladeburner contracts, don't have them follow player
-        if (sleeveInfo[i].shock == 0 && sleeveInfo[i].sync >= 100 && (i === 0 || i > 3 || !playerInBladeburner))
+        if (sleeveInfo[i].shock == 0 && sleeveInfo[i].sync >= 100 && (i === 0 || i > 3 || !playerInBladeburner || worldDaemonPriority))
             followPlayerSleeve ??= i; // Skips assignment if previously assigned
     followPlayerSleeve ??= 0; // If all have shock, use the first sleeve
     if ((4 in ownedSourceFiles) && !options['disable-auto-reputation'] && Date.now() >= nextRepRefresh) {
@@ -220,7 +224,7 @@ async function mainLoop(ns) {
     }
     const actualTasks = await getNsDataThroughFile(ns, 'ns.args.map(i=>ns.sleeve.getTask(i))', '/Temp/sleeve-tasks.txt', [...Array(numSleeves).keys()]);
     let teamPlan=null;
-    if(playerInBladeburner&&!options['disable-bladeburner']&&!options['disable-bladeburner-team-support']&&!options.crime)
+    if(!worldDaemonPriority&&playerInBladeburner&&!options['disable-bladeburner']&&!options['disable-bladeburner-team-support']&&!options.crime)
         try{const saved=JSON.parse(ns.read('tasks/bladeburner-team.json'));if(saved.nodeReset===reset.lastNodeReset&&saved.at<=Date.now()+5000&&Date.now()-saved.at<30000&&ns.ps('home').some(p=>p.pid===saved.pid&&p.filename.replace(/^\//,'')==='bladeburner.js'))teamPlan=saved;}catch{}
     bladeburnerSupportSleeves=new Set(sleeveBladeburnerSupport(sleeveInfo,actualTasks,teamPlan));
 
@@ -233,7 +237,7 @@ async function mainLoop(ns) {
         } catch { }
     }
     reputationAssignments = sleeveRepAssignments(sleeveInfo.map((s,i)=>bladeburnerSupportSleeves.has(i)?{...s,shock:100}:s), options['disable-auto-reputation'] ? [] : reputationTargets,
-        playerWorkInfo, followPlayerSleeve, playerInBladeburner, actualTasks, followTarget);
+        playerWorkInfo, followPlayerSleeve, playerInBladeburner&&!worldDaemonPriority, actualTasks, followTarget, worldDaemonPriority);
     if ((4 in ownedSourceFiles) && !Object.keys(cachedCrimeStats).length) {
         try { cachedCrimeStats = await getNsDataThroughFile(ns, 'Object.fromEntries(Object.values(ns.enums.CrimeType).map(name=>[name,ns.singularity.getCrimeStats(name)]))', '/Temp/sleeve-crime-stats.txt'); } catch { }
     }
@@ -273,7 +277,7 @@ async function mainLoop(ns) {
         }
     }
     const currentTasks = await getNsDataThroughFile(ns,'ns.args.map(i=>ns.sleeve.getTask(i))','/Temp/sleeve-tasks-final.txt',[...Array(numSleeves).keys()]);
-    await ns.write('tasks/sleeve-status.json', JSON.stringify({at:Date.now(),pid:ns.pid,state:'managing',bladeburnerSupport:[...bladeburnerSupportSleeves],sleeves:sleeveInfo.map((s,i)=>({index:i,shock:s.shock,sync:s.sync,memory:s.memory,task:task[i]||'waiting',actualTask:currentTasks[i]})),remainingAugBudget:budget,sharedAugBudgetRemaining:sleeveAugSpendingBudget(ns,budget)}), 'w');
+    await ns.write('tasks/sleeve-status.json', JSON.stringify({at:Date.now(),pid:ns.pid,state:'managing',route:worldDaemonPriority?'hacking':'normal',bladeburnerSupport:[...bladeburnerSupportSleeves],sleeves:sleeveInfo.map((s,i)=>({index:i,shock:s.shock,sync:s.sync,memory:s.memory,task:task[i]||'waiting',actualTask:currentTasks[i]})),remainingAugBudget:budget,sharedAugBudgetRemaining:sleeveAugSpendingBudget(ns,budget)}), 'w');
 }
 
 /** Picks the best task for a sleeve, and returns the information to assign and give status updates for that task.
@@ -381,7 +385,7 @@ async function pickSleeveTask(ns, playerInfo, playerWorkInfo, i, sleeve, canTrai
         [`work for faction '${rep.name}' (${rep.workType})`, 'ns.sleeve.setToFactionWork(ns.args[0],ns.args[1],ns.args[2])', [i,rep.name,rep.workType], `earning useful reputation with ${rep.name}`] :
         [`work for company '${rep.name}'`, 'ns.sleeve.setToCompanyWork(ns.args[0],ns.args[1])', [i,rep.name], `earning company reputation with ${rep.name}`];
     // If the player is in bladeburner, and has already unlocked gangs with Karma, generate contracts and operations
-    if (playerInBladeburner) {
+    if (playerInBladeburner && !worldDaemonPriority) {
         // Hack: Without paying much attention to what's happening in bladeburner, pre-assign a variety of tasks by sleeve index
         const bbTasks = [
             // Note: Sleeve 0 might still be used for faction work (unless --disable-follow-player is set), so don't assign them a 'unique' task
@@ -427,7 +431,7 @@ async function pickSleeveTask(ns, playerInfo, playerWorkInfo, i, sleeve, canTrai
     // If there's nothing more productive to do (above) and there's still shock, prioritize recovery
     if (sleeve.shock > 0)
         return shockRecoveryTask(sleeve, i, `there appears to be nothing better to do`);
-    // Finally, do crime for Karma. Pick the best crime based on success chances
+    // Earn cash when no useful reputation target remains; explicit crime overrides stay authoritative.
     var crime = options.crime || (4 in ownedSourceFiles ? bestSleeveCrime(sleeve,cachedCrimeStats) : chooseSleeveCrime(null, await calculateCrimeChance(ns, sleeve, 'Homicide'), options['homicide-chance-threshold']));
     return await crimeTask(ns, crime, i, sleeve, `there appears to be nothing better to do`);
 }

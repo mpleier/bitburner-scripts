@@ -12,7 +12,7 @@ export function sampleRouteProgress(previous, sample) {
     if (!sample || !finite(sample.at) || !finite(sample.exp) || !positive(sample.hackMult))
         return {samples:[],xpModes:{},sampling:true};
     if (last && (last.augReset !== sample.augReset || last.nodeReset !== sample.nodeReset ||
-        last.hackingMultiplier !== sample.hackingMultiplier || Math.abs(last.hackMult/sample.hackMult-1)>.01 || sample.exp < last.exp || sample.at < last.at || sample.at-last.at > 45000)) {
+        Math.abs(last.hackingMultiplier/sample.hackingMultiplier-1)>.01 || Math.abs(last.hackMult/sample.hackMult-1)>.01 || sample.exp < last.exp || sample.at < last.at || sample.at-last.at > 45000)) {
         samples=[]; xpModes={};
     }
     if (samples.at(-1)?.at !== sample.at) samples = [...samples,sample];
@@ -128,13 +128,16 @@ export function readNodeRoutePlan(ns, now=Date.now()) {
 }
 
 /** Read-only snapshot, also serialized into the RAM-dodging native worker. */
-export function nodeRouteSnapshotSource(canSingularity, canBladeburner) {
+export function nodeRouteSnapshotSource(canSingularity, canBladeburner, multipliers={}) {
     return String.raw`(() => {
     const p=ns.getPlayer(),r=ns.getResetInfo(),owned=r.ownedAugs;
     const names=typeof owned?.keys==='function'?[...owned.keys()]:Object.keys(owned||{});
     const s={at:Date.now(),augReset:r.lastAugReset,nodeReset:r.lastNodeReset,exp:p.exp.hacking,hacking:p.skills.hacking,
         hackMult:p.mults.hacking,hackingMultiplier:p.mults.hacking,hasRedPill:names.includes('The Red Pill'),simulacrum:names.includes("The Blade's Simulacrum"),
-        worth:p.money,rep:null,wdHack:null,singularityKnown:false};
+        money:p.money,worth:p.money,rep:null,wdHack:null,singularityKnown:false,node:r.currentNode,installedAugs:names.length,
+        combatReady:['strength','defense','dexterity','agility'].every(k=>p.skills[k]>=1500),
+        daedalusAugsRequired:${JSON.stringify(multipliers.DaedalusAugsRequirement??null)},
+        repPerDollar:p.mults.faction_rep*${JSON.stringify(multipliers.FactionWorkRepGain??0)}/1e6};
     try{s.hackMult*=ns.getBitNodeMultipliers().HackingLevelMultiplier;}
     catch{const base=32*Math.log(p.exp.hacking+534.6)-200;s.hackMult=base>0?(p.skills.hacking+.5)/base:null;}
     try{if(ns.serverExists('w0r1d_d43m0n'))s.wdHack=ns.getServerRequiredHackingLevel('w0r1d_d43m0n');}catch{}
@@ -147,6 +150,10 @@ ${canSingularity?`    try {
         s.rep=s.daedalus?ns.singularity.getFactionRep('Daedalus'):null;
         s.redPillPrice=ns.singularity.getAugmentationPrice('The Red Pill');
         s.redPillRep=ns.singularity.getAugmentationRepReq('The Red Pill');
+        s.redPillOffered=ns.singularity.getAugmentationsFromFaction('Daedalus').includes('The Red Pill');
+        s.favorToDonate=ns.getFavorToDonate();
+        s.favor=s.daedalus?ns.singularity.getFactionFavor('Daedalus'):0;
+        s.favorGain=s.daedalus?ns.singularity.getFactionFavorGain('Daedalus'):0;
         s.singularityKnown=true;
     }catch{}
 `:''}

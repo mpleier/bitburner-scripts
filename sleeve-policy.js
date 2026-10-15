@@ -16,7 +16,7 @@ export function bestFactionWork(sleeve, types) {
   const scores={hacking:Number(s.hacking)||0,field:((Number(s.hacking)||0)+(Number(s.charisma)||0)+combat)/6,security:combat/4};
   return [...types].sort((a,b)=>(scores[b]||0)-(scores[a]||0))[0];
 }
-export function sleeveRepAssignments(sleeves, targets, work, followIndex, bladeburner, actualTasks = [], followTarget = null) {
+export function sleeveRepAssignments(sleeves, targets, work, followIndex, bladeburner, actualTasks = [], followTarget = null, prioritizeCritical = false) {
   const assignments={},used=new Set();
   const ready=i=>sleeves[i]?.shock===0 && sleeves[i]?.sync>=100;
   const assign=(i,target)=>{
@@ -29,9 +29,15 @@ export function sleeveRepAssignments(sleeves, targets, work, followIndex, bladeb
   const allTargets=followTarget ? [followTarget,...targets.filter(t=>t.type!==followTarget.type||t.name!==followTarget.name)] : targets;
   const desiredFollow=allTargets.find(t=>t.type===work?.type&&t.name===(work.factionName||work.companyName));
   const followOccupied=desiredFollow && actualTasks.some((t,i)=>i!==followIndex&&eligible(i)&&t?.type===desiredFollow.type&&(t.factionName||t.companyName)===desiredFollow.name);
+  // A WD milestone (notably Red Pill reputation) must get a sleeve even when other jobs occupy all sleeves.
+  if(prioritizeCritical)for(const target of targets.filter(t=>t.priority===0)) {
+    let index=sleeves.findIndex((s,i)=>eligible(i)&&!assignments[i]&&actualTasks[i]?.type===target.type&&(actualTasks[i]?.factionName||actualTasks[i]?.companyName)===target.name);
+    if(index<0)index=sleeves.findIndex((s,i)=>eligible(i)&&!assignments[i]);
+    if(index>=0)assign(index,target);
+  }
   // Retain existing owners so two sleeves cannot deadlock while swapping employers.
   for(let i=0;i<sleeves.length;i++)if(eligible(i)) {
-    if(i===followIndex&&desiredFollow&&!followOccupied)continue;
+    if(assignments[i]||i===followIndex&&desiredFollow&&!followOccupied)continue;
     const actual=actualTasks[i];
     const name=actual?.factionName||actual?.companyName;
     assign(i,allTargets.find(t=>t.type===actual?.type&&t.name===name));

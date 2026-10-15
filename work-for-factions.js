@@ -3,7 +3,7 @@ import { factionControlAllowed } from './faction-policy.js';
 import { isScriptPaused } from './automation-control.js';
 import { registerAutomation, automationHeartbeat, maintenanceRequested } from './runtime-policy.js';
 import {achievementActionAllowed} from './achievement-policy.js';
-import { activityBusy, markActivitySupport } from './activity-coordination.js';
+import { activityBusy, markActivitySupport, claimActivity, releaseActivity } from './activity-coordination.js';
 import {
     instanceCount, getConfiguration, getNsDataThroughFile, getFilePath, getActiveSourceFiles, tryGetBitNodeMultipliers,
     formatDuration, formatMoney, formatNumberShort, disableLogs, log, getErrorInfo, tail
@@ -312,6 +312,12 @@ async function mainLoop(ns) {
     if (wasGrafting) {
         await loadStartupData(ns);
         wasGrafting = false;
+    }
+
+    const redPill=readNodeRoutePlan(ns)?.redPill;
+    if(redPill?.active&&redPill.requiredRep>redPill.rep&&player.factions.includes('Daedalus')&&!options['crime-focus']&&!skipFactions.includes('Daedalus')) {
+        await workForSingleFaction(ns,'Daedalus',false,false,redPill.requiredRep);
+        return;
     }
 
     // Remove Fulcrum from our "EarlyFactionOrder" if hack level is insufficient to backdoor their server
@@ -730,6 +736,7 @@ async function monitorStudies(ns, stat, requirement) {
                 `\nWAS: ${JSON.stringify(initialWork)}\nNOW: ${JSON.stringify(currentWork)}`, false, 'warning');
             return;
         }
+        await maintainWorkFocus(ns, currentWork);
         const player = await getPlayerInfo(ns);
         if (player.skills[stat] >= requirement) {
             log(ns, `SUCCESS: Achieved ${stat} level ${player.skills[stat]} >= ${requirement} while studying`, false, 'info');
@@ -846,6 +853,7 @@ async function getServerRequiredHackLevel(ns, serverName) {
 /** A special check for when we unlock donations with Daedalus, this is usually a good time to reset.
  * @param {NS} ns */
 async function daedalusSpecialCheck(ns, favorRepRequired, currentReputation) {
+    if(readNodeRoutePlan(ns)?.redPill){if(ns.fileExists('/Temp/Daedalus-donation-rep-attained.txt','home'))ns.rm('/Temp/Daedalus-donation-rep-attained.txt');return false;}
     if (favorRepRequired == 0 || currentReputation < favorRepRequired) return false;
     // If we would be unlocking donations, but actually, we're pretty close to just being able to afford TRP, no impetus to reset.
     if (currentReputation >= 0.9 * 2.500e6 * bitNodeMults.AugmentationRepCost) return false;
@@ -918,6 +926,26 @@ async function isValidInterruption(ns, currentWork = null) {
     return false;
 }
 
+let lastFocusCheck = 0;
+// Restore beneficial focus only while the work we are monitoring still matches.
+async function maintainWorkFocus(ns, expectedWork) {
+    if (!shouldFocus || Date.now() - lastFocusCheck < 5000) return;
+    lastFocusCheck = Date.now();
+    const expected = Object.fromEntries(['type', 'factionName', 'factionWorkType', 'companyName', 'classType', 'location']
+        .filter(key => expectedWork[key] !== undefined).map(key => [key, expectedWork[key]]));
+    if (!['FACTION', 'COMPANY', 'CLASS'].includes(expected.type)) return;
+    const result = await factionWorkCommand(ns, `(() => {
+        const expected = JSON.parse(ns.args[0]), current = ns.singularity.getCurrentWork();
+        if (!current || !Object.entries(expected).every(([key, value]) => current[key] === value)) return null;
+        if (ns.singularity.getOwnedAugmentations(false).includes('Neuroreceptor Management Implant')) return 'implant';
+        return ns.singularity.isFocused() || ns.singularity.setFocus(true);
+    })()`, [JSON.stringify(expected)], true);
+    if (result === 'implant') {
+        hasFocusPenalty = false;
+        shouldFocus = false;
+    }
+}
+
 let lastFactionWorkStatus = "";
 /** * Checks how much reputation we need with this faction to either buy all augmentations or get 150 favour, then works to that amount.
  * @param {NS} ns
@@ -985,6 +1013,7 @@ export async function workForSingleFaction(ns, factionName, forceUnlockDonations
     while ((currentReputation = (await getFactionReputation(ns, factionName))) < factionRepRequired) {
         if (breakToMainLoop()) return ns.print('INFO: Interrupting faction work to check on high-level priorities.');
         const currentWork = await getCurrentWorkInfo(ns);
+        if (workAssigned && currentWork.factionName === factionName) await maintainWorkFocus(ns, currentWork);
         let factionJob = currentWork.factionWorkType;
         // Detect if faction work was interrupted and log a warning
         if (workAssigned && currentWork.factionName != factionName) {
@@ -1088,12 +1117,18 @@ async function measureCompanyRepGainRate(ns, companyName) {
  * @returns {Promise<FactionWorkType>} The faction work type measured to give the best reputation gain rate */
 async function detectBestFactionWork(ns, factionName) {
     let bestWork, bestRepRate = 0;
+    const pill=readNodeRoutePlan(ns)?.redPill;
+    const calibrate=factionName==='Daedalus'&&pill?.active&&await claimActivity(ns,'Daedalus work measurement');
+    let passiveRate=0,passiveKnown=false;
+    const timedRate=async()=>{const before=await getFactionReputation(ns,factionName),at=Date.now();await ns.sleep(1200);return Math.max(0,(await getFactionReputation(ns,factionName)-before)/((Date.now()-at)/1000));};
+    try {
+    if(calibrate&&await stop(ns)){passiveRate=await timedRate();passiveKnown=true;}
     for (const work of Object.values(ns.enums.FactionWorkType)) {
         if (!(await startWorkForFaction(ns, factionName, work, shouldFocus))) {
             //ns.print(`"${factionName}": "${work}"" work not supported.`);
             continue; // This type of faction work must not be supported
         }
-        const currentRepGainRate = await measureFactionRepGainRate(ns, factionName);
+        const currentRepGainRate = calibrate?await timedRate():await measureFactionRepGainRate(ns, factionName);
 
         //ns.print(`"${factionName}" work ${work} provides ${formatNumberShort(currentRepGainRate)} rep rate`);
         if (currentRepGainRate > bestRepRate) {
@@ -1105,7 +1140,14 @@ async function detectBestFactionWork(ns, factionName) {
         mainLoopStart = 0; // Force break out of whatever work loop we're in to update info (maybe we formed a gang with the faction we were working for?)
         throw Error(`The faction "${factionName}" does not support any of the known work types. Cannot work for this faction!`);
     }
+    if(calibrate&&passiveKnown){
+        const p=await getPlayerInfo(ns),r=await getResetInfoRd(ns);
+        await ns.write('tasks/daedalus-work-rate.json',JSON.stringify({at:Date.now(),pid:ns.pid,augReset:r.lastAugReset,nodeReset:r.lastNodeReset,
+            rate:Math.max(0,bestRepRate-passiveRate),passiveRate,totalRate:bestRepRate,work:bestWork,factionMult:p.mults.faction_rep,
+            statSum:['hacking','strength','defense','dexterity','agility','charisma'].reduce((t,k)=>t+p.skills[k],0)}),'w');
+    }
     return bestWork;
+    }finally{if(calibrate)releaseActivity(ns);}
 }
 
 /** @param {NS} ns
@@ -1295,6 +1337,7 @@ export async function workForMegacorpFactionInvite(ns, factionName, waitForInvit
             log(ns, `Unexpected '${currentRole}' promotion from ${currentJob} to "${player.jobs[companyName]}. Promotion logic must be off..."`, false, 'warning');
         }
 
+        if (isWorking && !isStudying && currentWork.companyName === companyName) await maintainWorkFocus(ns, currentWork);
         // If not studying, ensure we are working for this company
         if (!isStudying && (!isWorking || currentWork.companyName != companyName)) {
             if (isWorking) { // Log a warning if we discovered that work we previously began was disrupted

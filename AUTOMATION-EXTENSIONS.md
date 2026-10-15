@@ -457,3 +457,13 @@ World Daemon forecasting requires installed Red Pill and a native hacking requir
 Priority requires both routes to have actionable estimates and a 25% advantage across estimate ranges for two continuous minutes. Unknown evidence clears overrides; stale plans, dead owners and plans from older resets cannot control managers. Until comparison is possible, the existing progression policy remains active. `--disable-node-route-planner` disables overrides.
 
 WD priority requests hacking XP, releases conflicting Bladeburner work (preserving BlackOps), and pauses dedicated BB hash spending. BB priority releases conflicting faction work and favors combat support spending. Installed Blade's Simulacrum permits parallel player/Bladeburner work. Casino/activity locks, grafting, program creation, maintenance and achievement protections keep their existing precedence. Overview displays Node Route with estimate reasons; the dashboard publishes nodeRoute. No native purchases, resets, or action starts are performed by the forecast collector.
+
+
+## Continuous hacking XP priority
+
+Autopilot now defaults to continuous daemon XP mode, including above the high-hack threshold and on small home servers. Home RAM and server allowances favor hacking progress. Other managers and augmentation/BitNode progression remain active. Use `--disable-continuous-xp` to return to adaptive income/XP scheduling. This preference persists across ordinary restarts through the script default.
+
+
+## Default World Daemon route
+
+World Daemon is the default completion priority, even before Daedalus/Red Pill access or reliable finish estimates. Forecasts continue to report blockers and uncertainty. Conflicting faction work and hash spending favor WD; Bladeburner remains available in parallel with installed Simulacrum, and existing BlackOps finish before faction work takes over. Use `--adaptive-node-route` to restore ETA-driven route switching. Already-completed BitNode victory conditions retain their normal departure handling.

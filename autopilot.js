@@ -32,6 +32,7 @@ const argsSchema = [ // The set of all command line arguments
     ['install-at-aug-plus-nf-count', 12], // or... automatically install when we can afford this many augmentations including additional levels of Neuroflux.  Note: This number will automatically be increased by 1 for every level of SF11 you have (up to 3)
     ['install-for-augs', ["The Red Pill", "The Blade's Simulacrum"]], // or... install when one of these is affordable or purchased and awaiting installation
     ['disable-adaptive-resets', false], // Use only the existing augmentation count and countdown rules.
+    ['adaptive-node-route', false], // Default to World Daemon; opt in to switching routes from ETA comparisons.
     ['disable-node-route-planner', false], // Keep legacy progression priorities; ignore route comparisons.
     ['disable-adaptive-spending', false], // Keep the base cash allowances.
     ['install-countdown', 5 * 60 * 1000], // If we're ready to install, wait this long first to see if more augs come online (we might just be gaining momentum)
@@ -52,6 +53,7 @@ const argsSchema = [ // The set of all command line arguments
     ['spend-hashes-on-server-hacking-threshold', 0.1], // Threshold for how good hacking multipliers must be to merit spending hashes for boosting hack income. Set to a large number to disable this entirely.
     ['on-completion-script', null], // Spawn this script when we defeat the bitnode
     ['on-completion-script-args', []], // Optional args to pass to the script when we defeat the bitnode
+    ['disable-continuous-xp', false], // XP is the default hacking priority; opt out to restore adaptive income/XP scheduling.
     ['xp-mode-interval-minutes', 55], // Every time this many minutes has elapsed, toggle daemon.js to runing in --xp-only mode, which prioritizes earning hack-exp rather than money
     ['xp-mode-duration-minutes', 5], // The number of minutes to keep daemon.js in --xp-only mode before switching back to normal money-earning mode.
     ['no-tail-windows', true], // Suppress automatic tail windows; open script logs manually from the terminal.
@@ -433,17 +435,21 @@ export async function main(ns) {
             routeObservation=sampleRouteProgress(routeObservation,s);
             const routes={hacking:estimateDaemonRoute(s,routeObservation),bladeburner:estimateBladeburnerRoute(s.bb)};
             const old=routePlan?.selected;
-            routePlan={...selectNodeRoute(routes,routePlan,{now,augReset:s.augReset,nodeReset:s.nodeReset}),
+            const preference=options['adaptive-node-route']?{}:{selected:'hacking',candidate:null,candidateSince:null,
+                policy:'preferred',reason:'World Daemon is the configured default; completion estimates remain informational.'};
+            routePlan={...selectNodeRoute(routes,routePlan,{now,augReset:s.augReset,nodeReset:s.nodeReset}),...preference,
                 ownerPid:ns.pid,simulacrum:s.simulacrum,sampling:routeObservation.sampling,
                 assumptions:['Current capabilities only; future upgrades are not forecast','Unknown prerequisites never count as zero time',
-                    'Bladeburner recovery, chaos and recruitment use a 50–100% duty range','Priority needs a 25% advantage across ranges for two minutes']};
+                    'Bladeburner recovery, chaos and recruitment use a 50–100% duty range',options['adaptive-node-route']?'Adaptive switching requires a 25% advantage for two minutes':'World Daemon preference applies even while its ETA is unknown']};
             await ns.write(nodeRouteFile,JSON.stringify(routePlan),'w');
             if(old!==routePlan.selected)log(ns,'Node route planner: '+routePlan.reason,false,'info');
         }catch(error) {
-            // A failed native read immediately releases all route-specific overrides.
-            routePlan=null;routeObservation=null;
-            await ns.write(nodeRouteFile,JSON.stringify({at:now,ownerPid:ns.pid,augReset:resetInfo.lastAugReset,
-                nodeReset:resetInfo.lastNodeReset,selected:null,reason:'Native route evidence unavailable: '+String(error)}),'w');
+            // Explicit route preference survives missing forecast APIs; inferred priorities do not.
+            routeObservation=null;
+            routePlan={at:now,ownerPid:ns.pid,augReset:resetInfo.lastAugReset,nodeReset:resetInfo.lastNodeReset,
+                selected:options['adaptive-node-route']?null:'hacking',policy:options['adaptive-node-route']?'adaptive':'preferred',
+                reason:(options['adaptive-node-route']?'':'World Daemon default. ')+'Native route evidence unavailable: '+String(error)};
+            await ns.write(nodeRouteFile,JSON.stringify(routePlan),'w');
         }
     }
 
@@ -608,7 +614,7 @@ export async function main(ns) {
             let corporationStartup=false;if(!options['disable-corporation']&&unlockedSFs[3]&&achievementActionAllowed(ns,'corporation'))try{corporationStartup=!await getNsDataThroughFile(ns,'ns.corporation.hasCorporation()','/Temp/budget-corporation.txt');}catch{}
             const signals=adaptiveBudgetSignals(ns,corporationStartup);
             let speed;try{speed=JSON.parse(ns.read('tasks/progression-speed.json'));}catch{}
-            if(!options['disable-adaptive-spending'])signals.bottleneck=homeRam<64?'ram':routePlan?.selected==='bladeburner'?'combat':prioritizeHackForDaedalus||prioritizeHackForWd?'hacking':speed?.augReset===resetInfo.lastAugReset&&speed.at>Date.now()-120000?speed.bottleneck:'balanced';
+            if(!options['disable-adaptive-spending'])signals.bottleneck=homeRam<64?'ram':!options['disable-continuous-xp']?'hacking':routePlan?.selected==='bladeburner'?'combat':prioritizeHackForDaedalus||prioritizeHackForWd?'hacking':speed?.augReset===resetInfo.lastAugReset&&speed.at>Date.now()-120000?speed.bottleneck:'balanced';
             signals.activeCategories={graft:!!unlockedSFs[10]&&!!unlockedSFs[4],soa:!!unlockedSFs[4],sleeves:!!unlockedSFs[10],sleeveExpansion:resetInfo.currentNode===10&&!!unlockedSFs[10],gang:!!unlockedSFs[2],corporation:!options['disable-corporation']&&!!unlockedSFs[3]};
             await ns.write('tasks/spending-plan.json',JSON.stringify(spendingPlan({money:player.money,reserve:Number(ns.read('reserve.txt'))||0,homeRam,node:resetInfo.currentNode,ownerPid:ns.pid,reset:resetInfo.lastAugReset,signals})), 'w');
         }
@@ -777,7 +783,7 @@ export async function main(ns) {
                 daemonArgs.push("--no-share", "--initial-max-targets", 1);
             } else { // XP-ONLY MODE: We can shift daemon.js to this when we want to prioritize earning hack exp rather than money
                 // Only do this if we aren't in --looping mode because TODO: currently it does not kill it's loops on shutdown, so they'd be stuck in hack exp mode
-                let useXpOnlyMode = (prioritizeHackForDaedalus && routePlan?.selected!=='bladeburner') || prioritizeHackForWd ||
+                let useXpOnlyMode = !options['disable-continuous-xp'] || (prioritizeHackForDaedalus && routePlan?.selected!=='bladeburner') || prioritizeHackForWd ||
                     // In BNs that give no money for hacking, always start daemon.js in this mode (except BN8, because TODO: --xp-only doesn't handle stock manipulation)
                     (bitNodeMults.ScriptHackMoney * bitNodeMults.ScriptHackMoneyGain == 0 && resetInfo.currentNode != 8);
                 if (!useXpOnlyMode) { // Otherwise, respect the configured interval / duration
@@ -794,15 +800,15 @@ export async function main(ns) {
                     daemonArgs.push("--xp-only", "--silent-misfires", "--no-share");
                     // If daemon.js isn't already running in hack exp mode, prepare a message to communicate the change
                     if (!existingDaemon?.args.includes("--xp-only"))
-                        daemonRelaunchMessage = prioritizeHackForWd ? `Prioritizing the World Daemon hacking requirement (${routePlan?.selected==='hacking'?'measured route comparison':'near-target fallback'}).` :
+                        daemonRelaunchMessage = !options['disable-continuous-xp'] ? 'Continuous hacking XP priority is enabled.' : prioritizeHackForWd ? `Prioritizing the World Daemon hacking requirement (${routePlan?.selected==='hacking'?'measured route comparison':'near-target fallback'}).` :
                             prioritizeHackForDaedalus ? `Hack Level is the only missing requirement for Daedalus, so we will run daemon.js in --xp-only mode to try and speed along the invite.` :
                                 (bitNodeMults.ScriptHackMoney * bitNodeMults.ScriptHackMoneyGain == 0) ?
                                     `The current BitNode does not give any money from hacking, so we will run daemon.js in --xp-only mode.` :
                                     `Relaunching daemon.js to focus on earning Hack Experience for ${options['xp-mode-duration-minutes']} minutes (--xp-mode-duration-minutes)`;
                 }
             }
-            // A measured WD priority also applies above the high-performance hacking threshold.
-            if((prioritizeHackForWd||xpMeasurementActive)&&!daemonArgs.includes('--xp-only'))daemonArgs.push('--xp-only','--silent-misfires','--no-share');
+            // Explicit XP priority also applies above the high-performance threshold and on small home servers.
+            if((!options['disable-continuous-xp']||prioritizeHackForWd||xpMeasurementActive)&&!daemonArgs.includes('--xp-only'))daemonArgs.push('--xp-only','--silent-misfires','--no-share');
             // Prevent daemon from starting "work-for-faction.js" since we now manage that script
             daemonArgs.push('--disable-script', getFilePath('work-for-factions.js'));
             // In BN8, always run in a mode that prioritizes stock market manipulation
@@ -1071,7 +1077,7 @@ export async function main(ns) {
 
         if(!speedObservation)try{speedObservation=JSON.parse(ns.read('tasks/speed-observation.json'));}catch{}
         const previousSnapshotAt=speedObservation?.at;
-        const speed=progressionSpeed({snapshot:facman.speedSnapshot,previous:speedObservation,augReset:resetInfo.lastAugReset,elapsed:getTimeInAug(),node:resetInfo.currentNode,firstBn9:inFirstBn9Aug,combat:routePlan?.selected?routePlan.selected==='bladeburner':[6,7].includes(resetInfo.currentNode),baseDelay:options['install-countdown'],homeRam,hackingGoal:(prioritizeHackForDaedalus&&routePlan?.selected!=='bladeburner')||prioritizeHackForWd});
+        const speed=progressionSpeed({snapshot:facman.speedSnapshot,previous:speedObservation,augReset:resetInfo.lastAugReset,elapsed:getTimeInAug(),node:resetInfo.currentNode,firstBn9:inFirstBn9Aug,combat:routePlan?.selected?routePlan.selected==='bladeburner':[6,7].includes(resetInfo.currentNode),baseDelay:options['install-countdown'],homeRam,hackingGoal:!options['disable-continuous-xp']||(prioritizeHackForDaedalus&&routePlan?.selected!=='bladeburner')||prioritizeHackForWd});
         speedObservation=speed.observation;
         if(speedObservation&&speedObservation.at!==previousSnapshotAt)await ns.write('tasks/speed-observation.json',JSON.stringify(speedObservation),'w');
         await ns.write('tasks/progression-speed.json',JSON.stringify({at:Date.now(),augReset:resetInfo.lastAugReset,...speed,observation:undefined}),'w');

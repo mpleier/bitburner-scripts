@@ -873,11 +873,17 @@ async function isValidInterruption(ns, currentWork = null) {
         try{hasSimulacrum=await getNsDataThroughFile(ns,'ns.singularity.getOwnedAugmentations(false).includes("The Blade\'s Simulacrum")','/Temp/faction-simulacrum-installed.txt');}catch{}
         lastSimulacrumCheck=Date.now();
     }
+    // Finish an already-running BlackOp before conflicting WD faction work can take over.
+    let protectedBlackOp=false;
+    if(nodeRoute==='hacking'&&!hasSimulacrum&&(6 in dictSourceFiles||7 in dictSourceFiles||[6,7].includes(currentBitnode))) {
+        try{protectedBlackOp=await getNsDataThroughFile(ns,'ns.bladeburner.inBladeburner()&&/black/i.test(ns.bladeburner.getCurrentAction()?.type||"")','/Temp/faction-protected-blackop.txt');}catch{}
+    }
     // Never interrupt grafting
     if (["GRAFTING","CREATE_PROGRAM"].includes(currentWork.type)) {
         interruptionNotice = currentWork.type+" in progress. Waiting before changing player work.";
         wasGrafting = currentWork.type === "GRAFTING";
     }
+    else if(protectedBlackOp)interruptionNotice='Finishing the active BlackOp before World Daemon faction work.';
     // If bladeburner is currently active, but we do not yet have The Blade's Simulacrum, we may choose to we pause working.
     else if ((6 in dictSourceFiles || 7 in dictSourceFiles || [6,7].includes(currentBitnode)) && !hasSimulacrum && !options['no-bladeburner-check'] && nodeRoute!=='hacking') {
         // Heuristic: If we're in a gang, its rep will give us access to most augs, we can take a break from working in favour of bladeburner progress

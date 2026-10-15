@@ -1,3 +1,4 @@
+import {readNodeRoutePlan} from './node-route-policy.js';
 import { factionControlAllowed } from './faction-policy.js';
 import { isScriptPaused } from './automation-control.js';
 import { registerAutomation, automationHeartbeat, maintenanceRequested } from './runtime-policy.js';
@@ -865,6 +866,7 @@ async function isValidInterruption(ns, currentWork = null) {
     automationHeartbeat(ns);
     if (isScriptPaused(ns,ns.getScriptName())||maintenanceRequested(ns)||activityBusy(ns)) return true;
     let interruptionNotice = "";
+    const nodeRoute=readNodeRoutePlan(ns)?.selected;
     currentWork ??= await getCurrentWorkInfo(ns); // Retrieve current work (unless it was passed in)
     // Grafting can install Simulacrum without restarting this manager. Refresh before the pause decision.
     if(!hasSimulacrum&&Date.now()-lastSimulacrumCheck>=5000) {
@@ -877,15 +879,17 @@ async function isValidInterruption(ns, currentWork = null) {
         wasGrafting = currentWork.type === "GRAFTING";
     }
     // If bladeburner is currently active, but we do not yet have The Blade's Simulacrum, we may choose to we pause working.
-    else if ((6 in dictSourceFiles || 7 in dictSourceFiles || [6,7].includes(currentBitnode)) && !hasSimulacrum && !options['no-bladeburner-check']) {
+    else if ((6 in dictSourceFiles || 7 in dictSourceFiles || [6,7].includes(currentBitnode)) && !hasSimulacrum && !options['no-bladeburner-check'] && nodeRoute!=='hacking') {
         // Heuristic: If we're in a gang, its rep will give us access to most augs, we can take a break from working in favour of bladeburner progress
         //       Also, if we're done all "priority" work (scope >= 2), consider letting Bladeburner take over
         // TODO: Are there other situations we want to prioritize bladeburner over normal work? Perhaps if we're in a Bladeburner BN? (6 or 7)
-        if (playerGang || scope >= 2) {
+        if (nodeRoute==='bladeburner' || playerGang || scope >= 2) {
             // Check if the player has joined bladeburner (can stop checking once we see they are)
             playerInBladeburner = playerInBladeburner || await getNsDataThroughFile(ns, 'ns.bladeburner.inBladeburner()');
             if (playerInBladeburner) {
-                if (playerGang)
+                if (nodeRoute==='bladeburner')
+                    interruptionNotice = 'Route planner prioritizes Bladeburner; pausing conflicting faction work.';
+                else if (playerGang)
                     interruptionNotice = `Gang will give us most augs, so pausing work to allow Bladeburner to operate.`;
                 else
                     interruptionNotice = `Decided that doing Bladeburner is more important that working right now.`;

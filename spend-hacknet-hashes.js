@@ -1,3 +1,4 @@
+import {readNodeRoutePlan} from './node-route-policy.js';
 import { claimSpending } from './spending-policy.js';
 import { hashOptionsError, hashOverflowBuffer, hashCapacityChoice } from './hacknet-policy.js';
 import {registerAutomation,automationHeartbeat,maintenanceRequested} from './runtime-policy.js';
@@ -87,6 +88,10 @@ export async function main(ns) {
     const formatHashes = (hashes) => formatNumberShort(hashes, 6, 3);
     while (!isScriptPaused(ns,ns.getScriptName())) {
  automationHeartbeat(ns);
+        if(toBuy.every(name=>name==='Exchange for Bladeburner Rank'||name==='Exchange for Bladeburner SP')&&readNodeRoutePlan(ns)?.selected==='hacking') {
+            await report('waiting',{reason:'Route planner prioritizes World Daemon; retain hashes for other spenders'});
+            await ns.sleep(Math.max(1000,interval));continue;
+        }
         if(!achievementActionAllowed(ns,"hashSpending")){await report("waiting",{reason:"Hash spending reserved for achievements"});await ns.sleep(Math.max(50,interval));continue;}
         await ns.sleep(interval);
         if (lowPriority && ns.hacknet.numHashes() > 0) // Low priority mode means any competing scripts should get to spend hashes first.

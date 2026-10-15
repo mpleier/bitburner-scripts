@@ -6,7 +6,7 @@ export function spendingPlan({money,reserve=0,homeRam=0,node=1,epoch=Date.now(),
  if(signals.gangStalled){weights.gang*=2;reasons.push('Gang equipment priority: territory is not advancing');}
  if(signals.sleeveShockHigh){weights.sleeves*=0.5;reasons.push('Hold sleeve augmentation spending while shock recovers');}
  if(signals.sleeveExpansionNeeded&&node===10){weights.sleeveExpansion*=1.5;reasons.push('Sleeve expansion priority');}
- const priorities={ram:{home:3,servers:.5,graft:.5},hacking:{home:2,servers:1.5,graft:1.5},reputation:{sleeves:2,soa:2,graft:1.25},cash:{home:1.5,servers:2,hacknet:1.5,gang:1.5,graft:.5}};
+ const priorities={ram:{home:3,servers:.5,graft:.5},hacking:{home:2,servers:1.5,graft:1.5},reputation:{sleeves:2,soa:2,graft:1.25},combat:{sleeves:2,gang:1.25,graft:.75,home:.75},cash:{home:1.5,servers:2,hacknet:1.5,gang:1.5,graft:.5}};
  // Preserve cash for augmentation progress rather than increasing hash reinvestment during a cash shortage.
  if(signals.bottleneck==='cash'&&node!==9)priorities.cash.hacknet=.35;
  if(priorities[signals.bottleneck]){for(const [category,factor]of Object.entries(priorities[signals.bottleneck]))weights[category]*=factor;reasons.push('Progression bottleneck: '+signals.bottleneck);}

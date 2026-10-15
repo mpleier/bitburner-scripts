@@ -1,3 +1,4 @@
+import {readNodeRoutePlan} from './node-route-policy.js';
 import {registerAutomation,automationHeartbeat,maintenanceRequested} from './runtime-policy.js';
 import {isBlackOp,nextSkill,raidCities,recoveryRequired,optionsError,requiredBladeburnerTeam,prepareBladeburnerTeam,bladeburnerRecruitmentBudget,bladeburnerRankRate,rankBladeburnerActions,spendBladeburnerSkills,bladeburnerRecruitmentDecision,planBladeburnerLevels,startBladeburnerPlannedAction,bladeburnerWorkAllowed} from './bladeburner-policy.js';
 import {isScriptPaused} from './automation-control.js';
@@ -485,6 +486,13 @@ async function canDoBladeburnerWork(ns) {
         state=await getNsDataThroughFile(ns,'(() => {const installed=ns.singularity.getOwnedAugmentations(false).includes("The Blade\'s Simulacrum");return {known:true,installed,busy:!!ns.singularity.getCurrentWork()?.type,queued:!installed&&ns.singularity.getOwnedAugmentations(true).includes("The Blade\'s Simulacrum")};})()','/Temp/bladeburner-work-state.txt');
     }catch{}
     haveSimulacrum=state.installed;
+    if(state.known&&!state.installed&&readNodeRoutePlan(ns)?.selected==='hacking') {
+        // The main loop preserves active BlackOps before reaching this decision.
+        await getNsDataThroughFile(ns,`ns.isRunning(ns.args[0])&&(${bbMutationGuard}) ? ns.bladeburner.stopBladeburnerAction():false`,
+            '/Temp/bladeburner-route-yield.txt',[ns.pid]);
+        await ns.write('tasks/bladeburner-work.json',JSON.stringify({at:Date.now(),pid:ns.pid,...state,allowed:false,reason:'World Daemon route priority'}),'w');
+        return false;
+    }
     const allowed=options['ignore-busy-status']||state.known&&(!state.busy||state.installed);
     await ns.write('tasks/bladeburner-work.json',JSON.stringify({at:Date.now(),pid:ns.pid,...state,allowed:!!allowed}),'w');
     if(allowed)return lastCanWorkCheckIdle=true;

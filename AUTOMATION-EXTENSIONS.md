@@ -438,3 +438,22 @@ With development-speed enabled, dividends are now zero and share buybacks are di
 Equity sales do not debit corporate funds, but reduce CEO ownership and can affect share price and future funding. They cannot be described as having no economic tradeoff. Income mode (--development-speed false) retains tiered dividend behavior. Status exposes retainedProfitFraction and liquidityDecision.
 
 Live verification: controller PID 178619 is in growth mode with native dividendRate zero, retainedProfitFraction one, no pending reloads, and no reliability errors. No new milestone sale was authorized in the observed state; the player already had more than the emergency wallet target. Both modified JavaScript files passed syntax checks. Regression tests were not run.
+
+## Node ETA correctness follow-up
+
+Confirmed live that The Red Pill was not installed and Bladeburner had no active player action. The former ETA incorrectly accepted a daemon hacking target without an installed Red Pill and extrapolated instantaneous script XP.
+
+Hacking projections now require an installed Red Pill. Rates use actual player XP and Bladeburner rank changes over a rolling five-minute history, with at least 60 seconds and three observations. Histories reset on augmentation/BitNode resets, stat multiplier changes, decreasing counters or observation gaps over 30 seconds. Missing Bladeburner observations do not poison the entire history. Idle Bladeburner displays BB paused rather than extrapolating passive rank trickles. Long straight-line projections display Slow XP / Slow BB beyond 24 hours, with the raw current-pace figure in the tooltip. Estimates remain conditional on current performance and do not forecast future augmentation gains.
+
+Overview diagnostics are published to tasks/overview-status.json and exposed by the supervisor dashboard. The supervisor now watches stats.js and can safely refresh this read-only display during protected activities without pausing other managers or using desktop input. Syntax checks passed; regression tests were not run for this follow-up.
+
+
+## BitNode completion route planner
+
+Autopilot samples native completion evidence every 15 seconds. `node-route-policy.js` keeps dedicated XP and income-mode XP separate (60 seconds minimum, five-minute observation window, ten-minute rate expiry). Reset, XP regression, multiplier changes and sampling gaps invalidate history.
+
+World Daemon forecasting requires installed Red Pill and a native hacking requirement. Before installation, status includes Daedalus/Red Pill acquisition stages and concurrent cash/reputation waits; a post-install finish time remains unknown until measured. Bladeburner simulates remaining BlackOps in order, credits their rank rewards, includes expected failed-attempt rank losses, and consumes finite supplies of safe current contracts/operations. Bonus time is bounded; recovery, recruitment and chaos use an explicitly approximate 50–100% duty range. Insufficient success chances, action supply or APIs produce unknown estimates. Future upgrades are not extrapolated.
+
+Priority requires both routes to have actionable estimates and a 25% advantage across estimate ranges for two continuous minutes. Unknown evidence clears overrides; stale plans, dead owners and plans from older resets cannot control managers. Until comparison is possible, the existing progression policy remains active. `--disable-node-route-planner` disables overrides.
+
+WD priority requests hacking XP, releases conflicting Bladeburner work (preserving BlackOps), and pauses dedicated BB hash spending. BB priority releases conflicting faction work and favors combat support spending. Installed Blade's Simulacrum permits parallel player/Bladeburner work. Casino/activity locks, grafting, program creation, maintenance and achievement protections keep their existing precedence. Overview displays Node Route with estimate reasons; the dashboard publishes nodeRoute. No native purchases, resets, or action starts are performed by the forecast collector.

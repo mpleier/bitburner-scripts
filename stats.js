@@ -1,5 +1,6 @@
+import {readNodeRoutePlan} from './node-route-policy.js';
 import {homeRamReserve} from './home-ram-policy.js';
-import {runtimeScripts} from './runtime-policy.js';
+import {runtimeScripts,registerAutomation,automationHeartbeat} from './runtime-policy.js';
 import {
     log, disableLogs, instanceCount, getConfiguration, getNsDataThroughFile, getActiveSourceFiles,
     getStocksValue, formatNumberShort, formatMoney, formatRam, formatDuration, getFilePath
@@ -20,7 +21,7 @@ export function autocomplete(data, args) {
 let doc, hook0, hook1;
 let serverCache = null, serverCacheAt = 0;
 let playerInBladeburner = false, nodeMap = {}
-let lastBbRank = 0, lastBbRankAt = 0, bbRankRate = 0;
+let progressCache=null, progressCacheAt=0, etaSamples=[], etaStatusAt=0;
 
 /** @param {NS} ns **/
 export async function main(ns) {
@@ -30,13 +31,14 @@ export async function main(ns) {
     const dictSourceFiles = await getActiveSourceFiles(ns, false); // Find out what source files the user has unlocked
     let resetInfo = await getNsDataThroughFile(ns, 'ns.getResetInfo()');
     const bitNode = resetInfo.currentNode;
-    disableLogs(ns, ['sleep']);
+    disableLogs(ns, ['sleep','getServerMaxRam','getServerUsedRam']);
 
     // Globals need to reset at startup. Otherwise, they can survive e.g. flumes and new BNs and return stale results
     playerInBladeburner = false;
     nodeMap = {};
     serverCache = null;serverCacheAt = 0;
-    lastBbRank = 0; lastBbRankAt = 0; bbRankRate = 0;
+    progressCache=null; progressCacheAt=0; etaSamples=[]; etaStatusAt=0;
+    registerAutomation(ns);
     try { doc = eval('document'); }
     catch { ns.tprint('Overview display needs the in-game interface.');return; }
     // Remove only rows owned by this script; stockmaster has its own overview elements.
@@ -45,6 +47,7 @@ export async function main(ns) {
 
     // Main stats update loop
     while (true) {
+        automationHeartbeat(ns);
         try {
             const nextHook0=doc.getElementById('overview-extra-hook-0'),nextHook1=doc.getElementById('overview-extra-hook-1');
             if(!nextHook0||!nextHook1){await ns.sleep(1000);continue;}
@@ -141,10 +144,12 @@ function updateHudElement(header, visible, value, toolTip) {
  * @typedef {string} toolTip - The tooltip to display if the user hovers over this HUD row with their cursor.
  * @typedef {[header, show, formattedValue, toolTip]} HudRowConfig The configuration for a custom row displayed in the HUD
  * @returns {Promise<HudRowConfig[]>} **/
-async function getHudData(ns, bitNode, dictSourceFiles, options) {
+async function getHudData(ns, bitNode, dictSourceFiles, options, resetInfo) {
     const hudData = (/**@returns {HudRowConfig[]}*/() => [])();
 
-    if(!options['hide-automation'])hudData.push(...getAutomationHudData(ns));
+    const progress=await getOverviewProgress(ns,4 in dictSourceFiles||bitNode===4);
+    let currentBB=null;
+    if(!options['hide-automation'])hudData.push(...getAutomationHudData(ns,progress?.workType));
 
     // Show what bitNode we're currently playing in
     {
@@ -271,7 +276,8 @@ async function getHudData(ns, bitNode, dictSourceFiles, options) {
         // Both SF6 and SF7 grant access. Keep unavailable APIs from blocking other rows.
         let bb=null;
         if (6 in dictSourceFiles||7 in dictSourceFiles||bitNode===6||bitNode===7)
-            bb=await optionalHudRead(ns,'(() => {if(!ns.bladeburner.inBladeburner())return null;const action=ns.bladeburner.getCurrentAction();return {rank:ns.bladeburner.getRank(),points:ns.bladeburner.getSkillPoints(),action,stamina:ns.bladeburner.getStamina(),team:ns.bladeburner.getTeamSize(),assigned:action?ns.bladeburner.getTeamSize(action.type,action.name):0};})()','/Temp/overview-bladeburner.txt',[],null);
+            bb=await optionalHudRead(ns,"(() => {if(!ns.bladeburner.inBladeburner())return null;const action=ns.bladeburner.getCurrentAction();const ops=ns.bladeburner.getBlackOpNames().filter(n=>ns.bladeburner.getActionCountRemaining('Black Operations',n)>0);return {rank:ns.bladeburner.getRank(),points:ns.bladeburner.getSkillPoints(),action,stamina:ns.bladeburner.getStamina(),team:ns.bladeburner.getTeamSize(),assigned:action?ns.bladeburner.getTeamSize(action.type,action.name):0,remainingBlackOps:ops.length,blackOpTimeMs:ops.reduce((t,n)=>t+ns.bladeburner.getActionTime('Black Operations',n),0),rankGoal:ns.bladeburner.getBlackOpRank('Operation Daedalus')};})()",'/Temp/overview-bladeburner.txt',[],null);
+        currentBB=bb;
         playerInBladeburner=!!bb;
         if(bb) {
             val1.push(true,formatSixSigFigs(bb.rank),'Your current Bladeburner rank');
@@ -281,7 +287,7 @@ async function getHudData(ns, bitNode, dictSourceFiles, options) {
         let teamPlan=null;try{const saved=JSON.parse(ns.read('tasks/bladeburner-team.json'));if(saved?.at<=Date.now()+5000&&Date.now()-saved.at<120000&&ns.ps('home').some(p=>p.pid===saved.pid&&p.filename.replace(/^\//,'')==='bladeburner.js'))teamPlan=saved;}catch{}
         const teamDetails=teamPlan?'\n'+(teamPlan.reason||teamPlan.state)+(teamPlan.required!==undefined?'\nTarget team: '+teamPlan.required:'')+'\nRecruitment budget: '+Math.max(0,teamPlan.budgetMinutes-teamPlan.spentMs/60000).toFixed(1)+' min left this hour':'';
         hudData.push(['BB Team',!!bb,bb?formatSixSigFigs(bb.team):'',bb?'Total team members: '+bb.team+'\nAssigned to '+(bb.action?.name||'current action')+': '+bb.assigned+teamDetails:'']);
-        hudData.push(val1, val2)
+        hudData.push(val1, val2);
     }
 
     // Show various server / RAM utilization stats
@@ -342,6 +348,23 @@ async function getHudData(ns, bitNode, dictSourceFiles, options) {
         hudData.push(val)
     }
 
+    const rates=sampleNodeEtaRates(etaSamples,progress?{at:progress.at,augReset:progress.lastAugReset,nodeReset:progress.lastNodeReset,exp:progress.hackingExp,rank:currentBB?.rank??null,hackMult:progress.hackMult}:null);
+    etaSamples=rates.samples;
+    let eta=estimateNodeCompletion({hasRedPill:progress?.hasRedPill,wdHack:progress?.wdHack,currentHack:progress?.hacking||0,currentExp:progress?.hackingExp||0,expRate:rates.xp,hackMult:progress?.hackMult||1,
+      inBladeburner:!!currentBB,bladeburnerActive:!!currentBB?.action,remainingBlackOps:currentBB?.remainingBlackOps??null,bladeburnerRank:currentBB?.rank||0,rankRate:rates.rank,
+      blackOpTimeMs:currentBB?.blackOpTimeMs,rankGoal:currentBB?.rankGoal,installedAugsCount:progress?.installedAugs||0});
+    if(rates.sampling&&eta.etaMs===null&&!['Need Red Pill','BB paused'].includes(eta.text))eta.text='Sampling';
+    const routePlan=readNodeRoutePlan(ns);
+    if(routePlan) {
+        const label=route=>route==='hacking'?'WD':'BB';
+        const describe=(name,r)=>!r?name+': unavailable':name+': '+(Number.isFinite(r.etaMs)?formatDuration(r.etaMs):'Unknown')+' — '+r.reason;
+        const details=[routePlan.reason,describe('WD',routePlan.routes?.hacking),describe('BB',routePlan.routes?.bladeburner),...(routePlan.assumptions||[])].join('\n');
+        hudData.push(['Node Route',true,routePlan.selected?label(routePlan.selected):routePlan.candidate?'Comparing '+label(routePlan.candidate):'Parallel',details]);
+        const selected=routePlan.routes?.[routePlan.selected];
+        if(selected&&Number.isFinite(selected.etaMs))eta={text:label(routePlan.selected)+' ~'+formatDuration(selected.etaMs),etaMs:selected.etaMs,tooltip:details};
+    }
+    hudData.push(['Node ETA',true,eta.text,eta.tooltip+'\nUses observed progress over a rolling 5-minute window (minimum 60 seconds), not instantaneous script XP.']);
+    if(Date.now()-etaStatusAt>=5000){etaStatusAt=Date.now();await ns.write('tasks/overview-status.json',JSON.stringify({at:etaStatusAt,pid:ns.pid,nodeEta:eta,routePlan,rates:{xp:rates.xp,rank:rates.rank,windowMs:rates.windowMs,sampling:rates.sampling},hasRedPill:progress?.hasRedPill,wdHack:progress?.wdHack}),'w');}
     return hudData
 }
 
@@ -411,124 +434,47 @@ export function formatEta(ms) {
 /** Estimates the remaining time to complete the current BitNode across completion phases.
  * @param {object} options
  * @returns {{text: string, etaMs: number|null, tooltip: string}} */
-export function estimateNodeCompletion({
-    bitNode = 1,
-    elapsedMs = 0,
-    hasRedPill = false,
-    wdHack = null,
-    currentHack = 0,
-    currentExp = 0,
-    expRate = 0,
-    hackMult = 1,
-    daemonRooted = false,
-    completedHook = false,
-    departureActive = false,
-    inBladeburner = false,
-    remainingBlackOps = null,
-    bladeburnerRank = 0,
-    rankRate = 0,
-    installedAugsCount = 0,
-    readyAugsCount = 0,
-    targetAugsCount = 31,
-} = {}) {
-    const fmtDuration = typeof formatDuration === 'function' ? formatDuration : (ms => Math.round(ms / 1000) + 's');
-    const fmtShort = typeof formatNumberShort === 'function' ? formatNumberShort : ((n, min, max) => Number(n).toLocaleString('en', { maximumFractionDigits: max || 1 }));
+export function estimateNodeCompletion({hasRedPill=false,wdHack=null,currentHack=0,currentExp=0,expRate=0,hackMult=1,
+ completedHook=false,departureActive=false,inBladeburner=false,bladeburnerActive=true,remainingBlackOps=null,bladeburnerRank=0,rankRate=0,
+ blackOpTimeMs=null,rankGoal=400000,installedAugsCount=0}={}) {
+ if(completedHook||departureActive||inBladeburner&&remainingBlackOps===0)return {text:'Ready',etaMs:0,tooltip:'A verified BitNode completion route is ready.'};
+ const routes=[];
+ if(hasRedPill&&Number.isFinite(wdHack)&&wdHack>0){
+  if(currentHack>=wdHack)return {text:'Backdoor WD',etaMs:0,tooltip:'Native daemon hacking requirement reached; backdoor it to complete the BitNode.'};
+  const required=Math.exp((wdHack/Math.max(.0001,hackMult)+200)/32)-534.6;
+  const etaMs=Math.max(0,required-currentExp)/expRate*1000;
+  if(expRate>0&&Number.isFinite(etaMs))routes.push({text:etaMs>86400000?'Slow XP':'XP ~'+formatEta(etaMs),etaMs,route:'hacking',tooltip:'Straight-line hacking estimate: '+formatEta(etaMs)+'. Hacking route estimate at the current script XP rate. Excludes interruptions, future upgrades and backdoor time.'});
+ }
+ if(inBladeburner&&bladeburnerActive&&remainingBlackOps>0&&Number.isFinite(blackOpTimeMs)&&blackOpTimeMs>=0&&Number.isFinite(rankGoal)&&rankGoal>0){
+  if(bladeburnerRank>=rankGoal||rankRate>0){
+   const etaMs=Math.max(0,rankGoal-bladeburnerRank)/(rankRate||1)*1000+blackOpTimeMs;
+   if(Number.isFinite(etaMs))routes.push({text:etaMs>86400000?'Slow BB':'BB ~'+formatEta(etaMs),etaMs,route:'bladeburner',tooltip:'Straight-line Bladeburner estimate: '+formatEta(etaMs)+'. Bladeburner route estimate from observed rank gain plus native remaining Black Op durations. Success chances, stamina and interruptions can extend it.'});
+  }
+ }
+ if(routes.length)return routes.sort((a,b)=>a.etaMs-b.etaMs)[0];
+ return {text:inBladeburner&&!bladeburnerActive?'BB paused':inBladeburner&&remainingBlackOps>0?'Need rank pace':hasRedPill?'Need XP pace':'Need Red Pill',etaMs:null,tooltip:(inBladeburner&&!bladeburnerActive?'Bladeburner is idle or paused; no completion time is projected from passive rank gains. ':'No reliable completion time yet. ')+installedAugsCount+' installed augmentations. Waiting for a native daemon target with XP income, or measured Bladeburner rank progress.'};
+}
 
-    // Phase 1: Victory / Ready to Depart
-    if (completedHook || departureActive || (daemonRooted && Number.isFinite(wdHack) && wdHack > 0 && currentHack >= wdHack) || (inBladeburner && remainingBlackOps === 0)) {
-        return {
-            text: 'Ready',
-            etaMs: 0,
-            tooltip: 'BitNode victory achieved! Ready to destroy BitNode or depart.'
-        };
-    }
+/** Observed XP/rank gains, reset on progression resets, stat multiplier changes or long observation gaps. */
+export function sampleNodeEtaRates(history,sample){
+ let samples=Array.isArray(history)?history:[];
+ const empty={samples,xp:0,rank:0,windowMs:0,sampling:true};
+ if(!sample||!Number.isFinite(sample.at)||!Number.isFinite(sample.exp)||sample.exp<0)return {...empty,samples:[]};
+ const previous=samples.at(-1);
+ if(previous&&(sample.augReset!==previous.augReset||sample.nodeReset!==previous.nodeReset||sample.hackMult!==previous.hackMult||sample.exp<previous.exp||sample.at-previous.at>30000||sample.at<previous.at||Number.isFinite(sample.rank)&&Number.isFinite(previous.rank)&&sample.rank<previous.rank))samples=[];
+ if(samples.at(-1)?.at!==sample.at)samples=[...samples,sample];
+ samples=samples.filter(p=>p.at>=sample.at-300000);
+ const first=samples[0],windowMs=sample.at-first.at;
+ if(windowMs<60000||samples.length<3)return {...empty,samples,windowMs};
+ const seconds=windowMs/1000,rankFirst=samples.find(p=>Number.isFinite(p.rank)),rankSeconds=rankFirst?(sample.at-rankFirst.at)/1000:0;
+ const rank=rankSeconds>=60&&Number.isFinite(sample.rank)?Math.max(0,(sample.rank-rankFirst.rank)/rankSeconds):0;
+ return {samples,xp:Math.max(0,(sample.exp-first.exp)/seconds),rank,windowMs,sampling:false};
+}
 
-    // Phase 2: w0r1d_d43m0n Backdoor Ready
-    const targetHack = Number.isFinite(wdHack) && wdHack > 0 ? wdHack : 3000;
-    if ((hasRedPill || (Number.isFinite(wdHack) && wdHack > 0)) && currentHack >= targetHack) {
-        return {
-            text: 'Backdoor WD',
-            etaMs: 0,
-            tooltip: `Target hacking level reached (${currentHack}/${targetHack}). Backdoor w0r1d_d43m0n to finish the BitNode.`
-        };
-    }
-
-    // Phase 3: Hacking w0r1d_d43m0n
-    let hackingEstimate = null;
-    if (hasRedPill || (Number.isFinite(wdHack) && wdHack > 0)) {
-        const safeMult = Math.max(0.0001, hackMult || 1);
-        // Formula: skill = Math.floor(mult * (32 * Math.log(exp + 534.6) - 200))
-        // Inverted: exp = Math.exp((skill / mult + 200) / 32) - 534.6
-        const expRequired = Math.exp((targetHack / safeMult + 200) / 32) - 534.6;
-        const expNeeded = Math.max(0, expRequired - (currentExp || 0));
-        if (expRate > 0) {
-            const etaMs = Math.round((expNeeded / expRate) * 1000);
-            hackingEstimate = {
-                text: formatEta(etaMs),
-                etaMs,
-                tooltip: `Hacking w0r1d_d43m0n: ${currentHack}/${targetHack} hack (${fmtShort(expNeeded, 3, 2)} exp needed at ${fmtShort(expRate, 3, 2)} exp/s)`
-            };
-        } else {
-            hackingEstimate = {
-                text: 'Need Exp',
-                etaMs: null,
-                tooltip: `Hacking w0r1d_d43m0n: ${currentHack}/${targetHack} hack (${fmtShort(expNeeded, 3, 2)} exp needed, no active script exp)`
-            };
-        }
-    }
-
-    // Phase 4: Bladeburner Route
-    let bladeburnerEstimate = null;
-    if (inBladeburner && remainingBlackOps !== null && remainingBlackOps > 0) {
-        let rankEtaMs = 0;
-        if (bladeburnerRank < 400000 && rankRate > 0) {
-            rankEtaMs = Math.max(0, Math.round(((400000 - bladeburnerRank) / rankRate) * 1000));
-        }
-        const opsEtaMs = remainingBlackOps * 600000;
-        const etaMs = Math.max(rankEtaMs, opsEtaMs);
-        bladeburnerEstimate = {
-            text: formatEta(etaMs),
-            etaMs,
-            tooltip: `Bladeburner: ${remainingBlackOps} Black Ops remaining (~${formatEta(etaMs)}). Rank: ${fmtShort(bladeburnerRank, 3, 1)}/400k${rankRate > 0 ? ` (+${fmtShort(rankRate, 3, 1)}/s)` : ''}`
-        };
-    }
-
-    if (hackingEstimate && bladeburnerEstimate) {
-        if (Number.isFinite(hackingEstimate.etaMs) && Number.isFinite(bladeburnerEstimate.etaMs)) {
-            return hackingEstimate.etaMs <= bladeburnerEstimate.etaMs ? hackingEstimate : bladeburnerEstimate;
-        }
-        return Number.isFinite(hackingEstimate.etaMs) ? hackingEstimate : bladeburnerEstimate;
-    }
-    if (hackingEstimate) return hackingEstimate;
-    if (bladeburnerEstimate && ([6, 7].includes(bitNode) || remainingBlackOps <= 3)) {
-        return bladeburnerEstimate;
-    }
-
-    // Phase 5: Augmentation Accumulation Phase (working toward Daedalus & TRP)
-    const targetAugs = targetAugsCount || 31;
-    const effectiveAugs = (installedAugsCount || 0) + (readyAugsCount || 0);
-    if (effectiveAugs >= targetAugs) {
-        return {
-            text: '~1h',
-            etaMs: 3600000,
-            tooltip: `Target augmentations reached (${effectiveAugs}/${targetAugs}). Working to join Daedalus and obtain The Red Pill.`
-        };
-    }
-    if (elapsedMs >= 120000 && effectiveAugs > 0) {
-        const msPerAug = elapsedMs / effectiveAugs;
-        const remainingAugs = targetAugs - effectiveAugs;
-        const totalEstimatedMs = Math.round(remainingAugs * msPerAug + 3600000);
-        return {
-            text: formatEta(totalEstimatedMs),
-            etaMs: totalEstimatedMs,
-            tooltip: `Pacing: ${effectiveAugs}/${targetAugs} augs in ${fmtDuration(elapsedMs)} (~${fmtDuration(Math.round(msPerAug))}/aug). Est. remaining: ${formatEta(totalEstimatedMs)} (includes ~1h Daedalus/WD buffer).`
-        };
-    }
-    return {
-        text: 'Pacing...',
-        etaMs: null,
-        tooltip: `Gathering progression pace (${effectiveAugs}/${targetAugs} augs, ${fmtDuration(elapsedMs)} elapsed).`
-    };
+async function getOverviewProgress(ns,canReadWork){
+ const now=Date.now();if(progressCacheAt&&now-progressCacheAt<5000)return progressCache;
+ const expression=`(() => {const p=ns.getPlayer(),r=ns.getResetInfo();const owned=r.ownedAugs;const names=typeof owned?.keys==='function'?[...owned.keys()]:Object.keys(owned||{});let wdHack=null;try{if(ns.serverExists('w0r1d_d43m0n'))wdHack=ns.getServerRequiredHackingLevel('w0r1d_d43m0n');}catch{}let hackMult=p.mults.hacking;try{hackMult*=ns.getBitNodeMultipliers().HackingLevelMultiplier;}catch{const base=32*Math.log(p.exp.hacking+534.6)-200;if(base>0)hackMult=(p.skills.hacking+.5)/base;}let workType=null;if(ns.args[0])try{workType=ns.singularity.getCurrentWork()?.type||null;}catch{}return {lastAugReset:r.lastAugReset,lastNodeReset:r.lastNodeReset,hasRedPill:names.includes('The Red Pill'),installedAugs:names.length,wdHack,hacking:p.skills.hacking,hackingExp:p.exp.hacking,hackMult,workType};})()`;
+ progressCache=await optionalHudRead(ns,expression,'/Temp/overview-progress.txt',[canReadWork],null);if(progressCache)progressCache.at=now;progressCacheAt=now;return progressCache;
 }
 
 
@@ -537,12 +483,12 @@ async function optionalHudRead(ns,expression,file,args,fallback) {
 }
 
 /** Read local manager records only while their owner is alive and the record is fresh. */
-function getAutomationHudData(ns) {
+function getAutomationHudData(ns,workType=null) {
     const now=Date.now(),processes=ns.ps('home'),active=processes.filter(p=>runtimeScripts.includes(p.filename.replace(/^\//,'')));
     const read=file=>{try{return JSON.parse(ns.read(file));}catch{return null;}};
     const live=(file,script)=>{const record=read(file),owner=record?.pid??record?.ownerPid;return owner&&processes.some(p=>p.pid===owner&&p.filename.replace(/^\//,'')===script)&&Number.isFinite(record.at)&&record.at>0&&record.at<=now+5000&&now-record.at<120000?record:null;};
     const detail=active.map(p=>p.filename.replace(/\.js$/,'')).join('\n')||'No automation managers are running.';
-    const lock=read('tasks/activity-lock.json'),priority=lock?.expiresAt>now&&processes.some(p=>p.pid===lock.ownerPid)?lock.kind:null;
+    const lock=read('tasks/activity-lock.json'),priority=lock?.expiresAt>now&&processes.some(p=>p.pid===lock.ownerPid)?lock.kind:(workType==='GRAFTING'?'Grafting':workType==='CREATE_PROGRAM'?'Creating program':null);
     const maintenance=read('tasks/automation-maintenance.json');
     const maintenanceActive=maintenance?.expiresAt>now&&processes.some(p=>p.pid===maintenance.ownerPid);
     const corp=live('tasks/corporation-status.json','corporation-manager.js'),sleeves=live('tasks/sleeve-status.json','sleeve.js'),go=live('tasks/go-status.json','go.js');
@@ -551,6 +497,7 @@ function getAutomationHudData(ns) {
     const corpRunning=active.some(p=>p.filename.replace(/^\//,'')==='corporation-manager.js');
     const profit=corp&&Number.isFinite(corp.revenue)&&Number.isFinite(corp.expenses)?corp.revenue-corp.expenses:null;
     rows.push(['Corp Profit',corpRunning,profit===null?'Waiting':formatMoney(profit)+'/sec',corp?'Funds '+(Number.isFinite(corp.funds)?formatMoney(corp.funds):'?')+' · Reserve '+(Number.isFinite(corp.reserve)?formatMoney(corp.reserve):'?')+'\n'+corp.mode+' · '+(corp.divisions?.length??0)+' divisions':'Waiting for fresh corporation data.']);
+    rows.push(['Corp Pay',corpRunning,Number.isFinite(corp?.estimatedDividendIncome)?formatMoney(corp.estimatedDividendIncome)+'/sec':'Waiting','Player dividend income after ownership and tribute. Share sales are one-off payments.\n'+(corp?.liquidityDecision?.reason||'Waiting for payout data.')]);
     const sleeveList=Array.isArray(sleeves?.sleeves)?sleeves.sleeves:[];
     rows.push(['Sleeves',active.some(p=>p.filename.replace(/^\//,'')==='sleeve.js'),sleeves?sleeveList.length+' managed':'Waiting',sleeveList.map(s=>'#'+s.index+' '+(s.task||'Idle')+' · Shock '+Number(s.shock).toFixed(1)+' · Sync '+Number(s.sync).toFixed(1)+'%').join('\n')||'Waiting for fresh sleeve data.']);
     rows.push(['IPvGO',active.some(p=>p.filename.replace(/^\//,'')==='go.js'),go?go.state==='recovering'?'Recovering':'Turn '+(go.turn??0):'Waiting',go?(go.opponent||go.selected?.name||'Selecting opponent')+' · '+(go.boardSize||'?')+'×'+(go.boardSize||'?')+(go.error?'\n'+go.error:''):'Waiting for fresh IPvGO data.']);

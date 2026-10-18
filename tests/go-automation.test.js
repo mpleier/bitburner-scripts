@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import vm from 'node:vm';
 import * as policy from '../go-policy.js';
+import * as opponentPolicy from '../go-opponent-policy.js';
 test('Go validates goals, explicit opponents and cheat thresholds',()=>{
  const o={goal:'auto',opponent:'','cheat-chance-threshold':.9};assert.equal(policy.goOptionsError(o),null);
  for(const patch of [{goal:'bad'},{opponent:'bad'},{'cheat-chance-threshold':2},{'cheat-chance-threshold':NaN}])assert.ok(policy.goOptionsError({...o,...patch}));
@@ -35,7 +36,7 @@ test('opponent ranking sanitizes numeric strings and malformed native stats',()=
 });
 async function controller(ns,overrides={}) {
  const source=await readFile(new URL('../go.js',import.meta.url),'utf8');
- const context={registerAutomation(){},automationHeartbeat(){},maintenanceRequested:()=>false,...policy,performance:{now:()=>0},isScriptPaused:()=>false,achievementActionAllowed:()=>true,ns,...overrides};
+ const context={registerAutomation(){},automationHeartbeat(){},maintenanceRequested:()=>false,...policy,...opponentPolicy,performance:{now:()=>0},isScriptPaused:()=>false,achievementActionAllowed:()=>true,ns,...overrides};
  const injection=`globalThis.harness={checkNewGame,getAllValidMoves,go_cheat_playTwoMoves,go_makeMove,go_passTurn,moveSnakeEyes,setRunOnce:value=>{runOnce=value;startedGame=false;},set:(b,v,t,o={goal:'auto',opponent:''})=>{board=b;validMove=v;contested=b.map(r=>'?'.repeat(r.length));turn=t;goOptions=o;runOnce=false;}};`;
  await vm.runInNewContext(source.replace(/^import\s[\s\S]*?from\s+['"][^'"]+['"];?\r?$/gm,'').replace('export async function main','async function main').replace('export function autocomplete','function autocomplete').replace('    await start();',injection)+';main(ns)',context);
  return context.harness;

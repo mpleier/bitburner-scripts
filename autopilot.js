@@ -1,20 +1,21 @@
-import {casinoSeedMoney,earnCasinoSeedSource} from './casino-bootstrap-policy.js';
+import {chooseNodeRoute,nodeRouteAvailability,routeContinuousXp,routeDevelopment} from './node-route-selection-policy.js';
+import {factionWorkerReady} from './early-game-policy.js';
+import {casinoSeedMoney,earnCasinoSeedSource,chooseCasinoSeedCrime,seedSleevesSource,essentialHomeRamSource} from './casino-bootstrap-policy.js';
 import {planRedPill,purchaseRedPillSource} from './red-pill-policy.js';
-import {nodeRouteFile,nodeRouteSnapshotSource,sampleRouteProgress,estimateDaemonRoute,estimateBladeburnerRoute,selectNodeRoute} from './node-route-policy.js';
+import {nodeRouteFile,nodeRouteSnapshotSource,sampleRouteProgress,estimateDaemonRoute,estimateBladeburnerRoute} from './node-route-policy.js';
 import {homeRamReserve,reclaimHomeRam} from './home-ram-policy.js';
-import {progressionSpeed} from './progression-speed-policy.js';
+import {observeCombatRecovery,augmentationResetDecision,progressionSpeed} from './progression-speed-policy.js';
 import {registerAutomation,automationHeartbeat,maintenanceRequested} from './runtime-policy.js';
 import {campaignReady,challengeProfile,achievementNode,achievementActionAllowed} from './achievement-policy.js';
 import {achievementWorkerSources} from './achievement-worker-sources.js';
-import { autopilotSourceFiles, installedAugmentationsFromReset, daemonArgumentsChanged, autopilotOptionsError, autopilotStockReserve, priorityAugmentationReady } from './autopilot-policy.js';
-import { spendingPlan,adaptiveBudgetSignals } from './spending-policy.js';
+import { autopilotSourceFiles, installedAugmentationsFromReset, daemonArgumentsChanged, autopilotOptionsError, autopilotStockReserve, priorityAugmentationReady, freshFactionManagerOutput } from './autopilot-policy.js';
+import { spendingPlan,adaptiveBudgetSignals,claimSpending } from './spending-policy.js';
 import { prepareResetBackup } from './reset-backup.js';
-import { maximumSleeves } from './sleeve-policy.js';
+import { maximumSleeves,sleeveCrimeChance } from './sleeve-policy.js';
 import { casinoRetryPending, casinoHookArgs } from './casino-policy.js';
 import { isScriptPaused } from './automation-control.js';
 import { planBitNodePriority } from './bitnode-priority.js';
 import { activityBusy, ramReserveFile, activityGuard } from './activity-coordination.js';
-import { commandPolicyVersion, heartbeatFile } from './remote-api-command.js';
 import { beginTransition, endTransition, bitNodeVictory, bitNodeDeparture, runCompletionHook } from './progression-coordination.js';
 import {
     log, getFilePath, getConfiguration, instanceCount, getNsDataThroughFile, runCommand, waitForProcessToComplete,
@@ -35,7 +36,9 @@ const argsSchema = [ // The set of all command line arguments
     ['install-at-aug-plus-nf-count', 12], // or... automatically install when we can afford this many augmentations including additional levels of Neuroflux.  Note: This number will automatically be increased by 1 for every level of SF11 you have (up to 3)
     ['install-for-augs', ["The Red Pill", "The Blade's Simulacrum"]], // or... install when one of these is affordable or purchased and awaiting installation
     ['disable-adaptive-resets', false], // Use only the existing augmentation count and countdown rules.
-    ['adaptive-node-route', false], // Default to World Daemon; opt in to switching routes from ETA comparisons.
+    ['adaptive-node-route', true], // Use BN preferences and stable ETA comparisons. False retains the legacy WD preference.
+    ['node-route','auto'], // auto, wd, bb; explicit routes override automatic comparison when available.
+    ['force-xp',false], // Explicitly keep hacking XP priority even while pursuing Bladeburner.
     ['disable-node-route-planner', false], // Keep legacy progression priorities; ignore route comparisons.
     ['disable-adaptive-spending', false], // Keep the base cash allowances.
     ['install-countdown', 5 * 60 * 1000], // If we're ready to install, wait this long first to see if more augs come online (we might just be gaining momentum)
@@ -87,6 +90,7 @@ export async function main(ns) {
     let playerInGang = false, rushGang = false; // Tells us whether we're should be trying to work towards getting into a gang
     let playerInBladeburner = false; // Whether we've joined bladeburner
     let wdHack = (/**@returns{null|number}*/() => null)(); // If the WD server is available (i.e. TRP is installed), caches the required hack level
+    let casinoSeedWorkerPid=0,casinoSeedPending=false,lastSeedSleeves=0;
     let ranCasino = false; // Flag to indicate whether we've stolen 10b from the casino yet
     let reservedPurchase = 0; // The amount of player money that has been reserved to purchase augmentations
     let alreadyJoinedDaedalus = false, autoJoinDaedalusUnavailable = false, reservingMoneyForDaedalus = false, disableStockmasterForDaedalus = false; // Flags to indicate that we should be keeping 100b cash on hand to earn an invite to Daedalus
@@ -105,7 +109,8 @@ export async function main(ns) {
     let installedAugmentations = [];
     let acceptedStanek = false, stanekLaunched = false;
     let daemonStartTime = 0; // The time we personally launched daemon.
-    let speedObservation, installWindowStarted=0;
+    let speedObservation, combatRecovery, augmentationWaitWindow, installWindowStarted=0;
+    let nextFactionSummaryRefresh=0;
     let installCountdown = 0; // Start of a countdown before we install augmentations.
     let installCountdownResets = 0; // Number of times we've reset the countdown because our affordable augs has increased
     let bnCompletionSuppressed = false; // Flag if we've detected that we've won the BN, but are suppressing a restart
@@ -258,8 +263,13 @@ export async function main(ns) {
         // A casino started outside autopilot still has first priority.
         if (ns.ps('home').some(process => /(^|\/)casino\.js$/.test(process.filename))) return true;
         const player = await getPlayerInfo(ns);
-        // On a fresh 32 GB home, devote cash and RAM to the casino seed before starting managers.
+        // Cash-poor starts prioritize the casino at every home size; unavailable workers yield to hacking.
         if (await bootstrapCasino(ns, player)) return true;
+        if(casinoSeedPending){
+            await checkOnRunningScripts(ns,player,true);
+            return shouldWeKeepRunning(ns);
+        }
+        await ensureEssentialHomeRam(ns,player);
         await updateCachedData(ns);
         let stocksValue = 0;
         try { stocksValue = await getStocksValue(ns); } catch { /* Assume if this fails (insufficient ram) we also have no stocks */ }
@@ -350,7 +360,9 @@ export async function main(ns) {
         // Remaining logic below is for rushing a Daedalus invite in the current reset
         const totalWorth = player.money + stocksValue;
         // Check for sufficient hacking level before attempting to reserve money
-        if (player.skills.hacking < 2500) {
+        const combatEntryReady=['strength','defense','dexterity','agility'].every(stat=>player.skills[stat]>=1500);
+        if (combatEntryReady) prioritizeHackForDaedalus=false;
+        if (player.skills.hacking < 2500 && !combatEntryReady) {
             // If we happen to already have enough money for daedalus and are only waiting on hack-level,
             // set a flag to switch daemon.js into --xp-only mode, to prioritize earning hack exp over money
             // HEURISTIC (i.e. Hack): Only do this if we naturally get within 75% of the hack stat requirement,
@@ -367,7 +379,7 @@ export async function main(ns) {
             //       never reserve money in case this requirement is not met, or we're potentially just wasting money
             if (!(4 in unlockedSFs)) {
                 log(ns, `SUCCESS: ${player.money < moneyReq ? "If you sell your stocks, y" : "Y"}ou should have enough money ` +
-                    `(>=${formatMoney(moneyReq)}) and a sufficiently high hack level (>=${2500}) to get an invite from the faction Daedalus. ` +
+                    `(>=${formatMoney(moneyReq)}) and sufficient hacking or combat stats to get an invite from the faction Daedalus. ` +
                     `Before you attempt this though, ensure you have ${bitNodeMults.DaedalusAugsRequirement} ` +
                     `augmentations installed (scripts cannot check this without SF4).`, true, 'success');
                 return autoJoinDaedalusUnavailable = true; // We won't show this again.
@@ -443,12 +455,14 @@ export async function main(ns) {
             routeObservation=sampleRouteProgress(routeObservation,s);
             const routes={hacking:estimateDaemonRoute(s,routeObservation),bladeburner:estimateBladeburnerRoute(s.bb)};
             const old=routePlan?.selected;
-            const preference=options['adaptive-node-route']?{}:{selected:'hacking',candidate:null,candidateSince:null,
-                policy:'preferred',reason:'World Daemon is the configured default; completion estimates remain informational.'};
-            routePlan={...selectNodeRoute(routes,routePlan,{now,augReset:s.augReset,nodeReset:s.nodeReset}),...preference,
-                ownerPid:ns.pid,simulacrum:s.simulacrum,sampling:routeObservation.sampling,
-                assumptions:['Current capabilities only; future upgrades are not forecast','Unknown prerequisites never count as zero time',
-                    'Bladeburner recovery, chaos and recruitment use a 50ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œ100% duty range',options['adaptive-node-route']?'Adaptive switching requires a 25% advantage for two minutes':'World Daemon preference applies even while its ETA is unknown']};
+            const availability=nodeRouteAvailability(resetInfo,unlockedSFs,options,{paused:isScriptPaused(ns,'bladeburner.js'),allowed:achievementActionAllowed(ns,'bladeburner')});
+            routePlan={...chooseNodeRoute(routes,routePlan,{now,augReset:s.augReset,nodeReset:s.nodeReset,node:s.node,override:options['node-route'],adaptive:options['adaptive-node-route'],availability}),
+                ownerPid:ns.pid,simulacrum:s.simulacrum,sampling:routeObservation.sampling,development:routeDevelopment(s,routeObservation),
+                assumptions:['BitNode preferences are priors, not completion forecasts','Unknown prerequisites never count as zero time',
+                    'Bladeburner recovery, chaos and recruitment use a 50 to 100 percent duty range','Automatic switches require a 25 percent advantage for two minutes']};
+            if(!combatRecovery)try{combatRecovery=JSON.parse(ns.read('tasks/combat-recovery.json'));}catch{}
+            combatRecovery=observeCombatRecovery(combatRecovery,{reset:resetInfo,route:routePlan,now});
+            if(combatRecovery)await ns.write('tasks/combat-recovery.json',JSON.stringify(combatRecovery),'w');
             routePlan.redPill=planRedPill(s,routeObservation,{route:routePlan.selected});
             if(routePlan.redPill.stage==='installed') {
                 const rate=routeObservation.xpModes?.xp?.rate;
@@ -461,9 +475,9 @@ export async function main(ns) {
         }catch(error) {
             // Explicit route preference survives missing forecast APIs; inferred priorities do not.
             routeObservation=null;
-            routePlan={at:now,ownerPid:ns.pid,augReset:resetInfo.lastAugReset,nodeReset:resetInfo.lastNodeReset,
-                selected:options['adaptive-node-route']?null:'hacking',policy:options['adaptive-node-route']?'adaptive':'preferred',
-                reason:(options['adaptive-node-route']?'':'World Daemon default. ')+'Native route evidence unavailable: '+String(error)};
+            routePlan={...chooseNodeRoute({},null,{now,augReset:resetInfo.lastAugReset,nodeReset:resetInfo.lastNodeReset,node:resetInfo.currentNode,
+                override:options['node-route'],adaptive:options['adaptive-node-route'],availability:nodeRouteAvailability(resetInfo,unlockedSFs,options,{paused:isScriptPaused(ns,'bladeburner.js'),allowed:achievementActionAllowed(ns,'bladeburner')})}),
+                ownerPid:ns.pid,error:'Native route evidence unavailable: '+String(error)};
             await ns.write(nodeRouteFile,JSON.stringify(routePlan),'w');
         }
     }
@@ -664,7 +678,7 @@ export async function main(ns) {
     /** Logic to ensure scripts are running to progress the BN
      * @param {NS} ns
      * @param {Player} player */
-    async function checkOnRunningScripts(ns, player) {
+    async function checkOnRunningScripts(ns, player, bootstrapOnly=false) {
         if (lastScriptsCheck > Date.now() - options['interval-check-scripts']) return;
         lastScriptsCheck = Date.now();
         let spending;try{spending=JSON.parse(ns.read('tasks/spending-plan.json'));}catch{}
@@ -672,7 +686,7 @@ export async function main(ns) {
             let corporationStartup=false;if(!options['disable-corporation']&&unlockedSFs[3]&&achievementActionAllowed(ns,'corporation'))try{corporationStartup=!await getNsDataThroughFile(ns,'ns.corporation.hasCorporation()','/Temp/budget-corporation.txt');}catch{}
             const signals=adaptiveBudgetSignals(ns,corporationStartup);
             let speed;try{speed=JSON.parse(ns.read('tasks/progression-speed.json'));}catch{}
-            if(!options['disable-adaptive-spending'])signals.bottleneck=homeRam<64?'ram':routePlan?.redPill?.active?(routePlan.redPill.canDonate?'cash':'reputation'):!options['disable-continuous-xp']?'hacking':routePlan?.selected==='bladeburner'?'combat':prioritizeHackForDaedalus||prioritizeHackForWd?'hacking':speed?.augReset===resetInfo.lastAugReset&&speed.at>Date.now()-120000?speed.bottleneck:'balanced';
+            if(!options['disable-adaptive-spending'])signals.bottleneck=homeRam<64?'ram':routePlan?.redPill?.active?(routePlan.redPill.canDonate?'cash':'reputation'):routePlan?.selected==='bladeburner'&&!options['force-xp']?'combat':routeContinuousXp(options,routePlan)?'hacking':prioritizeHackForDaedalus||prioritizeHackForWd?'hacking':speed?.augReset===resetInfo.lastAugReset&&speed.at>Date.now()-120000?speed.bottleneck:'balanced';
             signals.activeCategories={graft:!!unlockedSFs[10]&&!!unlockedSFs[4],soa:!!unlockedSFs[4],sleeves:!!unlockedSFs[10],sleeveExpansion:resetInfo.currentNode===10&&!!unlockedSFs[10],gang:!!unlockedSFs[2],corporation:!options['disable-corporation']&&!!unlockedSFs[3]};
             await ns.write('tasks/spending-plan.json',JSON.stringify(spendingPlan({money:player.money,reserve:Number(ns.read('reserve.txt'))||0,homeRam,node:resetInfo.currentNode,ownerPid:ns.pid,reset:resetInfo.lastAugReset,signals})), 'w');
         }
@@ -730,7 +744,7 @@ export async function main(ns) {
                 daemonArgs.push("--no-share", "--initial-max-targets", 1);
             } else { // XP-ONLY MODE: We can shift daemon.js to this when we want to prioritize earning hack exp rather than money
                 // Only do this if we aren't in --looping mode because TODO: currently it does not kill it's loops on shutdown, so they'd be stuck in hack exp mode
-                let useXpOnlyMode = !options['disable-continuous-xp'] || (prioritizeHackForDaedalus && routePlan?.selected!=='bladeburner') || prioritizeHackForWd ||
+                let useXpOnlyMode = routeContinuousXp(options,routePlan) || (prioritizeHackForDaedalus && routePlan?.selected!=='bladeburner') || prioritizeHackForWd ||
                     // In BNs that give no money for hacking, always start daemon.js in this mode (except BN8, because TODO: --xp-only doesn't handle stock manipulation)
                     (bitNodeMults.ScriptHackMoney * bitNodeMults.ScriptHackMoneyGain == 0 && resetInfo.currentNode != 8);
                 if (!useXpOnlyMode) { // Otherwise, respect the configured interval / duration
@@ -747,7 +761,7 @@ export async function main(ns) {
                     daemonArgs.push("--xp-only", "--silent-misfires", "--no-share");
                     // If daemon.js isn't already running in hack exp mode, prepare a message to communicate the change
                     if (!existingDaemon?.args.includes("--xp-only"))
-                        daemonRelaunchMessage = !options['disable-continuous-xp'] ? 'Continuous hacking XP priority is enabled.' : prioritizeHackForWd ? `Prioritizing the World Daemon hacking requirement (${routePlan?.selected==='hacking'?'measured route comparison':'near-target fallback'}).` :
+                        daemonRelaunchMessage = routeContinuousXp(options,routePlan) ? 'Continuous hacking XP priority is enabled.' : prioritizeHackForWd ? `Prioritizing the World Daemon hacking requirement (${routePlan?.selected==='hacking'?'measured route comparison':'near-target fallback'}).` :
                             prioritizeHackForDaedalus ? `Hack Level is the only missing requirement for Daedalus, so we will run daemon.js in --xp-only mode to try and speed along the invite.` :
                                 (bitNodeMults.ScriptHackMoney * bitNodeMults.ScriptHackMoneyGain == 0) ?
                                     `The current BitNode does not give any money from hacking, so we will run daemon.js in --xp-only mode.` :
@@ -755,7 +769,7 @@ export async function main(ns) {
                 }
             }
             // Explicit XP priority also applies above the high-performance threshold and on small home servers.
-            if((!options['disable-continuous-xp']||prioritizeHackForWd||xpMeasurementActive)&&!daemonArgs.includes('--xp-only'))daemonArgs.push('--xp-only','--silent-misfires','--no-share');
+            if((routeContinuousXp(options,routePlan)||prioritizeHackForWd||xpMeasurementActive)&&!daemonArgs.includes('--xp-only'))daemonArgs.push('--xp-only','--silent-misfires','--no-share');
             // Prevent daemon from starting "work-for-faction.js" since we now manage that script
             daemonArgs.push('--disable-script', getFilePath('work-for-factions.js'));
             // In BN8, always run in a mode that prioritizes stock market manipulation
@@ -766,7 +780,7 @@ export async function main(ns) {
             if (options['no-tail-windows']) daemonArgs.push('--no-tail-windows');
             // If we have SF4, but not level 3, instruct daemon.js to reserve additional home RAM
             if ((4 in unlockedSFs) && unlockedSFs[4] < 3)
-                daemonArgs.push('--reserved-ram', 32 * ((unlockedSFs[4] ?? 0) == 2 ? 4 : 16));
+                daemonArgs.push('--reserved-ram', Math.min(homeRam*.25,32 * ((unlockedSFs[4] ?? 0) == 2 ? 4 : 16)));
         }
 
         // Autopilot launches the corporation manager. Suppress daemon's competing
@@ -780,7 +794,7 @@ export async function main(ns) {
 
         // Once stanek's gift is accepted, launch it once per reset before we launch daemon (Note: stanek's gift is auto-purchased by faction-manager.js on your first install)
         let stanekRunning = findScript('stanek.js') !== undefined;
-        if (homeRam >= 128 && !stanekLaunched && !stanekRunning && installedAugmentations.includes(augStanek)) {
+        if (!bootstrapOnly && homeRam >= 128 && !stanekLaunched && !stanekRunning && installedAugmentations.includes(augStanek)) {
             const stanekArgs = ["--on-completion-script", getFilePath('daemon.js')]
             if (options['no-tail-windows']) stanekArgs.push('--no-tail'); // Relay the option to suppress tail windows
             if (daemonArgs.length >= 0) stanekArgs.push("--on-completion-script-args", JSON.stringify(daemonArgs)); // Pass in all the args we wanted to run daemon.js with
@@ -796,19 +810,32 @@ export async function main(ns) {
         if(achievementProfile?.active){for(const script of achievementProfile.disabledScripts)if(!daemonArgs.some((a,i)=>a==='--disable-script'&&daemonArgs[i+1]===getFilePath(script)))daemonArgs.push('--disable-script',getFilePath(script));
             if(achievementProfile.deniedActions.includes('hacknetMoney')&&!daemonArgs.includes('--disable-spend-hashes'))daemonArgs.push('--disable-spend-hashes');}
         if(achievementState?.goals?.xp&&!daemonArgs.includes('--xp-only'))daemonArgs.push('--xp-only');
+        if(casinoSeedPending&&bitNodeMults.ScriptHackMoney*bitNodeMults.ScriptHackMoneyGain>0)daemonArgs=daemonArgs.filter(arg=>arg!=='--xp-only'&&arg!=='-x');
+        if(bootstrapOnly){
+            daemonArgs.push('--no-share','--initial-max-targets',1,'--initial-study-time',0,'--initial-hack-xp-time',0);
+            for(const script of ['stockmaster.js','hacknet-upgrade-manager.js','sleeve.js','sleeve-expansion.js','gangs.js','work-for-factions.js','Tasks/backdoor-all-servers.js','Tasks/tor-manager.js','Tasks/program-manager.js','Tasks/ram-manager.js','host-manager.js','faction-manager.js'])
+                if(!daemonArgs.some((a,i)=>a==='--disable-script'&&daemonArgs[i+1]===getFilePath(script)))daemonArgs.push('--disable-script',getFilePath(script));
+        }
         const launchDaemon = !existingDaemon || daemonArgumentsChanged(existingDaemon.args, daemonArgs);
         if (launchDaemon) {
             if (existingDaemon) {
                 daemonRelaunchMessage ??= `Relaunching daemon.js with new arguments since the current instance doesn't include all the args we want.`;
                 log(ns, daemonRelaunchMessage);
             }
-            let daemonPid = launchScriptHelper(ns, 'daemon.js', daemonArgs);
+            const fallback=findScript('bootstrap-hacking.js');
+            const needed=ns.getScriptRam(getFilePath('daemon.js'),'home')+homeRamReserve(ns);
+            const replaceable=!fallback||ns.getServerMaxRam('home')-ns.getServerUsedRam('home')+ns.getScriptRam(fallback.filename,'home')*fallback.threads>=needed;
+            if(fallback&&replaceable)ns.kill(fallback.pid);
+            let daemonPid = replaceable?launchScriptHelper(ns, 'daemon.js', daemonArgs):0;
+            if(!daemonPid&&!existingDaemon&&(!fallback||replaceable)&&!stanekRunning)launchScriptHelper(ns,'bootstrap-hacking.js',[ns.pid]);
             if (daemonPid) daemonStartTime = Date.now();
             // Open the tail window if it's the start of a new BN. Especially useful to new players.
             if (!options['no-tail-windows'] && daemonPid && (getTimeInBitnode() < 1000 * 60 * 5 || homeRam == 8))
                 tail(ns, daemonPid);
         }
 
+
+        if(bootstrapOnly)return;
 
         // Leave RAM for absent priority managers while existing batches drain naturally.
         const priorityManagers = [
@@ -845,12 +872,8 @@ export async function main(ns) {
 
         // Maintain the Remote API mailbox after normal automation restarts.
         const remoteWorker = findScript('remote-api-agent.js');
-        let workerHeartbeat;
-        try { workerHeartbeat = JSON.parse(ns.read(heartbeatFile)); } catch { }
-        const oldWorker = remoteWorker && (!remoteWorker.args.some((arg, index) => arg === '--protocol-version' && remoteWorker.args[index + 1] === 2) ||
-            (workerHeartbeat?.pid === remoteWorker.pid && workerHeartbeat.policy !== commandPolicyVersion));
-        if (oldWorker) await killScript(ns, 'remote-api-agent.js', runningScripts, remoteWorker);
-        if (!remoteWorker || oldWorker) {
+        // The supervisor upgrades idle workers independently; do not replace newer compatible workers.
+        if (!remoteWorker) {
             const worker = getFilePath('remote-api-agent.js');
             if (ns.fileExists(worker, 'home')) {
                 const required = ns.getScriptRam(worker, 'home');
@@ -928,7 +951,7 @@ export async function main(ns) {
                     }
                     if (!existingSpendHashesProc) { // 
                         log(ns, `Identified that the best hack income server is ${bestServer} worth ${formatMoney(gain)}/sec.`);
-                        const spendHashesArgs = ["--liquidate", "--spend-on-server", bestServer, "--spend-on", "Increase_Maximum_Money"];
+                        const spendHashesArgs = ["--automatic","--liquidate", "--spend-on-server", bestServer, "--spend-on", "Increase_Maximum_Money"];
                         if (shouldReduceMinSecurity) spendHashesArgs.push("--spend-on", "Reduce_Minimum_Security");
                         launchScriptHelper(ns, 'spend-hacknet-hashes.js', spendHashesArgs);
                     }
@@ -972,8 +995,9 @@ export async function main(ns) {
         }
 
         // Launch work-for-factions if it isn't already running (rules for maybe killing unproductive instances are above)
-        // Note: We delay launching our own 'work-for-factions.js' until daemon has warmed up, so we don't steal it's "kickstartHackXp" study focus
-        if ((4 in unlockedSFs) && !findScript('work-for-factions.js') && Date.now() - daemonStartTime > 30000) {
+        // Native startup readiness replaces the fixed 30-second focus delay.
+        let daemonReadiness;try{daemonReadiness=JSON.parse(ns.read('tasks/daemon-readiness.json'));}catch{}
+        if ((4 in unlockedSFs) && !findScript('work-for-factions.js') && factionWorkerReady(daemonReadiness,findScript('daemon.js'),resetInfo)) {
             // If we're trying to rush gangs, run in such a way that we will spend most of our time doing crime, reducing Karma (also okay early income)
             // NOTE: Default work-for-factions behaviour is to spend hashes on coding contracts, which suits us fine
             launchScriptHelper(ns, 'work-for-factions.js', rushGang ? rushGangsArgs : workForFactionsArgs);
@@ -1018,28 +1042,54 @@ export async function main(ns) {
     }
 
     async function bootstrapCasino(ns, player) {
-        homeRam = ns.getServerMaxRam('home');
-        if (homeRam > 32 || ranCasino || options['disable-casino'] || isScriptPaused(ns, 'casino.js')) return false;
-        const sources = await getPlayerMoneySources(ns);
-        if ((sources.sinceInstall.casino || 0) > 1e10) { ranCasino = true; return false; }
-        // Preserve the seed for travel and betting; ordinary spending/managers wait below.
-        await ns.write('reserve.txt', String(casinoSeedMoney), 'w');
-        await ns.write(ramReserveFile, JSON.stringify({ ownerPid: ns.pid, expiresAt: Date.now()+30000, ram: 0 }), 'w');
-        let result;
-        if (player.money >= casinoSeedMoney) {
-            result = { state: 'ready', reason: 'Casino seed funded' };
-        } else if (!(4 in unlockedSFs)) {
-            result = { state: 'waiting', reason: 'Singularity unavailable; earn the casino seed manually' };
-        } else {
-            result = await getNsDataThroughFile(ns, `(${earnCasinoSeedSource})(ns,ns.args[0],ns.args[1])`,
-                '/Temp/casino-bootstrap-earn.txt', [ns.pid, casinoSeedMoney]);
+        homeRam=ns.getServerMaxRam('home');casinoSeedPending=false;
+        if(ranCasino||options['disable-casino']||isScriptPaused(ns,'casino.js'))return false;
+        const sources=await getPlayerMoneySources(ns);
+        if((sources.sinceInstall.casino||0)>1e10){ranCasino=true;return false;}
+        // Larger, established economies keep the existing wealth/income skip logic.
+        if(homeRam>32&&player.money>1e9)return false;
+        casinoSeedPending=player.money<casinoSeedMoney;
+        await ns.write('reserve.txt',String(casinoSeedMoney),'w');
+        await ns.write(ramReserveFile,JSON.stringify({ownerPid:ns.pid,expiresAt:Date.now()+30000,ram:0}),'w');
+        if(casinoSeedPending&&unlockedSFs[10]&&Date.now()-lastSeedSleeves>5000){
+            lastSeedSleeves=Date.now();
+            try{await getNsDataThroughFile(ns,`(${seedSleevesSource})(ns,ns.args[0],ns.args[1],(${sleeveCrimeChance.toString()}),(${achievementActionAllowed.toString()}),ns.args[2])`,
+                '/Temp/casino-seed-sleeves.txt',[ns.pid,casinoSeedMoney,bitNodeMults.CrimeSuccessRate??1],false,1,0,true);}catch{/* Hacking/player crime remain available when this worker cannot fit. */}
         }
-        await ns.write('tasks/casino-bootstrap.json', JSON.stringify({at:Date.now(),ownerPid:ns.pid,
-            augReset:resetInfo.lastAugReset,nodeReset:resetInfo.lastNodeReset,target:casinoSeedMoney,money:player.money,...result}), 'w');
-        setStatus(ns, result.state === 'earning' ? `Casino startup: ${result.crime}; ${formatMoney(player.money)}/${formatMoney(casinoSeedMoney)}` :
-            'Casino startup: '+(result.reason || result.state));
-        if (result.state === 'ready') await maybeDoCasino(ns, player, true);
-        return !ranCasino;
+        let result;
+        if(!casinoSeedPending)result={state:'ready',reason:'Casino seed funded'};
+        else if(!unlockedSFs[4])result={state:'fallback',reason:'Singularity unavailable; hacking earns the casino seed'};
+        else {
+            try{
+                if(!casinoSeedWorkerPid||!ns.isRunning(casinoSeedWorkerPid)){
+                    casinoSeedWorkerPid=await runCommand(ns,`let result;try{result=await (${earnCasinoSeedSource})(ns,ns.args[0],ns.args[1],(${chooseCasinoSeedCrime.toString()}));}catch(error){result={state:'fallback',reason:'Crime API unavailable: '+String(error)};}
+                        await ns.write('tasks/casino-seed-crime.json',JSON.stringify({ownerPid:ns.args[0],augReset:ns.getResetInfo().lastAugReset,at:Date.now(),...result}),'w');`,
+                        '/Temp/casino-seed-crime.js',[ns.pid,casinoSeedMoney],false,1,0,true);
+                }
+                result={state:casinoSeedWorkerPid?'earning':'fallback',reason:casinoSeedWorkerPid?'Crime worker running':'Crime worker cannot fit; hacking earns the seed'};
+                try{const saved=JSON.parse(ns.read('tasks/casino-seed-crime.json'));
+                    if(saved.ownerPid===ns.pid&&saved.augReset===resetInfo.lastAugReset&&saved.at>Date.now()-10000)result=saved;}catch{}
+            }catch{result={state:'fallback',reason:'Crime worker unavailable; hacking earns the seed'};}
+        }
+        await ns.write('tasks/casino-bootstrap.json',JSON.stringify({at:Date.now(),ownerPid:ns.pid,augReset:resetInfo.lastAugReset,
+            nodeReset:resetInfo.lastNodeReset,target:casinoSeedMoney,money:player.money,...result}),'w');
+        setStatus(ns,'Casino startup: '+(result.crime||result.reason||result.state));
+        if(result.state==='ready')await maybeDoCasino(ns,player,true);
+        // Unavailable APIs/RAM and casino retry delays must never freeze ordinary progression.
+        if(result.state==='fallback'||result.state==='ready'||result.state==='waiting')return false;
+        return false; // Funding crimes and a minimal hacking controller can run in parallel.
+    }
+
+    async function ensureEssentialHomeRam(ns,player) {
+        if(!unlockedSFs[4]||options['disable-casino']||!achievementActionAllowed(ns,'homeRam')||
+            ns.getServerMaxRam('home')>=128||isScriptPaused(ns,'Tasks/ram-manager.js'))return;
+        const sources=await getPlayerMoneySources(ns);
+        if((sources.sinceInstall.casino||0)<=1e10)return;
+        if(!options['disable-adaptive-spending'])await ns.write('tasks/spending-plan.json',JSON.stringify(spendingPlan({money:player.money,
+            reserve:Math.max(0,Number(ns.read('reserve.txt'))||0),homeRam:ns.getServerMaxRam('home'),node:resetInfo.currentNode,
+            ownerPid:ns.pid,reset:resetInfo.lastAugReset,signals:{bottleneck:'ram'}})),'w');
+        try{await getNsDataThroughFile(ns,`(${essentialHomeRamSource})(ns,ns.args[0],128,(${claimSpending.toString()}),(${achievementActionAllowed.toString()}))`,
+            '/Temp/essential-home-ram.txt',[ns.pid],false,1,0,true);}catch{/* Normal RAM manager retries when its workers fit. */}
     }
 
     /** Logic to steal 10b from the casino
@@ -1065,7 +1115,7 @@ export async function main(ns) {
 
         // If we're making more than ~5b / minute from the start of the BN, there's no need to run casino.
         // In BN8 this is impossible, so in that case we don't even check and head straight to the casino.
-        if (!bootstrap && resetInfo.currentNode != 8) {
+        if (!bootstrap && playerWealth > 1e9 && resetInfo.currentNode != 8) {
             // If we've been in the BN for less than 1 minute, wait a while to establish player's income rate 
             if (getTimeInAug() < 60000)
                 return log_once(ns, `INFO: Waiting a minute to establish player income before deciding whether casino.js is needed.`);
@@ -1080,7 +1130,7 @@ export async function main(ns) {
         }
 
         // If we aren't in Aevum already, wait until we have the 200K required to travel (plus some extra buffer to actually spend at the casino)
-        if (player.city != "Aevum" && player.money < 300000)
+        if (player.money < casinoSeedMoney)
             return log_once(ns, `INFO: Waiting until we have ${formatMoney(300000)} to travel to Aevum and run casino.js`);
 
         if (!await beginTransition(ns, 'casino automation', false)) return;
@@ -1110,8 +1160,7 @@ export async function main(ns) {
      *             affordable_augs: string[], affordable_count: number, affordable_count_nf: number, affordable_count_ex_nf: number,
      *             total_rep_cost: number, total_aug_cost: number, unowned_count: number }} */
     function getFactionManagerOutput(ns) {
-        const facmanOutput = ns.read(factionManagerOutputFile)
-        return !facmanOutput ? null : JSON.parse(facmanOutput)
+        return freshFactionManagerOutput(ns.read(factionManagerOutputFile),resetInfo);
     }
 
     /** Logic to detect if it's a good time to install augmentations, and if so, do so
@@ -1141,7 +1190,11 @@ export async function main(ns) {
         // Grab the latest output from faction manager to see if it's a good time to reset
         const facman = getFactionManagerOutput(ns);
         if (!facman) {
-            setStatus(ns, `Faction manager output not available. Will try again later.`);
+            if(Date.now()>=nextFactionSummaryRefresh){
+                nextFactionSummaryRefresh=Date.now()+31000;
+                launchScriptHelper(ns,'faction-manager.js');
+            }
+            setStatus(ns,'Waiting for a fresh faction-manager summary for this reset.');
             return reservedPurchase = 0;
         }
         playerInstalledAugCount = facman.installed_count; // Augmentations bought *and installed* by the player (used for Daedalus requirement)
@@ -1182,7 +1235,7 @@ export async function main(ns) {
 
         if(!speedObservation)try{speedObservation=JSON.parse(ns.read('tasks/speed-observation.json'));}catch{}
         const previousSnapshotAt=speedObservation?.at;
-        const speed=progressionSpeed({snapshot:facman.speedSnapshot,previous:speedObservation,augReset:resetInfo.lastAugReset,elapsed:getTimeInAug(),node:resetInfo.currentNode,firstBn9:inFirstBn9Aug,combat:routePlan?.selected?routePlan.selected==='bladeburner':[6,7].includes(resetInfo.currentNode),baseDelay:options['install-countdown'],homeRam,hackingGoal:!options['disable-continuous-xp']||(prioritizeHackForDaedalus&&routePlan?.selected!=='bladeburner')||prioritizeHackForWd});
+        const speed=progressionSpeed({snapshot:facman.speedSnapshot,previous:speedObservation,augReset:resetInfo.lastAugReset,elapsed:getTimeInAug(),node:resetInfo.currentNode,firstBn9:inFirstBn9Aug,combatRecovery,nodeReset:resetInfo.lastNodeReset,combatTarget:routePlan?.development?.nextBlackOp?.name??null,routeRemainingMs:routePlan?.routes?.[routePlan.selected]?.etaMs,combat:routePlan?.selected?routePlan.selected==='bladeburner':[6,7].includes(resetInfo.currentNode),baseDelay:options['install-countdown'],homeRam,hackingGoal:routeContinuousXp(options,routePlan)||(prioritizeHackForDaedalus&&routePlan?.selected!=='bladeburner')||prioritizeHackForWd});
         speedObservation=speed.observation;
         if(speedObservation&&speedObservation.at!==previousSnapshotAt)await ns.write('tasks/speed-observation.json',JSON.stringify(speedObservation),'w');
         await ns.write('tasks/progression-speed.json',JSON.stringify({at:Date.now(),augReset:resetInfo.lastAugReset,...speed,observation:undefined}),'w');
@@ -1228,18 +1281,38 @@ export async function main(ns) {
             return setStatus(ns,'Red Pill milestone: '+pill.reason+'; optional augmentation resets are held.');
         }
 
+        // Apply after every count/quick-install heuristic, retaining verified progression milestones.
+        if(!augmentationWaitWindow)try{augmentationWaitWindow=JSON.parse(ns.read('tasks/augmentation-wait-plan.json'));}catch{}
+        const economicsDecision=augmentationResetDecision({requested:shouldReset,adaptive:adaptiveEnabled,speed,
+            waitWindow:augmentationWaitWindow,now:Date.now(),augReset:resetInfo.lastAugReset,nodeReset:resetInfo.lastNodeReset,
+            priority:priorityAugmentationReady(options['install-for-augs'],facman),
+            favor:pill?.allowFavorReset===true&&pill.worth>=pill.postResetBill+totalCost,
+            countUnlock:speed.countMilestone===true||!inFirstBn9Aug&&speed.countProgress===true,
+            campaign:!options['disable-achievements']&&achievementGoals?.expiresAt>Date.now()&&achievementGoals.minimumQueue>0&&pendingAugInclNfCount>=achievementGoals.minimumQueue,
+            bn8Quick:resetInfo.currentNode===8&&getTimeInBitnode()<10*60*1000,
+            remainingMs:routePlan?.routes?.[routePlan.selected]?.etaMs});
+        if(economicsDecision.waitWindow){
+            augmentationWaitWindow=economicsDecision.waitWindow;
+            await ns.write('tasks/augmentation-wait-plan.json',JSON.stringify({...augmentationWaitWindow,active:true,ownerPid:ns.pid,at:Date.now(),plan:economicsDecision.waitPlan}),'w');
+        }
+        else if(augmentationWaitWindow){
+            await ns.write('tasks/augmentation-wait-plan.json',JSON.stringify({...augmentationWaitWindow,active:false,ownerPid:ns.pid,at:Date.now()}),'w');
+        }
+        if(economicsDecision.waitWindow||augmentationWaitWindow)await refreshAugmentationFundingBudget(ns,player);
+        if(shouldReset&&!economicsDecision.allowed){shouldReset=false;resetStatus=economicsDecision.reason;}
         // If not ready to reset, set a status with our progress and return
         if(!options['disable-achievements']&&achievementGoals?.expiresAt>Date.now()&&achievementGoals.minimumQueue>0&&pendingAugInclNfCount<achievementGoals.minimumQueue)shouldReset=false;
         if (!shouldReset) {
+            await ns.write('tasks/augmentation-reset-plan.json',JSON.stringify({pending:false,augReset:resetInfo.lastAugReset,ownerPid:ns.pid,expiresAt:Date.now()+120000}),'w');
             setStatus(ns, `Currently at ${formatDuration(getTimeInAug())} since last aug. ` +
-                `Waiting for ${augsNeeded} new augs (or ${augsNeededInclNf} including NeuroFlux levels) before installing.` +
+                (economicsDecision.reason==='Augmentation threshold not reached'?`Waiting for ${augsNeeded} new augs (or ${augsNeededInclNf} including NeuroFlux levels) before installing.`:economicsDecision.reason) +
                 `\nCan currently get: ${augSummary}` + (pendingAugCount == 0 ? '' : `\n  Total Cost: ${formatMoney(totalCost)}`) +
                 ` (\`run faction-manager.js\` for details)`, augSummary);
             installWindowStarted=0;installCountdownResets=0;
             return reservedPurchase = 0; // If we were previously reserving money for a purchase, reset that flag now
         }
         if(totalCost===0&&pendingAugInclNfCount>0)totalCost=1; // Give queued-only installations the same bounded countdown.
-        await ns.write('tasks/augmentation-reset-plan.json', JSON.stringify({ pending: true, ownerPid: ns.pid, expiresAt: Date.now() + 120000 }), 'w');
+        await ns.write('tasks/augmentation-reset-plan.json', JSON.stringify({ pending: true, augReset:resetInfo.lastAugReset, ownerPid: ns.pid, expiresAt: Date.now() + 120000 }), 'w');
         // If we want to reset, but there is a reason to delay, don't reset
         if (await shouldDelayInstall(ns, player, facman)) // If we're currently in a state where we should not be resetting, skip reset logic
             return reservedPurchase = 0;
@@ -1314,12 +1387,12 @@ export async function main(ns) {
         // Don't install if we're currently grafting an augmentation
         if (await checkIfGrafting(ns))
             return true;
-        if ((7 in unlockedSFs) && await getNsDataThroughFile(ns,
+        if ((unlockedSFs[6]||unlockedSFs[7]) && await getNsDataThroughFile(ns,
             'ns.bladeburner.inBladeburner() && /black/i.test(ns.bladeburner.getCurrentAction()?.type || "")', '/Temp/autopilot-blackop.txt'))
             return true;
         // Are we close to being able to afford 4S TIX data?
         if (!have4STixApi) have4STixApi = await getNsDataThroughFile(ns, `ns.stock.has4SDataTixApi()`);
-        if (!options['disable-wait-for-4s'] && achievementActionAllowed(ns,'fourSigma') && !have4STixApi) {
+        if (!priorityAugmentationReady(options['install-for-augs'],facmanOutput) && !options['disable-wait-for-4s'] && achievementActionAllowed(ns,'fourSigma') && !have4STixApi) {
             if (!have4SData) have4SData = await getNsDataThroughFile(ns, `ns.stock.has4SData()`);
             const totalWorth = player.money + await getStocksValue(ns);
             const totalCost = 25E9 * bitNodeMults.FourSigmaMarketDataApiCost +
@@ -1393,10 +1466,24 @@ export async function main(ns) {
             return wasGrafting = false
     }
 
+    /** Refresh only the cash goal; keep the current epoch and already-consumed allowances. */
+    async function refreshAugmentationFundingBudget(ns,player) {
+        const signals=adaptiveBudgetSignals(ns);
+        let plan;try{plan=JSON.parse(ns.read('tasks/spending-plan.json'));}catch{}
+        if(plan?.ownerPid===ns.pid&&plan.reset===resetInfo.lastAugReset&&plan.expiresAt>Date.now()){
+            plan.signals={...plan.signals,augmentationCashTarget:signals.augmentationCashTarget};
+        }else{
+            plan=spendingPlan({money:player.money,reserve:Math.max(0,Number(ns.read('reserve.txt'))||0),homeRam,
+                node:resetInfo.currentNode,ownerPid:ns.pid,reset:resetInfo.lastAugReset,signals});
+        }
+        await ns.write('tasks/spending-plan.json',JSON.stringify(plan),'w');
+    }
+
     /** Consolidated logic for all the times we want to reserve money
      * @param {NS} ns
      * @param {Player} player */
     async function manageReservedMoney(ns, player, stocksValue) {
+        if(casinoSeedPending)return ns.write('reserve.txt',String(casinoSeedMoney),'w');
         if(routePlan?.redPill?.active&&Number.isFinite(routePlan.redPill.reserve))return ns.write('reserve.txt',Math.max(0,routePlan.redPill.reserve),'w');
         if (reservedPurchase) return; // Do not mess with money reserved for installing augmentations
         const currentReserve = Number(ns.read("reserve.txt") || 0);
@@ -1404,8 +1491,10 @@ export async function main(ns) {
             return currentReserve == 100E9 ? true : ns.write("reserve.txt", 100E9, "w");
         // Keep essential spending possible before the stock API is unlocked.
         let stockApiAvailable = false;
-        try { stockApiAvailable = await getNsDataThroughFile(ns, 'ns.stock.hasTIXAPIAccess()', '/Temp/autopilot-stock-access.txt'); } catch { }
-        const reserve = autopilotStockReserve(player.money, stocksValue, getTimeInBitnode() / 3.6e6, stockApiAvailable);
+        try { stockApiAvailable = await getNsDataThroughFile(ns, 'ns.stock.hasTixApiAccess()', '/Temp/autopilot-stock-access.txt'); } catch { }
+        let saving=false;try{const p=JSON.parse(ns.read('tasks/spending-plan.json'));saving=p.ownerPid===ns.pid&&p.reset===resetInfo.lastAugReset&&p.expiresAt>Date.now()&&Number.isFinite(p.signals?.augmentationCashTarget?.cost)&&p.signals.augmentationCashTarget.cost>0;}catch{}
+        // The stock-capital target is optional when another route or an augmentation needs funding.
+        const reserve = autopilotStockReserve(player.money, stocksValue, getTimeInBitnode() / 3.6e6, stockApiAvailable,routePlan?.selected==='bladeburner'||saving);
         if (currentReserve !== reserve) await ns.write('reserve.txt', reserve, 'w');
     }
 

@@ -76,7 +76,7 @@ export async function playInfiltration(ns, document, state, faction = null, minD
 export async function main(ns) {
  registerAutomation(ns);
   ns.disableLog('ALL');
-  const options = ns.flags([['manual-only', false], ['interval', 20000], ['max-difficulty', 1.5], ['money-only', false], ['faction', ''], ['min-demand', 2 / 3]]);
+  const options = ns.flags([['manual-only', false], ['ignore-node-route', false], ['interval', 20000], ['max-difficulty', 1.5], ['money-only', false], ['faction', ''], ['min-demand', 2 / 3]]);
   const interval = Number(options.interval), minDemand = Number(options['min-demand']);
   if (!Number.isFinite(interval) || interval < 1000 || !Number.isFinite(minDemand) || minDemand <= 0 || minDemand >= 1 ||
       !Number.isFinite(Number(options['max-difficulty'])) || Number(options['max-difficulty']) < 0) {
@@ -118,6 +118,10 @@ export async function main(ns) {
         continue;
       }
       if(options['manual-only']||!sourceFiles[4]){result.status='waiting-for-manual-infiltration';continue;}
+      const route=readNodeRoutePlan(ns);
+      if(!options['ignore-node-route']&&route?.selected==='bladeburner'&&route.simulacrum!==true){
+        result={status:'prioritizing-bladeburner',reason:'Automatic entry waits while Bladeburner has priority without installed Simulacrum'};continue;
+      }
       if(Date.now()<nextEntryAt){result.status='waiting-for-entry';continue;}
       if(maintenanceRequested(ns)){result.status='maintenance';continue;}
       if (activityBusy(ns)) { result.status = 'activity-busy'; continue; }
@@ -157,20 +161,21 @@ export async function main(ns) {
       previousWorker = ns.ps('home').find(p => /(^|\/)work-for-factions\.js$/.test(p.filename));
       const resumeRam = previousWorker ? ns.getScriptRam(previousWorker.filename, 'home') : 0;
       if (!(await claimActivity(ns, 'infiltration', resumeRam))) { result.status = 'activity-busy'; continue; }
+      if(!infiltrationEntryAllowed(ns,ns.pid,!options['ignore-node-route'])){result.status='priority-changed';continue;}
       if (previousWorker) ns.kill(previousWorker.pid);
       await ns.sleep(500);
       const entered = await getNsDataThroughFile(ns,
-        `(() => { if(!(${infiltrationEntryAllowed.toString()})(ns,ns.args[3]))return false; if(["GRAFTING","CREATE_PROGRAM"].includes(ns.singularity.getCurrentWork()?.type) || (ns.args[2] && ns.bladeburner.inBladeburner() && /black/i.test(ns.bladeburner.getCurrentAction()?.type || ""))) return false; ns.singularity.stopAction(); const p=ns.getPlayer(); if(p.city!==ns.args[0] && (p.money<200000 + Math.max(0,Number(ns.read("reserve.txt"))||0) || !ns.singularity.travelToCity(ns.args[0]))) return false; return ns.singularity.goToLocation(ns.args[1]); })()`,
-        '/Temp/infiltration-enter.txt', [target.location.city, target.location.name, !!(sourceFiles[6] || sourceFiles[7]),ns.pid]);
+        `(() => { if(!(${infiltrationEntryAllowed.toString()})(ns,ns.args[3],!ns.args[4]))return false; if(["GRAFTING","CREATE_PROGRAM"].includes(ns.singularity.getCurrentWork()?.type) || (ns.args[2] && ns.bladeburner.inBladeburner() && /black/i.test(ns.bladeburner.getCurrentAction()?.type || ""))) return false; ns.singularity.stopAction(); const p=ns.getPlayer(); if(p.city!==ns.args[0] && (p.money<200000 + Math.max(0,Number(ns.read("reserve.txt"))||0) || !ns.singularity.travelToCity(ns.args[0]))) return false; return ns.singularity.goToLocation(ns.args[1]); })()`,
+        '/Temp/infiltration-enter.txt', [target.location.city, target.location.name, !!(sourceFiles[6] || sourceFiles[7]),ns.pid,!!options['ignore-node-route']]);
       if (!entered) continue;
       if (sourceFiles[6] || sourceFiles[7]) {
         const combat = await getNsDataThroughFile(ns,
-          `!(${infiltrationEntryAllowed.toString()})(ns,ns.args[0]) ? "interrupted" : ns.bladeburner.inBladeburner() ? (/black/i.test(ns.bladeburner.getCurrentAction()?.type || "") ? "blackop-active" : (ns.bladeburner.stopBladeburnerAction(), "stopped")) : "inactive"`, '/Temp/infiltration-stop-combat.txt',[ns.pid]);
+          `!(${infiltrationEntryAllowed.toString()})(ns,ns.args[0],!ns.args[1]) ? "interrupted" : ns.bladeburner.inBladeburner() ? (/black/i.test(ns.bladeburner.getCurrentAction()?.type || "") ? "blackop-active" : (ns.bladeburner.stopBladeburnerAction(), "stopped")) : "inactive"`, '/Temp/infiltration-stop-combat.txt',[ns.pid,!!options['ignore-node-route']]);
         if (combat === 'interrupted') {result.status='interrupted';continue;}
         if (combat === 'blackop-active') { result.status = 'blackop-active'; continue; }
       }
       await ns.sleep(150);
-      if(!infiltrationEntryAllowed(ns,ns.pid)){result.status='interrupted';continue;}
+      if(!infiltrationEntryAllowed(ns,ns.pid,!options['ignore-node-route'])){result.status='interrupted';continue;}
       const enter = button(document, /infiltrate/i);
       if (!enter) { result = { status: 'entry-ui-unavailable' }; continue; }
       if (!enterInfiltration(enter)) { result = { status: 'unsupported-entry-ui', ui: infiltrationUiDetails(document) }; continue; }

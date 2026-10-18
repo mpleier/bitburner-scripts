@@ -59,7 +59,7 @@ When useful gains are ready and there is no measured near-term improvement, the 
 Cash allocations increase home RAM funding when controller capacity is low, hacking infrastructure when hacking requirements are blocking progression, sleeve/SoA funding when measured reputation waits dominate, and income infrastructure when cash waits dominate. Categories without the required Source File/current BitNode access receive no allocation. Reserves and the separate corporation treasury remain in force. Decisions appear in `tasks/progression-speed.json` and the dashboard.
 
 
-## Corporation optimization review — October 14, 2026
+## Corporation optimization review â€” October 14, 2026
 
 Pre-TA.II product pricing uses completed sales feedback once per market cycle. It doubles a clearing product's price multiplier to discover a sale boundary, then refines a lower/upper bracket geometrically. Backlogs force price reductions; unavailable production/sales evidence holds the previous price. Multipliers remain bounded, and substantial rating changes discard obsolete bracket bounds. Native TA.II remains preferred when unlocked. This is a feedback heuristic, not an exact reimplementation of the game's optimal-price formula.
 
@@ -95,7 +95,7 @@ Formula policies and a Tobacco bootstrap path have local regression coverage. Ga
 Run `infiltration-manager.js --manual-only` for passive assistance without starting new infiltrations. Without Singularity the controller automatically operates in this mode; autopilot and daemon may launch it once home RAM reaches 64 GB. With Singularity, the default retains automatic entry at the configured interval while also assisting manual entries. Idle status writes are throttled, and a market cooldown does not block manual detection.
 
 
-## IPvGO review — October 14, 2026
+## IPvGO review â€” October 14, 2026
 
 `go.js --runOnce` starts a new board if the previous game was already finished, then stops after completing one game. An in-progress game is continued. Reset responses must be valid square native boards before opponent selection is reported as successful. `--board-size` accepts 5, 7, 9, or 13 (default 13). Smaller boards may finish sooner, but this review did not benchmark bonus gain per minute or win rates.
 
@@ -295,7 +295,7 @@ Verification: 431 project tests, 15 API tests, and 145 syntax checks passed. All
 
 Tobacco can now start as soon as Agriculture exists and creation plus a $5b setup allowance and operating reserves are funded. The [official industry recipe](https://github.com/bitburner-official/bitburner-src/blob/dev/src/Corporation/data/IndustryData.ts) requires Plants; Chemical is not a prerequisite. Chemical creation no longer waits for a laboratory or four times its starting cost. Core launches can draw on retained corporation cash instead of only the profit-funded growth ledger.
 
-Development-office upgrades receive higher priority. Speed-focused product staffing is enabled by default through the development-speed option, preserving baseline R&D and recovery floors. Source-formula comparisons estimate roughly 9–12% shorter development across tested office sizes; this can trade product quality and excess research generation for speed. Live completion-time improvement remains unbenchmarked.
+Development-office upgrades receive higher priority. Speed-focused product staffing is enabled by default through the development-speed option, preserving baseline R&D and recovery floors. Source-formula comparisons estimate roughly 9â€“12% shorter development across tested office sizes; this can trade product quality and excess research generation for speed. Live completion-time improvement remains unbenchmarked.
 
 Material quality now uses the public industry scienceFactor property, correctly including accumulated RP. Verification: 436 project tests, 15 API tests, and 145 syntax checks passed. All 112 files synced; native controller RAM is 853 GB.
 
@@ -452,7 +452,7 @@ Overview diagnostics are published to tasks/overview-status.json and exposed by 
 
 Autopilot samples native completion evidence every 15 seconds. `node-route-policy.js` keeps dedicated XP and income-mode XP separate (60 seconds minimum, five-minute observation window, ten-minute rate expiry). Reset, XP regression, multiplier changes and sampling gaps invalidate history.
 
-World Daemon forecasting requires installed Red Pill and a native hacking requirement. Before installation, status includes Daedalus/Red Pill acquisition stages and concurrent cash/reputation waits; a post-install finish time remains unknown until measured. Bladeburner simulates remaining BlackOps in order, credits their rank rewards, includes expected failed-attempt rank losses, and consumes finite supplies of safe current contracts/operations. Bonus time is bounded; recovery, recruitment and chaos use an explicitly approximate 50–100% duty range. Insufficient success chances, action supply or APIs produce unknown estimates. Future upgrades are not extrapolated.
+World Daemon forecasting requires installed Red Pill and a native hacking requirement. Before installation, status includes Daedalus/Red Pill acquisition stages and concurrent cash/reputation waits; a post-install finish time remains unknown until measured. Bladeburner simulates remaining BlackOps in order, credits their rank rewards, includes expected failed-attempt rank losses, and consumes finite supplies of safe current contracts/operations. Bonus time is bounded; recovery, recruitment and chaos use an explicitly approximate 50â€“100% duty range. Insufficient success chances, action supply or APIs produce unknown estimates. Future upgrades are not extrapolated.
 
 Priority requires both routes to have actionable estimates and a 25% advantage across estimate ranges for two continuous minutes. Unknown evidence clears overrides; stale plans, dead owners and plans from older resets cannot control managers. Until comparison is possible, the existing progression policy remains active. `--disable-node-route-planner` disables overrides.
 
@@ -494,6 +494,400 @@ After TRP is installed, non-NeuroFlux augmentation resets remain possible only w
 
 Running `autopilot.js` on a home server with at most 32 GB now prioritizes a $300,000 cash seed. It uses a short-lived Singularity worker to choose a short crime by expected money per second, focuses that crime, and leaves repeating crimes intact between checks. Other managers and spending wait; $300,000 is reserved for travel and betting. Once funded, the casino starts immediately without the normal one-minute income observation. After casino earnings reach the existing completion threshold, normal automation resumes. Disabled or paused casino settings are respected; without Singularity the startup status explains that the seed must be earned manually.
 
-### Dark Net Mastermind and yes’nt feedback
+### Dark Net Mastermind and yesâ€™nt feedback
 
-`DeepGreen` (Mastermind) now discovers character multiplicities with uniform probes, then bisects unresolved positions using native exact/misplaced counts. It handles repeated characters without enumerating exponential candidate sets. `NIL` (yes’nt) locks confirmed positions and accepts straight/curly apostrophes and both negative-token spellings. Both retain pending guesses across temporary authentication/Heartbleed failures, reject malformed feedback, seed progress from structured native logs, and retain progress after bounded work. The manager deploys `darknet-feedback.js` alongside every scout. Existing model fixtures now use the native duplicate-counting rules; no test suite was run for this change.
+`DeepGreen` (Mastermind) now discovers character multiplicities with uniform probes, then bisects unresolved positions using native exact/misplaced counts. It handles repeated characters without enumerating exponential candidate sets. `NIL` (yesâ€™nt) locks confirmed positions and accepts straight/curly apostrophes and both negative-token spellings. Both retain pending guesses across temporary authentication/Heartbleed failures, reject malformed feedback, seed progress from structured native logs, and retain progress after bounded work. The manager deploys `darknet-feedback.js` alongside every scout. Existing model fixtures now use the native duplicate-counting rules; no test suite was run for this change.
+
+### Adaptive sleeve opening priorities
+
+Default sleeve management now funds the $300,000 casino seed using money crimes without waiting for synchronization or zero shock. Once funded, if gang access is available and karma remains above -54,000, approximately half the sleeves work toward gang karma while the others recover shock. Fully recovered and synchronized sleeves also join karma work. Worker ownership stays stable between polls. Synchronization is selected when its estimated completion benefit outweighs working immediately; crime money does not require it. Paid training, sleeve augmentations, and training hash upgrades wait during these urgent milestones. Afterward sleeves recover for augmentation access, synchronize, then follow normal reputation, training and work priorities.
+
+`--disable-adaptive-startup` restores the previous strict recovery-first ordering. Explicit crimes, custom shock thresholds or recovery ratios, disabled gang priorities, paused/disabled casino settings, and achievement restrictions remain respected. The 32 GB autopilot casino bootstrap still defers the sleeve manager. Status includes the opening stage, worker indexes, and planned tasks.
+
+### Shared faction joining decisions
+
+Faction workers, augmentation purchases and ascension now share tasks/faction-join-plan.json, scoped to the current augmentation and BitNode resets. City groups are compared by remaining augmentation benefits, reputation requirements, duplicate supply and hacking/XP/reputation priorities. Existing city membership anchors the compatible group; explicit --first or --force-join city preferences take priority before membership. Native join workers recheck current membership and the shared choice, so automatic NeuroFlux preferences cannot override the city plan. Intelligence farming also honors that guard. Non-conflicting invitations remain available, with Daedalus and gang invitations processed first. Gang rush stops pursuing harder invitations once a qualifying faction is joined and focuses on the remaining karma. Daedalus funding now recognizes either 2,500 hacking or all four combat stats at 1,500.
+
+
+### Shared gang host selection
+
+Faction work and gang creation now use the same host policy. Combat is the default; joining NiteSec or The Black Hand does not stop pursuit of a combat invitation. Once an eligible host is joined, no harder invitation is pursued for gang creation. Existing gangs remain authoritative and are never replaced. BN2 does not farm the otherwise required -54,000 karma after a host is ready.
+
+Configure `gangs.js` with `--gang-type hacking` to allow both hacking hosts, including NiteSec, or `--gang-faction "The Black Hand"` to require an exact host (implies its type). `--gang-skip` excludes hosts. The same flags can be saved in `gangs.js.config.txt`; live gang-manager flags are shared through a reset-scoped, owner-checked preference file. Faction skip preferences are also respected. Explicit hosts may wait for an invitation; default selection never waits for a better host. Invalid preferences defer creation.
+
+Among joined hosts of the selected type, higher faction favor wins, then the count of unowned native unique augmentations, then a deterministic NPC-rival order. Existing host reputation is deliberately not counted as retained value: creation erases it, and the log reports that loss. Missing Singularity or host benefit data falls back to the deterministic order without blocking gang development. Player hacking/combat stats do not select gang type. Unique augmentation counts are a tie breaker, not an exact forecast of the seeded post-creation augmentation catalog.
+
+
+### Faster opening progression
+
+Cash-poor casino startup now applies at every home size and bypasses the one-minute income observation below $1b wealth. Missing Singularity or insufficient worker RAM yields to ordinary hacking, with casino cash reserved and money hacking enabled while the seed is missing. Retry/protected-activity waits cannot freeze other progression.
+
+An optional one-shot sleeve worker assigns money crimes without a persistent manager or Singularity dependency. It respects sleeve pauses, explicit sleeve settings, challenge restrictions, existing manager ownership and activity locks. The player seed worker is detached; it compares whole-payout expected time to the remaining target and awaits the native crime-completion promise before changing an existing crime. It rechecks ownership, protected work and target cash after the wait.
+
+After casino completion a guarded worker immediately buys essential home RAM up to 128 GB within half the free wallet and the shared home allowance. The periodic RAM task also permits reaching 128 GB in nodes where hacking income is disabled. Sleeve gang opening compares all native-size worker subsets by estimated gang ETA plus average recovery delay, keeps near-equal assignments stable, and evaluates synchronization against the remaining karma. BN2 does not allocate sleeves to unnecessary gang karma. These forecasts use current stats and rates; they are not guaranteed completion times.
+
+
+### Gang growth and augmentation purchase acceleration
+
+Default gang management projects native member XP and stats to compare another training interval with productive work. The old ten territory-tick training period becomes a maximum forced-training window, with a brief two-second settling period. Random whole-gang training is replaced by per-member decisions. Set `--disable-adaptive-growth` to restore legacy decisions; `--growth-horizon-minutes` defaults to fifteen.
+
+Recruitment remains the first respect goal. Once recruitment finishes, a fresh reset-scoped purchase plan from the faction manager selects the next useful augmentation. Gang work switches to money when its rep requirement is met or cash is far behind. Equipment orders compare projected productive value gained per dollar and remain subject to current wallet reserves, explicit budgets, and the shared allocator. Short-payback opportunities increase the next gang allowance. Temporary equipment is withheld from members selected for ascension; BN8 retains conservative legacy spending.
+
+Member ascensions model lost production, training and replacement equipment costs, retain the existing respect/recruitment guards, and stagger resets. Native workers recheck plan expiry, member stats and ascension results before mutating. All rates and payback times are estimates at current stats, not promised earnings.
+
+Before Daedalus entry, default augmentation selection may add prerequisite-complete cheap unique augmentations within ten percent of wealth toward the installed-count requirement. Explicit stat filters, omissions and `--disable-count-building` remain authoritative. Existing dependency-aware purchase order and native affordability checks still apply.
+
+Reset forecasts now include a conservative gang income penalty allowance and, on the first BN9 install, the native formula cost of rebuilding current Hacknet servers (including the free starting server). If formula access is unavailable, existing conservative first-BN9 behavior remains. Measured rebuild costs can authorize a worthwhile earlier reset or hold an ordinary reset whose modeled payback exceeds four hours. Explicit priority augmentation and Red Pill paths retain their existing protections.
+
+
+### Faster IPvGO games
+
+IPvGO now builds each connected stone group and its liberties once per board snapshot. Capture/rescue calculations use group sets rather than copying and flood-filling the board for every legal move. Pattern rotations and reflections are deduplicated and cached, with static patterns warmed at startup. Native legality and pause checks remain in the action path.
+
+`tasks/go-performance.json` stores up to twenty recent completed-game measurements per opponent, board size and cheat mode, scoped to the BitNode and augmentation reset. Measurements include elapsed wall time, wins, turns, bonus growth and native node-power awards; resumed partial games and ambiguous results are excluded. Opponent ranking incorporates observed bonus growth per minute with a bounded adjustment to existing goal priorities. Adaptive boards begin at 13x13, establish a three-game baseline, then sample other supported sizes at most once per eight completed games. Board comparison uses node power per minute to avoid bias from diminishing percentage bonuses. Only sizes with at least three samples and an 80% observed win rate may displace the baseline. Illuminati trials consider 5x5 first because of its native special reward multiplier.
+
+Explicit `--board-size` arguments/configuration remain authoritative. `--adaptive-boards false` retains the configured board size. Streak achievement goals disable board exploration. `--early-pass false` disables the conservative endgame rule, which otherwise requires a clear score lead, no neutral empty regions, no playable enemy territory/captures/rescues, and two independent small eyes in every friendly group. Existing move heuristics remain the fallback.
+
+
+### Faster early-game startup
+
+Casino seed crimes now run alongside a minimal hacking controller. Funding mode suppresses optional managers, infrastructure purchases, startup study and startup XP warmups, protecting both cash and the player's crime action. Without Singularity, ordinary hacking remains the fallback. Normal manager settings resume once funding mode ends.
+
+The default daemon home reservation is 25% of installed RAM up to 32 GB (8 GB at a 32 GB start). Explicit `--reserved-ram` values remain authoritative. Available-thread planning no longer subtracts that reservation twice. Autopilot scales its Source File 4 helper reservation on small home servers.
+
+TOR and program purchase workers recheck the shared cash reserve and honor pauses, maintenance and cash-spending achievement restrictions. Missing APIs exit with a log message. Infrastructure polling wakes on rising wallet milestones, while retaining ordinary timed retries. Post-casino essential RAM upgrades already run immediately through autopilot.
+
+Daemon now launches one Hacknet controller with `--adaptive-tiers` rather than four competing configurations. It combines one-hour upgrades, four-hour upgrades costing at most 10% of cash, eight-hour upgrades costing at most 1%, and very cheap upgrades costing at most 0.1%. Cash bottleneck limits and shared allowances still apply. Up to ten guarded purchases run per poll so consolidation does not reduce startup purchases to one per second. The worker stays available when upgrades are temporarily unaffordable.
+
+
+### Early-game readiness, fallback and exact purchase thresholds
+
+Daemon publishes startup readiness after its study/XP warmup and initial rooting finish. Autopilot can then launch faction work immediately, checking the current daemon PID and augmentation/BitNode reset identities instead of waiting thirty seconds. Missing, mismatched or warming records do not steal study focus.
+
+If the main controller cannot fit, autopilot attempts a smaller one-thread `bootstrap-hacking.js` worker. It roots hosts needing no port openers, selects an accessible fast money target, and weakens, grows or hacks without buying anything or changing player work. Pauses, maintenance, owner exit, casino and a running daemon stop further actions. Autopilot preserves a productive fallback until there is enough space to replace it with daemon, avoiding repeated interruptions merely to retry the larger controller.
+
+TOR, program and RAM workers publish native purchase costs. The scheduler checks reserve-adjusted affordability, including RAM spending fractions, and wakes on exact threshold crossings even within the same general cash milestone. Quotes expire after five minutes and cannot cross reset boundaries. Crossings remain queued through the one-second retry cooldown; unchanged affordable quotes do not cause repeated immediate launches. Normal timed retries remain available when a quote is missing or a purchase is deferred by shared allowances.
+
+
+### Faster faction backdoors and TOR handoff
+
+Successful native TOR purchases publish a reset-scoped handoff that wakes the existing program scheduler within its one-second retry limit, rather than waiting the ordinary 26-second interval. A failed RAM or pause check retains the handoff for bounded retries; successful dispatch consumes it. The program worker still enforces reserves, pauses and achievement spending guards.
+
+Backdoor targets now prioritize CSEC, avmnite-02h, I.I.I.I, run4theh111z and fulcrumassets before optional servers. Eligibility includes matching the required hacking level exactly. Default helper headroom is 25% of home RAM capped at 22 GB, with explicit task and global reservations honored. Each launch additionally requires the worker's measured native script RAM, including current Source File multipliers. Failed routes skip installation, and activity ownership, pauses and maintenance are rechecked before each target.
+
+QC: 606 project tests passed and 164 JavaScript files passed syntax checks, including actual scheduler and backdoor-manager harnesses for TOR retries, 32 GB home operation, exact hacking requirements, faction ordering, high Source File RAM costs, failed connections and changed activity ownership. This is simulated startup coverage; no fresh BitNode reset was performed for testing.
+
+
+Live QC additionally exposed a reset-cache scope error in periodic scheduling. The cache is now shared with startup instead of being declared only inside startup; a regression check prevents that shadowing from returning.
+
+
+### Batched backdoor discovery and confirmed startup
+
+Network discovery now scans every reachable server inside one serialized helper, retaining home-rooted routes and reporting isolated scan failures. It replaces one helper launch per server with one helper launch for discovery; metadata queries remain separate.
+
+Each backdoor worker verifies the connected server before invoking native installation, then acknowledges invocation using its PID, target and unique request token. The parent reconnects home only after a matching confirmation. Startup waits are bounded by `--start-timeout` (default five seconds, maximum one minute); `--spawn-delay` is retained as the polling interval rather than an assumed startup delay. Unconfirmed workers are stopped on cancellation, failed startup or timeout, and confirmation files are removed. Optional Source File access failures and failed cleanup connections remain graceful.
+
+QC: 617 project tests passed and 165 JavaScript files passed syntax checks. Regression coverage includes one-scan-per-host discovery, cyclic networks, unavailable scan hosts, delayed worker startup, stale/wrong receipts, cancellation, timeouts, target mismatches, missing SF4 and native promise rejection. Native inspection measured the guarded worker at 6.7 GB in the current run; the existing RAM launch guard uses that measured cost. No new installation was forced solely for live testing.
+
+
+### Batched server metadata and installed-backdoor shortcuts
+
+Backdoor startup now collects hacking skill and each candidate's required skill, root access, installed-backdoor flag and ownership in one metadata worker. Server reads are deduplicated and failed or malformed hosts are skipped individually. Discovery, purchased-server enumeration and metadata now use three startup data helpers instead of the previous six; RAM, connection and running-worker checks remain separate. This is a reduction in helper launches, not a measured end-to-end speedup.
+
+Routes use the deepest installed backdoor on the scanned path as a direct connection shortcut. Original paths remain intact, and a failed shortcut is retried using the original home-rooted path before skipping the target. Worker target checks and startup confirmations remain in force.
+
+QC: 626 project tests passed and 166 JavaScript files passed syntax checks. Coverage includes metadata serialization, one read per distinct host, failed-host isolation, shortcut selection, original-route retries and actual manager integration. Files synced without pending updates or sync errors, and inspected autopilot/daemon logs showed no new runtime errors. No installation was forced solely for live testing.
+
+
+### Prompt faction-backdoor unlock scheduling
+
+Daemon observes the five faction servers using current hacking skill, current native root access and known installed-backdoor state. Newly eligible servers wake the backdoor scheduler after its one-second retry cooldown instead of waiting for the ordinary 33-second interval. Pending unlocks survive cooldowns and failed RAM/pause checks. If a manager is already running, pending work waits for a new dispatch because the running manager may have captured its snapshot before the unlock. State is scoped to BitNode and augmentation resets; ordinary interval retries remain available after dispatch.
+
+Live QC found that the game's RAM analyzer rejected a redundant relative re-export in the backdoor policy. Removing it restored the manager's native RAM estimate to 7.5 GB. Helper launch checks now refresh native RAM estimates, preserve configured minimum RAM requirements, and defer invalid estimates rather than entering repeated exec retries that interrupt the hacking loop.
+
+QC: 638 project tests and 169 JavaScript syntax checks passed. Coverage includes exact hacking thresholds, root acquisition, in-flight managers, cooldowns, reset boundaries, failed dispatch retries, repaired imports, updated RAM costs and configured minimum requirements. Files synced without pending updates; the backdoor manager has a valid native RAM estimate. No new backdoor installation or reset was forced solely for testing.
+
+
+### Faction-first rooting and backdoor completion handoff
+
+Daemon attempts eligible faction-server roots before ordinary startup rooting and before periodic scheduling in each targeting loop. It uses current root access and owned port openers, respects pauses/maintenance, checks helper RAM and waits five seconds between failed attempts on a host. Newly rooted faction servers can therefore enter the existing prompt backdoor scheduler without waiting behind income-target processing.
+
+Successful faction backdoors publish one completion file per host, scoped to the reset in which installation started. Failed installations and changed-reset completions publish no event. Valid completion events wake the existing faction manager after its one-second retry cooldown, including below the ordinary first-faction wealth gate. Joining, gang-host and city decisions continue through the existing faction policy. Pending events survive RAM/pause failures and wait for an in-flight faction manager to finish before being consumed by a new dispatch.
+
+QC: 646 project tests passed and 170 JavaScript files passed syntax checks. Tests cover concurrent completion records, reset boundaries, failed native installation, available port openers, priority rooting, pause/RAM deferral, bounded root retries and completion-triggered faction checks. Native RAM estimates remain valid (daemon 5.95 GB; guarded backdoor worker 6.7 GB). Files synced without pending updates or sync errors; inspected controller logs showed no new runtime errors. No reset or installation was forced solely for testing.
+
+
+### Early faction-work reassessment after membership changes
+
+The faction worker observes membership changes from its existing player snapshots. During reputation grinding, it additionally probes only the membership list at most once per normal five-second work poll. Changes remain latched until the main planner resets its work scope and acknowledges them, rather than waiting for the ten-minute periodic priority review. Membership ordering and duplicate entries do not cause false wakeups; same-count membership changes do.
+
+Reassessment uses the existing first/skip, preferred faction, gang and activity policies. It does not directly stop work or force a specific new faction. Explicit continuing crime/karma modes retain their existing boundary rules. Pauses and maintenance yield without launching a membership query; temporary probe failures leave work running, warn once per failure streak and retry later. Existing player snapshots avoid duplicate membership probes, and scope messages now reflect the reassessed priority level.
+
+QC: 655 project tests passed, 172 JavaScript files passed syntax checks and whitespace checks passed. Coverage includes membership latching/acknowledgment, five-second throttling, ordinary snapshot reuse, probe failures, pause handling, the actual reputation-loop guard and the planner's scope reset. Files synced; the native faction-worker RAM estimate is valid at 5.35 GB. Inspected controller logs showed no new runtime errors. No faction membership or reset was forced solely for testing.
+
+
+### Progression-aware IPvGO opponents
+
+Automatic opponent selection reads fresh, current-reset spending/progression signals before each new game. Hacking bottlenecks favor the hacking-level opponent and Illuminati speed; reputation/combat/economic phases choose their corresponding benefits while retaining the BitNode baseline as a secondary priority. Stale or unavailable planner evidence falls back to the existing node goals. BN8 does not prioritize ordinary hacking-money gains.
+
+Selection compares recent log multiplier gain per minute for each established board size and cheat mode. Board experiments are scheduled after opponent ranking and explicitly identify the comparison board, so a cold board trial cannot stall exploration by suppressing the incumbent score. Switching an established opponent requires a 15% score advantage, except for bounded trials and explicit/achievement choices. New records carry individual timestamps; samples expire after thirty minutes, and untimed legacy history remains available only to the existing board policy. Measured rates already include losses and diminishing multiplier gains. Opponents with fewer than three recent matching samples receive at most one trial per eight completed native games; unavailable opponents retain their five-minute cooldown. Opponent trials use the established board rather than combining two experiments.
+
+Faction membership and the remaining SF14 favor allowance provide a bounded secondary preference. This is favor progress, not spendable faction reputation, and reaching the allowance never caps the opponent's global multiplier. Explicit opponents/goals and explicit board sizes remain authoritative; achievement streak protection suppresses opponent/board trials. Selection reasons, matching sample counts, rates, trial status and remaining favor allowance are visible in tasks/go-status.json. No additional UI windows open.
+
+
+IPvGO opponent QC: 672 project tests passed, including 17 new selection regressions, and 174 JavaScript files passed syntax checks. Both VM controller harnesses now import the selection policy. Three matching zero-gain samples remain measured evidence with zero utility rather than reverting to an optimistic prior; malformed null history entries are safely discarded during recording. Coverage includes live/reset-scoped planner signals, stale/future/legacy samples, board/cheat matching, one-in-eight opponent trials, favor caps, explicit choices, achievement protection, switching hysteresis and separate board experiments. Native go.js compilation/RAM is valid at 9.75 GB. The game reports Go playing, no Go error, and files synced with no pending updates; inspected dashboard logs contain no new runtime errors. No native game reset was forced for QC.
+
+
+### BitNode-aware World Daemon / Bladeburner route selection
+
+Autopilot now defaults to automatic route selection. BN6/7/9/10/13/14 start with a Bladeburner preference; BN1/3/5/15 start with World Daemon; BN2/4/11/12 use a weak WD preference until comparative evidence exists. BN8 excludes Bladeburner. Preferences are heuristics, never measured ETAs. Source File/API access, native restrictions, pauses and achievement controls exclude unavailable BB automation. Explicit --node-route wd or --node-route bb overrides automatic decisions; unavailable explicit BB reports unavailable instead of silently choosing WD. --adaptive-node-route false retains the legacy WD preference.
+
+Complete, actionable ETA ranges can replace a BN preference only when the challenger is at least 25 percent faster across ranges for two minutes, with fresh evidence in the same reset. Early WD prerequisite stages and observed combat-entry/rank milestones are shown separately. Unsafe BlackOps, unknown augmentation development, regeneration, or post-install XP remain unknown; partial forecasts never become full completion times. BN12 uses current native multipliers and observed rates rather than treating every level as the same run.
+
+BB priority disables automatic continuous hacking XP and directs adaptive spending toward combat. --force-xp preserves an explicit XP override, and measurement/achievement XP requests still apply. Existing faction-work yielding, sleeve routing, Simulacrum handling and BlackOp protection continue through live route plans. Before joining BB, its controller may train combat with short income-producing crimes under an activity lease, respecting protected work, pause, maintenance, Source File and achievement controls. It stops only its own matching entry crime upon reaching the threshold. Casino and transition owners retain priority.
+
+
+Route QC: added 24 regressions covering every BN preference, Source File/native/achievement/pause restrictions, explicit/legacy overrides, measured comparison stability, reset/freshness boundaries, XP handoff, partial WD/BB development estimates, finite native grind supply, generated snapshot execution, and serialized entry-worker ownership/protected-work/casino guards. Native RAM review moved entry APIs into literal temporary-worker sources, removing their 16.5 GB addition to the persistent BB controller. Autopilot and the faction controller compile at 5.85 GB and 5.35 GB; BB compiles at 81.95 GB with its existing recruitment-exit API costs. Low-RAM starts continue to defer unavailable controllers through the existing launch/headroom checks. In-game BN9 now selects the labelled BB prior, adaptive spending reports combat, and the daemon no longer starts in automatic XP-only mode. Entry training correctly defers while another activity owns focus. No reset, installation or forced interruption was performed solely for QC.
+
+
+### Native temporary-worker filename fix
+
+Live error review found Bladeburner repeatedly failing to start actions because the default helper filename included namespace arguments, commas and brackets from a serialized function call. Default names now extract only a bounded ASCII namespace identifier, or use a deterministic command hash when no ordinary namespace reference exists. Worker command hashes and per-PID receipts still isolate concurrent queries; ordinary ns-function result filenames remain compatible. Bladeburner action starts additionally use the explicit /Temp/bladeburner-start-action.txt result path.
+
+QC: all 700 tests passed and all 176 JavaScript files passed syntax checks, including four new regressions for namespace arguments, multiline/computed/unicode/long expressions, ordinary filename compatibility and the explicit BB path. Files synced without pending updates or connection errors. Only the idle BB script was restarted after native getCurrentAction returned null, because supervisor reload was deferred by another protected activity. Existing stock holding warnings and gang territory-tick resynchronization warnings were classified separately from the repeating runtime failure.
+
+
+### BB focus protection and warning clarity
+
+Automatic infiltrations now defer while a live BB route plan reports Simulacrum not installed. Existing manually started infiltration UIs are still detected and assisted before the automatic-entry gate. --ignore-node-route explicitly permits automatic entries during BB priority. The entry worker, combat-stop worker and final UI-entry check repeat the live owner/reset/freshness guard so a changed route cannot slip past a previous decision. Already-started infiltrations continue to completion. Unknown or queued Simulacrum is not treated as installed; stale route plans do not reserve focus.
+
+BB clears old assignment tracking when deliberately yielding to an activity, WD priority or known player work. Unexpected action changes remain warnings, state only the observed transition rather than diagnosing native automation, and repeat at most once per transition per minute. Existing hash controllers are informational only after checking their processes; true launch failures still warn. Stock minimum-hold safeguards are informational. Isolated fast stock ticks are diagnostics, with warnings retained for persistent rapid ticks. Gang timing resync retains its recovery behavior and escalates after three consecutive misses, at most once a minute.
+
+
+### HGW timing and outcome measurements
+
+Hack/grow/weaken workers now compare observed completion against the planned deadline, with a tolerance of half the inter-leg spacing (5 to 250 ms). Nominal late starts that are compensated through additionalMsec no longer toast. A zero-money hack, growth factor <=1, or zero security reduction is recorded separately as an outcome, not diagnosed as a timing failure. Native operation exceptions remain exceptions and are recorded before rethrowing. Looping workers retain their existing period and owner-stop behavior.
+
+Port 20 is reserved for synchronous bounded HGW telemetry aggregation. Standalone remote workers require no deployed imports. Each completed operation merges counters into one shared message without awaiting; targets and recent events are bounded. The daemon drains it into tasks/hgw-misfires.json, preserving totals across daemon reloads within the same augmentation/node reset. Alerts are limited to once per target/tool per minute; silent mode suppresses alerts while retaining measurements. Foreign port traffic is preserved and reported as blocking measurement. Standalone workers without daemon metadata retain local deadline alerts. The dashboard and read-only Remote API automation.status expose the measurements. Observed late completion is a timing risk, not proof that in-game batch effects were applied out of order.
+
+
+Native integration review confirmed 1.85 GB hack and 1.9 GB grow/weaken workers. Timing metadata is JSON encoded because native script arguments accept only strings, numbers and booleans. The daemon was refreshed to apply this format; Remote API policy 16 refreshes the agent for the new read-only timing status field. Diagnostics failures are isolated from production scheduling. Syntax and whitespace checks passed; no unit tests were added or run in this implementation turn.
+
+
+### Bladeburner team opportunity costs
+
+Team preparation now opens within two minutes of the next Black Op's rank gate, based on at least one minute of observed rank progress (up to five minutes retained). Healthy, fully synchronized sleeves can supply this squad in parallel. Below the rank gate, useful rank work takes priority over human recruitment; early human recruitment is limited to forecasts within two minutes when no positive-rank action was selected. Recovery, protected activities, and the rolling recruitment budget still apply.
+
+Ordinary operation planning compares zero to three spare human recruits. It reserves the pending Black Op squad, excludes support sleeves from expendable capacity, and charges expected casualties as recruitment replacement time. A team must improve conservative rank throughput by over ten percent against a viable solo plan. Successful operations can lose up to ceil(team/2) members; failed operations can lose the full assigned team. Plans restore temporary levels and squads; action start rechecks the current reserve and native success chance and restores settings on failure. No recruitment is performed solely to supply repeatable operations. Native auto-repeat can consume recruits between controller ticks, so this is a conservative forecast rather than a casualty guarantee.
+
+The BB Team tooltip reports the next Black Op, rank gap, measured rank ETA, team cap, healthy sleeves, expected recruitment time, and remaining hourly budget. No tests were added or run for this implementation request.
+
+
+QC follow-up: fixed unnecessary team restoration for level-only action plans, and rejected malformed success intervals before accepting an already-sufficient lower bound. The early recruitment timing gate is now a directly checked pure policy. Eleven new regressions cover casualty replacement costs, a meaningful throughput advantage, Black Op reserves, supporting sleeves, unknown recruitment estimates, probe cancellation/errors, fresh reserve checks, rejected starts/assignments, late cancellation, restored settings, early recruitment timing, and serialized helpers. All 711 tests passed; syntax checks passed for all 177 JavaScript files; git whitespace checks passed. The game reported 81.95 GB controller RAM and the sync service reported no pending files or errors. This does not establish a measured progression speedup or guarantee casualties under native auto-repeat.
+
+
+### Live-game bottleneck follow-up
+
+Hacking pacing uses deltas from completed-operation telemetry, not lifetime warning totals. After a window of at least 30 seconds and 20 completions, at least three late completions and a late fraction of 5% trigger 1.5x spacing (up to 4x), at most once per minute. The future target cap falls with spacing. Three windows at <=1% late, with a two-minute cooldown, restore pacing gradually. Missing/blocked/stale evidence holds the current setting. Existing jobs are not killed. tasks/hgw-pacing.json records the decision and automation.status exposes it. Lower utilization cannot immediately undo the target cap.
+
+All hash spenders now re-evaluate a common route reserve immediately before each synchronous purchase. A live Bladeburner spender reserves the next rank purchase; skills take priority once the rank gate is reached or when they cost less than half as much. Only actions configured on live spenders are reserved. Other purchases can use surplus. If a priority cannot fit in capacity, imminent overflow remains spendable and the existing capacity-upgrade path stays active. Missing/expired route evidence retains ordinary behavior. Existing World Daemon/achievement/pause protections remain.
+
+During a Bladeburner route, infrastructure allowances are capped at 2% each for home (after 128 GB) and purchased servers, and 5% for Hacknet per budget epoch. Nearby reputation-ready augmentation goals with a useful route bonus lower the Hacknet allowance to 2%. Candidate bills must have known purchase prerequisites, fresh reset-scoped evidence, and cost between 25% and three times current cash. The Hacknet payoff horizon is capped at two hours for Bladeburner, or one hour for a nearby augmentation goal, including BN9; explicitly shorter limits win. Essential home RAM funding is retained. Unused allocations stay as player cash, not redistributed spending.
+
+Queued augmentations no longer block all grafts indefinitely. A fresh reset countdown owned by the live autopilot still blocks them; the planner clears pending intent when it defers installation. Grafting rechecks that intent before spending/travel and before starting. Existing grafts, Black Ops, program creation, maintenance, shared budgets and payback checks stay protected. Native reset-plan checks do not infer a countdown from the queued augmentation list.
+
+Corporation records now carry node and augmentation reset identity. Read-only API status rejects archived, stale, future-dated or orphaned records without deleting history. Remote API policy 17 refreshes the agent for the scoped status and pacing fields; no command permissions were added.
+
+QC: all 723 tests passed, including twelve new focused tests and the updated queued-augmentation regression. All 179 JavaScript files passed syntax checks; whitespace checks passed. Native API confirmed 5.85 GB autopilot and 5.95 GB daemon scripts. Files synced with no pending updates or connection errors. Live pacing widened from 4000 to 6000 ms and reduced the future target cap to one after seven late completions in a 40-operation window. The Bladeburner spender purchased rank while the server-upgrade spender retained the shared reserve. Infrastructure caps and absent corporation status were visible through the API; no runtime errors appeared in the captured post-reload logs. This validates integration, not a measured long-term progression speedup.
+
+
+### Shared augmentation cash and chance-bound development
+
+Fresh, live-autopilot augmentation savings goals are now enforced as cash floors in shared spending claims and stock transactions, including synchronous native trade and stock-access workers. An explicit zero stock reserve cannot bypass this goal. The goal expires with its plan or reset; missing/malformed/dead-owner data does not strand cash. Essential home RAM purchases below 128 GB retain funding, and stock sales retain their prior control and liquidation semantics. This protects new purchases; it does not force-liquidate existing positions.
+
+Gang training is no longer permanently disabled after the initial 200-second default window. Older members can train when the modeled incremental output over working repays lost work within the configured horizon. --no-training retains the old initial-window restriction. Invalid projections and zero-value training do not keep old members in training. Live QC observed an older member assigned Train Combat. Task assignment now distinguishes maintenance/pause deferral, already-applied native state and actual native rejection; failed orders alone are reported as failures.
+
+When rank is sufficient but the next Black Op's lower success estimate is unsafe, skill spending favors native marginal chance multipliers and effective combat improvements. Unrelated cheap money, contract-only and speed skills no longer drain points during this bottleneck; points are banked if the useful skills are unaffordable. Context is refreshed after each purchase. Stamina shortage admits Cyber's Edge. Evasive Systems uses its native 4% level multiplier with a half-weight combat contribution. Outside the chance bottleneck, existing skill selection remains active. This is a conservative marginal ranking, not a complete simulator of each Black Op's stat weights.
+
+Chance-blocked actions can prioritize Field Analysis for a range spanning the success threshold, or Training for combat and stamina development. Training is limited to two minutes per rolling ten minutes, respects the existing training limit, and yields to health, stamina, chaos recovery, recruitment and protected Black Ops. Accounting survives controller reloads and does not credit a prior reset's interrupted action as continuous training. tasks/bladeburner-development.json records the decision and rolling budget.
+
+Adaptive hacking recovery accepts clean sparse windows after eight completed operations and two minutes. Two such windows permit gradual recovery, while normal traffic still needs three clean windows. Silence is not a clean sample and fresh overruns prevent recovery. Target caps use rounded concurrency so partial recovery can restore a second target earlier. tasks/hgw-pacing.json reports observed completion throughput separately from the late fraction. These measurements do not establish profit throughput or a progression speedup.
+
+QC: all 738 tests passed, including fifteen new checks for native stock reserve injection, live/reset-scoped cash floors, serialized shared spending, extended gang training and task deferrals, blocked Black Op skill choices, refreshed skill context, bounded development, and sparse recovery. All 180 JavaScript files passed syntax checks; whitespace checks passed. Native RAM remained 81.95 GB for Bladeburner and was 13.85 GB for stockmaster. Sync reported no pending files or errors. The latest captured post-reload logs contained no runtime errors; supervisor reported no pending updates. Live gang training and pacing telemetry were observed; long-term progression gains remain unmeasured.
+
+
+### Alignment with installed Bitburner 3.0.1
+
+Autopilot now queries stock.hasTixApiAccess(), allowing the existing helper to translate the modern spelling for version 2 when needed. Live QC revealed that restoring detection also activated the old 8-billion stock-capital target and starved all spending allowances. That optional target now yields to a selected Bladeburner route or a fresh nearby augmentation savings goal. Casino funding, Red Pill reservations, pending augmentation purchases and the existing early cash buffer retain their prior precedence.
+
+bladeburner-action-data.js contains all 21 native BlackOp kill/stealth flags, stat weights and decay coefficients. Every record was compared directly against official v3.0.1 BlackOperations.ts and matched exactly. Chance-bound skill selection now includes Short-Circuit for kill operations and Cloak for stealth operations. Combat upgrades are evaluated by their relative change to the native weighted competence sum, including Reaper/Evasive multiplication and the action's stat decay exponents. Direct success skill benefits use the native marginal linear level multiplier. Fresh native chances, costs, ownership and protected-action checks remain authoritative; this is not an unrestricted speculative purchase worker.
+
+Sleeve crime scoring, opening gang ETA/subset planning, ordinary crime selection, homicide thresholds and the serialized low-RAM casino funding worker now receive the effective CrimeSuccessRate before the probability cap. sleeve.js obtains native BitNode multipliers with the existing source-based fallback when SF5 is unavailable. Autopilot passes its existing multiplier into the seed worker. BN14's 0.4 multiplier can alter the best crime after probability saturation, so it is applied separately for every candidate.
+
+Sleeve faction task selection follows the native hacking, security and field expressions, including intelligence, the distinct divisors, share power and effective SF15 level-3 charisma bonuses. The native getSharePower() API already returns the calculated share bonus; no second logarithmic conversion is applied. Unsupported work types are excluded. Favor and other common same-faction multipliers are omitted only because they cannot affect the task ranking. Share input is refreshed in a temporary worker and effective SF15 access uses the existing override-aware Source File handling.
+
+QC: all 750 tests passed; all 182 JavaScript files passed syntax checks; whitespace checks passed. Twelve new source-alignment checks include 486 combinations of faction-work stats/share/SF15 context, skill category applicability and native competence, probability saturation, startup ETA, the low-RAM seed worker, input propagation and the restored stock reserve's funding priorities. Native RAM confirmed 81.95 GB Bladeburner and 20.15 GB sleeves. Source metadata was independently compared against the official pinned v3.0.1 file. Sync reported no pending files or errors, and the captured post-reload logs contained no runtime errors. Native logs also showed the bounded Bladeburner Training mode followed by normal contract work. Long-term speed gains are not established by these checks.
+
+
+### Automatic StormSeed recycling
+
+- Scouts publish fresh surveys of neighbours, blocked RAM, caches, contracts and the native `STORM_SEED.exe` program. Busy or missing scouts block recycling, including unsolved labyrinth/frontier hosts.
+- The manager requires the entire reachable network to be surveyed, rewards exhausted, and topology unchanged for five minutes. State survives manager restarts and is scoped to the BitNode reset; dispatch attempts have a conservative 30 minute cooldown.
+- A separate helper runs on the seed holder, keeping the native StormSeed API cost out of low-RAM scouts. It rechecks current rewards/processes and cancels expired requests, maintenance, or failed checks. Missing access/API errors are caught.
+- A webstorm replaces/restarts much of the network; normal scout deployment then rebuilds exploration. It does not grant an immediate reward. Disconnected or unknown regions cannot be certified exhausted; any discovered frontier lacking a fresh completed survey prevents automatic recycling.
+
+- StormSeed QC: 757 project tests passed, 185 JavaScript syntax checks passed, and Git whitespace checks passed. Remote API confirmed connected with no pending sync files or sync error; updated manager deployed a 7.65 GB scout. No storm was forced during QC.
+
+
+### Chance-blocked Bladeburner progression and hacking pacing
+
+- During a fresh, live Bladeburner Black Op chance bottleneck, default adaptive sleeve management can borrow one fully synchronized sleeve with shock at most 50 for free combat-XP crimes. Other shocked sleeves recover. Native expected XP includes failure-quarter XP, per-stat XP multipliers, shock, sync and BitNode crime success. Casino and gang-karma milestones, explicit sleeve settings, disabled XP and the selected route remain authoritative. `--disable-combat-xp-support` retains full recovery.
+- HGW telemetry retains all raw deadline warnings and adds half-leg-spacing risk counters. Adaptive pacing uses the new counters only when every operation in a window has spacing evidence; mixed/legacy windows retain the old conservative behavior. Recovery still needs measured clean windows. Fresh, validated pacing state survives controller reloads.
+- First-BN9 reset economics remain protected; status now distinguishes weak route gains, unknown rebuild costs and excessive payback. No augmentation reset or storm was forced during QC.
+- Live validation confirmed sleeve 4 doing Mug (five completed crimes) while six sleeves recovered, updated spacing counters arriving without operation errors, and the explicit first-BN9 reset-hold reason.
+
+- Final progression QC: 768 tests passed; 187 JavaScript files passed syntax checks; Git whitespace checks passed. Live API showed one combat-XP sleeve and six recovering, spacing-aware pacing active, zero HGW operation errors, no sampled manager runtime errors, and no pending sync files. Longer-term throughput gains have not yet been measured.
+
+
+### Follow-up progression review fixes
+
+- Reset count gains require crossing the configured installed augmentation threshold from below. NeuroFlux and duplicate names do not build the count; the count bonus does not apply to the Bladeburner route.
+- StormSeed helpers retrieve current pause and maintenance files from home before the final synchronous reward/process checks. Failed copies or malformed maintenance records defer the attempt; stale local control copies are ignored when home has no corresponding flag.
+- Dispatches have reset-scoped identifiers and matching result receipts. Only confirmed native success starts a 30 minute storm cooldown. Failed launches, cancelled helpers and missing receipts have a one minute attempt delay, while the existing network readiness and quiet-period requirements remain in force. Receipt IDs, host, reset and timestamps are validated before accepting success.
+- Combat XP sleeves finish an already invested crime before selecting another crime or worker. Higher priority milestones, disabled support, shock/synchronization eligibility and route changes still take precedence.
+- QC: 773 project tests passed, 187 JavaScript files passed syntax checks, and Git whitespace checks passed. Live verification showed `completingCrime: true`, the preserved BN9 reset hold, an active updated Dark Net manager, no pending sync files and no sampled runtime errors. Storm success/failure/cancellation and pause behavior were exercised with mocked game APIs; no live storm or augmentation reset was forced.
+
+
+### Native-source progression improvements (v3.0.1)
+
+- Removed fictitious direct Black Op chance gain from Cyber's Edge. Native max-stamina changes preserve the current stamina percentage. The ordinary skill planner can still buy endurance upgrades outside a chance bottleneck.
+- Manager and scouts try the synchronous native `connectToSession` path for saved credentials on nonstationary servers. Rejection, absent APIs and unsupported token lengths fall back to authentication. Blank saved credentials are supported. Stationary/story servers keep their existing authentication path.
+- Sleeve crime ranking estimates the pending Black Op competence gained per second using its stat weights/decays, the native logarithmic XP-to-level sensitivity, player stat multipliers, sleeve XP multipliers, shock/sync, failure-quarter XP and BitNode level/crime modifiers. This is a local marginal estimate, not a completion forecast. Existing crime completion protection remains authoritative. Status labels the scoring metric.
+- StormSeed now requires six minutes of measured zero native Dark Net income and no recent cache reward, in addition to full network readiness. Productive networks are retained because future replacement rewards are unknown. Native income is read directly rather than parsed from formatted messages; cache helpers publish reward timestamps through scout surveys. Unknown, reset or stale evidence starts a new observation window. The reported income opportunity cost assumes 30 seconds of storm plus a conservative five-minute deployment allowance; that allowance is an estimate, not a benchmark.
+- QC: 781 project tests passed and 189 JavaScript files passed syntax checks; Git whitespace checks passed. Live verification showed the targeted sleeve score active, all three relevant controllers running, no sampled runtime errors and no pending sync files. Native scout RAM is 7.70 GB, retaining room on 16 GB darkweb. No live storm or reset was forced; long-term throughput gains are not yet measured.
+
+
+### Gang development improvements
+
+- Regression tests first reproduced three reviewed issues: accepting ascension forecasts with unguaranteed equipment restoration, order-dependent adaptive thresholds, and rejecting bounded recruitment investments on direct cash payback alone.
+- Ascension forecasts use only retained augmentations and compare post-reset production with natural growth from continued work. The native worker rejects any restoration-dependent forecast. Adaptive eligibility uses the configured base multiplier threshold, then economic payback; legacy spacing remains under `--disable-adaptive-growth`. Native respect-loss and imminent-recruit guards, per-member cooldowns, and one successful ascension per pass remain enforced.
+- Training compares 20/60/120/200/300 second durations over the configured growth horizon. Both continued work and trained work use the same bounded timeline, include natural XP and task unlocks, and require a five percent production advantage. Productive members preserve imminent recruits; protected cases skip unnecessary forecasting. Status includes per-member forecast decisions.
+- Equipment retains direct production-payback ranking and adds a recruitment exception when it saves at least 20 seconds and two percent of next-recruit ETA. Its entire batch is capped at one percent of currently available player cash and the remaining shared allowance. Explicit money focus disables the exception; equipment/augmentation budget limits and native purchase guards still apply. Respect gains are evaluated on each member's actual task.
+- Final QC: 789 tests passed, 190 JavaScript files passed syntax checks, and Git whitespace checks passed. Live controller confirmed all eight productive members preserving the imminent ninth recruit (15,101 / 15,625 respect), with no sampled runtime errors or pending sync files. No ascension was forced during live QC; sustained speed gains are not yet measured.
+
+## Gang productive time and economics
+
+Gang members resume their previous productive tasks immediately after a territory tick, before development calculations. The status includes postTickRestoreMs. Surviving members already working or training are left on those tasks; pause and maintenance guards apply to each restoration.
+
+Equipment valuation separates cashPaybackSeconds from progression utility. Only schemaVersion 2 production opportunities with measured-formula incremental cash qualify for extra shared cash funding. Recruitment and reputation opportunities share a bounded 1% discretionary allowance and respect explicit equipment budgets.
+
+Work selection, training and equipment forecasts share the same goal-derived objective. Forecast task choices honor wanted headroom with the other crew assignments held fixed. Ascension forecasts integrate the entire crew, working XP, retained augmentations, training downtime, global wanted effects and a modeled cost for delaying recruitment. Native execution rechecks crew membership, respect, wanted and expected respect loss. Recruitment and training forecasts remain estimates, not promises of measured earnings.
+
+Territory timing now discards unknown phases after maintenance and misfires. Members wait for a fresh rival power update before entering warfare again; completed territory still receives periodic development passes. This prevents repeated stale-deadline warfare windows.
+
+## Shared hash spending and marginal value
+
+Every automated hash consumer now checks hash-spending-policy.js immediately before its native purchase. Fresh route ownership, reset identity, maintenance, achievements and available hashes are rechecked. Casino bootstrap cash and reachable reserved augmentation bills can take precedence over Bladeburner reserves.
+
+Bladeburner rank purchases record their observed rank and skill-point yield. Known maximum-rank evidence values only new high-water rank at a conservative one SP per three rank; unknown history permits at most one observation purchase per augmentation reset, costing no more than half the next direct-SP purchase. Zero-yield observations cannot repeat speculatively. Future purchases compare rank-derived SP against direct SP and rank gates. Observation cost is a bounded experiment, not a guaranteed profitable purchase. Source File dependent rank calls are confined to the dedicated worker; other consumers use fresh Bladeburner telemetry.
+
+Automatic server boosts require reset-scoped profitability analysis, current income-mode RAM assigned to that server and modeled repayment within thirty minutes by default (never more than one hour). Analysis gainRate is interpreted as dollars per RAM-second. A pending augmentation reset blocks discretionary investments. Predictions remain approximations; server money softcaps and disabled income allocations are handled conservatively.
+
+Automatic gym/study upgrades require at least a minute of estimated remaining training, at least twenty seconds of modeled savings and a cash-equivalent cost under 1% of unreserved player cash. Current automated training callers use a bounded fifteen-minute estimate. Corporation hash purchases require an operating-cash shortage or a research milestone within one 1,000-point purchase, with the same 1% cash opportunity-cost cap. Contract generation requires a verified solver, no unresolved network contracts and a 0.1% cash opportunity-cost ceiling.
+
+Cash overflow converts automatically in v3.0.1. Automatic cache expansion therefore only serves a useful reserved purchase that cannot fit, with a 1% player-cash cap and the existing shared expense claim. Cache selection compares added capacity per dollar among affordable choices. Explicit manual goals can request capacity for an unreachable configured action.
+
+Hash worker flags: --automatic defaults true. --manual disables investment-value estimates for explicit goals; --ignore-route-priority separately overrides the route reserve. Achievement, maintenance and owner guards remain active. Bladeburner checks for a worker with both rank and SP capabilities, and retries missing workers once per minute instead of accepting a cash/server worker by filename alone.
+
+Each worker and consumer writes bounded per-PID decision records containing costs, cash-equivalent opportunity cost, reserve/preference and reasons. Current API status and the reliability dashboard expose the latest 24 fresh records for live owners. Existing API workers pick up the extended top-level status on their next restart; dashboard diagnostics are also available to older status readers after the supervisor reloads.
+
+
+## Stock transitions and adaptive sleeve purchases
+
+Stock-focus direction changes now retire only controller-owned work through the phased hacking drain. Live loop inventory is reconciled every five seconds; split grow/weaken jobs count as one scheduled loop, while hack counts retain all worker threads. Urgent home RAM reclamation precedes background stock refreshes.
+
+Sleeve augmentation purchases now compare crime income, karma, or combat XP against continuing without a sleeve skill reset. Adaptive batches must fit the shared allowance and the original planned cost, and all quotes are checked before buying. Decisions and receipts appear in sleeve status under `purchasePlans`. Missing stats or an unpriced task defer the purchase. Faction, company, class, and Bladeburner task estimates are not implemented yet.
+
+Use `run sleeve.js --disable-adaptive-augmentations` to explicitly retain budget-only purchases. This option retains reserve, pause, maintenance, eligibility, cooldown, and achievement checks.
+
+### Gang equipment bundles and progression purchases
+
+Adaptive gang equipment buying evaluates missing items against the current shadow crew after every purchase. If no affordable single qualifies, it evaluates same-member pairs among the twelve cheapest missing items in each category (permanent augmentations or temporary equipment). Combined stat multipliers can expose task improvements that neither item unlocks alone. This is bounded pair search, not an exhaustive portfolio optimizer.
+
+Alongside cash payback and recruitment ETA, the existing shared progression allowance can fund at least a 2% improvement in that member's feasible objective. This allowance remains capped at 1% of spendable cash per planning pass, with shared spending limits, category limits, reserve and augmentation cash targets still enforced. Respect gains never count as cash payback. Explicit money focus disables this progression allowance. Temporary equipment is excluded for members already selected to ascend; equivalent-return ties favor permanent augmentations.
+
+Bundles reserve their full quoted cost before the first purchase. Fresh prices, cash and pause guards are checked before buying; an unexpected native rejection stops the rest of that bundle. The game provides no atomic purchase or rollback, so partial purchases remain possible if a native call unexpectedly fails. Successful receipts are reported individually.
+
+Gang status includes equipment diagnostics: ownership/missing counts, initial single-item qualification and rejection counts, budget blocks, bounded rejection samples, pair evaluations, planning time, planned cost and native receipts. Diagnostic ownership is captured before purchases; `equipmentOwnership` in gang status reports the refreshed inventory after purchases. Production opportunities retain separate cash payback telemetry for the shared spending planner.
+
+### Stock signals, crew equipment forecasts, and sleeve work valuations
+
+Stock manipulation snapshots now carry schema version, producer PID, capture time, both reset IDs, and a mock flag. The daemon requires a live stockmaster producer, a snapshot no older than sixty seconds, and valid mapped symbols and positions. Legacy, partial, malformed, mock, and stale signals disable new stock directions; existing owned stock work is retired through the recovery drain. Direction reversals also retire obsolete stock loops outside stock-focus mode. On exit, stockmaster removes its own signal file even with HUD disabled. Status reports the validation reason through `stockManipulation` in the existing Remote API status response.
+
+Equipment progression forecasts use deterministic, wanted-constrained whole-crew task allocation. Gear can gain value by making one member a better wanted reducer and freeing another member for productive work. The shadow planner invalidates all member candidates after any purchase, caches equivalent stat quotes for that crew state, and stops further search after an approximate 100 ms planning budget. A single evaluation already in progress may overrun the budget. Diagnostics report incomplete searches; the next tick can price further purchases. Mandatory training and imminent ascension protections remain active; actual task optimization is seeded with the same deterministic allocator. Cash payback still uses incremental income from current work, so speculative reassignment is not treated as cash already earned. These are immediate rate forecasts; changes in future wanted penalty and recruitment behavior are not fully simulated.
+
+Healthy sleeve augmentation quotes can use native work formulas for faction reputation, company reputation, university courses, and gyms. Both continued work and installation with reset skills are projected over at most fifteen minutes; native XP gains rebuild the sleeve's skills during the projection. Reputation and work utility must improve by more than ten percent. Formulas or required Source File access failures defer purchases. The temporary forecasting helper is self-contained and does not charge its native formula API RAM to the long-running sleeve controller.
+
+General Bladeburner Training, Field Analysis, and Diplomacy use coefficients from the official v3.0.1 source. Support and synthoid infiltration have no stat-dependent augmentation benefit. Recruitment and contract purchases remain deferred because their changing team/success conditions are not modeled safely. Forecasts ignore XP from other sleeves, do not assume future task changes or company promotions, and use thirty-second integration steps. Existing reserves, shared budgets, shock checks, cooldowns, and minimum batch size still govern native purchases.
+
+Native references: [work formulas](https://github.com/bitburner-official/bitburner-src/blob/v3.0.1/src/Work/Formulas.ts), [general Bladeburner actions](https://github.com/bitburner-official/bitburner-src/blob/v3.0.1/src/Bladeburner/data/GeneralActions.ts), and [Bladeburner rewards](https://github.com/bitburner-official/bitburner-src/blob/v3.0.1/src/Bladeburner/Bladeburner.ts).
+
+### Stock checkpoint continuity and gang maintenance diagnostics
+
+Stockmaster checkpoints at most 151 price samples per symbol, forecast phase and held-age metadata under `tasks/stock-history.json` (mock runs use a separate file). Quick reloads can resume a checkpoint only within fifteen seconds, in the same reset, mode and forecast settings, with all fresh native bid/ask quotes unchanged and the previous producer exited. A quote change cannot establish how many ticks were missed, so it requires a cold start. Corrupt or oversized checkpoints are rejected. Estimated forecasts are recalculated from raw prices; native positions, cash and 4S forecasts remain authoritative. Held age survives only when all native position fields still match.
+
+A restored first refresh does not invent another market tick. Fresh manipulation signals are published on every refresh after reading native positions, including when prices have not changed. Bid-only price changes now count as market ticks. Stock status reports checkpoint restoration outcome and history length. Checkpoints are local runtime data and are excluded from repository-to-game file sync.
+
+Gang maintenance retains the last complete status from the same PID and reset. `at` remains the controller heartbeat, while `dataAt` stays at the last complete observation through repeated maintenance. New complete observations replace both timestamps. Shared budget progress uses `dataAt` for freshness, so retained diagnostics cannot keep an obsolete territory measurement active indefinitely. Foreign-owner, wrong-reset and future-dated measurements are discarded.
+
+### Split-loop capacity, observed sleeve XP and stock uncertainty
+
+New looping HGW jobs carry one job ID and expected total thread count across every fragment. The home coordinator compares native live thread totals with that contract and a reset/owner-scoped local ledger. Partial loss, excess capacity, inconsistent metadata and disappearance of a previously known group trigger target recovery through attack, grow and weaken phases. Jobs without capacity metadata remain unmeasured; incomplete host scans cannot update the ledger or advance recovery. Finite workers in the same target still gate recovery. Unsupported or reset-incompatible loop protocols are not forced to stop. The ledger is capped at 2,048 groups, prioritizing damaged groups and reporting untracked groups; the local ledger is not copied to worker hosts. Fully disappeared healthy groups beyond the retained ledger cannot be reconstructed from metadata alone.
+
+Sleeve XP observation requires at least two healthy, fully synchronized observers and two stable thirty-second windows. It uses the minimum observed shared XP rate across observers and recent windows, subtracts the candidate's own XP contribution with a timing margin, and discards calibration after task changes, XP resets, gaps, owner/reset changes or observed bonus cycles. Incoming XP affects projected skill rebuilding; receiving augmentation XP multipliers do not multiply it, and it is not counted as the candidate's own output. Crime subtraction reserves for discrete completion bursts. Observed XP is credited for at most ninety seconds, rather than assuming it continues through the entire fifteen-minute forecast. Missing or stale observations keep the own-work-only fallback. Post-install crime stats now use native zero-XP skill reconstruction with level multipliers immediately.
+
+Estimated stock forecasts use a Wilson bound with z=1 toward the neutral midpoint, replacing the normal approximation that had zero uncertainty at all-up/all-down endpoints. The `probStdDev` compatibility field now stores the toward-neutral confidence margin. Current 4S forecasts retain their native values and zero estimated uncertainty. Restored checkpoints recompute the same margin from raw prices. This is a sampling heuristic; it does not establish that serially correlated game returns have the stated statistical coverage. Trading thresholds are unchanged.
+
+### Estimated stock exits, launch manifests, and sleeve reputation audits
+
+- Ordinary estimated stock exits confirm weak reversals or low returns over two to three distinct observed market ticks. A three-tick forward loss estimate above the sale commission requires two observations; lower-confidence signals require three. This is bounded noise filtering, not a profit guarantee. Strong reversals and native 4S exits remain immediate; explicit liquidation and cash raising bypass this policy. Entry commission is a sunk cost and is not used to justify holding.
+- Fully launched income batches commit their expected looping groups to the controller's reset-scoped capacity ledger before returning success. Failed launches never commit; rejected or throwing commits roll back the batch's new workers. The 2,048-group bound rejects untracked batches. Existing XP loops continue to acquire capacity records from inventory, so whole-job loss before their first scan remains a follow-up opportunity.
+- Sleeve status now includes a read-only reputation accuracy audit. Native per-cycle reputation quotes are converted to per-second rates, integrated across ten-second samples, and compared with thirty-second reputation changes. Task/job/favor/multiplier changes, resets, owner changes, sampling gaps, shock, incomplete synchronization, stored bonus cycles, and competing player/sleeve/gang producers invalidate the window. Deviations above 25% are flagged as unexplained changes. These approximate diagnostics do not retune forecasts or spending; donations or producer changes between samples may contaminate a window. Missing API/formula access defers gracefully. No helper runs when reputation work or Singularity access is absent.
+
+### XP loop launch records and dependency upload order
+
+Standalone looping XP jobs now write expected capacity before their first worker starts. One record covers all fragments, so partial allocation and whole-job loss remain detectable before the first inventory. Failed manifest writes prevent new workers starting. Finite jobs skip this record, income batches retain their existing commit behavior, and pause/maintenance is checked again after the write. Recovery still follows attack, grow, then weaken phases.
+
+The local Remote API listener now orders changed uploads by relative module dependencies, traversing unchanged intermediate modules. Each upload is read back before its importers are exposed; mismatches or connection changes abort the pass. This addresses temporary missing-export errors when a controller arrives before an updated policy. Cyclic module groups cannot be uploaded atomically by the native API and retain deterministic traversal order. The listener was restarted to activate this behavior.
+
+### Fresh launch RAM, independent reloads, and compact diagnostics
+
+- XP worker RAM is recalculated after awaiting the launch manifest write, immediately before execution. Unsplittable jobs require their complete fresh capacity; partial split jobs retain the expected full capacity for recovery.
+- During grafting, program creation or Black Ops, only stockmaster.js, gangs.js and corporation-manager.js may reload independently. Activity locks, casino/reset transitions, unknown protection state, RAM limits, and daemon recovery drains retain their guards. Independent reloads during protected work do not request global maintenance. Stats retains its existing exception.
+- Remote command policy 20 makes automation.status compact: bulk logs, file audits and recent event arrays are omitted; other arrays, objects, strings and nesting are bounded. Explicit _diagnostics metadata identifies omissions. The returned diagnostic data has a 65,536-byte UTF-8 limit; transport envelopes add overhead.
+- automation.logs optionally accepts one managed script name and returns the latest twenty stored lines per selected process. automation.files accepts an optional nonnegative offset and a page size from 1 through 100, returning an audit page and nextOffset. Both use the same byte bound. These are fixed, read-only diagnostic queries; arbitrary file reads remain unsupported.
+- Generated jobs are self-contained. Existing workers must adopt policy 20 before the compact status and added methods become active. Autopilot already refreshes workers when it adopts a changed policy; protected work may defer that activation.
+
+### Independent API worker upgrades and dashboard summaries
+
+- The reliability supervisor now owns idle-only Remote API worker upgrades. It debounces source signatures for ten seconds, preserves RAM headroom, blocks under hard activity/reset locks or unknown protection, waits for pending/running commands, and limits failed restorations to three per fifteen minutes. Completed result files are retained; requests are not replayed by the upgrade helper.
+- Worker heartbeats report activePolicy and the loaded source signature separately from the legacy policy field. Managed upgrades preserve the legacy value expected by an older running autopilot. Current workers are not downgraded, and compatibility survives stale-heartbeat recovery. Updated autopilot only starts a missing worker; it no longer replaces workers based on policy inequality.
+- The read-only supervisor may adopt its own updates during soft protected work, retaining hard-lock, pending-restore, debounce and RAM checks.
+- tasks/dashboard-summary.json contains bounded summary data and trusted owner/reset/time metadata. Routine API status prefers this file only while fresh (under thirty seconds), owned by a live supervisor in the current reset. Missing, stale or invalid summaries fall back to the detailed dashboard. Logs and file-audit queries continue to use detailed data.
+- Command validation/constants now live in the import-free remote-api-command-policy.js. The local listener reloads this module independently, avoiding stale renderer/helper imports in Node's module cache. The existing remote-api-command.js exports remain compatible.
+
+### Diagnostic cadence and upgrade explanations
+
+- Health summaries and warning checks remain on the ten-second supervisor cycle. Detailed logs and the full dashboard are materialized once per minute, including the initial pass. The lightweight warning feed scans the same last 120 native log lines, classifies warnings before shortening strings, deduplicates messages, retains up to 24 recent entries for five minutes, and reports tracked/omitted process counts (maximum 32 tracked). These are observed messages, not proof of current failure or a lossless event stream.
+- Detailed log/audit queries expose their older snapshot timestamp. The dashboard UI prefers the fresh summary and falls back to detailed data if required manager/pending fields were truncated. Summary production preserves all manager entries within its byte budget rather than applying the compact API's eight-entry array limit.
+- Supervisor update status explains settling, protected activity, paused state, pending restorations and retry limits. Native handoff checks add waiting-activity, waiting-process or waiting-ram with available, required and shortfall RAM values. Existing activity, retry and RAM headroom checks remain enforced.
+- Combined lifecycle tests execute the actual autopilot worker-start block with the supervisor upgrade helper and real worker heartbeat. They cover low RAM, a failed replacement, autopilot restoration, legacy policy preservation and avoiding repeated replacement.
+- The command facade exports its already imported policy bindings locally. Relative re-export sources are avoided because the native RAM calculator treats their paths differently from ordinary imports; the former form caused zero RAM quotes despite valid JavaScript syntax.
+
+### Native preflight, fresh logs, and warning observations
+
+- Run `npm run check:game` from the local repository before manual restart workflows. It issues the read-only `automation.preflight` query for all 26 allowed entrypoints. To check selected scripts, use `npm run check:game -- daemon.js reliability-manager.js`. Set `BITBURNER_REMOTE_API_DIR` if the local listener tools are outside the default Documents/Codex/bitburner-remote-api folder. The command fails on missing, invalid, unavailable, empty, incomplete or failed native results.
+- Native preflight quotes RAM without running scripts. It does not guarantee successful JavaScript module execution, Source File access, or every runtime feature. Existing cooperative reloads retain their native RAM checks. Remote `start` now validates a finite positive quote and available RAM before clearing a pause; returned failures and thrown launch errors restore an existing pause.
+- Command policy 21 adds `automation.preflight` (no arguments checks the full allowlist; optional arguments are managed script names) and `automation.logsFresh` (exactly one allowed script name). Neither exposes arbitrary file access or code execution.
+- Fresh logs come directly from current native processes, newest PID first: up to four instances, ten lines each, and 256 characters per line, with omitted-process counts and an overall 65,536-byte diagnostic data bound. Missing processes yield an empty current sample; per-process read failures are reported. `automation.logs` retains the cached detailed snapshot behavior.
+- Warning entries report firstSeenAt, lastSeenAt, observations, visibleCount, lastNewOccurrenceAt and confirmedOccurrences. Observations count polls where the message is present; confirmedOccurrences is a conservative lower bound based on increases in matching text within the sampled 120-line window. Identical retained windows do not inflate occurrence counts. lastSeenAt means presence in the sampled window, not proof the warning was emitted again. Full-line fingerprints distinguish messages before their display strings are shortened. Entries expire five minutes after they leave the observed window.

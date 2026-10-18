@@ -42,3 +42,62 @@ export function dashboardRows(processes,read,now=Date.now()){
   return {script,pids:matching.map(p=>p.pid),state:matching.length?(status?.status||status?.state||status?.mode||'running'):'not-running',reason:status?.reason||status?.error||(matching.length&&saved&&owner?'Waiting for status from the current process':''),updatedAt:status?.at||null,ageMs:status?.at?now-status.at:null};
  });
 }
+
+/** Old processes retain their launch-time RAM cost when files change. */
+export function automationReloadFits({free,newRam,oldRam=0,threads=1,reserve=0,stopped=false}) {
+ if(![free,newRam,oldRam,threads,reserve].every(Number.isFinite)||free<0||newRam<=0||oldRam<0||!Number.isInteger(threads)||threads<1||reserve<0)return false;
+ return free+(stopped?0:oldRam*threads)>=newRam*threads+reserve;
+}
+
+/** Debounce code sync and bound self-update attempts across supervisor instances. */
+export function supervisorUpdatePlan({previous,launchedSignature,currentSignature,reset,now,protectedWork=false,pendingRestores=false,paused=false}) {
+ const valid=previous?.nodeReset===reset.lastNodeReset&&previous.augReset===reset.lastAugReset&&previous.at<=now;
+ const old=valid?previous:null;
+ const attempts=old?.signature===currentSignature&&Number.isFinite(old.windowAt)&&now-old.windowAt<15*60000?Math.max(0,Number(old.attempts)||0):0;
+ const candidateAt=old?.signature===currentSignature&&Number.isFinite(old.candidateAt)&&old.candidateAt<=now?old.candidateAt:now;
+ const record={at:now,nodeReset:reset.lastNodeReset,augReset:reset.lastAugReset,signature:currentSignature,candidateAt,attempts,windowAt:attempts?old.windowAt:now};
+ const changed=typeof currentSignature==='string'&&currentSignature&&currentSignature!==launchedSignature;
+ const state=!changed?'current':paused?'paused':protectedWork||pendingRestores?'deferred':attempts>=3?'retry-limit':now-candidateAt<10000?'settling':'ready';
+ return {...record,state,reason:!changed?'Current code is active':paused?'Supervisor is paused':protectedWork?'Waiting for protected activity':pendingRestores?'Waiting for stopped controllers to be restored':attempts>=3?'Update retry limit reached':state==='settling'?'Waiting for files to settle':'Ready to activate'};
+}
+
+/** ns.spawn replaces this process only after native RAM and activity checks pass. */
+export function handoffSupervisor(ns,plan,{reserve=0,blocked=false}={}) {
+ if(plan.state!=='ready'||blocked)return false;
+ const activation=supervisorHandoffStatus(ns,plan,{reserve,blocked});if(activation.state!=='ready')return false;
+ const script=ns.getScriptName(),old=ns.getRunningScript(ns.pid);
+ ns.write('tasks/reliability-self-update.json',JSON.stringify({...plan,pid:ns.pid,state:'handoff',attempts:plan.attempts+1}),'w');
+ ns.spawn(script,{threads:old.threads,spawnDelay:0},...ns.args);
+ return true;
+}
+
+/** A waiting reload must not globally pause automation until its replacement can fit. */
+export function automationReloadReady(ns,job,reserve=0) {
+ const oldRam=job.stopped?0:ns.getRunningScript(job.pid)?.ramUsage;
+ if(!job.stopped&&!Number.isFinite(oldRam))return false;
+ return automationReloadFits({free:ns.getServerMaxRam('home')-ns.getServerUsedRam('home'),newRam:ns.getScriptRam(job.filename,'home'),oldRam,threads:job.threads,reserve,stopped:job.stopped});
+}
+export function maintenanceReloadJobs(ns,jobs,reserve=0,protectedWork=false) {
+ return protectedWork?[]:jobs.filter(job=>job.filename.replace(/^\//,'')!=='stats.js'&&automationReloadReady(ns,job,reserve));
+}
+
+/** Only independent controllers may reload during soft protected work. Hard locks remain global. */
+export function controllerReloadBlocked(script,{protectedWork=false,globalProtection=false,drainProtected=false}={}) {
+ const name=script.replace(/^\//,'');
+ if(name==='stats.js')return false;
+ if(globalProtection||name==='daemon.js'&&drainProtected)return true;
+ return protectedWork&&!['stockmaster.js','gangs.js','corporation-manager.js'].includes(name);
+}
+
+/** Explain native activation checks without stopping anything or relaxing reserved RAM. */
+export function supervisorHandoffStatus(ns,plan,{reserve=0,blocked=false}={}) {
+ if(plan.state!=='ready')return plan;
+ if(blocked)return {...plan,state:'waiting-activity',reason:'Waiting for an activity lock or pause to clear'};
+ try{
+  const old=ns.getRunningScript(ns.pid);if(!old)return {...plan,state:'waiting-process',reason:'Cannot verify the supervisor RAM usage'};
+  const free=ns.getServerMaxRam('home')-ns.getServerUsedRam('home'),newRam=ns.getScriptRam(ns.getScriptName(),'home');
+  const fits=automationReloadFits({free,newRam,oldRam:old.ramUsage,threads:old.threads,reserve});
+  const availableRam=free+old.ramUsage*old.threads,requiredRam=newRam*old.threads+reserve;
+  return {...plan,state:fits?'ready':'waiting-ram',reason:fits?'Ready to activate':'Waiting for home RAM while preserving helper headroom',availableRam,requiredRam,shortfallRam:Math.max(0,requiredRam-availableRam)};
+ }catch{return {...plan,state:'waiting-process',reason:'Cannot verify native RAM requirements'};}
+}

@@ -213,16 +213,12 @@ function checkBackwardsCompatibility(ns, command) {
 /** Convert a command name like "ns.namespace.someFunction(args, args)" into
  * a default file path for running that command "/Temp/namespace-someFunction.txt" */
 function getDefaultCommandFileName(command, ext = '.txt') {
-    let fname = command;
-    // Find the first occurrence of "ns.", which would indicate the start of the main function being invoked
-    const nsIndex = fname.indexOf('ns.');
-    if (nsIndex !== -1) fname = fname.substring(nsIndex);
-    // Remove anything after an opening parentheses (function call)
-    const openParen = fname.indexOf('(');
-    if (openParen !== -1) fname = fname.substring(0, openParen);
-    // Replace any dereferencing (dots) with dashes
-    fname = fname.replaceAll(".", "-");
-    return `/Temp/${fname}${ext}`
+    // A serialized function can pass ns.namespace as an argument without calling it.
+    // Never copy arguments, brackets, whitespace or source text into a native filename.
+    const reference = String(command).match(/\bns\.([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)/);
+    const name = reference ? ('ns-' + reference[1].replaceAll('.', '-')).slice(0, 80) :
+        'command-' + (hashCode(String(command)) >>> 0).toString(16);
+    return `/Temp/${name}${ext}`;
 }
 
 /**

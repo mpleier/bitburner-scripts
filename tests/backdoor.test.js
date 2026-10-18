@@ -23,8 +23,8 @@ test('backdoor worker reports a successful install', async () => {
     const installed = [];
     const toasts = [];
     const ns = {
-        args: ['CSEC'],
-        singularity: { installBackdoor: async () => installed.push(true) },
+        args: ['CSEC'],read:()=>'',getResetInfo:()=>({lastNodeReset:1,lastAugReset:2}),pid:9,write(){},getScriptName:()=> 'Tasks/backdoor-all-servers.js.backdoor-one.js',
+        singularity: { getCurrentServer:()=> 'CSEC',installBackdoor: async () => installed.push(true) },
         toast: (...args) => toasts.push(args),
     };
 
@@ -37,8 +37,8 @@ test('backdoor worker handles install failure without throwing', async () => {
     const printed = [];
     const toasts = [];
     const ns = {
-        args: ['pserv-owned'],
-        singularity: { installBackdoor: async () => { throw new Error('server is your server'); } },
+        args: ['pserv-owned'],read:()=>'',getResetInfo:()=>({lastNodeReset:1,lastAugReset:2}),pid:9,write(){},getScriptName:()=> 'Tasks/backdoor-all-servers.js.backdoor-one.js',
+        singularity: { getCurrentServer:()=> 'pserv-owned',installBackdoor: async () => { throw new Error('server is your server'); } },
         print: message => printed.push(message),
         toast: (...args) => toasts.push(args),
     };

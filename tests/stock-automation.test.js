@@ -1,3 +1,4 @@
+import {augmentationCashReserve} from '../spending-policy.js';
 import {readFile} from 'node:fs/promises';
 import vm from 'node:vm';
 import test from 'node:test';
@@ -38,7 +39,7 @@ test('invalid stock options reject impossible cash fractions',()=>{
 test('serialized stock worker uses fresh reserves and valid native argument types',async()=>{
  const source=await readFile(new URL('../stockmaster.js',import.meta.url),'utf8');
  const m=market(),ns={pid:1,read:()=> '1950000',getPlayer:()=>({money:m.wallet()}),isRunning:()=>true,stock:m.api};
- const context={stockTradeReceipt,stockReserve,stockControlAllowed,stockHistoryForecast,achievementActionAllowed:()=>true,getNsDataThroughFile:async(ns,expression,file,args)=>{assert.ok(args.every(a=>['string','number','boolean'].includes(typeof a)));ns.args=args;return vm.runInNewContext(expression,{ns});}};
+ const context={augmentationCashReserve,stockTradeReceipt,stockReserve,stockControlAllowed,stockHistoryForecast,achievementActionAllowed:()=>true,getNsDataThroughFile:async(ns,expression,file,args)=>{assert.ok(args.every(a=>['string','number','boolean'].includes(typeof a)));ns.args=args;return vm.runInNewContext(expression,{ns});}};
  vm.runInNewContext(source.replace(/^import[\s\S]*?from\s+['"][^'"]+['"];?\r?$/gm,'').replaceAll('export function','function').replace('export async function','async function')+';globalThis.trade=transactStock;',context);
  const result=await context.trade(ns,'AAA',1000,'buyStock');assert.equal(result.shares,0);assert.equal(m.calls(),0);
 });
@@ -60,7 +61,7 @@ test('serialized workers preserve order allocations and explicit liquidation pau
  const source=await readFile(new URL('../stockmaster.js',import.meta.url),'utf8');
  const make=async(position=[0,0,0,0],paused=false)=>{
   const m=market({position}),ns={pid:1,read:path=>path==='reserve.txt'?'0':paused?'true':'',getPlayer:()=>({money:m.wallet()}),isRunning:()=>true,stock:m.api};
-  const context={stockTradeReceipt,stockReserve,stockControlAllowed,stockHistoryForecast,achievementActionAllowed:()=>true,getNsDataThroughFile:async(ns,expression,file,args)=>{ns.args=args;return vm.runInNewContext(expression,{ns});}};
+  const context={augmentationCashReserve,stockTradeReceipt,stockReserve,stockControlAllowed,stockHistoryForecast,achievementActionAllowed:()=>true,getNsDataThroughFile:async(ns,expression,file,args)=>{ns.args=args;return vm.runInNewContext(expression,{ns});}};
   vm.runInNewContext(source.replace(/^import[\s\S]*?from\s+['"][^'"]+['"];?\r?$/gm,'').replaceAll('export function','function').replace('export async function','async function')+';globalThis.trade=transactStock;',context);
   return {m,trade:(...args)=>context.trade(ns,'AAA',1000,...args)};
  };
@@ -87,7 +88,7 @@ test('one synchronous snapshot collects consistent quotes, forecasts and positio
  calls=[];const mockSnapshot=vm.runInNewContext(stockSnapshotExpression(false,true),{ns});assert.equal(mockSnapshot.AAA.position,null);assert.deepEqual(calls,['getAskPrice','getBidPrice']);
 });
 
-function stockContext(source,context,append){context.stockHistoryForecast=stockHistoryForecast;vm.runInNewContext(source.replace(/^import[\s\S]*?from\s+['"][^'"]+['"];?\r?$/gm,'').replaceAll('export function','function').replace('export async function','async function')+append,context);}
+function stockContext(source,context,append){context.augmentationCashReserve=augmentationCashReserve;context.stockHistoryForecast=stockHistoryForecast;vm.runInNewContext(source.replace(/^import[\s\S]*?from\s+['"][^'"]+['"];?\r?$/gm,'').replaceAll('export function','function').replace('export async function','async function')+append,context);}
 
 test('mock trades debit and credit a separate wallet instead of reusing real cash',async()=>{
  const source=await readFile(new URL('../stockmaster.js',import.meta.url),'utf8'),ns={read:()=>'',getScriptName:()=> 'stockmaster.js',print:()=>{}},context={stockReserve,achievementActionAllowed:()=>true,isScriptPaused:()=>false,formatMoney:String,getNsDataThroughFile:async()=>({money:2e6})};
@@ -116,4 +117,15 @@ test('partial 4S access purchases request a portfolio refresh even if API purcha
 test('short purchase quotes use the native S enum value',()=>{
  const m=market({forecast:.3});const receipt=stockTradeReceipt(m.api,m.wallet,'AAA',1000,'buyShort',0,()=>true);
  assert.equal(receipt.shares,1000);assert.equal(receipt.cash,200000);
+});
+
+
+test('native stock workers recheck augmentation cash goals even with a zero stock reserve',async()=>{
+ const source=await readFile(new URL('../stockmaster.js',import.meta.url),'utf8'),m=market(),now=Date.now();
+ let goal=1950000;
+ const ns={pid:1,read:f=>f==='tasks/spending-plan.json'?JSON.stringify({epoch:now,expiresAt:now+60000,reset:3,ownerPid:7,signals:{augmentationCashTarget:{name:'Combat',cost:goal}}}):'0',getResetInfo:()=>({lastAugReset:3}),ps:()=>[{pid:7,filename:'autopilot.js'}],getPlayer:()=>({money:m.wallet()}),isRunning:()=>true,stock:m.api};
+ const context={augmentationCashReserve,stockTradeReceipt,stockReserve,stockControlAllowed,stockHistoryForecast,achievementActionAllowed:()=>true,getNsDataThroughFile:async(ns,expression,file,args)=>{ns.args=args;return vm.runInNewContext(expression,{ns});}};
+ stockContext(source,context,';options={reserve:0};globalThis.trade=transactStock;');
+ assert.equal((await context.trade(ns,'AAA',1000,'buyStock')).shares,0);assert.equal(m.calls(),0);
+ goal=0;assert.equal((await context.trade(ns,'AAA',1000,'buyStock')).shares,1000);
 });

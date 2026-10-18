@@ -1,4 +1,5 @@
-import {stockOptionsError,stockReserve,holdYoungStock,stockTradeReceipt,stockControlAllowed,stockCycleAgreement,stockHistoryForecast,stockSnapshotExpression} from './stock-policy.js';
+import {augmentationCashReserve} from './spending-policy.js';
+import {stockExitDecision,stockForecastUncertainty,stockHistoryCheckpoint,restoreStockHistory,stockManipulationSnapshot,stockOptionsError,stockReserve,holdYoungStock,stockTradeReceipt,stockControlAllowed,stockCycleAgreement,stockHistoryForecast,stockSnapshotExpression} from './stock-policy.js';
 import {registerAutomation,automationHeartbeat,maintenanceRequested} from './runtime-policy.js';
 import {isScriptPaused} from './automation-control.js';
 import {achievementActionAllowed} from './achievement-policy.js';
@@ -34,6 +35,10 @@ let inversionAgreementThreshold = 6; // If this many stocks are detected as bein
 const expectedTickTime = 6000;
 const catchUpTickTime = 4000;
 let lastTick = 0;
+let rapidTickStreak=0,lastRapidTickWarningAt=0;
+let pendingStockHistory=null,historyRestoration={restored:false,reason:'no-checkpoint'},lastHistorySaveAt=0;
+const stockHistorySettings=()=>({minHistory:minTickHistory,longWindow:longTermForecastWindowLength,nearWindow:nearTermForecastWindowLength,cycleLength:marketCycleLength,maxHistory:maxTickHistory});
+const stockHistoryFile=()=>mock?'tasks/stock-history-mock.json':'tasks/stock-history.json';
 let sleepInterval = 1000;
 let resetInfo = (/**@returns{ResetInfo}*/() => undefined)(); // Information about the current bitnode
 let bitNodeMults = (/**@returns{BitNodeMultipliers}*/() => undefined)();
@@ -116,6 +121,7 @@ export async function main(ns) {
     showMarketSummary = options['show-pre-4s-forecast'] || options['show-market-summary'];
     // Other global values must be reset at start lest they be left in memory from a prior run
     lastTick = 0, totalProfit = 0, lastLog = "", marketCycleDetected = false, detectedCycleTick = 0, inversionAgreementThreshold = 6;
+    pendingStockHistory=null;historyRestoration={restored:false,reason:'no-checkpoint'};lastHistorySaveAt=0;
     let myStocks = [], allStocks = [];
     let player = await getPlayerInfo(ns);
     resetInfo = await getNsDataThroughFile(ns, 'ns.getResetInfo()');
@@ -131,7 +137,7 @@ export async function main(ns) {
             if(isScriptPaused(ns,ns.getScriptName()))return;automationHeartbeat(ns);
             await ns.sleep(sleepInterval);
             try {
-                const reserve = stockReserve(options['reserve'],ns.read('reserve.txt'));
+                const reserve = Math.max(stockReserve(options['reserve'],ns.read('reserve.txt')),augmentationCashReserve(ns));
                 player = await getPlayerInfo(ns);
                 success = await tryGetStockMarketAccess(ns, player.money - reserve);
             } catch (err) {
@@ -149,6 +155,7 @@ export async function main(ns) {
 
     allStockSymbols = await getStockSymbols(ns);
     allStocks = await initAllStocks(ns);
+    pendingStockHistory=ns.read(stockHistoryFile());
     if(!allStocks.length)return log(ns,"No stock symbols are available; trading stopped.",true);
     bitNodeMults = await tryGetBitNodeMultipliers(ns);
 
@@ -157,8 +164,9 @@ export async function main(ns) {
     let hudElement = null;
     if (!disableHud) {
         hudElement = initializeHud();
-        ns.atExit(()=>{try{hudElement?.parentElement?.parentElement?.remove();}catch{}});
     }
+    ns.atExit(()=>{try{hudElement?.parentElement?.parentElement?.remove();}catch{}
+        try{const file='/Temp/stock-probabilities.txt';if(JSON.parse(ns.read(file))?.pid===ns.pid)ns.rm(file);}catch{}});
 
     log(ns, `Welcome! Please note: all stock purchases will initially result in a Net (unrealized) Loss. This is not only due to commission, but because each stock has a 'spread' (difference in buy price and sell price). ` +
         `This script is designed to buy stocks that are most likely to surpass that loss and turn a profit, but it will take a few minutes to see the progress.\n\n` +
@@ -170,12 +178,12 @@ export async function main(ns) {
         if(maintenanceRequested(ns)){await ns.write("tasks/stock-status.json",JSON.stringify({at:Date.now(),pid:ns.pid,state:"waiting",reason:"Automation maintenance"}),"w");await ns.sleep(sleepInterval);continue;}
         try {
             const playerStats = await getPlayerInfo(ns);
-            const reserve = stockReserve(options['reserve'],ns.read('reserve.txt'));
+            const reserve = Math.max(stockReserve(options['reserve'],ns.read('reserve.txt')),augmentationCashReserve(ns));
             // Check whether we have 4s access yes (once we do, we can stop checking)
             if (pre4s) pre4s = !(await checkAccess(ns, "has4SDataTixApi"));
             const holdings = await refresh(ns, !pre4s, allStocks, myStocks); // Returns total stock value
             const corpus = holdings + playerStats.money;
-            await ns.write('tasks/stock-status.json',JSON.stringify({at:Date.now(),pid:ns.pid,state:pre4s&&allStocks[0].priceHistory.length<minTickHistory?'building-history':'trading',mode:mock?'mock':pre4s?'estimated forecasts':'4S forecasts',cash:playerStats.money,reserve,holdings,corpus,realizedProfit:totalProfit,positions:myStocks.map(s=>({symbol:s.sym,long:s.sharesLong,short:s.sharesShort}))}),'w'); // Corpus means total stocks + cash
+            await ns.write('tasks/stock-status.json',JSON.stringify({at:Date.now(),pid:ns.pid,state:pre4s&&allStocks[0].priceHistory.length<minTickHistory?'building-history':'trading',mode:mock?'mock':pre4s?'estimated forecasts':'4S forecasts',historyRestoration,historyLength:allStocks[0].priceHistory.length,forecastUncertainty:pre4s?'Wilson z=1':'native 4S',cash:playerStats.money,reserve,holdings,corpus,realizedProfit:totalProfit,positions:myStocks.map(s=>({symbol:s.sym,long:s.sharesLong,short:s.sharesShort,exit:s.exitDecision}))}),'w'); // Corpus means total stocks + cash
             const maxHoldings = (1 - fracH) * corpus; // The largest value of stock we could hold without violiating fracH (Fraction to keep as cash)
             if (pre4s && !mock && await tryGet4SApi(ns, playerStats, corpus * (options['buy-4s-budget'] - fracH) - reserve))
                 continue; // Refresh after access purchases or liquidation change cash/positions
@@ -195,9 +203,10 @@ export async function main(ns) {
             let sales = 0;
             for (let stk of myStocks) {
                 if(!Number.isFinite(stk.prob)||!Number.isFinite(stk.vol))continue;
-                if (stk.absReturn() <= thresholdToSell || stk.bullish() && stk.sharesShort > 0 || stk.bearish() && stk.sharesLong > 0) {
+                stk.exitDecision=stockExitDecision(stk,stk.exitDecision,{estimated:pre4s,tick:lastTick,threshold:thresholdToSell,margin:pre4sBuyThresholdProbability,commission});
+                if (stk.exitDecision.sell) {
                     if (pre4s && holdYoungStock(stk,pre4sMinHoldTime,pre4sBuyThresholdProbability)) {
-                        if (!stk.warnedBadPurchase) log(ns, `WARNING: Thinking of selling ${stk.sym} with ER ${formatBP(stk.absReturn())}, but holding out as it was purchased just ${stk.ticksHeld} ticks ago...`);
+                        if (!stk.warnedBadPurchase) log(ns, `INFO: Considering selling ${stk.sym} with ER ${formatBP(stk.absReturn())}, but holding out as it was purchased just ${stk.ticksHeld} ticks ago...`);
                         stk.warnedBadPurchase = true; // Hack to ensure we don't spam this warning
                     } else {
                         const before=stk.ownedShares();await doSellAll(ns,stk);if(stk.ownedShares()<before)sales++;
@@ -291,7 +300,7 @@ async function initAllStocks(ns) {
         sym: s,
         maxShares: dictMaxShares[s], // Value never changes once retrieved
         expectedReturn: function () { // How much holdings are expected to appreciate (or depreciate) in the future
-            // To add conservatism to pre-4s estimates, we reduce the probability by 1 standard deviation without crossing the midpoint
+            // For estimated forecasts, use the toward-neutral Wilson bound without crossing the midpoint
             let normalizedProb = (this.prob - 0.5);
             let conservativeProb = normalizedProb < 0 ? Math.min(0, normalizedProb + this.probStdDev) : Math.max(0, normalizedProb - this.probStdDev);
             return this.vol * conservativeProb;
@@ -323,18 +332,36 @@ async function refresh(ns, has4s, allStocks, myStocks) {
     const snapshot = await getNsDataThroughFile(ns,stockSnapshotExpression(has4s,mock),'/Temp/stock-snapshot.txt',allStockSymbols);
     const map = key => Object.fromEntries(allStockSymbols.map(sym=>[sym,snapshot[sym][key]]));
     const dictAskPrices=map('ask'),dictBidPrices=map('bid'),dictVolatilities=map('vol'),dictForecasts=map('prob'),dictPositions=map('position');
-    const ticked = allStocks.some(stk => stk.ask_price != dictAskPrices[stk.sym]); // If any price has changed since our last update, the stock market has "ticked"
+    if(pendingStockHistory!==null){
+        const saved=restoreStockHistory(pendingStockHistory,{reset:resetInfo,settings:stockHistorySettings(),mock,has4s,quotes:snapshot,pid:ns.pid,processes:ns.ps('home')});
+        pendingStockHistory=null;historyRestoration={restored:!!saved.state,reason:saved.reason,at:Date.now()};
+        if(saved.state){
+            const state=saved.state;
+            lastTick=state.lastTick;marketCycleDetected=state.marketCycleDetected;detectedCycleTick=state.detectedCycleTick;inversionAgreementThreshold=state.inversionAgreementThreshold;
+            for(const stock of allStocks){const old=state.stocks[stock.sym];
+                Object.assign(stock,{ask_price:old.ask,bid_price:old.bid,priceHistory:old.priceHistory,lastInversion:old.lastInversion,
+                    lastTickProbability:old.lastTickProbability,prob:old.prob,probStdDev:old.probStdDev,vol:old.vol,
+                    nearTermForecast:old.nearTermForecast,longTermForecast:old.longTermForecast,ticksHeld:old.ticksHeld});
+            }
+        }
+    }
+    const ticked = allStocks.some(stk => stk.ask_price != dictAskPrices[stk.sym] || stk.bid_price != dictBidPrices[stk.sym]); // If any price has changed since our last update, the stock market has "ticked"
 
     if (ticked) {
         if (Date.now() - lastTick < expectedTickTime - sleepInterval) {
             if (Date.now() - lastTick < catchUpTickTime - sleepInterval) {
-                let changedPrices = allStocks.filter(stk => stk.ask_price != dictAskPrices[stk.sym]);
-                log(ns, `WARNING: Detected a stock market tick after only ${formatDuration(Date.now() - lastTick)}, but expected ~${formatDuration(expectedTickTime)}. ` +
+                let changedPrices = allStocks.filter(stk => stk.ask_price != dictAskPrices[stk.sym] || stk.bid_price != dictBidPrices[stk.sym]);
+                rapidTickStreak++;
+                const repeated=rapidTickStreak>=5&&Date.now()-lastRapidTickWarningAt>=60000;
+                if(repeated)lastRapidTickWarningAt=Date.now();
+                log(ns, `${repeated?'WARNING':'INFO'}: Detected a stock market tick after only ${formatDuration(Date.now() - lastTick)}, but expected ~${formatDuration(expectedTickTime)}. ` +
                     (changedPrices.length >= 33 ? '(All stocks updated)' : `The following ${changedPrices.length} stock prices changed: ${changedPrices.map(stk =>
-                        `${stk.sym} ${formatMoney(stk.ask_price)} -> ${formatMoney(dictAskPrices[stk.sym])}`).join(", ")}`), false, 'warning');
-            } else
-                log(ns, `INFO: Detected a rapid stock market tick (${formatDuration(Date.now() - lastTick)}), likely to make up for lag / offline time.`)
-        }
+                        `${stk.sym} ${formatMoney(stk.ask_price)} -> ${formatMoney(dictAskPrices[stk.sym])}`).join(", ")}`), false, repeated?'warning':null);
+            } else {
+                rapidTickStreak=0;
+                log(ns, `INFO: Detected a rapid stock market tick (${formatDuration(Date.now() - lastTick)}), likely to make up for lag / offline time.`);
+            }
+        } else rapidTickStreak=0;
         lastTick = Date.now()
     }
 
@@ -357,11 +384,16 @@ async function refresh(ns, has4s, allStocks, myStocks) {
         stk.sharesShort = mock ? (stk.sharesShort || 0) : stk.position[2];
         stk.boughtPriceShort = mock ? (stk.boughtPriceShort || 0) : stk.position[3];
         holdings += stk.positionValue();
-        if (stk.owned()) myStocks.push(stk); else stk.ticksHeld = 0;
+        if (stk.owned()) myStocks.push(stk); else {stk.ticksHeld = 0;stk.exitDecision=null;}
         if (ticked) // Increment ticksHeld, or reset it if we have no position in this stock or reversed our position last tick.
             stk.ticksHeld = !stk.owned() || (priorLong > 0 && stk.sharesLong == 0) || (priorShort > 0 && stk.sharesShort == 0) ? 0 : 1 + (stk.ticksHeld || 0);
     }
     if (ticked) await updateForecast(ns, allStocks, has4s); // Logic below only required on market tick
+    await ns.write('/Temp/stock-probabilities.txt',JSON.stringify(stockManipulationSnapshot(allStocks,ns.pid,resetInfo,mock)),'w');
+    if(Date.now()-lastHistorySaveAt>=1000){
+        await ns.write(stockHistoryFile(),JSON.stringify(stockHistoryCheckpoint(allStocks,{pid:ns.pid,reset:resetInfo,settings:stockHistorySettings(),mock,has4s,lastTick,marketCycleDetected,detectedCycleTick,inversionAgreementThreshold})),'w');
+        lastHistorySaveAt=Date.now();
+    }
     await ns.write(stockSignalFile, JSON.stringify(stockPromotionSignals(allStocks, has4s && !mock)), 'w');
     return holdings;
 }
@@ -423,7 +455,7 @@ async function updateForecast(ns, allStocks, has4s) {
         stk.longTermForecast = forecast(stk.priceHistory.slice(0, probWindowLength));
         if (!has4s) {
             stk.prob = stk.longTermForecast;
-            stk.probStdDev = Math.sqrt((stk.prob * (1 - stk.prob)) / Math.max(1,Math.min(probWindowLength,stk.priceHistory.length)-1));
+            stk.probStdDev = stockForecastUncertainty(stk.prob,Math.max(0,Math.min(probWindowLength,stk.priceHistory.length)-1));
         }
         const signalStrength = 1 + (stk.bullish() ? (stk.nearTermForecast > stk.prob ? 1 : 0) + (stk.prob > 0.8 ? 1 : 0) : (stk.nearTermForecast < stk.prob ? 1 : 0) + (stk.prob < 0.2 ? 1 : 0));
         if (prepSummary) { // Example: AERO  ++   Prob: 54% (t51: 54%, t10: 67%) tLast⇄:190 Vol:0.640% ER: 2.778BP Spread:1.784% ttProfit: 65 Pos: 14.7M long  (held 189 ticks)
@@ -443,9 +475,6 @@ async function updateForecast(ns, allStocks, has4s) {
             `Current Stock Summary and Pre-4S Forecasts (by best payoff-time):\n` + allStocks.sort(purchaseOrder).map(s => s.debugLog).join("\n")
         if (showMarketSummary) await updateForecastFile(ns, summary); else log(ns, summary);
     }
-    // Write out a file of stock probabilities so that other scripts can make use of this (e.g. hack orchestrator can manipulate the stock market)
-    await ns.write('/Temp/stock-probabilities.txt', JSON.stringify(Object.fromEntries(
-        allStocks.map(stk => [stk.sym, { prob: stk.prob, sharesLong: stk.sharesLong, sharesShort: stk.sharesShort }]))), "w");
 }
 
 // Helpers to display the stock market summary in a separate window.
@@ -466,13 +495,13 @@ let launchSummaryTail = async ns => {
 
 // Each receipt records actual filled shares and synchronous cash movement.
 async function transactStock(ns,sym,count,action,liquidating=false,budget=Number.MAX_VALUE){
- return await getNsDataThroughFile(ns,`(${stockTradeReceipt.toString()})({getPosition:(...a)=>ns.stock.getPosition(...a),getMaxShares:(...a)=>ns.stock.getMaxShares(...a),getPurchaseCost:(...a)=>ns.stock.getPurchaseCost(...a),has4SDataTixApi:()=>ns.stock.has4SDataTixApi(),getForecast:(...a)=>ns.stock.getForecast(...a),${action}:(...a)=>ns.stock.${action}(...a)},()=>ns.getPlayer().money,ns.args[0],ns.args[1],"${action}",(${stockReserve.toString()})(ns.args[4],ns.read("reserve.txt")),()=>(${stockControlAllowed.toString()})(ns,ns.args[2],ns.args[3])&&(${action.startsWith('buy')?'('+achievementActionAllowed.toString()+')(ns,"stockInvesting")':'true'}),100000,ns.args[5])`,null,[sym,count,ns.pid,liquidating,options?.reserve??'__default__',budget]);
+ return await getNsDataThroughFile(ns,`(${stockTradeReceipt.toString()})({getPosition:(...a)=>ns.stock.getPosition(...a),getMaxShares:(...a)=>ns.stock.getMaxShares(...a),getPurchaseCost:(...a)=>ns.stock.getPurchaseCost(...a),has4SDataTixApi:()=>ns.stock.has4SDataTixApi(),getForecast:(...a)=>ns.stock.getForecast(...a),${action}:(...a)=>ns.stock.${action}(...a)},()=>ns.getPlayer().money,ns.args[0],ns.args[1],"${action}",Math.max((${stockReserve.toString()})(ns.args[4],ns.read("reserve.txt")),(${augmentationCashReserve.toString()})(ns)),()=>(${stockControlAllowed.toString()})(ns,ns.args[2],ns.args[3])&&(${action.startsWith('buy')?'('+achievementActionAllowed.toString()+')(ns,"stockInvesting")':'true'}),100000,ns.args[5])`,null,[sym,count,ns.pid,liquidating,options?.reserve??'__default__',budget]);
 }
 async function doBuy(ns,stk,count,budget=Number.MAX_VALUE){
  if(!achievementActionAllowed(ns,'stockInvesting')||isScriptPaused(ns,ns.getScriptName()))return 0;
  const long=stk.bullish(),expected=long?stk.ask_price:stk.bid_price,owned=stk.owned();
  const r=mock?{price:expected,shares:count,cash:count*expected+commission}:await transactStock(ns,stk.sym,count,long?'buyStock':'buyShort',false,budget);
- if(mock&&r.cash>Math.min(budget,mockCash-stockReserve(options.reserve,ns.read("reserve.txt"))))return 0;
+ if(mock&&r.cash>Math.min(budget,mockCash-Math.max(stockReserve(options.reserve,ns.read("reserve.txt")),augmentationCashReserve(ns))))return 0;
  if(!r.shares){log(ns,'Purchase deferred or rejected: '+stk.sym);return 0;}
  if(mock)mockCash-=r.cash;
  if(owned)totalProfit-=commission;
@@ -545,7 +574,7 @@ async function tryGet4SApi(ns, playerStats, budget) {
     if (totalCost > budget) /* Need to reserve some money to invest */
         return false;
     let changed=false;
-    if (playerStats.money < totalCost+stockReserve(options['reserve'],ns.read('reserve.txt'))) {
+    if (playerStats.money < totalCost+Math.max(stockReserve(options['reserve'],ns.read('reserve.txt')),augmentationCashReserve(ns))) {
         changed=true;
         if(!await liquidate(ns)){await ns.sleep(sleepInterval);return true;}
     }
@@ -578,7 +607,7 @@ async function checkAccess(ns, stockFn) {
  * @param {"purchaseWseAccount"|"purchaseTixApi"|"purchase4SMarketData"|"purchase4SMarketDataTixApi"} stockFn
  * Helper to try and buy a stock access. Yes, the code is the same as above, but I wanted to be explicit. */
 async function tryBuy(ns, stockFn,cost) {
-    return await getNsDataThroughFile(ns, `(${stockControlAllowed.toString()})(ns,ns.args[0])&&(${achievementActionAllowed.toString()})(ns,ns.args[3])&&ns.getPlayer().money>=ns.args[1]+(${stockReserve.toString()})(ns.args[2],ns.read('reserve.txt'))?ns.stock.${stockFn}():false`,null,[ns.pid,cost,options['reserve']??'__default__',stockFn.includes('4S')?'fourSigma':'stockInvesting']);
+    return await getNsDataThroughFile(ns, `(${stockControlAllowed.toString()})(ns,ns.args[0])&&(${achievementActionAllowed.toString()})(ns,ns.args[3])&&ns.getPlayer().money>=ns.args[1]+Math.max((${stockReserve.toString()})(ns.args[2],ns.read('reserve.txt')),(${augmentationCashReserve.toString()})(ns))?ns.stock.${stockFn}():false`,null,[ns.pid,cost,options['reserve']??'__default__',stockFn.includes('4S')?'fourSigma':'stockInvesting']);
 }
 
 /** @param {NS} ns

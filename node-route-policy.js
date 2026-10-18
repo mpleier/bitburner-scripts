@@ -1,3 +1,5 @@
+import {bladeburnerStaminaChance} from './bladeburner-policy.js';
+import {blackOpMetadata,bladeburnerDifficulty} from './bladeburner-action-data.js';
 /** Completion forecasts at current capabilities, not promises about future upgrades. */
 export const nodeRouteFile = 'tasks/node-route-plan.json';
 const minute = 60000;
@@ -35,12 +37,17 @@ export function sampleRouteProgress(previous, sample) {
     return {samples,xpModes,cashRate,repRate,sampling:elapsed<60};
 }
 
-export function estimateDaemonRoute(snapshot, observation) {
+export function estimateDaemonRoute(snapshot, observation={}) {
     const s=snapshot, stages=[];
     if(!s.hasRedPill) {
         if(!s.singularityKnown)return {...unknown('Singularity unavailable; Red Pill requirements cannot be measured'),stages};
         if(s.queuedRedPill)stages.push({name:'Install The Red Pill',etaMs:null});
-        else if(!s.daedalus)stages.push({name:'Join Daedalus (augmentation, wealth and stat requirements)',etaMs:null});
+        else if(!s.daedalus){
+            stages.push({name:'Installed augmentation requirement',current:s.installedAugs,target:s.daedalusAugsRequired,etaMs:null});
+            stages.push({name:'Daedalus wealth requirement',gapCash:Math.max(0,100e9-s.worth),etaMs:s.worth>=100e9?0:positive(observation.cashRate)?(100e9-s.worth)/observation.cashRate*1000:null});
+            stages.push({name:'Daedalus entry stats',hacking:s.hacking,targetHack:2500,combatReady:s.combatReady,etaMs:s.hacking>=2500||s.combatReady?0:null});
+            stages.push({name:'Acquire and install The Red Pill, then measure post-reset XP',etaMs:null});
+        }
         else {
             const gapCash=Math.max(0,s.redPillPrice-s.worth),gapRep=Math.max(0,s.redPillRep-s.rep);
             const cashMs=gapCash===0?0:positive(observation.cashRate)?gapCash/observation.cashRate*1000:null;
@@ -49,14 +56,14 @@ export function estimateDaemonRoute(snapshot, observation) {
             stages.push({name:'Install and measure XP after reset',etaMs:null});
         }
         // Pre-install XP multipliers and rates cannot safely predict the post-reset route.
-        return {...unknown(stages[0]?.name || 'The Red Pill is not installed'),stages};
+        return {...unknown(!s.daedalus&&!s.queuedRedPill?'Join Daedalus or acquire The Red Pill through another unlocked source':stages[0]?.name || 'The Red Pill is not installed'),stages,phase:'prerequisites',partial:true};
     }
     if(!positive(s.wdHack))return {...unknown('Waiting for the native daemon hacking requirement'),stages};
     if(s.hacking>=s.wdHack)return {etaMs:0,lowerMs:0,upperMs:0,actionable:true,phase:'backdoor',reason:'Hacking requirement met; root and departure handled by autopilot',stages};
     const requiredExp=Math.max(0,Math.exp((s.wdHack/s.hackMult+200)/32)-534.6);
     const gap=Math.max(0,requiredExp-s.exp), dedicated=observation.xpModes?.xp;
     const measured=dedicated || observation.xpModes?.income;
-    if(!measured || !positive(measured.low) || !positive(measured.high) || !Number.isFinite(requiredExp))
+    if(!measured || !positive(measured.rate) || !positive(s.hackMult) || !finite(s.exp) || !positive(measured.low) || !positive(measured.high) || !Number.isFinite(requiredExp))
         return {...unknown('Need at least 60 seconds of measured hacking XP'),stages};
     return {etaMs:gap/measured.rate*1000,lowerMs:gap/measured.high*1000,upperMs:gap/measured.low*1000,
         actionable:!!dedicated,phase:'xp',xpGap:gap,xpRate:measured.rate,
@@ -69,33 +76,46 @@ export function estimateBladeburnerRoute(bb, threshold=.99) {
     if(bb.disabled)return unknown('Bladeburner automation disabled or paused');
     if(!Array.isArray(bb.ops))return unknown('Missing native BlackOp data');
     if(!bb.ops.length)return {etaMs:0,lowerMs:0,upperMs:0,actionable:true,reason:'All BlackOps completed'};
-    let rank=bb.rank, work=0, reason=null;
+    let rank=bb.rank, work=0, recoveryWork=0, reason=null;
+    const recoveryKnown=finite(bb.recovery?.regen)&&finite(bb.recovery?.hrc);
+    const recoveryFor=action=>{
+        if(!recoveryKnown)return 0;
+        if(!finite(action.staminaCost))return null;
+        const deficit=Math.max(0,action.staminaCost-bb.recovery.regen*action.time/1000),rate=bb.recovery.regen+bb.recovery.hrc;
+        return deficit===0?0:positive(rate)?1000*deficit/rate:null;
+    };
     if(!finite(rank))return unknown('Missing native rank');
-    const pools=(bb.actions||[]).filter(a=>positive(a.time)&&a.chance?.[0]>=threshold&&a.count>=1)
-        .map(a=>({...a,count:Math.floor(a.count),net:a.chance[0]*a.gain-(1-a.chance[0])*a.loss}))
+    const pools=(bb.actions||[]).filter(a=>positive(a.time)&&a.chance?.[0]>=threshold&&a.chance[0]<=1&&finite(a.gain)&&finite(a.loss)&&finite(a.count)&&a.count>=1)
+        .map(a=>({...a,nativeTime:a.time,recoveryMs:recoveryFor(a),count:Math.floor(a.count),net:a.chance[0]*a.gain-(1-a.chance[0])*a.loss}))
+        .filter(a=>a.recoveryMs!==null).map(a=>({...a,time:a.nativeTime+a.recoveryMs}))
         .filter(a=>positive(a.net)).sort((a,b)=>b.net/b.time-a.net/a.time);
     const grind=gap=>{
         for(const a of pools) {
             if(gap<=0)break;
             const count=Math.min(a.count,Math.ceil(gap/a.net));
-            a.count-=count;rank+=count*a.net;gap-=count*a.net;work+=count*a.time;
+            a.count-=count;rank+=count*a.net;gap-=count*a.net;work+=count*a.time;recoveryWork+=count*a.recoveryMs;
         }
         return gap<=0;
     };
-    for(const op of bb.ops) {
+    for(const [index,op] of bb.ops.entries()) {
         const p=op.chance?.[0];
         if(!positive(op.time)||!finite(op.required)||!finite(op.gain)||!finite(op.loss)) {reason='Incomplete native BlackOp data';break;}
-        if(!(p>=threshold&&p<=1)) {reason='Improve skills, team or population estimates for '+op.name;break;}
+        if(!(p>=threshold&&p<=1)) {reason=op.rawChance?.[0]>=threshold?'Recover stamina or increase maximum stamina for '+op.name:'Improve skills, team or population estimates for '+op.name;break;}
         // Replace expected failed-attempt rank losses before each operation, then credit its reward.
         const loss=op.loss*(1-p)/p;
         if(!grind(Math.max(0,op.required+loss-rank))) {reason='Available safe contracts/operations cannot yet supply the required rank';break;}
-        work+=op.time/p;rank+=op.gain-loss;
+        const recoveryMs=recoveryFor(op);
+        if(recoveryMs===null){reason='Stamina recovery data unavailable for '+op.name;break;}
+        // Failures require another attempt. Recovery after the final success cannot help completion.
+        const repeats=index===bb.ops.length-1?(1-p)/p:1/p;
+        const overhead=recoveryMs*repeats;
+        work+=op.time/p+overhead;recoveryWork+=overhead;rank+=op.gain-loss;
     }
-    if(reason)return {...unknown(reason),next:bb.ops[0]?.name,completedStagesMs:work};
+    if(reason)return {...unknown(reason),next:bb.ops[0]?.name,blocked:reason,partial:true,completedStagesMs:work,recoveryMs:recoveryKnown?recoveryWork:null,recoveryModel:recoveryKnown?'amortized-native':'duty-range',rankAfterStages:rank};
     // Native bonus time is consumed at up to 5x speed. Allow recovery, chaos and recruitment overhead.
     const wall=duration=>Math.max(duration/5,duration-Math.max(0,bb.bonusTime||0));
     return {etaMs:wall(work/.75),lowerMs:wall(work),upperMs:wall(work/.5),actionable:true,
-        reason:'Current safe actions, finite action supply and ordered BlackOps; 50–100% active duty range',next:bb.ops[0]?.name};
+        reason:'Current safe actions, finite supply and ordered BlackOps; '+(recoveryKnown?'native recovery costs plus chaos/recruitment allowance':'recovery unknown; 50–100% active duty range'),recoveryMs:recoveryKnown?recoveryWork:null,recoveryModel:recoveryKnown?'amortized-native':'duty-range',next:bb.ops[0]?.name};
 }
 
 /** Require a 25% advantage across estimate ranges for two minutes before a priority switch. */
@@ -132,7 +152,8 @@ export function nodeRouteSnapshotSource(canSingularity, canBladeburner, multipli
     return String.raw`(() => {
     const p=ns.getPlayer(),r=ns.getResetInfo(),owned=r.ownedAugs;
     const names=typeof owned?.keys==='function'?[...owned.keys()]:Object.keys(owned||{});
-    const s={at:Date.now(),augReset:r.lastAugReset,nodeReset:r.lastNodeReset,exp:p.exp.hacking,hacking:p.skills.hacking,
+    const combat=Object.fromEntries(['strength','defense','dexterity','agility'].map(k=>{const mult=p.mults[k]*(${JSON.stringify({strength:multipliers.StrengthLevelMultiplier,defense:multipliers.DefenseLevelMultiplier,dexterity:multipliers.DexterityLevelMultiplier,agility:multipliers.AgilityLevelMultiplier})}[k]||1);return [k,{level:p.skills[k],exp:p.exp[k],mult,requiredExp:mult>0?Math.max(0,Math.exp((100/mult+200)/32)-534.6):null}];}));
+    const s={combat,at:Date.now(),augReset:r.lastAugReset,nodeReset:r.lastNodeReset,exp:p.exp.hacking,hacking:p.skills.hacking,
         hackMult:p.mults.hacking,hackingMultiplier:p.mults.hacking,hasRedPill:names.includes('The Red Pill'),simulacrum:names.includes("The Blade's Simulacrum"),
         money:p.money,worth:p.money,rep:null,wdHack:null,singularityKnown:false,node:r.currentNode,installedAugs:names.length,
         combatReady:['strength','defense','dexterity','agility'].every(k=>p.skills[k]>=1500),
@@ -159,9 +180,28 @@ ${canSingularity?`    try {
 `:''}
 ${canBladeburner?`    try {
         if(ns.bladeburner.inBladeburner()) {
-            const action=(type,name)=>({name,time:ns.bladeburner.getActionTime(type,name),chance:ns.bladeburner.getActionEstimatedSuccessChance(type,name),
-                gain:ns.bladeburner.getActionRankGain(type,name),loss:ns.bladeburner.getActionRankLoss(type,name),count:ns.bladeburner.getActionCountRemaining(type,name)});
-            s.bb={rank:ns.bladeburner.getRank(),action:ns.bladeburner.getCurrentAction(),bonusTime:ns.bladeburner.getBonusTime(),
+            const stamina=ns.bladeburner.getStamina(),forecast=(${bladeburnerStaminaChance.toString()});
+            const difficulties=${JSON.stringify({...bladeburnerDifficulty,...Object.fromEntries(Object.entries(blackOpMetadata).map(([name,data])=>[name,{base:data.baseDifficulty,factor:1}]))})};
+            let recovery=null;
+            try{
+                const b=ns.bladeburner,reaper=b.getSkillLevel('Reaper'),evasive=b.getSkillLevel('Evasive Systems'),cyber=b.getSkillLevel("Cyber's Edge");
+                const effective=p.skills.agility*(1+.02*reaper)*(1+.04*evasive);
+                const regen=(.0085+stamina[1]/70000)*Math.pow(effective,.17)*(1+.02*cyber)*p.mults.bladeburner_stamina_gain;
+                const hrc=stamina[1]*.01/60;
+                if(Number.isFinite(regen)&&regen>=0&&Number.isFinite(hrc)&&hrc>=0)recovery={regen,hrc};
+            }catch{}
+            const action=(type,name)=>{
+                const rawChance=ns.bladeburner.getActionEstimatedSuccessChance(type,name),data=difficulties[name];
+                const level=type==='Black Operations'?1:ns.bladeburner.getActionCurrentLevel(type,name);
+                const difficulty=data?data.base*Math.pow(data.factor,level-1):NaN;
+                const chance=forecast(rawChance,stamina,difficulty)||[0,0];
+                const penalty=Math.min(1,stamina[0]/(.5*stamina[1]));
+                const recoveredRaw=penalty>0?rawChance.map(p=>Math.min(1,p/penalty)):null;
+                const capabilityChance=recoveredRaw?forecast(recoveredRaw,[stamina[1],stamina[1]],difficulty):null;
+                return {name,time:ns.bladeburner.getActionTime(type,name),chance,rawChance,capabilityChance,staminaCost:Number.isFinite(difficulty)&&difficulty>0?.285*(Math.pow(difficulty,.28)+difficulty/650):null,
+                    gain:ns.bladeburner.getActionRankGain(type,name),loss:ns.bladeburner.getActionRankLoss(type,name),count:ns.bladeburner.getActionCountRemaining(type,name)};
+            };
+            s.bb={joined:true,stamina,recovery,chanceModel:"post-cost-v1",city:ns.bladeburner.getCity(),rank:ns.bladeburner.getRank(),action:ns.bladeburner.getCurrentAction(),bonusTime:ns.bladeburner.getBonusTime(),
                 ops:ns.bladeburner.getBlackOpNames().filter(n=>ns.bladeburner.getActionCountRemaining('Black Operations',n)>0)
                     .map(n=>({...action('Black Operations',n),required:ns.bladeburner.getBlackOpRank(n)})),
                 actions:[...ns.bladeburner.getContractNames().map(n=>action('Contracts',n)),...ns.bladeburner.getOperationNames().map(n=>action('Operations',n))]};

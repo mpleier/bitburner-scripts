@@ -149,12 +149,18 @@ export function infiltrationUiDetails(document) {
 }
 
 /** Self-contained so delayed workers recheck control before moving the player's UI. */
-export function infiltrationEntryAllowed(ns,ownerPid){
+export function infiltrationEntryAllowed(ns,ownerPid,respectRoute=false){
  if(!Number.isInteger(ownerPid)||ownerPid<=0||!ns.isRunning(ownerPid)||ns.read('remote-control/paused/infiltration-manager.js.txt').trim()==='true')return false;
  const now=Date.now();
  const record=file=>{try{return JSON.parse(ns.read(file));}catch{return null;}};
  const lease=record('tasks/activity-lock.json');
  if(lease?.ownerPid!==ownerPid||!(lease.expiresAt>now))return false;
+ if(respectRoute){
+  const route=record('tasks/node-route-plan.json'),reset=ns.getResetInfo();
+  if(route?.selected==='bladeburner'&&route.simulacrum!==true&&Number.isFinite(route.at)&&route.at<=now&&now-route.at<=45000&&
+   route.augReset===reset.lastAugReset&&route.nodeReset===reset.lastNodeReset&&
+   ns.ps('home').some(p=>p.pid===route.ownerPid&&p.filename.replace(/^\//,'')==='autopilot.js'))return false;
+ }
  const maintenance=record('tasks/automation-maintenance.json'),transition=record('tasks/progression-transition.json');
  if(maintenance?.expiresAt>now&&ns.isRunning(maintenance.ownerPid)||transition?.expiresAt>now&&ns.isRunning(transition.ownerPid))return false;
  return !ns.ps('home').some(p=>/(^|\/)(casino|ascend)\.js$/.test(p.filename));

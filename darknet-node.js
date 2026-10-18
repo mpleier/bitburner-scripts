@@ -1,3 +1,4 @@
+import { surveyFile } from './darknet-storm-policy.js';
 /** Runs on authenticated darknet servers, scouts outward, and tries exact-match candidates. */
 import { isBlankPassword, parsePasswordEntries, solveFeedbackPassword, supportsFeedbackModel, modelCandidates, isStalledScout, dictionaryWords } from './darknet-solvers.js';
 import { stockSignalFile, chooseStockPromotion } from './darknet-stock-policy.js';
@@ -13,7 +14,7 @@ export async function main(ns) {
   const cacheFile = "darknet-cache.js";
   const promoteFile = 'darknet-promote.js';
   const migrateFile = 'darknet-migrate.js';
-  const codeFiles = [nodeFile, lootFile, stasisFile, cacheFile, "darknet-solvers.js", "darknet-feedback.js", "darknet-advanced.js", "darknet-dictionaries.js", promoteFile, "darknet-stock-policy.js", migrateFile, "darknet-migration-policy.js"];
+  const codeFiles = [nodeFile, lootFile, stasisFile, cacheFile, "darknet-solvers.js", "darknet-feedback.js", "darknet-advanced.js", "darknet-dictionaries.js", promoteFile, "darknet-stock-policy.js", migrateFile, "darknet-migration-policy.js", "darknet-storm-policy.js", "darknet-storm.js"];
   let lastMigration = 0;
   const reportedHints = new Map();
   // Retry when the shared credential or candidate files change, not on every mutation.
@@ -48,6 +49,18 @@ export async function main(ns) {
       depth: info.depth, difficulty: info.difficulty, revision: startupRevision }), 'w');
     try { await ns.scp(heartbeatFile, 'home', ns.getHostname()); } catch { /* local heartbeat still helps adjacent scouts */ }
     lastHeartbeat = Date.now();
+  };
+
+  const survey = async (busy) => {
+    const host = ns.getHostname(), files = ns.ls(host), info = ns.dnet.getServerDetails(host);
+    let lastCacheAt = 0;try{lastCacheAt=JSON.parse(ns.read('tasks/dnet-last-cache.json')||'{}').at||0;}catch{}
+    const report = { lastCacheAt, version: 1, host, pid: ns.pid, at: Date.now(), busy,
+      blockedRam: info.blockedRam, caches: files.filter(file => file.endsWith('.cache')).length,
+      contracts: files.filter(file => file.endsWith('.cct')).length, seed: files.includes('STORM_SEED.exe'),
+      neighbours: ns.dnet.probe().filter(name => name !== host) };
+    const file = surveyFile(host);
+    await ns.write(file, JSON.stringify(report), 'w');
+    try { await ns.scp(file, 'home', host); } catch { /* stale reports block storms */ }
   };
 
   const readMap = () => {
@@ -107,13 +120,22 @@ export async function main(ns) {
     }
     return result;
   };
+  const trySavedPassword = async (host, password, info) => {
+    // Native reconnect has no authentication delay. Stationary/story servers retain the normal path.
+    if (info.isStationary === false && password.length <= 100) {
+      try { if (ns.dnet.connectToSession(host, password).success) return { success: true, code: 200 }; }
+      catch { /* Old API or missing access: authenticate normally. */ }
+    }
+    return tryPassword(host, password);
+  };
+
   const authenticate = async (host, info, saved, candidates) => {
     if (info.hasSession) return true;
     if (!isBlankPassword(info) && supportsFeedbackModel(info)) {
       if (!nilProgress.has(host)) nilProgress.set(host, {});
       const progress = nilProgress.get(host);
       if (typeof saved === "string" && progress.rejectedSaved !== saved) {
-        const result = await tryPassword(host, saved);
+        const result = await trySavedPassword(host, saved, info);
         if (result.success) { nilProgress.delete(host); return true; }
         if (Number(result.code) !== AUTH_FAILURE) return false;
         progress.rejectedSaved = saved;
@@ -141,7 +163,7 @@ export async function main(ns) {
     const previous = attemptedInputs.get(host);
     if (previous && previous.signature === signature && Date.now() - previous.at < RETRY_AFTER_MS) return false;
     if (typeof saved === "string") {
-      const result = await tryPassword(host, saved);
+      const result = await trySavedPassword(host, saved, info);
       if (result.success) return true;
       if (Number(result.code) !== AUTH_FAILURE) {
         ns.print(`${host}: saved password check stopped (${result.code}: ${result.message}); will retry.`);
@@ -177,6 +199,7 @@ export async function main(ns) {
     try {
       // Run the helpers on this server with whatever RAM the scout leaves free.
       const self = ns.getHostname();
+      await survey(true);
       await heartbeat();
       // Retry credential delivery after temporary disconnections. Mark reports
       // synchronized only after scp succeeds, so failed uploads are not lost.
@@ -312,6 +335,7 @@ export async function main(ns) {
           }
         } catch { /* Network changes: leave scouts and stasis links in place. */ }
       }
+      await survey(ns.ps(self).some(p => [cacheFile, stasisFile, migrateFile].includes(p.filename)));
       await ns.sleep(15_000);
     } catch (error) {
       ns.print(`Darknet scout recovered: ${String(error)}`);

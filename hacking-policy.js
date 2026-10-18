@@ -8,8 +8,8 @@ export function canFitHackingJob(capacities,threads,split) {
  return (split?available.reduce((a,b)=>a+b,0):Math.max(0,...available))>=threads;
 }
 /** Roll back only workers launched by this batch when a later leg fails. */
-export async function launchHackingBatch(items,launch,rollback) {
+export async function launchHackingBatch(items,launch,rollback,commit=()=>true) {
  const pids=[];
- try{for(const item of items){if(!item.threadsNeeded)continue;if(!await launch(item,pids)){await rollback(pids);return false;}}return true;}
+ try{for(const item of items){if(!item.threadsNeeded)continue;if(!await launch(item,pids)){await rollback(pids);return false;}}if(!await commit()){await rollback(pids);return false;}return true;}
  catch(error){await rollback(pids);throw error;}
 }

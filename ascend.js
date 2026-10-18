@@ -1,3 +1,6 @@
+import {augmentationInstallSafety,resumeAugmentationAutomation,liquidateAugmentationStocks} from './augmentation-install-policy.js';
+import {ensureFactionJoinPlan} from './faction-joining.js';
+import {factionJoinAllowed,rankFactionInvites} from './faction-policy.js';
 import {achievementActionAllowed} from './achievement-policy.js';
 import { prepareResetBackup } from './reset-backup.js';
 import { beginTransition, endTransition } from './progression-coordination.js';
@@ -15,6 +18,8 @@ const argsSchema = [
     // Spawn this script after installing augmentations (Note: Args not supported by the game)
     ['on-reset-script', null], // By default, will start with `stanek.js` if you have stanek's gift, otherwise `daemon.js`.
     ['ticks-to-wait-for-additional-purchases', 10], // Don't reset until we've gone this many game ticks without any new purchases being made (10 * 200ms (game tick time) ~= 2 seconds)
+    ['stock-liquidation-timeout',30000], // Maximum wall time allowed for stock liquidation before aborting installation.
+    ['stock-liquidation-attempts',3], // Bound retries when its worker cannot start or leaves positions open.
     ['max-wait-time', 60000], // The maximum number of milliseconds we'll wait for external scripts to purchase whatever permanent upgrades they can before we ascend anyway.
     ['prioritize-home-ram', false], // If set to true, will spend as much money as possible on upgrading home RAM before buying augmentations
     /* Deprecated */['prioritize-augmentations', true], // (Legacy flag, now ignored - left for backwards compatibility)
@@ -38,14 +43,26 @@ export async function main(ns) {
         return log(ns, "ERROR: You cannot automate installing augmentations until you have unlocked singularity access (SF4).", true, 'error');
     if (!await beginTransition(ns, 'augmentation installation', true)) return;
     ns.atExit(() => endTransition(ns));
+    const beforeReset=ns.getResetInfo(),previousAutomation=ns.ps('home');
+    const bladeburnerAccess=!!(dictSourceFiles[6]||dictSourceFiles[7]);
+    let shutdownStarted=false;
+    try {
     ns.disableLog('sleep');
     if (options['prioritize-augmentations'])
         log(ns, "INFO: The --prioritize-augmentations flag is deprecated, as this is now the default behaviour. Use --prioritize-home-ram to get back the old behaviour.")
 
     // Kill every script except this one, since it can interfere with out spending
-    let pid = await runCommand(ns, `ns.ps().filter(s => s.pid!==ns.pid && s.filename!=ns.args[0] && !s.filename.includes('remote-api-agent') && !s.filename.startsWith('remote-control/')).forEach(s => ns.kill(s.pid));`,
-        '/Temp/kill-everything-but.js', [ns.getScriptName()]);
-    await waitForProcessToComplete(ns, pid, true); // Wait for the script to shut down, indicating it has shut down other scripts
+    // Guard and stop services in one worker tick so an intervening Black Op is preserved.
+    shutdownStarted=true;
+    const stopped=await getNsDataThroughFile(ns,`(() => {
+        if(!ns.isRunning(ns.args[2]))return {allowed:false,reason:"Install owner exited"};
+        const safety=(${augmentationInstallSafety.toString()})({getCurrentWork:()=>ns.singularity.getCurrentWork(),inBladeburner:()=>ns.bladeburner.inBladeburner(),getCurrentAction:()=>ns.bladeburner.getCurrentAction()},ns.args[1]);
+        if(!safety.allowed)return safety;
+        ns.ps().filter(s=>s.pid!==ns.pid&&s.filename!==ns.args[0]&&!s.filename.includes('remote-api-agent')&&!s.filename.startsWith('remote-control/')).forEach(s=>ns.kill(s.pid));
+        return {allowed:true};
+    })()`,'/Temp/ascend-stop-services.txt',[ns.getScriptName(),bladeburnerAccess,ns.pid]);
+    if(!stopped?.allowed)return log(ns,stopped?.reason||'Install safety check unavailable',true,'warning');
+    let pid;
 
     // Stop the current action so that we're no longer spending money (if training) and can collect rep earned (if working)
     await getNsDataThroughFile(ns, 'ns.singularity.stopAction()');
@@ -63,15 +80,10 @@ export async function main(ns) {
         const stkSymbols = await getStockSymbols(ns);
         const countOwnedStocks = async () => await getNsDataThroughFile(ns, `ns.args.map(sym => ns.stock.getPosition(sym))` +
             `.reduce((t, stk) => t + (stk[0] + stk[2] > 0 ? 1 : 0), 0)`, '/Temp/owned-stocks.txt', stkSymbols);
-        let ownedStocks;
-        do {
-            log(ns, `INFO: Waiting for ${ownedStocks} owned stocks to be sold...`, false, 'info');
-            pid = ns.run(getFilePath('stockmaster.js'), 1, '--liquidate');
-            if (pid) await waitForProcessToComplete(ns, pid, true);
-            else log(ns, `ERROR: Failed to run "stockmaster.js --liquidate" to sell ${ownedStocks} owned stocks. Will try again soon...`, false, 'true');
-            await ns.sleep(1000);
-            ownedStocks = await countOwnedStocks();
-        } while (ownedStocks > 0);
+        const liquidation=await liquidateAugmentationStocks(ns,{count:countOwnedStocks,
+            launch:()=>ns.run(getFilePath('stockmaster.js'),1,'--liquidate'),
+            timeoutMs:options['stock-liquidation-timeout'],maxAttempts:options['stock-liquidation-attempts']});
+        if(!liquidation.ok)return log(ns,'Installation deferred: '+liquidation.reason,true,'warning');
     }
 
     // STEP 2: Buy Home RAM Upgrades (more important than squeezing in a few extra augs)
@@ -155,9 +167,11 @@ export async function main(ns) {
     await waitForProcessToComplete(ns, pid, true); // Wait for the script to shut down, indicating it has bought all it can.
 
     // STEP 9: Join every faction we've been invited to (gives a little INT XP)
+    await ensureFactionJoinPlan(ns);
     let invites = await getNsDataThroughFile(ns, 'ns.singularity.checkFactionInvitations()');
+    invites=rankFactionInvites(invites);
     if (invites.length > 0) {
-        pid = await runCommand(ns, 'ns.args.forEach(f => ns.singularity.joinFaction(f))', '/Temp/join-factions.js', invites);
+        pid = await runCommand(ns, `ns.args.forEach(f => {if((${factionJoinAllowed.toString()})({joined:()=>ns.getPlayer().factions,read:path=>ns.read(path),reset:()=>ns.getResetInfo()},f))ns.singularity.joinFaction(f);})`, '/Temp/join-factions.js', invites);
         await waitForProcessToComplete(ns, pid, true);
     }
 
@@ -195,11 +209,25 @@ export async function main(ns) {
         const resetScript = options['on-reset-script'] ??
             // Default script (if none is specified) is stanek.js if we have it (which in turn will spawn daemon.js when done)
             (purchasedAugmentations.includes(`Stanek's Gift - Genesis`) ? getFilePath('stanek.js') : getFilePath('daemon.js'));
-        if (noAugsToInstall)
-            await runCommand(ns, `ns.singularity.softReset(ns.args[0])`, null, [resetScript]);
-        else
-            await runCommand(ns, `ns.singularity.installAugmentations(ns.args[0])`, null, [resetScript]);
+        const committed=await getNsDataThroughFile(ns,`(() => {
+            const r=ns.getResetInfo();
+            if(!ns.isRunning(ns.args[5])||r.lastAugReset!==ns.args[2]||r.lastNodeReset!==ns.args[3])return {allowed:false,reason:"Reset changed during preparation"};
+            const safety=(${augmentationInstallSafety.toString()})({getCurrentWork:()=>ns.singularity.getCurrentWork(),inBladeburner:()=>ns.bladeburner.inBladeburner(),getCurrentAction:()=>ns.bladeburner.getCurrentAction()},ns.args[1]);
+            if(!safety.allowed)return safety;
+            const queued=ns.singularity.getOwnedAugmentations(true).length>ns.singularity.getOwnedAugmentations(false).length;
+            if(!queued&&!ns.args[4])return {allowed:false,reason:"No augmentations queued at commit"};
+            const result=queued?ns.singularity.installAugmentations(ns.args[0]):ns.singularity.softReset(ns.args[0]);
+            return {allowed:result!==false,reason:"Install returned without resetting"};
+        })()`,'/Temp/ascend-install.txt',[resetScript,bladeburnerAccess,beforeReset.lastAugReset,beforeReset.lastNodeReset,options['allow-soft-reset'],ns.pid]);
+        if(committed)log(ns,committed.reason||'Installation returned without resetting; resuming automation',true,'warning');
     } else
         log(ns, `SUCCESS: Ready to ascend. In the future, you can run with --reset (or --install-augmentations) ` +
             `to actually perform the reset automatically.`, true, 'success');
+    } finally {
+        endTransition(ns);
+        if(shutdownStarted){
+            try{resumeAugmentationAutomation(ns,previousAutomation,beforeReset);}
+            catch(error){ns.print('Could not restore automation after installation preparation: '+String(error));}
+        }
+    }
 }

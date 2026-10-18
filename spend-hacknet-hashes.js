@@ -1,3 +1,4 @@
+import {hashSpendingDecision,spendHashesWithPolicy,fundHashCashGoal} from './hash-spending-policy.js';
 import {readNodeRoutePlan} from './node-route-policy.js';
 import { claimSpending } from './spending-policy.js';
 import { hashOptionsError, hashOverflowBuffer, hashCapacityChoice } from './hacknet-policy.js';
@@ -9,6 +10,9 @@ import { log as log_helper, getConfiguration, disableLogs, formatMoney, formatDu
 const sellForMoney = 'Sell for Money';
 
 const argsSchema = [
+    ['automatic', true], // Apply progression payback checks to this worker's discretionary purchases.
+    ['manual', false], // Bypass investment-value estimates for explicitly chosen goals.
+    ['ignore-route-priority', false], // Explicitly override the automatic route reserve.
     ['l', false], // Spend hashes as soon as we can afford any --spend-on purchase item. Otherwise, only spends when nearing capacity.
     ['liquidate', false], // Long-form of above flag
     ['interval', 50], // (milliseonds) Interval at which the program wakes up to spends hashes
@@ -40,8 +44,9 @@ export function autocomplete(data, args) {
  * Executes instructions to spend hacknet hashes continuously.
  * NOTE: This script is written to support multiple concurrent instances running with different arguments. **/
 export async function main(ns) {
-    let lastToast = 0, lastStatusAt = 0, lastStatusState = "", lastProduction = 0;
-    const report = async (state,extra={}) => { const now=Date.now();if(now-lastStatusAt<5000&&state===lastStatusState)return;lastStatusAt=now;lastStatusState=state;await ns.write("tasks/hacknet-hash-status.json",JSON.stringify({at:now,pid:ns.pid,state,...extra}),"w"); };
+    let lastToast = 0, lastStatusAt = 0, lastStatusState = "", lastProduction = 0,lastDecision=null,lastDecisionLog='',lastDecisionAt=0;
+    const report = async (state,extra={}) => { const now=Date.now();if(now-lastStatusAt<5000&&state===lastStatusState)return;lastStatusAt=now;lastStatusState=state;if(state==='spending')lastDecision=hashSpendingDecision(ns,toBuy[0],{...policyOptions,target:spendOnServer});const record={at:now,pid:ns.pid,state,nodeReset:ns.getResetInfo().lastNodeReset,augReset:ns.getResetInfo().lastAugReset,decision:lastDecision,...extra};
+      await ns.write("tasks/hacknet-hash-status.json",JSON.stringify(record),"w");await ns.write('tasks/hash-worker-status-'+ns.pid+'.json',JSON.stringify(record),'w'); };
  registerAutomation(ns);
     if(isScriptPaused(ns,ns.getScriptName()))return;
     const options = getConfiguration(ns, argsSchema);
@@ -52,6 +57,16 @@ export async function main(ns) {
     const toBuy = options['spend-on'].map(s => s.replaceAll("_", " "));
     const spendOnServer = options['spend-on-server']?.replaceAll("_", " ") ?? undefined;
     const maxPurchasesPerLoop = options['max-purchases-per-loop'];
+    const observeRank=()=>{try{return {rank:ns.bladeburner.getRank(),points:ns.bladeburner.getSkillPoints()};}catch{return null;}};
+    const policyOptions={observeRank,ownerPid:ns.pid,script:'spend-hacknet-hashes.js',automatic:options.automatic&&!options.manual,ignoreRoute:options['ignore-route-priority']};
+    const routeBudget = (action,buffer) => {
+        lastDecision=hashSpendingDecision(ns,action,{...policyOptions,target:spendOnServer});
+        const key=JSON.stringify([lastDecision.preferred,lastDecision.priorityCost,lastDecision.reason,lastDecision.priorityReason]);
+        if(key!==lastDecisionLog&&Date.now()-lastDecisionAt>5000){lastDecisionLog=key;lastDecisionAt=Date.now();
+            ns.print('Hash policy: '+lastDecision.reason+'; priority '+lastDecision.preferred+' at '+lastDecision.priorityCost+' hashes; '+lastDecision.priorityReason+'; rank-derived SP '+lastDecision.rankSpGain+'; rank/SP costs '+lastDecision.rankHashCost+'/'+lastDecision.spHashCost+'.');}
+        return lastDecision.allowed?lastDecision.budget:0;
+    };
+
     // Validate arguments
     if (toBuy.length == 0)
         return log(ns, "ERROR: You must specify at least one thing to spend hashes on via the --spend-on argument.", true, 'error');
@@ -62,7 +77,7 @@ export async function main(ns) {
     // Operate in "low-priority" mode if our only job is to sell for money when nearing our hash capacity
     const lowPriority = !liquidate && toBuy.length == 1 && toBuy[0] == sellForMoney;
 
-    disableLogs(ns, ['sleep', 'getServerMoneyAvailable']);
+    disableLogs(ns, ['ALL']);
     ns.print(`Starting spend-hacknet-hashes.js... Will check in every ${formatDuration(interval)}`);
     ns.print(liquidate ? `-l --liquidate mode active! Will spend all hashes as soon as possible.` :
         `Saving up hashes, only spending hashes when near capacity to avoid wasting them.`);
@@ -88,7 +103,7 @@ export async function main(ns) {
     const formatHashes = (hashes) => formatNumberShort(hashes, 6, 3);
     while (!isScriptPaused(ns,ns.getScriptName())) {
  automationHeartbeat(ns);
-        if(toBuy.every(name=>name==='Exchange for Bladeburner Rank'||name==='Exchange for Bladeburner SP')&&readNodeRoutePlan(ns)?.selected==='hacking') {
+        if(!options['ignore-route-priority']&&toBuy.every(name=>name==='Exchange for Bladeburner Rank'||name==='Exchange for Bladeburner SP')&&readNodeRoutePlan(ns)?.selected==='hacking') {
             await report('waiting',{reason:'Route planner prioritizes World Daemon; retain hashes for other spenders'});
             await ns.sleep(Math.max(1000,interval));continue;
         }
@@ -135,11 +150,11 @@ export async function main(ns) {
                         if(purchasesThisLoop>=maxPurchasesPerLoop||isScriptPaused(ns,ns.getScriptName())||maintenanceRequested(ns)||!achievementActionAllowed(ns,'hashSpending'))return;
                         if(spendAction===sellForMoney&&!achievementActionAllowed(ns,'hacknetMoney'))continue;
                         const cost = ns.hacknet.hashCost(spendAction); // What's the cost of making this purchase
-                        const budget = maxHashSpend();
+                        const budget = Math.min(maxHashSpend(),routeBudget(spendAction,hashesEarnedNextTick));
                         if (!Number.isFinite(cost)||cost<=0||cost > budget) continue; // Skip this purchase if if costs more than we have left
                         const quantity = spendAction == sellForMoney ? Math.min(maxPurchasesPerLoop-purchasesThisLoop,Math.floor(budget / cost)) : 1; // We can easily buy money in bulk, because the cost doesn't scale.
                         const totalCost = cost * quantity;
-                        lastPurchaseSucceeded = ns.hacknet.spendHashes(spendAction, parameterizedSpendOptions.includes(spendAction) ? spendOnServer : undefined, quantity);
+                        lastPurchaseSucceeded = spendHashesWithPolicy(ns,spendAction,parameterizedSpendOptions.includes(spendAction)?spendOnServer:undefined,quantity,policyOptions,hashSpendingDecision).success;
                         if (!lastPurchaseSucceeded) { // Note: Even if we had enough hashes, we may fail if another script spends them first
                             log(ns, `WARN: Failed to spend hashes on ${quantity}x '${spendAction}'. Cost was: ${formatHashes(totalCost)} of ${formatHashes(budget)} ` +
                                 `budgeted hashes. Have: ${formatHashes(ns.hacknet.numHashes())} of ${formatHashes(capacity)} (capacity) hashes.`);
@@ -160,6 +175,9 @@ export async function main(ns) {
                     log(ns, `INFO: Summary: Spent ${formatHashes(startingHashes - ns.hacknet.numHashes())} hashes on ${purchasesThisLoop} purchases ` +
                         (spendAllHashes ? '' : `to avoid reaching capacity (${formatHashes(capacity)}) `) + `while earning ${formatHashes(globalProduction)} hashes per second.`);
             };
+            // Cash milestones are immediate demand, independent of this worker's normal actions.
+            const cashReceipt=fundHashCashGoal(ns,policyOptions,maxPurchasesPerLoop-purchasesThisLoop);
+            if(cashReceipt?.success){purchasesThisLoop+=cashReceipt.quantity;lastDecision=cashReceipt;await report('spending',{cashReceipt});}
             // Spend hashes normally on any/all user-specified purchases
             await fnSpendHashes(toBuy, liquidate);
             currentHashes = lastHashBalance = ns.hacknet.numHashes();
@@ -167,9 +185,11 @@ export async function main(ns) {
             // Determine if we should try to upgrade our hacknet capacity
             const remaining = capacity - currentHashes;
             let capacityMessage;
-            if (getMinCost(toBuy) > capacity - options['reserve-buffer'])
+            const demand=hashSpendingDecision(ns,'__capacity__',policyOptions);
+            const requestedCost=toBuy.includes(demand.preferred)&&Number.isFinite(demand.priorityCost)?demand.priorityCost:getMinCost(toBuy);
+            if (requestedCost > capacity - options['reserve-buffer'])
                 capacityMessage = `Our hash capacity is ${formatHashes(capacity)}, but the cheapest upgrade we wish to purchase ` +
-                    `costs ${formatHashes(getMinCost(toBuy))} hashes. A capacity upgrade is needed before any more upgrades can be purchased (${toBuy.join(", ")})`;
+                    `costs ${formatHashes(requestedCost)} hashes. More capacity is needed for this goal (${toBuy.includes(demand.preferred)?demand.preferred:toBuy.join(", ")})`;
             else if (hashesEarnedNextTick > capacity)
                 capacityMessage = `We're earning hashes faster than we can spend them (${formatHashes(globalProduction)} hashes/sec > capacity: ${formatHashes(capacity)}).`;
             else if (remaining < hashesEarnedNextTick)
@@ -179,6 +199,11 @@ export async function main(ns) {
             else
                 continue; // Current hash capacity suffices, go back to sleep
 
+            const capacityNeed=hashSpendingDecision(ns,'__capacity__',policyOptions);
+            const explicitNeed=!policyOptions.automatic&&toBuy.some(a=>a!==sellForMoney)&&getMinCost(toBuy)>capacity;
+            if(!capacityNeed.allowed&&!explicitNeed){
+                await report('saving',{reason:'Overflow becomes cash automatically; no useful purchase needs extra capacity',decision:capacityNeed});continue;
+            }
             // If we aren't allowed to purchase capacity upgrades by configuration (or can't afford it),
             // we may need to warn the player via toast notification so that they can intervene.
             // Don't create a toast notification unless we're nearing our capacity limit and at risk of wasting hashes.
@@ -190,31 +215,40 @@ export async function main(ns) {
                 if (!notifiedMaxCapacity) // Log that we want to increase hash capacity (unless we've previously seen that we are maxed out)
                     log(ns, `INFO: ${capacityMessage}`);
                 if(isScriptPaused(ns,ns.getScriptName())||maintenanceRequested(ns)||!achievementActionAllowed(ns,'hacknetExpense'))continue;
-                const choice=hashCapacityChoice(ns.hacknet);
-                const lowestIndex=choice?.kind==='cache'?choice.index:null;
-                const nextCacheUpgradeCost=lowestIndex===null?Infinity:choice.cost;
-                const nextNodeCost = ns.hacknet.getPurchaseNodeCost();
                 const reservedMoney = options['reserve'] ?? Number(ns.read("reserve.txt") || 0);
                 const playerMoney = ns.getServerMoneyAvailable('home');
                 const spendableMoney = Math.max(0, playerMoney - reservedMoney,
-                    // Hack: Because managing global reserve is tricky. We tend to always want to purchase cheap upgrades
                     playerMoney * options['ignore-reserve-if-upgrade-cost-less-than-pct']);
+                const capacityBudget=Math.min(spendableMoney,policyOptions.automatic?Math.max(0,playerMoney-reservedMoney)*.01:Infinity);
+                const choice=hashCapacityChoice(ns.hacknet,capacityBudget);
+                const quote=choice||hashCapacityChoice(ns.hacknet); // Preserve finite quotes when only the budget blocks a purchase.
+                const lowestIndex=quote?.kind==='cache'?quote.index:null;
+                const nextCacheUpgradeCost=lowestIndex===null?Infinity:quote.cost;
+                const nextNodeCost = quote?.kind==='node'?quote.cost:Infinity;
                 // If it's cheaper to buy a new hacknet node than to upgrade the cache of an existing one, do so
-                if (nextNodeCost < nextCacheUpgradeCost && nextNodeCost < spendableMoney) {
-                    if (claimSpending(ns,"hacknet",nextNodeCost) && ns.hacknet.purchaseNode()>=0)
+                if (choice?.kind==='node' && nextNodeCost < nextCacheUpgradeCost && nextNodeCost < spendableMoney) {
+                    if (!claimSpending(ns,"hacknet",nextNodeCost)) {
+                        await report('saving',{reason:'Hash capacity purchase deferred by the shared cash budget',capacityBudget,cost:nextNodeCost});
+                        continue;
+                    }
+                    if (ns.hacknet.purchaseNode()>=0)
                         log(ns, `SUCCESS: spend-hacknet-hashes.js spent ${formatMoney(nextNodeCost)} to purchase a new hacknet node ${nodes + 1} ` +
                             `in order to increase hash capacity and afford further purchases (${toBuy.join(", ")}). (You can disable this with --no-capacity-upgrades)`, false, 'success');
                     else
                         log(ns, `WARNING: spend-hacknet-hashes.js attempted to spend ${formatMoney(nextNodeCost)} to purchase hacknet node ${nodes + 1}, ` +
-                            `but the purchase failed for an unknown reason (despite appearing to have ${formatMoney(spendableMoney)} to spend after reserves.)`, false, 'warning');
+                            `but the native purchase failed after budget approval (available after reserves: ${formatMoney(spendableMoney)} to spend after reserves.)`, false, 'warning');
                 } // Otherwise, try upgrading the cache level of an existing hash node 
-                else if (lowestIndex !== null && nextCacheUpgradeCost < spendableMoney) {
-                    if (claimSpending(ns,"hacknet",nextCacheUpgradeCost) && ns.hacknet.upgradeCache(lowestIndex, 1))
+                else if (choice?.kind==='cache' && lowestIndex !== null && nextCacheUpgradeCost < spendableMoney) {
+                    if (!claimSpending(ns,"hacknet",nextCacheUpgradeCost)) {
+                        await report('saving',{reason:'Hash capacity purchase deferred by the shared cash budget',capacityBudget,cost:nextCacheUpgradeCost});
+                        continue;
+                    }
+                    if (ns.hacknet.upgradeCache(lowestIndex, 1))
                         log(ns, `SUCCESS: spend-hacknet-hashes.js spent ${formatMoney(nextCacheUpgradeCost)} to upgrade hacknet node ${lowestIndex} hash capacity ` +
                             `in order to afford further purchases (${toBuy.join(", ")}). (You can disable this with --no-capacity-upgrades)`, false, 'success');
                     else
                         log(ns, `WARNING: spend-hacknet-hashes.js attempted to spend ${formatMoney(nextCacheUpgradeCost)} to upgrade hacknet node ${lowestIndex} hash capacity, ` +
-                            `but the purchase failed for an unknown reason (despite appearing to have ${formatMoney(spendableMoney)} to spend after reserves.)`, false, 'warning');
+                            `but the native purchase failed after budget approval (available after reserves: ${formatMoney(spendableMoney)} to spend after reserves.)`, false, 'warning');
                 } else if (nodes > 0) {
                     // Prepare a message about our inability to upgrade hash capacity
                     let message = `Cannot upgrade hash capacity (currently ${formatHashes(capacity)} hashes max). `;
@@ -223,9 +257,9 @@ export async function main(ns) {
                     if (!Number.isFinite(nextCheapestCacheIncreaseCost))
                         message += `Hash Capacity is at its maximum and hacknet server limit is reached.`;
                     else
-                        message += ` We cannot afford to increase our hash capacity (${formatMoney(nextCheapestCacheIncreaseCost)} to ${nextCheapestCacheIncrease}).` +
+                        message += ` We cannot afford to increase our hash capacity (${formatMoney(nextCheapestCacheIncreaseCost)} to ${nextCheapestCacheIncrease})` +
                             (playerMoney < nextCheapestCacheIncreaseCost ? '' : // Don't bother mentioning budget if the cost exceeds all player money
-                                `on our budget of ${formatMoney(spendableMoney)}` + (reservedMoney > 0 ? ` (after respecting reserve of ${formatMoney(reservedMoney)}).` : '.'));
+                                ` on our capacity budget of ${formatMoney(capacityBudget)}` + (reservedMoney > 0 ? ` (after respecting reserve of ${formatMoney(reservedMoney)}).` : '.'));
                     // Include in the message information about what we are trying to spend hashes on
                     const nextPurchaseCost = getMinCost(toBuy);
                     if (nextPurchaseCost > capacity)
@@ -235,7 +269,8 @@ export async function main(ns) {
                     if (Number.isFinite(nextCheapestCacheIncreaseCost)) {
                         if (playerMoney > nextCheapestCacheIncreaseCost)
                             message += ' Feel free to manually purchase this upgrade (despite the reserve/budget) if you deem it worthwhile.'
-                        log(ns, `WARNING: spend-hacknet-hashes.js ${message}`, false, warnToast);
+                        await report('saving',{reason:message,capacityBudget,cost:nextCheapestCacheIncreaseCost});
+                        log(ns, `INFO: spend-hacknet-hashes.js ${message}`);
 
                     } else if (nextPurchaseCost > capacity) // If we can't afford anything, and have maxed our hash capacity, we may as well shut down.
                         return log(ns, `SUCCESS: We've maxed all purchases. ${message}`); // Shut down, because we will never be able to buy anything further.

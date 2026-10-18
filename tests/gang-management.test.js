@@ -47,9 +47,9 @@ test('gang manager integrates task fixes, guards, native formulas and pause supp
  assert.match(source,/chooseGangAscensions\(/);
  assert.match(source,/warfareDecision\(/);
  assert.match(source,/wantedRecoveryOrder\(/);
- assert.match(source,/\.map\(m => ns.gang.setMemberTask\(m.name, m.task\)\)\.every\(Boolean\)/);
+ assert.match(source,/applyGangWorkOrders.toString\(\)/);assert.match(source,/result.deferred/);assert.match(source,/result.failed/);
  assert.match(source,/isScriptPaused/);assert.match(source,/ns.formulas.gang.moneyGain/);
- assert.match(source,/myGangInfo.moneyGainRate \/ 1000 \+ myGangInfo.respectGainRate/);
+ assert.match(source,/gangObjectiveValue\(\{money:myGangInfo.moneyGainRate,respect:myGangInfo.respectGainRate\},optStat,objectiveWeight\)/);
  assert.doesNotMatch(source,/myGangMembers.map\(m => assignedTasks\[m\]\).reduce/);
 });
 

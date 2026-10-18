@@ -1,47 +1,73 @@
-/** @param {NS} ns
- * Wait until an appointed time and then execute a hack. */
+/** Schedule a hack against its completion deadline; persist outcomes separately from timing. */
 export async function main(ns) {
-    // Destructure the arguments (default values should never be used and should just provide type hints)
-    const [
-        /*args[0]*/ target = "",
-        /*args[1]*/ start_time = 0,
-        /*args[2]*/ duration = 0,
-        /*args[3]*/ description = "",
-        /*args[4]*/ manipulateStock = false,
-        /*args[5]*/ silentMisfires = false,
-        /*args[6]*/ loopingMode = false
-    ] = ns.args;
+ const [target='',start=0,duration=0,description='',stock=false,silent=false,loop=false,owner=0,timingMeta='']=ns.args;
+ let meta=null;try{meta=typeof timingMeta==='string'?JSON.parse(timingMeta):null;}catch{}
+ if(!target||!Number.isFinite(start)||!Number.isFinite(duration)||duration<0)return ns.print('Invalid hacking schedule.');
+ const toleranceMs=Number.isFinite(meta?.toleranceMs)&&meta.toleranceMs>=0?meta.toleranceMs:100;
+ let first=true,lastWarningAt=-Infinity,lastCompleted=0;
+ do {
+  if(owner&&!ns.isRunning(owner))return;
+  if(loop&&hackingLoopShouldStop(ns,owner,target,'hack',lastCompleted,meta))return;
+  const began=Date.now(),period=duration*(loop?4:1),deadline=duration>0?(first?start:began)+period:null;
+  const nativeTime=duration>0?ns.getHackTime(target):0;
+  const additionalMsec=deadline===null?Math.max(0,first?start-began:0):Math.max(0,deadline-began-nativeTime);
+  const startLateMs=first?Math.max(0,began-start):0;
+  const unavoidableMs=deadline===null?0:Math.max(0,began+nativeTime-deadline);
+  let value,error,failed=false;
+  try{value=await ns.hack(target,{stock,additionalMsec});}
+  catch(e){error=e;failed=true;}
+  const at=Date.now(),lateMs=deadline===null?0:Math.max(0,at-deadline);
+  const outcome=failed?'error':value===0?'zero-hack-result':'effect';
+  const event={at,tool:'hack',target,description:String(description).slice(0,100),pid:ns.pid,owner,
+   deadline,lateMs,unavoidableMs,startLateMs,toleranceMs,legSpacingMs:Number.isFinite(meta?.legSpacingMs)&&meta.legSpacingMs>0?meta.legSpacingMs:null,outcome,value:Number.isFinite(value)?value:null,
+   error:failed?String(error).slice(0,300):null};
+  const delivered=report(ns,meta,event,silent);
+  // Normal zero-effect outcomes and compensated starts are measurements, never timing alerts.
+  if(!silent&&lateMs>toleranceMs&&!delivered&&at-lastWarningAt>=60000){
+   ns.toast(`Timing risk: hack on ${target} completed ${Math.round(lateMs)} ms after its deadline.`,'warning');lastWarningAt=at;
+  }
+  if(failed)throw error;
+  lastCompleted=at;
+  first=false;
+ }while(loop);
+}
 
-    const owner=ns.args[7]||0;
-    if(!target||!Number.isFinite(start_time)||!Number.isFinite(duration)||duration<0)return ns.print('Invalid hacking schedule.');
-    // We may need to sleep before we start the operation to align ourselves properly with other batch cycle (HGW) operations
-    let sleepDuration = start_time - Date.now();
-    if (sleepDuration < 0) {
-        if (!silentMisfires)
-            ns.toast(`Misfire: Hack started ${-sleepDuration} ms too late. ${JSON.stringify(ns.args)}`, 'warning');
-        sleepDuration = 0;
-    }
-    // We use the "additionalMsec" option to bundle the initial sleep time we require with the built-in operation timer
-    const hgwOptions = {
-        stock: manipulateStock,
-        additionalMsec: sleepDuration
-    }
-    // In looping mode, we want increase the run time to match the time-to-weaken, so that we fire once per cycle
-    if (loopingMode)
-        hgwOptions.additionalMsec += duration * 3.0 // (duration * 4.0 (time-to-weaken) - duration)
+/** Synchronous port operations make this bounded read/merge/write atomic between JS tasks. */
+function report(ns,meta,event,silent) {
+ if(meta?.port!==20||typeof ns.getPortHandle!=='function')return false;
+ try {
+  const port=ns.getPortHandle(20),head=port.peek();let data;
+  if(head!=='NULL PORT DATA'){
+   try{data=JSON.parse(head);}catch{return false;}
+   if(data?.channel!=='hgw-v1')return false; // Do not consume another user's messages.
+   port.read();
+  }
+  if(!data||data.augReset!==meta.augReset||data.nodeReset!==meta.nodeReset)
+   data={channel:'hgw-v1',augReset:meta.augReset,nodeReset:meta.nodeReset,counts:{},targets:{},recent:[],alerts:[]};
+  const spacingKnown=Number.isFinite(event.legSpacingMs)&&event.legSpacingMs>0;
+  const counters={operations:1,spacingSamples:Number(spacingKnown),spacingRisks:Number(spacingKnown&&(!!event.error||event.lateMs>Math.max(event.toleranceMs,event.legSpacingMs/2))),deadlineOverruns:Number(event.lateMs>event.toleranceMs),
+   unavoidableOverruns:Number(event.unavoidableMs>event.toleranceMs),
+   compensatedStarts:Number(event.startLateMs>0&&event.lateMs<=event.toleranceMs&&!event.error),
+   zeroHack:Number(event.outcome==='zero-hack-result'),noGrowth:Number(event.outcome==='no-growth'),
+   noWeaken:Number(event.outcome==='no-weaken'),errors:Number(!!event.error)};
+  const add=(record)=>{for(const [key,n]of Object.entries(counters))record[key]=(Number(record[key])||0)+n;
+   record.maxLateMs=Math.max(Number(record.maxLateMs)||0,event.lateMs);return record;};
+  data.counts=add(data.counts||{});data.targets||={};
+  const key=event.tool+':'+event.target;data.targets[key]={...add(data.targets[key]||{}),at:event.at};
+  const keys=Object.keys(data.targets);if(keys.length>64)delete data.targets[keys.sort((a,b)=>data.targets[a].at-data.targets[b].at)[0]];
+  data.at=event.at;data.firstAt=Number.isFinite(data.firstAt)?Math.min(data.firstAt,event.at):event.at;
+  data.recent=[...(data.recent||[]),event].slice(-20);
+  data.alerts=[...(data.alerts||[]),...(!silent&&(event.lateMs>event.toleranceMs||event.error)?[event]:[])].slice(-20);
+  port.write(JSON.stringify(data));return true;
+ }catch{return false;}
+}
 
-    let firstLoop = true;
-    do {
-        if(owner&&!ns.isRunning(owner))return;
-        // Keep the requested finish time / loop period as skill and security change.
-        if(duration>0)hgwOptions.additionalMsec=Math.max(0,(firstLoop?start_time-Date.now():0)+(loopingMode?duration*4:duration)-ns.getHackTime(target));
-        const stolen = await ns.hack(target, hgwOptions);
-        // If enabled, warn of any misfires
-        if (stolen == 0 && !silentMisfires)
-            ns.toast(`Misfire: Hack stole 0 money. ${JSON.stringify(ns.args)}`, 'warning');
-        // (looping mode only) After the first loop, remove the initial sleep time used to align our start with other HGW operations
-        if (firstLoop) {
-            firstLoop = false;
-        }
-    } while (loopingMode); // Keep going only if we were started in "looping mode"
+function hackingLoopShouldStop(ns,owner,target,tool,lastCompleted,meta) {
+ if(!owner||typeof ns.read!=='function')return false;
+ let plan;try{plan=JSON.parse(ns.read('tasks/hgw-drain-'+owner+'.json'));}catch{return false;}
+ if(plan?.ownerPid!==owner||plan.nodeReset!==meta?.nodeReset||plan.augReset!==meta?.augReset)return false;
+ const entry=plan.targets?.[target];if(!entry||!Number.isFinite(entry.stageAt))return false;
+ if(tool==='hack')return ['attack','grow','weaken','complete'].includes(entry.stage);
+ if(tool==='grow')return ['grow','weaken','complete'].includes(entry.stage)&&lastCompleted>entry.stageAt;
+ return tool==='weaken'&&['weaken','complete'].includes(entry.stage)&&lastCompleted>entry.stageAt;
 }

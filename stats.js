@@ -65,7 +65,7 @@ export async function main(ns) {
         } catch (err) {
             // Might run out of ram from time to time, since we use it dynamically
             log(ns, `WARNING: stats.js Caught (and suppressed) an unexpected error in the main loop. Update Skipped:\n` +
-                (typeof err === 'string' ? err : err.message || JSON.stringify(err)), false, 'warning');
+                (typeof err === 'string' ? err : (err.stack || err.message || JSON.stringify(err)).slice(0,2048)), false, 'warning');
         }
         await ns.sleep(1000);
     }
@@ -199,10 +199,10 @@ async function getHudData(ns, bitNode, dictSourceFiles, options, resetInfo) {
     }
 
     // Show total instantaneous script income and experience per second (values provided directly by the game)
-    const totalScriptInc = await getNsDataThroughFile(ns, 'ns.getTotalScriptIncome()');
-    const totalScriptExp = await getNsDataThroughFile(ns, 'ns.getTotalScriptExpGain()');
-    hudData.push(["Scr Inc", true, formatMoney(totalScriptInc[0], 3, 2) + '/sec', "Total 'instantaneous' income per second being earned across all scripts running on all servers."]);
-    hudData.push(["Scr Exp", true, formatNumberShort(totalScriptExp, 3, 2) + '/sec', "Total 'instantaneous' hack experience per second being earned across all scripts running on all servers."]);
+    const totalScriptInc = overviewIncomeRate(await optionalHudRead(ns, 'ns.getTotalScriptIncome()', '/Temp/overview-income.txt', [], null));
+    const totalScriptExp = await optionalHudRead(ns, 'ns.getTotalScriptExpGain()', '/Temp/overview-exp.txt', [], null);
+    hudData.push(["Scr Inc", totalScriptInc !== null, formatMoney(totalScriptInc ?? 0, 3, 2) + '/sec', "Total 'instantaneous' income per second being earned across all scripts running on all servers."]);
+    hudData.push(["Scr Exp", Number.isFinite(totalScriptExp), formatNumberShort(totalScriptExp ?? 0, 3, 2) + '/sec', "Total 'instantaneous' hack experience per second being earned across all scripts running on all servers."]);
 
     // Show reserved money
     {
@@ -277,15 +277,26 @@ async function getHudData(ns, bitNode, dictSourceFiles, options, resetInfo) {
         let bb=null;
         if (6 in dictSourceFiles||7 in dictSourceFiles||bitNode===6||bitNode===7)
             bb=await optionalHudRead(ns,"(() => {if(!ns.bladeburner.inBladeburner())return null;const action=ns.bladeburner.getCurrentAction();const ops=ns.bladeburner.getBlackOpNames().filter(n=>ns.bladeburner.getActionCountRemaining('Black Operations',n)>0);return {rank:ns.bladeburner.getRank(),points:ns.bladeburner.getSkillPoints(),action,stamina:ns.bladeburner.getStamina(),team:ns.bladeburner.getTeamSize(),assigned:action?ns.bladeburner.getTeamSize(action.type,action.name):0,remainingBlackOps:ops.length,blackOpTimeMs:ops.reduce((t,n)=>t+ns.bladeburner.getActionTime('Black Operations',n),0),rankGoal:ns.bladeburner.getBlackOpRank('Operation Daedalus')};})()",'/Temp/overview-bladeburner.txt',[],null);
+        if(bb && (typeof bb!=='object'||!Number.isFinite(bb.rank)||!Number.isFinite(bb.points)))bb=null;
         currentBB=bb;
         playerInBladeburner=!!bb;
         if(bb) {
             val1.push(true,formatSixSigFigs(bb.rank),'Your current Bladeburner rank');
             val2.push(true,formatSixSigFigs(bb.points),'Your current unspent Bladeburner skill points');
         } else {val1.push(false);val2.push(false);}
-        hudData.push(['BB Action',!!bb,bb?.action?.name||'Idle',bb?'Stamina '+(100*bb.stamina[0]/Math.max(1,bb.stamina[1])).toFixed(1)+'%':'']);
+        hudData.push(['BB Action',!!bb,bb?.action?.name||'Idle',bb?overviewStaminaText(bb.stamina):'']);
         let teamPlan=null;try{const saved=JSON.parse(ns.read('tasks/bladeburner-team.json'));if(saved?.at<=Date.now()+5000&&Date.now()-saved.at<120000&&ns.ps('home').some(p=>p.pid===saved.pid&&p.filename.replace(/^\//,'')==='bladeburner.js'))teamPlan=saved;}catch{}
-        const teamDetails=teamPlan?'\n'+(teamPlan.reason||teamPlan.state)+(teamPlan.required!==undefined?'\nTarget team: '+teamPlan.required:'')+'\nRecruitment budget: '+Math.max(0,teamPlan.budgetMinutes-teamPlan.spentMs/60000).toFixed(1)+' min left this hour':'';
+        const teamDetails=teamPlan?'\n'+(teamPlan.reason||teamPlan.state)
+            +(teamPlan.target?'\nNext Black Op: '+teamPlan.target:'')
+            +(Number.isFinite(teamPlan.rankGap)?'\nRank still needed: '+formatSixSigFigs(teamPlan.rankGap):'')
+            +(Number.isFinite(teamPlan.rankEtaMs)?'\nMeasured rank ETA: '+formatDuration(teamPlan.rankEtaMs):teamPlan.rankGap>0?'\nRank ETA: measuring progress':'')
+            +(Number.isInteger(teamPlan.required)?'\nTarget team: '+teamPlan.required:'')
+            +(Number.isInteger(teamPlan.teamCap)?'\nTeam cap: '+teamPlan.teamCap:'')
+            +(Number.isFinite(teamPlan.baseline?.[0])?'\nSolo lower success estimate: '+(100*teamPlan.baseline[0]).toFixed(1)+'%':'')
+            +(Number.isInteger(teamPlan.available)&&Number.isInteger(teamPlan.supportingSleeves)?'\nHuman recruits: '+Math.max(0,teamPlan.available-teamPlan.supportingSleeves)+'; supporting sleeves: '+teamPlan.supportingSleeves:'')
+            +'\nHealthy support sleeves: '+(Number.isInteger(teamPlan.healthySleeves)?teamPlan.healthySleeves:'unavailable')
+            +(Number.isFinite(teamPlan.expectedRecruitmentMs)?'\nExpected recruitment: '+formatDuration(teamPlan.expectedRecruitmentMs):'')
+            +(Number.isFinite(teamPlan.budgetMinutes)&&Number.isFinite(teamPlan.spentMs)?'\nRecruitment budget: '+Math.max(0,teamPlan.budgetMinutes-teamPlan.spentMs/60000).toFixed(1)+' min left this hour':''):'';
         hudData.push(['BB Team',!!bb,bb?formatSixSigFigs(bb.team):'',bb?'Total team members: '+bb.team+'\nAssigned to '+(bb.action?.name||'current action')+': '+bb.assigned+teamDetails:'']);
         hudData.push(val1, val2);
     }
@@ -494,7 +505,11 @@ async function getOverviewProgress(ns,canReadWork){
 
 
 async function optionalHudRead(ns,expression,file,args,fallback) {
-    try{return await getNsDataThroughFile(ns,expression,file,args);}catch{return fallback;}
+    try{
+        const value=await getNsDataThroughFile(ns,expression,file,args);
+        if(Array.isArray(fallback)&&(!Array.isArray(value)||fallback.some((_,i)=>!Number.isFinite(value[i]))))return fallback;
+        return value ?? fallback;
+    }catch{return fallback;}
 }
 
 /** Read local manager records only while their owner is alive and the record is fresh. */
@@ -524,4 +539,15 @@ function getAutomationHudData(ns,workType=null) {
     if(paused.length)alerts.push('Paused: '+paused.join(', '));
     rows.push(['Attention',alerts.length>0,alerts.length+' notice'+(alerts.length===1?'':'s'),alerts.join('\n')]);
     return rows;
+}
+
+/** Native reads may be unavailable during RAM pressure or a controller reload. */
+export function overviewIncomeRate(value) {
+    const rate=Array.isArray(value)?value[0]:value;
+    return Number.isFinite(rate)?rate:null;
+}
+export function overviewStaminaText(value) {
+    if(!Array.isArray(value)||!Number.isFinite(value[0])||!Number.isFinite(value[1])||value[0]<0||value[1]<=0)
+        return 'Stamina unavailable';
+    return 'Stamina '+(100*Math.min(1,value[0]/value[1])).toFixed(1)+'%';
 }

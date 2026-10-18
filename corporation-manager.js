@@ -1,3 +1,4 @@
+import {hashSpendingDecision,spendHashesWithPolicy} from './hash-spending-policy.js';
 import {readNodeRoutePlan} from './node-route-policy.js';
 import {registerAutomation,automationHeartbeat,maintenanceRequested} from './runtime-policy.js';
 import {achievementActionAllowed} from './achievement-policy.js';
@@ -280,7 +281,12 @@ export async function main(ns) {
       if (!Number.isFinite(cost) || cost <= 0 || cost > MAX_HASH_COST_PER_PURCHASE) continue;
       if (available < cost) continue;
 
-      if (attempt(`Spend hashes on ${target}`, () => ns.hacknet.spendHashes(target))) {
+      const corp=c.getCorporation();
+      const useful=target==='Sell for Corporation Funds'?corp.funds<Math.max(1e9,Number(corp.expenses||0)*60):corp.divisions.some(name=>{
+        const d=c.getDivision(name),next=['Hi-Tech R&D Laboratory','Market-TA.I','Market-TA.II'].find(r=>!c.hasResearched(name,r));
+        return next&&c.getResearchCost(name,next)>d.researchPoints&&c.getResearchCost(name,next)<=d.researchPoints+1000;
+      });
+      if (attempt(`Spend hashes on ${target}`, () => spendHashesWithPolicy(ns,target,undefined,1,{ownerPid:ns.pid,script:'corporation-manager.js',corporationUseful:useful},hashSpendingDecision).success)) {
         hashSpendIndex = (idx + 1) % HASH_SPEND_PLAN.length;
         return target;
       }
@@ -327,7 +333,7 @@ export async function main(ns) {
     const currentHashes = Number(ns.hacknet.numHashes()) || 0;
     const capacityTight = totalCapacity > 0 && currentHashes > totalCapacity * 0.5;
 
-    if (capacityTight) {
+    if (capacityTight&&hashSpendingDecision(ns,'__capacity__',{ownerPid:ns.pid,script:'corporation-manager.js'}).allowed) {
       let bestCache = null;
       for (const { i, s } of stats) {
         if (s.cache === undefined || s.cache >= HACKNET_CACHE_TARGET) continue;
@@ -1060,7 +1066,7 @@ export async function main(ns) {
       await ns.write(otherProductStateFile,JSON.stringify({nodeReset:resetInfo.lastNodeReset,corporation:info.name,divisions:otherProductTimes}),'w');
       await ns.write(financeFile,JSON.stringify({at:Date.now(),pid:ns.pid,nodeReset:resetInfo.lastNodeReset,corporation:info.name,history:financeHistory,lastShareSaleAt,decision:financeDecision&&{accept:financeDecision.accept,holdIPO:financeDecision.holdIPO,reason:financeDecision.reason}}),'w');
       await ns.write(lifecycleFile, JSON.stringify({nodeReset: resetInfo.lastNodeReset, corporation: info.name, growthBank, lastExpansion}), 'w');
-      await ns.write('tasks/corporation-status.json', JSON.stringify({ at: Date.now(), pid: ns.pid, corporation: info.name,
+      await ns.write('tasks/corporation-status.json', JSON.stringify({ at: Date.now(), pid: ns.pid, nodeReset:resetInfo.lastNodeReset, augReset:resetInfo.lastAugReset, corporation: info.name,
         growthBank, growthDecisions, productMetrics, staffingGoals:Object.fromEntries(staffingGoals), mode: recovering ? 'cash recovery' : 'growth', funds: funds(), reserve, divisions: divisions(),
         revenue: liveStatus.revenue, expenses: liveStatus.expenses, public: liveStatus.public,
         ownership: liveStatus.totalShares > 0 ? liveStatus.numShares / liveStatus.totalShares : null,

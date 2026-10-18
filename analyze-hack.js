@@ -95,7 +95,7 @@ export async function main(ns) {
                     `Theoretical ${formatMoney(theoreticalGainRate)}, Limit: ${formatMoney(hackProfit / ram_total)}, Exp: ${expRate.toPrecision(3)}, ` +
                     `Hack Chance: ${(ns.formulas.hacking.hackChance(server, player) * 100).toPrecision(3)}% (${server.hostname})`);
             }
-            catch { // Formulas API unavailable?               
+            catch { // Formulas API unavailable?
                 useFormulas = false;
             } finally {
                 player.skills.hacking = real_player_hack_skill; // Restore the real hacking skill if we changed it temporarily
@@ -177,6 +177,7 @@ export async function main(ns) {
         serverListByExp += `\n ${order++} ${server_eval[i].hostname}, with ${server_eval[i].expRate.toPrecision(3)} exp per ram-second`;
     ns.print(serverListByExp);
 
+    ns.write('/Temp/analyze-hack-meta.txt',JSON.stringify({at:Date.now(),augReset:ns.getResetInfo().lastAugReset,nodeReset:ns.getResetInfo().lastNodeReset}),'w');
     ns.write('/Temp/analyze-hack.txt', JSON.stringify(server_eval.map(s => ({
         hostname: s.hostname,
         gainRate: s.gainRate,

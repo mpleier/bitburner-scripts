@@ -1,3 +1,5 @@
+import { darknetEconomics } from './darknet-economics-policy.js';
+import { surveyPrefix, stormRequestFile, stormStateFile, stormResultFile, applyStormReceipt, planStorm } from './darknet-storm-policy.js';
 import {registerAutomation,automationHeartbeat,maintenanceRequested} from './runtime-policy.js';
 import { isScriptPaused } from './automation-control.js';
 /** Darknet coordinator. Tries supplied exact-match candidates on discovered servers. */
@@ -16,7 +18,7 @@ export async function main(ns) {
   const lootFile = "darknet-loot.js";
   const stasisFile = "darknet-stasis.js";
   const cacheFile = "darknet-cache.js";
-  const codeFiles = [nodeFile, lootFile, stasisFile, cacheFile, "darknet-solvers.js", "darknet-feedback.js", "darknet-advanced.js", "darknet-dictionaries.js", "darknet-promote.js", "darknet-stock-policy.js", "darknet-migrate.js", "darknet-migration-policy.js"];
+  const codeFiles = [nodeFile, lootFile, stasisFile, cacheFile, "darknet-solvers.js", "darknet-feedback.js", "darknet-advanced.js", "darknet-dictionaries.js", "darknet-promote.js", "darknet-stock-policy.js", "darknet-migrate.js", "darknet-migration-policy.js", "darknet-storm-policy.js", "darknet-storm.js"];
   // Every ns call is logged by default (scp, probe, getServerMaxRam...), which
   // buried the useful lines. Keep only what this script prints itself.
   ns.disableLog("ALL");
@@ -122,6 +124,15 @@ export async function main(ns) {
     return result;
   };
 
+  const trySavedPassword = async (host, password, info) => {
+    // Native reconnect has no authentication delay. Stationary/story servers retain the normal path.
+    if (info.isStationary === false && password.length <= 100) {
+      try { if (ns.dnet.connectToSession(host, password).success) return { success: true, code: 200 }; }
+      catch { /* Old API or missing access: authenticate normally. */ }
+    }
+    return tryPassword(host, password);
+  };
+
   const authenticate = async (host, details, saved, candidates) => {
     if (details.hasSession) return true;
     if (!isBlankPassword(details) && supportsFeedbackModel(details)) {
@@ -130,7 +141,7 @@ export async function main(ns) {
       // Reuse a verified password without requiring Heartbleed after a restart.
       // Remember rejected saved values so they are not retried every poll.
       if (typeof saved === "string" && progress.rejectedSaved !== saved) {
-        const result = await tryPassword(host, saved);
+        const result = await trySavedPassword(host, saved, details);
         if (result.success) { nilProgress.delete(host); return true; }
         if (Number(result.code) !== AUTH_FAILURE) return false;
         progress.rejectedSaved = saved;
@@ -156,7 +167,7 @@ export async function main(ns) {
     const previous = attemptedInputs.get(host);
     if (previous && previous.signature === signature && Date.now() - previous.at < RETRY_AFTER_MS) return false;
     if (typeof saved === "string") {
-      const result = await tryPassword(host, saved);
+      const result = await trySavedPassword(host, saved, details);
       if (result.success) return true;
       if (Number(result.code) !== AUTH_FAILURE) {
         ns.print(`${host}: saved password check stopped (${result.code}: ${result.message}); will retry.`);
@@ -184,6 +195,49 @@ export async function main(ns) {
     attemptedInputs.set(host, { signature, at: Date.now() });
     ns.print(`${host}: no match in ${candidates.length} candidates; retrying in ${RETRY_AFTER_MS / 60_000} min or when inputs change.`);
     return false;
+  };
+
+  const manageStorm = async () => {
+    const reports = [];
+    for (const file of ns.ls('home', surveyPrefix)) {
+      try {
+        const report = JSON.parse(ns.read(file));
+        report.live = Number.isInteger(report.pid) && ns.ps(report.host).some(p => p.pid === report.pid && p.filename === nodeFile);
+        reports.push(report);
+      } catch { /* invalid or deleted hosts cannot authorize a storm */ }
+    }
+    let state = {};
+    try { state = JSON.parse(ns.read(stormStateFile) || '{}'); } catch { }
+    const roots = ns.dnet.probe(), now = Date.now(), reset = ns.getResetInfo().lastNodeReset;
+    try { state = applyStormReceipt(state, JSON.parse(ns.read(stormResultFile) || '{}'), reset, now); } catch { }
+    const decision = planStorm(reports, roots, state, now, reset);
+    let totalIncome=null;try{totalIncome=ns.getMoneySources().sinceInstall.darknet;}catch{}
+    const lastCacheAt=Math.max(0,...reports.filter(report=>report.live&&report.at<=now&&now-report.at<90000).map(report=>Number(report.lastCacheAt)||0));
+    decision.state.economics=darknetEconomics(state.economics,totalIncome,lastCacheAt,reset,now);
+    if(decision.launch&&!decision.state.economics.allow){decision.launch=false;decision.reason=decision.state.economics.reason;}
+    note('storm-status', `StormSeed: ${decision.reason}.`);
+    if (decision.launch && !maintenanceRequested(ns) && !isScriptPaused(ns, ns.getScriptName())) {
+      const host = decision.seedHost, helper = 'darknet-storm.js';
+      if (ns.ps(host).some(p => p.filename === helper)) return;
+      if (await ns.scp([helper, 'darknet-storm-policy.js'], host, 'home')) {
+        const ram = ns.getScriptRam(helper, host);
+        if (ram > 0) {
+          if (ns.getServerMaxRam(host) - ns.getServerUsedRam(host) < ram)
+            for (const p of ns.ps(host)) if (p.filename === lootFile) ns.kill(p.pid);
+          if (ns.getServerMaxRam(host) - ns.getServerUsedRam(host) >= ram) {
+            const request = { id: `${ns.pid}:${now}`, host, at: now, reset, reports, roots, signature: decision.signature };
+            await ns.write(stormRequestFile, JSON.stringify(request), 'w');
+            decision.state.pending = { id: request.id, host, at: now };
+            // Save before launching: manager restarts must not dispatch duplicate storms.
+            decision.state.lastAttempt = now;
+            await ns.write(stormStateFile, JSON.stringify(decision.state), 'w');
+            const pid = ns.exec(helper, host, 1);
+            if (pid) note('storm', `StormSeed on ${host}: ${decision.reason}.`);
+          }
+        }
+      }
+    }
+    await ns.write(stormStateFile, JSON.stringify(decision.state), 'w');
   };
 
   ns.print("Darknet manager active. Tries exact words in darknet-candidates.txt plus saved hostname=password entries.");
@@ -295,6 +349,7 @@ export async function main(ns) {
         }
       }
 
+      await manageStorm();
       await ns.sleep(30_000);
     } catch (error) {
       ns.print(`Darknet manager waiting: ${String(error)}`);

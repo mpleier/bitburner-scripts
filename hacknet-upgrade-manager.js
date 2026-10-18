@@ -1,11 +1,12 @@
 import { achievementActionAllowed } from './achievement-policy.js';
 import { isScriptPaused } from './automation-control.js';
 import { registerAutomation, automationHeartbeat, maintenanceRequested } from './runtime-policy.js';
-import { hacknetProduction, hacknetServerMode, hacknetOptionsError, hacknetPayoffLimit } from './hacknet-policy.js';
+import { hacknetProduction, hacknetServerMode, hacknetOptionsError, hacknetPayoffLimit, hacknetTierEligible } from './hacknet-policy.js';
 import { claimSpending } from './spending-policy.js';
 import { getConfiguration, disableLogs, formatDuration, formatMoney, tryGetBitNodeMultipliers, } from './helpers.js'
 
 const argsSchema = [
+    ['adaptive-tiers', false], // Single-worker equivalent of the former four spending tiers.
     ['max-payoff-time', '1h'], // Controls how far to upgrade hacknets. Can be a number of seconds, or an expression of minutes/hours (e.g. '123m', '4h')
     ['time', null], // alias for max-payoff-time
     ['c', false], // Set to true to run continuously, otherwise, it runs once
@@ -52,12 +53,17 @@ export async function main(ns) {
         automationHeartbeat(ns);
         if(maintenanceRequested(ns)){if(!continuous)return;await ns.sleep(Math.max(100,interval));continue;}
         try {
-            const moneySpent = upgradeHacknet(ns, maxSpend, maxPayoffTime, options);
-            if (moneySpent === false) {
-                setStatus(ns, `Spending limit reached. Breaking...`);
-                break; // Hack, but we return a non-number (false) when we've bought all we can for the current config
+            for(let purchase=0;purchase<(options['adaptive-tiers']?10:1);purchase++){
+                const moneySpent = upgradeHacknet(ns, maxSpend, maxPayoffTime, options);
+                if (moneySpent === false) {
+                    setStatus(ns, `Spending limit reached. Breaking...`);
+                    maxSpend=0;
+                    break; // No upgrade can satisfy the requested finite spending/payoff limits.
+                }
+                maxSpend -= moneySpent;
+                if(moneySpent<=0)break;
             }
-            maxSpend -= moneySpent;
+            if(maxSpend<=0)break;
         }
         catch (err) {
             setStatus(ns, `WARNING: hacknet-upgrade-manager.js Caught (and suppressed) an unexpected error in the main loop:\n` +
@@ -96,9 +102,9 @@ export function upgradeHacknet(ns,maxSpend,maxPayoffTimeSeconds=3600,options={})
   payoffLimit=hacknetPayoffLimit(maxPayoffTimeSeconds,plan,reset,now,ownerAlive);
   isCashBottleneck=payoffLimit<maxPayoffTimeSeconds||(reset.currentNode!==9&&ownerAlive&&plan?.reset===reset.lastAugReset&&plan?.expiresAt>now&&plan?.epoch<=now&&plan?.signals?.bottleneck==='cash');
  }
- const useful=candidates.filter(c=>c.payoff<=payoffLimit).sort((a,b)=>a.payoff-b.payoff);
+ const useful=candidates.filter(c=>c.payoff<=payoffLimit&&(!options['adaptive-tiers']||hacknetTierEligible(c,ns.getPlayer().money))).sort((a,b)=>a.payoff-b.payoff);
  const best=useful.find(c=>c.cost<=funds);
- if(!best){setStatus(ns,useful.length?'Hacknet waiting for funds or spending limit.':`No production upgrades meet the ${formatDuration(payoffLimit*1000)} payoff limit${isCashBottleneck?' (cash bottleneck)':''}.`);return useful.some(c=>c.cost<=maxSpend)?0:false;}
+ if(!best){setStatus(ns,useful.length?'Hacknet waiting for funds or spending limit.':`No production upgrades meet the ${formatDuration(payoffLimit*1000)} payoff limit${isCashBottleneck?' (cash bottleneck)':''}.`);return options['adaptive-tiers']&&options.productionMultiplier!==0?0:useful.some(c=>c.cost<=maxSpend)?0:false;}
  if(!claimSpending(ns,'hacknet',best.cost))return 0;
  const success=best.kind==='node'?ns.hacknet.purchaseNode()>=0:best.kind==='level'?ns.hacknet.upgradeLevel(best.index,1):best.kind==='ram'?ns.hacknet.upgradeRam(best.index,1):ns.hacknet.upgradeCore(best.index,1);
  const message=success?`Purchased Hacknet ${best.kind} for ${formatMoney(best.cost)}; payoff ${formatDuration(best.payoff*1000)}`:'Hacknet purchase failed; will recheck costs and funds.';

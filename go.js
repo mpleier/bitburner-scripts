@@ -13,8 +13,9 @@ import {achievementActionAllowed} from './achievement-policy.js';
  * - Insight (alainbryden)
  */
 
+import {goProgressionContext,planGoOpponents} from './go-opponent-policy.js';
 import { isScriptPaused } from './automation-control.js';
-import { rankGoOpponents, goOpponents, goOptionsError, goCheatsEnabled, validGoPair, shuffleGoMoves, liveGoGoals, attemptGoFailure,goCheatChanceAllowed,validGoBoard,goMoveOutcome,goTacticalMove } from './go-policy.js';
+import { analyzeGoBoard,goSettledPass,recordGoPerformance, goOpponents, goOptionsError, goCheatsEnabled, validGoPair, shuffleGoMoves, liveGoGoals, attemptGoFailure,goCheatChanceAllowed,validGoBoard,goMoveOutcome,goTacticalMove } from './go-policy.js';
 import {
     getConfiguration, instanceCount, log, getErrorInfo, getActiveSourceFiles, getNsDataThroughFile, formatTime
 } from './helpers.js'
@@ -22,6 +23,8 @@ import {
 const argsSchema = [
     ['goal','auto'], // auto, money, speed, hacking, reputation, combat, crime, hacknet
     ['allow-self-atari',false], // Permit non-capturing moves that leave the played group with only one liberty.
+    ['adaptive-boards',true], // Measure bonus per minute and gradually compare board sizes unless board-size is explicit.
+    ['early-pass',true], // Pass only when territory is settled and every friendly group has two small eyes.
     ['board-size',13], // Supported native sizes: 5, 7, 9, 13.
     ['opponent',''], // Optional explicit opponent override
     ['cheats', true], // (Now true by default - but still an option for backwards compatibility) This is only possible if you have BN14.2
@@ -43,7 +46,7 @@ export function autocomplete(data, args) {
 export async function main(ns) {
  registerAutomation(ns);
     if(isScriptPaused(ns,ns.getScriptName()))return;
-    let goOptions, unavailableOpponents=new Map();
+    let goOptions, sourceFile14=0, unavailableOpponents=new Map();
     const stopPlaying=Symbol('Go stopped');let failureAttempts=0,startedGame=false,lastStatusAt=0,goStatus={};
     const ensurePlaying=()=>{if(isScriptPaused(ns,ns.getScriptName())||maintenanceRequested(ns)||!achievementActionAllowed(ns,'go'))throw stopPlaying;};
     let cheats = false;
@@ -55,7 +58,9 @@ export async function main(ns) {
     let turn = 0;
     let START = performance.now();
     // Global variables initialized in this way get strong typing throughout
-    let moveOutcomes = new Map();
+    let moveOutcomes = new Map(),boardAnalysis=null;
+    const patternCache=new Map();
+    let performanceBuckets={},gameRecord=null,boardSizeExplicit=false;
     let board = (/**@returns{string[]}*/() => undefined)(); // The current board state
     let currentValidMoves = (/**@returns{number[][]}*/() => undefined)(); //All valid moves for this turn
     let currentValidContestedMoves = (/**@returns{number[][]}*/() => undefined)(); //All valid moves that occupy a contested space
@@ -108,13 +113,20 @@ export async function main(ns) {
         if (!runOptions || (await instanceCount(ns)) > 1) return; // Prevent multiple instances of this script from being started, even with different args.
 
         goOptions=runOptions;
+        boardSizeExplicit=ns.args.some(a=>a==='--board-size'||typeof a==='string'&&a.startsWith('--board-size='));
+        try{const config=JSON.parse(ns.read('go.js.config.txt')||'{}');const values=Array.isArray(config)?Object.fromEntries(config):config;
+            if(values&&Object.prototype.hasOwnProperty.call(values,'board-size'))boardSizeExplicit=true;}catch{}
+        try{const saved=JSON.parse(ns.read('tasks/go-performance.json'));if(saved.nodeReset===ns.getResetInfo().lastNodeReset&&saved.augReset===ns.getResetInfo().lastAugReset&&saved.version===2&&saved.buckets&&typeof saved.buckets==='object')performanceBuckets=saved.buckets;}catch{}
+        // Warm static pattern variants before any candidate searches.
+        for(const pattern of [...disrupt4,...disrupt5,...def5])getAllPatterns(pattern);
         const invalid=goOptionsError(goOptions);if(invalid)return ns.tprint(invalid);
         logtime = runOptions.logtime;
         runOnce = runOptions.runOnce;
 
         const reset=ns.getResetInfo();const sourceFiles=reset.ownedSF?autopilotSourceFiles(reset):await getActiveSourceFiles(ns,true);
         // Enable cheats if we have SF14.2 or higher (unless the user disabled cheats).
-        cheats = goCheatsEnabled(runOptions,sourceFiles[14]??0);
+        sourceFile14=sourceFiles[14]??0;
+        cheats = goCheatsEnabled(runOptions,sourceFile14);
         cheatChanceThreshold = runOptions['cheat-chance-threshold'];
 
         ns.disableLog("go.makeMove")
@@ -210,7 +222,7 @@ export async function main(ns) {
         while (true) {
             automationHeartbeat(ns);ensurePlaying();currentValidMovesTurn=-1;
             turn++; if(turn===1)playStyle=getStyle(ns);
-            const snapshot=await getNsDataThroughFile(ns,'({board:ns.go.getBoardState(),contested:ns.go.analysis.getControlledEmptyNodes(),valid:ns.go.analysis.getValidMoves(),liberties:ns.go.analysis.getLiberties(),chains:ns.go.analysis.getChains()})','/Temp/go-board-snapshot.txt');
+            const snapshot=await getNsDataThroughFile(ns,'({board:ns.go.getBoardState(),contested:ns.go.analysis.getControlledEmptyNodes(),valid:ns.go.analysis.getValidMoves(),liberties:ns.go.analysis.getLiberties(),chains:ns.go.analysis.getChains(),game:ns.go.getGameState()})','/Temp/go-board-snapshot.txt');
             ensurePlaying();
             board = snapshot.board;
             if(!validGoBoard(board))throw new Error('Malformed Go board; waiting for native state.');
@@ -220,9 +232,9 @@ export async function main(ns) {
             validMove = snapshot.valid;
             validLibMoves = snapshot.liberties;
             chains = snapshot.chains;
-            moveOutcomes = new Map();
+            moveOutcomes = new Map();boardAnalysis=analyzeGoBoard(board);
             for(let x=0;x<board.length;x++)for(let y=0;y<board.length;y++)if(validMove[x]?.[y]===true)
-                moveOutcomes.set(x+','+y,goMoveOutcome(board,x,y));
+                moveOutcomes.set(x+','+y,goMoveOutcome(board,x,y,boardAnalysis));
             const size = board[0].length
             //Build a test board with walls
             let testWall = "W".repeat(size + 2);
@@ -235,6 +247,10 @@ export async function main(ns) {
 
             let results;
             const achievement=liveGoGoals(ns);
+            if(gameRecord)gameRecord.turns=turn;
+            if(goOptions['early-pass']!==false&&!achievement?.goFailure&&goSettledPass(board,validMove,contested,moveOutcomes,ns.go.getOpponent(),boardAnalysis,snapshot.game)){
+                results=await go_passTurn(ns);await checkNewGame(ns,results);continue;
+            }
             if(attemptGoFailure(achievement,failureAttempts,cheats)) {
                 const moves=validMove.flatMap((row,x)=>row.flatMap((valid,y)=>valid?[[x,y]]:[]));
                 if(moves.length>=2){failureAttempts++;results=await go_cheat_playTwoMoves(ns,...moves[0],...moves[1]);}
@@ -405,19 +421,24 @@ export async function main(ns) {
     async function checkNewGame(ns, gameInfo) {
         if (gameInfo?.type === "gameOver") {
             ensurePlaying();
+            const finishedStats=ns.go.analysis.getStats();
+            if(gameRecord){performanceBuckets=recordGoPerformance(performanceBuckets,gameRecord,finishedStats,Date.now(),typeof ns.go.getGameState==='function'?ns.go.getGameState():null);gameRecord=null;
+                await ns.write('tasks/go-performance.json',JSON.stringify({version:2,nodeReset:ns.getResetInfo().lastNodeReset,augReset:ns.getResetInfo().lastAugReset,buckets:performanceBuckets}),'w');}
             if (runOnce&&startedGame){await ns.write('tasks/go-status.json',JSON.stringify({...goStatus,at:Date.now(),pid:ns.pid,state:'completed',error:null}),'w');throw stopPlaying;}
-            const stats=ns.go.analysis.getStats(),ranked=rankGoOpponents(stats,goOptions.goal,ns.getResetInfo().currentNode);
-            const achievement=liveGoGoals(ns);
-            if(!goOptions.opponent&&achievement?.goStreak)ranked.sort((a,b)=>Number(b.name==='Illuminati')-Number(a.name==='Illuminati'));
-            if(goOptions.opponent)ranked.splice(0,ranked.length,...ranked.filter(c=>c.name===goOptions.opponent));
-            let selected;
+            const stats=finishedStats,achievement=liveGoGoals(ns),now=Date.now();
+            const context={...goProgressionContext(ns,sourceFile14,now),cheats,boardSizeExplicit,protectStreak:!!achievement?.goStreak,currentOpponent:goStatus?.selected?.name,
+                unavailable:[...unavailableOpponents].filter(([,until])=>until>now).map(([name])=>name)};
+            const selection=planGoOpponents(stats,goOptions,ns.getResetInfo().currentNode,performanceBuckets,context),ranked=selection.ranked;
+            let selected,selectedSize;
             for(const candidate of ranked) {
                 if((unavailableOpponents.get(candidate.name)||0)>Date.now())continue;
-                try{ensurePlaying();const fresh=ns.go.resetBoardState(candidate.name,goOptions['board-size']??13);if(!validGoBoard(fresh))throw new Error('Board reset was not accepted');selected=candidate;startedGame=true;break;}
+                try{ensurePlaying();const size=candidate.size;
+                    const fresh=ns.go.resetBoardState(candidate.name,size);if(!validGoBoard(fresh))throw new Error('Board reset was not accepted');selected=candidate;selectedSize=fresh.length;startedGame=true;break;}
                 catch(err){if(err===stopPlaying)throw err;unavailableOpponents.set(candidate.name,Date.now()+300000);}
             }
             if(!selected)throw new Error('No available Go opponent; retrying after cooldown.');
-            goStatus={at:Date.now(),pid:ns.pid,state:'starting',error:null,selected,ranked,stats,boardSize:goOptions['board-size']??13};
+            const previous=stats[selected.name]||{};gameRecord={opponent:selected.name,size:selectedSize,cheats,startedAt:Date.now(),wins:Number(previous.wins)||0,losses:Number(previous.losses)||0,bonus:Number(previous.bonusPercent)||0,winStreak:Number(previous.winStreak)||0,turns:0};
+            goStatus={performance:performanceBuckets,at:Date.now(),pid:ns.pid,state:'starting',error:null,selected,ranked,selection:{goal:selection.goal,source:selection.source,bottleneck:context.bottleneck,trial:!!selected.trial},stats,boardSize:selectedSize};
             await ns.write('tasks/go-status.json',JSON.stringify(goStatus),'w');
             turn = 0;currentValidMovesTurn=-1;failureAttempts=0;moveOutcomes=new Map();
             ns.clearLog()
@@ -540,13 +561,15 @@ export async function main(ns) {
      * @param {string[]} pattern
      * @returns {string[][]} */
     function getAllPatterns(pattern) {
+        const key=pattern.join('/');if(patternCache.has(key))return patternCache.get(key);
         const rotations = [
             pattern,
             rotate90Degrees(pattern),
             rotate90Degrees(rotate90Degrees(pattern)),
             rotate90Degrees(rotate90Degrees(rotate90Degrees(pattern))),
         ]
-        return [...rotations, ...rotations.map(verticalMirror)]
+        const variants=[...new Map([...rotations,...rotations.map(verticalMirror)].map(p=>[p.join('/'),p])).values()];
+        patternCache.set(key,variants);return variants;
     }
 
     //Special thanks to @gmcew for the next 2 functions!
@@ -1359,7 +1382,7 @@ export async function main(ns) {
         if (!attack?.coords) return false
         const [x, y] = attack.coords
         if (x === undefined) return false
-        const outcome=moveOutcomes.get(x+','+y)||goMoveOutcome(board,x,y);
+        const outcome=moveOutcomes.get(x+','+y)||goMoveOutcome(board,x,y,boardAnalysis);
         if(!outcome||outcome.liberties===0||!goOptions?.['allow-self-atari']&&outcome.liberties===1&&outcome.captured===0)return false;
         let mid = performance.now()
         ns.printf("%s", attack.msg)
@@ -1396,7 +1419,7 @@ export async function main(ns) {
         for (let x = 0; x < board[0].length; x++)
             for (let y = 0; y < board[0].length; y++) {
                 if (validMove[x][y]) {
-                    const outcome=moveOutcomes.get(x+','+y)||goMoveOutcome(board,x,y);
+                    const outcome=moveOutcomes.get(x+','+y)||goMoveOutcome(board,x,y,boardAnalysis);
                     if(!outcome||outcome.liberties===0||!goOptions?.['allow-self-atari']&&outcome.liberties===1&&outcome.captured===0)continue;
                     if (["O", "?"].includes(contested[x][y])) contestedMoves.push([x, y])
                     moves.push([x, y])

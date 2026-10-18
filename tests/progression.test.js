@@ -100,15 +100,13 @@ test('grafting honors a live transition owner but ignores stale locks', () => {
   assert.equal(graftTick(f.ns).status, 'started');
 });
 
-test('grafting waits for queued augmentation installs and live reset plans', () => {
+test('queued augmentations allow grafting while an actual live reset plan blocks it', () => {
   const f = graftFixture();
   f.ns.singularity.getOwnedAugmentations = purchased => purchased ? ['Base', 'Queued'] : ['Base'];
-  assert.equal(graftTick(f.ns).status, 'reset-pending');
-  assert.equal(f.started.length, 0);
+  assert.equal(graftTick(f.ns).status, 'started');
   f.ns.singularity.getOwnedAugmentations = purchased => purchased ? ['Base', 'NeuroFlux Governor', 'NeuroFlux Governor'] : ['Base', 'NeuroFlux Governor'];
-  assert.equal(graftTick(f.ns).status, 'reset-pending');
-  f.ns.singularity.getOwnedAugmentations = () => ['Base'];
-  f.ns.ps = () => [{ pid: 42 }];
+  assert.equal(graftTick(f.ns).status, 'started');
+  f.ns.ps = () => [{ pid: 42,filename:'autopilot.js' }];
   f.ns.read = file => file === 'tasks/augmentation-reset-plan.json' ? JSON.stringify({ pending: true, ownerPid: 42, expiresAt: Date.now()+60000 }) : '';
   assert.equal(graftTick(f.ns).status, 'reset-pending');
   f.ns.ps = () => [];

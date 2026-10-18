@@ -11,6 +11,7 @@ export async function main(ns) {
   for (const file of ns.ls(self, ".cache")) {
     try {
       const result = ns.dnet.openCache(file, true);
+      if (result?.success) await ns.write('tasks/dnet-last-cache.json', JSON.stringify({at:Date.now()}), 'w');
       ns.tprint(`${self}: opened ${file}: ${JSON.stringify(result)}`);
     } catch (error) {
       ns.tprint(`${self}: could not open ${file}: ${String(error)}`);

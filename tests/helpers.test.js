@@ -80,3 +80,30 @@ test('temporary result paths are escaped correctly in generated source',async()=
 test('legacy games without UI game-info support still execute temporary queries',async()=>{
  const e=await engine(()=>42);e.ns.ui=undefined;assert.equal(await h.getNsDataThroughFile_Custom(e.ns,e.run,'ns.fake()','/Temp/legacy.txt'),42);
 });
+
+
+test('default worker names never copy namespace arguments or brackets into native paths',async()=>{
+ const e=await engine(x=>x);
+ assert.equal(await h.getNsDataThroughFile_Custom(e.ns,e.run,'((api,args)=>api(args))(ns.fake,ns.args[0])',null,[42]),42);
+ const paths=[...e.files.keys()].filter(k=>k.startsWith('/Temp/'));
+ assert.ok(paths.length>0);assert.ok(paths.every(k=>/^\/Temp\/[A-Za-z0-9_.-]+$/.test(k)));
+ assert.ok(paths.some(k=>k.startsWith('/Temp/ns-fake.txt.')));
+});
+test('default filenames handle multiline, computed, unicode and long commands safely',async()=>{
+ for(const command of ['((api)=>api(42))(\n ns.fake\n)', 'ns["fake"](42)', '("雪".length+41)', '('+JSON.stringify('ns.'+'a'.repeat(1000))+',42)']) {
+  const e=await engine(x=>x);assert.equal(await h.getNsDataThroughFile_Custom(e.ns,e.run,command),42);
+  const paths=[...e.files.keys()].filter(k=>k.startsWith('/Temp/'));
+  assert.ok(paths.every(k=>/^\/Temp\/[A-Za-z0-9_.-]+$/.test(k)&&k.length<140));
+ }
+});
+test('ordinary command names remain compatible and distinct complex commands stay immutable',async()=>{
+ const e=await engine(x=>x);
+ await h.getNsDataThroughFile_Custom(e.ns,e.run,'ns.fake(1)');await h.getNsDataThroughFile_Custom(e.ns,e.run,'ns.fake(2)');
+ assert.equal(e.ns.read('/Temp/ns-fake.txt'),'2');assert.equal([...e.files.keys()].filter(k=>k.endsWith('.js')&&k.startsWith('/Temp/ns-fake.txt.')).length,2);
+});
+test('Bladeburner action starts use a stable explicit native result path',async()=>{
+ const source=await readFile(new URL('../bladeburner.js',import.meta.url),'utf8');
+ const call=source.match(/const success = await getNsDataThroughFile\(ns,([\s\S]*?)\n    const expectedDuration/);
+ assert.ok(call,'guarded action start call exists');
+ assert.match(call[1],/`,\s*'\/Temp\/bladeburner-start-action.txt'/);
+});

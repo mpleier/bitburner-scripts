@@ -1,3 +1,4 @@
+import {scriptSignature} from './runtime-policy.js';
 import { commandFile, heartbeatFile, resultFile, validateCommand, renderCommandJob, commandPolicyVersion } from './remote-api-command.js';
 /** File mailbox for state queries and named project script controls. */
 export async function main(ns) {
@@ -5,10 +6,15 @@ export async function main(ns) {
  if (ns.getHostname() !== 'home') { ns.tprint('Run remote-api-agent.js on home.'); return; }
  if (ns.ps('home').some(p => p.filename === ns.getScriptName() && p.pid !== ns.pid)) return;
  ns.tprint('Remote API command worker ready.');
+ const signature=scriptSignature(ns,ns.getScriptName());
+ const legacyIndex=ns.args.indexOf('--legacy-policy');let savedHeartbeat;
+ try{savedHeartbeat=JSON.parse(ns.read(heartbeatFile));}catch{}
+ const candidate=legacyIndex>=0?ns.args[legacyIndex+1]:savedHeartbeat?.policy;
+ const legacyPolicy=Number.isSafeInteger(candidate)&&candidate>0&&candidate<=commandPolicyVersion?candidate:commandPolicyVersion;
  let lastHeartbeat = 0;
  while (true) {
   if (Date.now() - lastHeartbeat >= 2000) {
-   lastHeartbeat = Date.now(); await ns.write(heartbeatFile, JSON.stringify({pid:ns.pid,at:lastHeartbeat,version:2,policy:commandPolicyVersion}), 'w');
+   lastHeartbeat = Date.now(); await ns.write(heartbeatFile, JSON.stringify({pid:ns.pid,at:lastHeartbeat,version:2,policy:legacyPolicy,activePolicy:commandPolicyVersion,signature}), 'w');
   }
   let command;
   try { command = JSON.parse(ns.read(commandFile) || 'null'); } catch { }
@@ -31,7 +37,7 @@ export async function main(ns) {
       if (!pid) await ns.write(output, JSON.stringify({id:command.id,state:'failed',at:Date.now(),error:'Unable to launch command job'}), 'w');
       else {
        while (ns.isRunning(pid)) {
-        await ns.write(heartbeatFile, JSON.stringify({pid:ns.pid,at:Date.now(),version:2,policy:commandPolicyVersion,commandId:command.id}), 'w');
+        await ns.write(heartbeatFile, JSON.stringify({pid:ns.pid,at:Date.now(),version:2,policy:legacyPolicy,activePolicy:commandPolicyVersion,signature,commandId:command.id}), 'w');
         await ns.sleep(500);
        }
       }

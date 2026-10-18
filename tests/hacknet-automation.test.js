@@ -67,7 +67,8 @@ test('invalid polling, spending, reserve and batch options are rejected',()=>{
 
 test('hash spender budgets capacity purchases, checks pauses after yields, and counts bulk quantities',async()=>{
  const source=await readFile(new URL('../spend-hacknet-hashes.js',import.meta.url),'utf8');
- assert.match(source,/claimSpending\(ns,"hacknet",nextNodeCost\) && ns.hacknet.purchaseNode\(\)>=0/);
+ assert.match(source,/if \(!claimSpending\(ns,"hacknet",nextNodeCost\)\)/);
+ assert.ok(source.indexOf('if (!claimSpending(ns,"hacknet",nextNodeCost))')<source.indexOf('if (ns.hacknet.purchaseNode()>=0)'));
  assert.match(source,/claimSpending\(ns,"hacknet",nextCacheUpgradeCost\)/);
  assert.match(source,/purchasesThisLoop\+=quantity/);assert.match(source,/maintenanceRequested\(ns\)/);
  assert.match(source,/hashOverflowBuffer\(globalProduction/);

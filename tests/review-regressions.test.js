@@ -32,11 +32,11 @@ test('study cleanup only stops class work', () => {
  assert.equal(run(ns),false); type='CLASS'; assert.equal(run(ns),true); assert.equal(stops,1);
 });
 test('continuous program buying exits immediately when all programs exist', async () => {
- await programs({args:['-c'],fileExists:()=>true,singularity:{purchaseProgram:()=>assert.fail('already owned')},sleep:()=>assert.fail('must exit'),toast:()=>{}});
+ await programs({args:['-c'],write(){},getScriptName:()=> 'Tasks/program-manager.js',read:()=>'',getResetInfo:()=>({}),getPlayer:()=>({money:1e9}),fileExists:()=>true,singularity:{purchaseProgram:()=>assert.fail('already owned')},sleep:()=>assert.fail('must exit'),toast:()=>{}});
 });
 test('continuous program buying retries genuinely missing programs', async () => {
  const owned=new Set(); let affordable=false,sleeps=0;
- await programs({args:['-c'],fileExists:program=>owned.has(program),singularity:{purchaseProgram:program=>{if(!affordable)return false;owned.add(program);return true;}},toast:()=>{},sleep:async()=>{sleeps++;affordable=true;}});
+ await programs({args:['-c'],write(){},getScriptName:()=> 'Tasks/program-manager.js',read:()=>'',getResetInfo:()=>({}),getPlayer:()=>({money:1e9}),fileExists:program=>owned.has(program),singularity:{getDarkwebProgramCost:()=>500000,purchaseProgram:program=>{if(!affordable)return false;owned.add(program);return true;}},toast:()=>{},sleep:async()=>{sleeps++;affordable=true;}});
  assert.equal(sleeps,1); assert.equal(owned.size,5);
 });
 test('explicit sleeve crime overrides survive automatic chance selection', () => {

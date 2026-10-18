@@ -1,3 +1,4 @@
+import {graftResetBlocked} from './progression-improvements-policy.js';
 import {registerAutomation,automationHeartbeat,maintenanceRequested} from './runtime-policy.js';
 import { claimSpending } from './spending-policy.js';
 import { isScriptPaused } from './automation-control.js';
@@ -30,8 +31,7 @@ export function graftTick(ns, fraction = 0.25, maxPayback = 4 * 3600_000) {
   const owned = new Set(ownedList);
   let plan;
   try { plan = JSON.parse(ns.read('tasks/augmentation-reset-plan.json')); } catch { }
-  if ((plan?.pending && plan.expiresAt > Date.now() && ns.ps('home').some(p => p.pid === plan.ownerPid)) ||
-      ownedList.length > installedList.length || [...owned].some(name => !installed.has(name))) return { status: 'reset-pending' };
+  if (graftResetBlocked(plan,reset,ns.ps('home'))) return { status: 'reset-pending' };
   let hackingIncome = 0, rates = {};
   try {
     hackingIncome = Math.max(0, Number(ns.getTotalScriptIncome()[0]) || 0);
@@ -53,10 +53,14 @@ export function graftTick(ns, fraction = 0.25, maxPayback = 4 * 3600_000) {
   }
   const choice = candidates.sort((a, b) => a.payback - b.payback || b.benefit - a.benefit || a.cost - b.cost)[0];
   if (!choice) return { status: 'waiting' };
+  try{plan=JSON.parse(ns.read('tasks/augmentation-reset-plan.json'));}catch{plan=null;}
+  if(graftResetBlocked(plan,ns.getResetInfo(),ns.ps('home')))return {status:'reset-pending'};
   if(!claimSpending(ns,'graft',choice.cost+travel))return {status:'waiting-for-budget'};
   if (player.city !== 'New Tokyo' && !ns.singularity.travelToCity('New Tokyo')) return { status: 'travel-failed' };
   // Recheck work after travel to avoid replacing a graft started by another script.
   if (activityBusy(ns) || ns.singularity.getCurrentWork()?.type === 'GRAFTING') return { status: 'busy' };
+  try{plan=JSON.parse(ns.read('tasks/augmentation-reset-plan.json'));}catch{plan=null;}
+  if(isScriptPaused(ns,'grafting-manager.js')||maintenanceRequested(ns)||graftResetBlocked(plan,ns.getResetInfo(),ns.ps('home')))return {status:'reset-pending'};
   if (ns.getPlayer().money < choice.cost + reserve) return { status: 'waiting' };
   return { status: ns.grafting.graftAugmentation(choice.name, false) ? 'started' : 'rejected', ...choice };
 }

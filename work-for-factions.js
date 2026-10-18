@@ -1,5 +1,8 @@
+import {hashSpendingDecision,spendHashesWithPolicy} from './hash-spending-policy.js';
+import {observeFactionMembership,acknowledgeFactionMembership,augmentationFundingWorkTargets} from './faction-reassessment-policy.js';
+import {ensureFactionJoinPlan} from './faction-joining.js';
 import {readNodeRoutePlan} from './node-route-policy.js';
-import { factionControlAllowed } from './faction-policy.js';
+import { factionJoinAllowed,rankFactionInvites,factionControlAllowed,planGangHost,gangHostPreferences } from './faction-policy.js';
 import { isScriptPaused } from './automation-control.js';
 import { registerAutomation, automationHeartbeat, maintenanceRequested } from './runtime-policy.js';
 import {achievementActionAllowed} from './achievement-policy.js';
@@ -9,6 +12,7 @@ import {
     formatDuration, formatMoney, formatNumberShort, disableLogs, log, getErrorInfo, tail
 } from './helpers.js'
 
+let factionMembershipState=null,lastMembershipProbeAt=0,membershipProbeWarned=false,fundingResetInfo=null;
 let options, activeNs, lastWorkStatusAt=0, lastWorkStatusKey="",lastSimulacrumCheck=0;
 const argsSchema = [
     ['first', []], // Grind rep with these factions first. Also forces a join of this faction if we normally wouldn't (e.g. no desired augs or all augs owned)
@@ -98,10 +102,8 @@ const preferredCompanyFactionOrder = [
 ]
 // Order in which to focus on crime factions. Start with the hardest-to-earn invites, assume we will skip to next best if not achievable.
 const preferredCrimeFactionOrder = ["Slum Snakes", "Tetrads", "Speakers for the Dead", "The Syndicate", "The Dark Army", "The Covenant", "Daedalus", "Netburners", "NiteSec", "The Black Hand"];
-// Gang factions in order of ease-of-invite. If gangs are available, as we near 54K Karma to unlock gangs (as per --karma-threshold-for-gang-invites), we will attempt to get into any/all of these.
-const desiredGangFactions = ["Slum Snakes", "The Syndicate", "The Dark Army", "Speakers for the Dead"];
-// Previously this was needed because you couldn't work for any gang factions once in a gang, but that was changed.
-const allGangFactions = ["Speakers for the Dead", "The Dark Army", "The Syndicate", "Tetrads", "Slum Snakes", "The Black Hand", "NiteSec"];
+// Gang host type and invitation targets are shared with gangs.js.
+
 
 const loopSleepInterval = 5000; // 5 seconds
 const statusUpdateInterval = 60 * 1000; // 1 minute (outside of this, minor updates in e.g. stats aren't logged)
@@ -124,12 +126,13 @@ export function autocomplete(data, args) {
 }
 
 // Bit of an ugly afterthought, but this is all over the place to break out of whatever we're doing and return to the main loop.
-const breakToMainLoop = () => { if(activeNs)automationHeartbeat(activeNs); return Date.now() > mainLoopStart + checkForNewPrioritiesInterval || !!activeNs&&(isScriptPaused(activeNs,activeNs.getScriptName())||maintenanceRequested(activeNs)||activityBusy(activeNs)); };
+const breakToMainLoop = () => { if(activeNs)automationHeartbeat(activeNs); return factionMembershipState?.changed===true || Date.now() > mainLoopStart + checkForNewPrioritiesInterval || !!activeNs&&(isScriptPaused(activeNs,activeNs.getScriptName())||maintenanceRequested(activeNs)||activityBusy(activeNs)); };
 
 /** @param {NS} ns */
 export async function main(ns) {
     if(isScriptPaused(ns,ns.getScriptName()))return;
     activeNs=ns; lastWorkStatusAt=0; lastWorkStatusKey="";
+    factionMembershipState=null;lastMembershipProbeAt=0;membershipProbeWarned=false;
     await markActivitySupport(ns);
     const runOptions = getConfiguration(ns, argsSchema);
     if (!runOptions || await instanceCount(ns) > 1) return; // Prevent multiple instances of this script from being started, even with different args.
@@ -258,6 +261,7 @@ async function loadStartupData(ns) {
         ns.print(`${softCompletedFactions.length} factions will initially be skipped (all desired augs purchased): ${softCompletedFactions.join(", ")}`);
 
     // TODO: If --prioritize-invites is set, we should have a preferred faction order that puts easiest-invites-to-earn at the front (e.g. all city factions)
+    await ensureFactionJoinPlan(ns,firstFactions,options.skip);
     numJoinedFactions = playerInfo.factions.length;
     fulcrumHackReq = await getServerRequiredHackLevel(ns, "fulcrumassets");
 }
@@ -268,26 +272,29 @@ let lastMainLoopMessage = "";
 async function mainLoop(ns) {
     if (!breakToMainLoop()) scope++; // Increase the scope of work if the last iteration completed early (i.e. due to all work within that scope being complete)
     mainLoopStart = Date.now();
+    // Update information that may have changed since our last loop
+    const player = await getPlayerInfo(ns);
+    const resetInfo = await getResetInfoRd(ns);
+    currentBitnode = resetInfo.currentNode;
+    fundingResetInfo=resetInfo;
+    if (factionMembershipState?.changed || player.factions.length > numJoinedFactions) {
+        scope = 1; // Reassess using the existing explicit and preferred faction priorities.
+        numJoinedFactions = player.factions.length;
+        factionMembershipState=acknowledgeFactionMembership(factionMembershipState);
+    }
     // If changing our loop scope, log a message
     const loopMessage = `INFO: Currently work scope is anything <= priority level: ${scope}`;
     if (loopMessage != lastMainLoopMessage)
         ns.print((lastMainLoopMessage = loopMessage));
 
-    // Update information that may have changed since our last loop
-    const player = await getPlayerInfo(ns);
-    const resetInfo = await getResetInfoRd(ns);
-    currentBitnode = resetInfo.currentNode;
-    if (player.factions.length > numJoinedFactions) { // If we've recently joined a new faction, reset our work scope
-        scope = 1; // Back to basics until we've satisfied all highest-priority work
-        numJoinedFactions = player.factions.length;
-    }
     // Immediately accept any outstanding faction invitations for factions we want to earn rep with soon
     // TODO: If check if we would qualify for an invite to any factions just by travelling, and do so to start earning passive rep
     const invites = await checkFactionInvites(ns);
+    const gangInvites=!playerGang&&dictSourceFiles[2]?planGangHost([],gangHostPreferences(ns),options.skip).inviteOrder:[];
     const invitesToAccept = options['get-invited-to-every-faction'] || options['prioritize-invites'] ?
-        invites.filter(f => !skipFactions.includes(f)) :
-        invites.filter(f => !skipFactions.includes(f) && !softCompletedFactions.includes(f));
-    for (const invite of invitesToAccept)
+        invites.filter(f => (!skipFactions.includes(f)||gangInvites.includes(f))&&!options.skip.includes(f)) :
+        invites.filter(f => ((!skipFactions.includes(f)&&!softCompletedFactions.includes(f))||gangInvites.includes(f))&&!options.skip.includes(f));
+    for (const invite of rankFactionInvites(invitesToAccept,!!dictSourceFiles[2]&&!playerGang,gangHostPreferences(ns)))
         await tryJoinFaction(ns, invite);
     // Get some information about gangs (if unlocked)
     if (2 in dictSourceFiles) {
@@ -297,11 +304,12 @@ async function mainLoop(ns) {
             // If we've only just now joined a gang, we have to reload startup data, because the augs offered by our gang faction has now changed.
             if (playerGang) await loadStartupData(ns);
         }
-        if (ns.heart.break() <= options['karma-threshold-for-gang-invites']) { // Start trying to earn gang faction invites if we're close to unlocking gangs
+        if (currentBitnode === 2 || ns.heart.break() <= options['karma-threshold-for-gang-invites']) { // Start trying to earn gang faction invites if we're close to unlocking gangs
             if (!playerGang) {
                 log(ns, `INFO: We are nearing the Karma required to unlock gangs (${formatNumberShort(ns.heart.break())} / -54K). Prioritize earning gang faction invites.`);
-                for (const factionName of desiredGangFactions)
-                    await earnFactionInvite(ns, factionName);
+                const hostPlan=planGangHost((await getPlayerInfo(ns)).factions,gangHostPreferences(ns),options.skip);
+                // Work only on the easiest permitted invitation. Re-plan before seeking anything harder.
+                if(!hostPlan.host&&hostPlan.inviteOrder.length)await earnFactionInvite(ns,hostPlan.inviteOrder[0]);
             }
         }
     }
@@ -314,9 +322,23 @@ async function mainLoop(ns) {
         wasGrafting = false;
     }
 
+    // Gang rush waits only for a host of the selected type; a hacking membership cannot block a combat invitation.
+    if (!playerGang && dictSourceFiles[2] && options['crime-focus'] && options['prioritize-invites'] &&
+        achievementActionAllowed(ns,'gang') && planGangHost((await getPlayerInfo(ns)).factions,gangHostPreferences(ns),options.skip).host) {
+        if (currentBitnode!==2 && ns.heart.break()>-54000 && !options['no-crime']) await crimeForKillsKarmaStats(ns,0,54000,0,true);
+        else await ns.sleep(loopSleepInterval);
+        return;
+    }
+
     const redPill=readNodeRoutePlan(ns)?.redPill;
     if(redPill?.active&&redPill.requiredRep>redPill.rep&&player.factions.includes('Daedalus')&&!options['crime-focus']&&!skipFactions.includes('Daedalus')) {
         await workForSingleFaction(ns,'Daedalus',false,false,redPill.requiredRep);
+        return;
+    }
+
+    const fundingWork=await pendingAugmentationFundingWork(ns);
+    if(fundingWork){
+        await workForSingleFaction(ns,fundingWork.faction,false,false,fundingWork.targetRep,fundingWork);
         return;
     }
 
@@ -450,9 +472,12 @@ const classHeuristic = (player, stat) => heuristic(player, stat, bitNodeMults.Cl
 
 /** @param {NS} ns */
 async function earnFactionInvite(ns, factionName) {
+    if(options.skip.includes(factionName))return false;
     let player = await getPlayerInfo(ns);
     const joinedFactions = player.factions;
     if (joinedFactions.includes(factionName)) return true;
+    if (!factionJoinAllowed({joined:()=>joinedFactions,read:f=>ns.read(f),reset:()=>ns.getResetInfo()},factionName))
+        return ns.print(`Deferring ${factionName}: the shared city plan selects a different group.`);
     var invitations = await checkFactionInvites(ns);
     if (invitations.includes(factionName))
         return await tryJoinFaction(ns, factionName);
@@ -789,7 +814,7 @@ export async function tryJoinFaction(ns, factionName) {
     var joinedFactions = (await getPlayerInfo(ns)).factions;
     if (joinedFactions.includes(factionName))
         return true;
-    if (!(await factionWorkCommand(ns, `ns.singularity.joinFaction(ns.args[0])`, [factionName], false)))
+    if (!(await factionWorkCommand(ns, `(${factionJoinAllowed.toString()})({joined:()=>ns.getPlayer().factions,read:f=>ns.read(f),reset:()=>ns.getResetInfo()},ns.args[0])&&ns.singularity.joinFaction(ns.args[0])`, [factionName], false)))
         return false;
     log(ns, `Joined faction "${factionName}"`, false, 'success');
     return true;
@@ -798,8 +823,45 @@ export async function tryJoinFaction(ns, factionName) {
 /** @param {NS} ns
  * @returns {Promise<Player>} the result of ns.getPlayer() */
 async function getPlayerInfo(ns) {
-    //return ns.getPlayer(); // Note: We may decide that we call this frequently enough it is not worth ram-dodging
-    return await getNsDataThroughFile(ns, `ns.getPlayer()`);
+    const player=await getNsDataThroughFile(ns, `ns.getPlayer()`);
+    factionMembershipState=observeFactionMembership(factionMembershipState,player.factions);
+    lastMembershipProbeAt=Date.now();membershipProbeWarned=false;
+    return player;
+}
+
+// Reputation loops otherwise have no player snapshot. Probe at most once per ordinary five-second work poll.
+async function checkFactionMembership(ns) {
+    if(isScriptPaused(ns,ns.getScriptName())||maintenanceRequested(ns)||activityBusy(ns))return true;
+    if(Date.now()-lastMembershipProbeAt<loopSleepInterval)return factionMembershipState?.changed===true;
+    lastMembershipProbeAt=Date.now();
+    try{
+        const names=await getNsDataThroughFile(ns,'ns.getPlayer().factions','/Temp/faction-membership-current.txt');
+        factionMembershipState=observeFactionMembership(factionMembershipState,names);membershipProbeWarned=false;
+    }catch(error){
+        if(!membershipProbeWarned)ns.print('WARN: Membership refresh deferred: '+String(error));
+        membershipProbeWarned=true;
+    }
+    return factionMembershipState?.changed===true;
+}
+
+/** Read-only guidance; never acquire a new membership or override explicit player priorities. */
+function readAugmentationFundingWork(ns) {
+    try{
+        const pill=readNodeRoutePlan(ns)?.redPill;
+        if(pill?.active&&pill.requiredRep>pill.rep)return [];
+        const record=JSON.parse(ns.read('tasks/augmentation-wait-plan.json'));
+        return augmentationFundingWorkTargets(record,{now:Date.now(),reset:fundingResetInfo,ownerAlive:ns.isRunning(record.ownerPid),
+            joined:factionMembershipState?.current||[],skip:skipFactions||[],first:firstFactions||[],gangFaction:playerGang,
+            crimeFocus:options['crime-focus'],invitesOnly:options['invites-only']});
+    }catch{return [];}
+}
+
+async function pendingAugmentationFundingWork(ns) {
+    for(const target of readAugmentationFundingWork(ns)){
+        const rep=await getFactionReputation(ns,target.faction);
+        if(Number.isFinite(rep)&&rep<target.targetRep)return target;
+    }
+    return null;
 }
 
 /** @param {NS} ns
@@ -874,7 +936,7 @@ async function isValidInterruption(ns, currentWork = null) {
     automationHeartbeat(ns);
     if (isScriptPaused(ns,ns.getScriptName())||maintenanceRequested(ns)||activityBusy(ns)) return true;
     let interruptionNotice = "";
-    const nodeRoute=readNodeRoutePlan(ns)?.selected;
+    const routePlan=readNodeRoutePlan(ns),nodeRoute=routePlan?.selected;
     currentWork ??= await getCurrentWorkInfo(ns); // Retrieve current work (unless it was passed in)
     // Grafting can install Simulacrum without restarting this manager. Refresh before the pause decision.
     if(!hasSimulacrum&&Date.now()-lastSimulacrumCheck>=5000) {
@@ -900,6 +962,8 @@ async function isValidInterruption(ns, currentWork = null) {
         if (nodeRoute==='bladeburner' || playerGang || scope >= 2) {
             // Check if the player has joined bladeburner (can stop checking once we see they are)
             playerInBladeburner = playerInBladeburner || await getNsDataThroughFile(ns, 'ns.bladeburner.inBladeburner()');
+            if(!playerInBladeburner&&nodeRoute==='bladeburner'&&routePlan?.development?.entry?.needsTraining&&ns.ps('home').some(p=>p.filename.replace(/^\//,'')==='bladeburner.js'))
+                interruptionNotice='Route planner prioritizes combat training for Bladeburner entry.';
             if (playerInBladeburner) {
                 if (nodeRoute==='bladeburner')
                     interruptionNotice = 'Route planner prioritizes Bladeburner; pausing conflicting faction work.';
@@ -956,9 +1020,9 @@ let lastFactionWorkStatus = "";
  *                                          and b) ignore the rep required to unlock donations and keep going until we can buy all augmentations
  *                               Note: The exception is if donations are already unlocked, then you can already buy all augmentations (by buying rep first), so this does nothing.
  * @param {boolean|number} forceRep Set to true to force working for reputation even if we have unlocked donations and could just buy reputation.
- *                               Hack: If set to a number, we will work until that reputation amount regardless of augmentation reputation requirements.
+ *                               A number sets a minimum target; fundingWork supplies an exact, cancellable short-term target.
  * */
-export async function workForSingleFaction(ns, factionName, forceUnlockDonations = false, forceBestAug = false, forceRep = false) {
+export async function workForSingleFaction(ns, factionName, forceUnlockDonations = false, forceBestAug = false, forceRep = false, fundingWork = null) {
     const repToFavour = (rep) => Math.ceil(25500 * 1.02 ** (rep - 1) - 25000);
     let highestRepAug = forceBestAug ? mostExpensiveAugByFaction[factionName] : mostExpensiveDesiredAugByFaction[factionName];
     let startingFavor = dictFactionFavors[factionName] || 0; // How much favour do we already have with this faction?
@@ -995,6 +1059,8 @@ export async function workForSingleFaction(ns, factionName, forceUnlockDonations
     // If the best faction aug is within 10% of our current rep, grind all the way to it so we can get it immediately, regardless of our current rep target
     if (forceBestAug || highestRepAug <= 1.1 * Math.max(currentReputation, factionRepRequired))
         factionRepRequired = Math.max(highestRepAug, factionRepRequired);
+    // A planned prerequisite is an exact short-term target, not a request for the faction's most expensive aug.
+    if(fundingWork)factionRepRequired=fundingWork.targetRep;
     if (factionName == "Daedalus") await daedalusSpecialCheck(ns, favorRepRequired, currentReputation);
     if (currentReputation >= factionRepRequired)
         return ns.print(`Faction "${factionName}" required rep of ${Math.round(factionRepRequired).toLocaleString('en')} has already been attained ` +
@@ -1011,7 +1077,14 @@ export async function workForSingleFaction(ns, factionName, forceUnlockDonations
     let workAssigned = false; // Use to track whether work previously assigned by this script is being disrupted
     let bestFactionJob = null;
     while ((currentReputation = (await getFactionReputation(ns, factionName))) < factionRepRequired) {
-        if (breakToMainLoop()) return ns.print('INFO: Interrupting faction work to check on high-level priorities.');
+        if (await checkFactionMembership(ns) || breakToMainLoop()) return ns.print('INFO: Interrupting faction work to check on high-level priorities.');
+        if(fundingWork&&!readAugmentationFundingWork(ns).some(target=>target.key===fundingWork.key)){
+            const current=await getCurrentWorkInfo(ns);
+            if(workAssigned&&current.factionName===factionName)await stop(ns);
+            return false;
+        }
+        if(!fundingWork&&await pendingAugmentationFundingWork(ns))
+            return ns.print('INFO: Reassessing faction work for the selected augmentation funding plan.');
         const currentWork = await getCurrentWorkInfo(ns);
         if (workAssigned && currentWork.factionName === factionName) await maintainWorkFocus(ns, currentWork);
         let factionJob = currentWork.factionWorkType;
@@ -1067,6 +1140,10 @@ export async function workForSingleFaction(ns, factionName, forceUnlockDonations
                 factionRepRequired = forceUnlockDonations ? favorRepRequired : Math.min(highestRepAug, favorRepRequired);
             }
         }
+    }
+    if(fundingWork&&workAssigned){
+        const current=await getCurrentWorkInfo(ns);
+        if(current.factionName===factionName)await stop(ns);
     }
     if (currentReputation >= factionRepRequired)
         ns.print(`Attained ${Math.round(currentReputation).toLocaleString('en')} rep with "${factionName}" ` +
@@ -1183,8 +1260,8 @@ export async function workForAllMegacorps(ns, megacorpFactionsInPreferredOrder, 
  * @param {NS} ns */
 async function trySpendHashes(ns, spendOn) {
     return await getNsDataThroughFile(ns,
-        `(${achievementActionAllowed.toString()})(ns,"hashSpending") ? ns.hacknet.numHashes() + ns.hacknet.spendHashes(ns.args[0]) - ns.hacknet.numHashes() : 0`,
-        '/Temp/hacknet-spendHashes-returnSpent.txt', [spendOn]);
+        `(${achievementActionAllowed.toString()})(ns,"hashSpending") ? (()=>{const hashSpendingDecision=${hashSpendingDecision.toString()};return (${spendHashesWithPolicy.toString()})(ns,ns.args[0],undefined,1,{ownerPid:ns.args[1],script:"work-for-factions.js",trainingSeconds:900},hashSpendingDecision).spent;})() : 0`,
+        '/Temp/hacknet-spendHashes-returnSpent.txt', [spendOn,ns.pid]);
 }
 
 /** If we're wealthy, hashes have relatively little monetary value, spend hacknet-node hashes on contracts to gain rep faster

@@ -1,3 +1,4 @@
+import {factionJoinAllowed,rankFactionInvites} from './faction-policy.js';
 import { activityBusy } from './activity-coordination.js';
 import { autopilotSourceFiles } from './autopilot-policy.js';
 import { getConfiguration } from './helpers.js';
@@ -34,7 +35,7 @@ export async function main(ns) {
  if(freshOwned.length>freshInstalled.length||freshBusy) {
   state.status='blocked';state.reason='protected-progress';await ns.write('tasks/intelligence-session.json',JSON.stringify(state),'w');return;
  }
- invites.forEach(f=>ns.singularity.joinFaction(f));
+ rankFactionInvites(invites).forEach(f=>{if(factionJoinAllowed({joined:()=>ns.getPlayer().factions,read:path=>ns.read(path),reset:()=>ns.getResetInfo()},f))ns.singularity.joinFaction(f);});
  state.resets++;state.status='farming';ns.write('tasks/intelligence-session.json',JSON.stringify(state),'w');
  ns.singularity.softReset(ns.getScriptName());
 }

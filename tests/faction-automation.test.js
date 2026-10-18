@@ -6,7 +6,7 @@ import {factionForcedJoins,factionControlAllowed,factionPurchaseBatch} from '../
 
 test('default forced invitations include Covenant and flat gang faction names',()=>{
  assert.deepEqual(factionForcedJoins(null,10,'',false,0),['The Covenant']);
- const names=factionForcedJoins(null,2,'',true,-54000);assert.equal(names.length,6);assert.ok(names.includes('The Black Hand'));
+ const names=factionForcedJoins(null,2,'',true,-54000);assert.equal(names.length,5);assert.ok(names.includes('Slum Snakes'));assert.ok(!names.includes('The Black Hand'));
  assert.deepEqual(factionForcedJoins([],10,'',true,-54000),[]);
  assert.deepEqual(factionForcedJoins('The_Covenant',1,'',false,0),['The Covenant']);
  assert.deepEqual(factionForcedJoins(null,2,'Slum Snakes',true,-54000),[]);

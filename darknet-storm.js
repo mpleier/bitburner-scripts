@@ -43,7 +43,7 @@ export async function main(ns) {
     if (Date.now() - request.at > 30000 || request.reset !== ns.getResetInfo().lastNodeReset) return;
     const result = ns.dnet.unleashStormSeed();
     outcome = { success: result?.success === true, reason: result?.message || String(result?.code || 'Webstorm triggered') };
-    ns.tprint(`StormSeed: ${result.success ? 'webstorm triggered; scouts will rebuild exploration' : result.message || result.code}`);
+    ns.print(`StormSeed: ${result.success ? 'webstorm triggered; scouts will rebuild exploration' : result.message || result.code}`);
   } catch (error) {
     outcome.reason = String(error);
     ns.print(`StormSeed deferred: ${String(error)}`);

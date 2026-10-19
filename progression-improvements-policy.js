@@ -20,15 +20,27 @@ export function adaptiveHgwTiming(previous,telemetry,{now=Date.now(),baseCycleMs
    const lowTraffic=n<20;
    state.completionsPerSecond=n/Math.max(1,(now-state.windowAt)/1000);
    state.lateFraction=rawBad/n;state.riskFraction=bad/n;state.evidenceMode=spacingComplete?'half-leg-spacing':'deadline-fallback';state.windowOperations=n;
-   if(bad>=3&&bad/n>=.05){state.cleanWindows=0;if(now-state.changedAt>=60000){state.multiplier=Math.min(4,state.multiplier*1.5);state.changedAt=now;}}
-   else if(bad/n<=.01){state.cleanWindows++;if(state.cleanWindows>=(lowTraffic?2:3)&&now-state.changedAt>=120000){state.multiplier=Math.max(1,state.multiplier/1.25);state.changedAt=now;state.cleanWindows=0;}}
+   if(bad>=3&&bad/n>=.05){state.cleanWindows=0;if(now-state.changedAt>=60000){
+    state.multiplier=Math.min(4,state.multiplier*1.5);
+    // Recent measured delays can exceed the fixed multiplier's safety margin.
+    // Require three independent risky completions in this window; lifetime maxima are not evidence.
+    const risky=(Array.isArray(telemetry.recent)?telemetry.recent:[]).filter(e=>
+     Number.isFinite(e.at)&&e.at>state.windowAt&&e.at<=now&&now-e.at<=120000&&
+     Number.isFinite(e.lateMs)&&e.lateMs>0&&Number.isFinite(e.legSpacingMs)&&e.legSpacingMs>0&&
+     Number.isFinite(e.toleranceMs)&&e.toleranceMs>=0&&!e.error&&e.lateMs>Math.max(e.toleranceMs,e.legSpacingMs/2));
+    const distinct=new Map(risky.map(e=>[JSON.stringify([e.pid,e.tool,e.target,e.at,e.deadline]),e]));
+    if(spacingComplete&&distinct.size>=3)state.latencyFloorMs=Math.max(state.latencyFloorMs||0,
+     Math.min(base*16,Math.ceil(Math.max(...[...distinct.values()].map(e=>e.lateMs))*8)));
+    state.changedAt=now;
+   }}
+   else if(bad/n<=.01){state.cleanWindows++;if(state.cleanWindows>=(lowTraffic?2:3)&&now-state.changedAt>=120000){state.multiplier=Math.max(1,state.multiplier/1.25);state.latencyFloorMs=(state.latencyFloorMs||0)/1.25;if(state.latencyFloorMs<=base)state.latencyFloorMs=0;state.changedAt=now;state.cleanWindows=0;}}
    else state.cleanWindows=0;
    state.windowAt=now;state.operations=operations;state.late=late;state.spacingSamples=counts?.spacingSamples||0;state.spacingRisks=counts?.spacingRisks||0;
   }
  }
- state.at=now;state.cycleMs=Math.ceil(base*state.multiplier);state.queueMs=Math.max(baseQueueMs,Math.ceil(baseQueueMs*state.multiplier));
- state.targetCap=Math.max(1,Math.round(Math.max(1,targetCount)/state.multiplier));
- state.reason=!valid?'Timing evidence unavailable; retaining the current pacing':state.multiplier>1?'Back off after sustained late completions; recover gradually after clean windows':'Normal pacing';
+ state.at=now;state.cycleMs=Math.ceil(Math.max(base*state.multiplier,Math.min(base*16,state.latencyFloorMs||0)));state.queueMs=Math.max(baseQueueMs,Math.ceil(baseQueueMs*state.multiplier));
+ state.targetCap=Math.max(1,Math.round(Math.max(1,targetCount)/(state.cycleMs/base)));
+ state.reason=!valid?'Timing evidence unavailable; retaining the current pacing':state.cycleMs>base?'Back off after sustained late completions; recover gradually after clean windows':'Normal pacing';
  return state;
 }
 
@@ -38,6 +50,7 @@ export function restoreHgwTiming(saved, telemetry, now = Date.now()) {
      !Number.isFinite(saved.at) || saved.at > now || now - saved.at > 120000 ||
      !Number.isFinite(saved.multiplier) || saved.multiplier < 1 || saved.multiplier > 4 ||
      !Number.isFinite(saved.baseCycleMs) || saved.baseCycleMs <= 0 ||
+     (saved.latencyFloorMs!==undefined&&(!Number.isFinite(saved.latencyFloorMs)||saved.latencyFloorMs<0||saved.latencyFloorMs>saved.baseCycleMs*16)) ||
      !Number.isFinite(saved.windowAt) || saved.windowAt > now || saved.windowAt < 0 ||
      !Number.isFinite(saved.changedAt) || saved.changedAt > now || saved.changedAt < 0 ||
      !Number.isSafeInteger(saved.cleanWindows) || saved.cleanWindows < 0 || saved.cleanWindows > 3 ||

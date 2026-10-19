@@ -24,7 +24,7 @@ export async function main(ns) {
     if (!options['clear']) {
         const fragments = await getNsDataThroughFile(ns, 'ns.stanek.activeFragments()');
         if (fragments.length > 0)
-            return log(ns, `WARNING: Nothing to do, you've already populated Stanek's Gift. Exiting...`, true);
+            return log(ns, `WARNING: Nothing to do, you've already populated Stanek's Gift. Exiting...`, false);
     }
 
     // Find the saved layout that best matches
@@ -62,7 +62,7 @@ export async function main(ns) {
         '(() => { const before=ns.stanek.activeFragments(); if(before.length) return false; for(const f of JSON.parse(ns.args[0])) { if(!ns.stanek.canPlaceFragment(f.x,f.y,f.rotation,f.id)||!ns.stanek.placeFragment(f.x,f.y,f.rotation,f.id)){ns.stanek.clearGift();return false;} } return true; })()', 
         '/Temp/stanek-placeFragments.txt', [JSON.stringify(bestLayout.fragments)]);
     if (result)
-        log(ns, `SUCCESS: Placed ${bestLayout.fragments.length} Stanek fragments.`, true, 'success');
+        log(ns, `SUCCESS: Placed ${bestLayout.fragments.length} Stanek fragments.`, false, 'success');
     else
         log(ns, `ERROR: Failed to place one or more fragments. The layout may be invalid.`, true, 'error');
     } catch (error) { log(ns,'Stanek layout unavailable: '+String(error),true,'warning'); }

@@ -3,3 +3,5 @@
 !darknet-candidates.txt
 .vscode/*.*
 *.ts
+
+node_modules/

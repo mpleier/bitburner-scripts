@@ -42,7 +42,7 @@ export async function main(ns) {
         maxPayoffTime = Number.parseFloat(maxPayoffTime);
     const invalid=hacknetOptionsError(options,maxPayoffTime);if(invalid)return ns.tprint('Hacknet: '+invalid);
     options.productionMultiplier=(await tryGetBitNodeMultipliers(ns)).HacknetNodeMoney;
-    lastUpgradeLog="";lastUpgradeStatusAt=0;
+    lastUpgradeLog="";lastUpgradeStatusAt=0;upgradeStatusHistory=new Map();
     registerAutomation(ns);
     disableLogs(ns, ['sleep', 'getServerUsedRam', 'getServerMoneyAvailable']);
     setStatus(ns, `Starting hacknet-upgrade-manager with purchase payoff time limit of ${formatDuration(maxPayoffTime * 1000)} and ` +
@@ -73,10 +73,16 @@ export async function main(ns) {
     } while (continuous);
 }
 
-let lastUpgradeLog = "", lastUpgradeStatusAt=0;
+let lastUpgradeLog = "", lastUpgradeStatusAt=0, upgradeStatusHistory=new Map();
 function setStatus(ns, logMessage) {
     if(typeof ns.write==='function'&&Date.now()-lastUpgradeStatusAt>=5000){lastUpgradeStatusAt=Date.now();ns.write('tasks/hacknet-upgrade-status.json',JSON.stringify({at:Date.now(),pid:ns.pid,state:logMessage.startsWith('Purchased')?'upgrading':'waiting',reason:logMessage}),'w');}
-    if (logMessage != lastUpgradeLog) ns.print(lastUpgradeLog = logMessage);
+    // Alternating waiting reasons should not flood logs as the spending plan changes.
+    const now=Date.now(),purchase=logMessage.startsWith('Purchased'),failure=/WARNING:|ERROR:|purchase failed/.test(logMessage);
+    if(purchase||failure||now-(upgradeStatusHistory.get(logMessage)??-Infinity)>=300000){
+        ns.print(logMessage);upgradeStatusHistory.delete(logMessage);upgradeStatusHistory.set(logMessage,now);
+        if(upgradeStatusHistory.size>16)upgradeStatusHistory.delete(upgradeStatusHistory.keys().next().value);
+    }
+    lastUpgradeLog=logMessage;
 }
 
 // Will buy the most effective hacknet upgrade, so long as it will pay for itself in the next {payoffTimeSeconds} seconds.

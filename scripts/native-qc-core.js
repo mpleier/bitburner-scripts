@@ -6,5 +6,5 @@ export function parseNativeQc(stdout) {
  if(reply.result?.check!=='native-ram'||!Array.isArray(reply.result.scripts))return {ok:false,message:'Unexpected native preflight response'};
  const failures=reply.result.scripts.filter(s=>s.status!=='ready'||!Number.isFinite(s.ram)||s.ram<=0);
  const ok=reply.result.ok===true&&!failures.length&&reply.result.scripts.length>0;
- return {ok,scripts:reply.result.scripts,failures,message:ok?'Native RAM preflight passed':reply.result.scripts.length?'Native preflight failed':'Native preflight returned no checks'};
+ return {ok,native:reply.result,scripts:reply.result.scripts,failures,message:ok?'Native RAM preflight passed':reply.result.scripts.length?'Native preflight failed':'Native preflight returned no checks'};
 }

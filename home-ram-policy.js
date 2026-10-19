@@ -45,3 +45,18 @@ export function reclaimHomeRam(ns,required=0,reserve=0) {
  }
  return satisfied;
 }
+
+/** Minimum capacity for current persistent processes, missing essential managers and headroom. */
+export function essentialManagerRamTarget(ns,managers=[],processes=ns.ps('home')) {
+ const essential=new Set(['remote-api-agent.js','reliability-manager.js','health-manager.js','bladeburner.js','sleeve.js','work-for-factions.js','spend-hacknet-hashes.js']);
+ const running=new Set(processes.map(p=>p.filename.replace(/^\//,'')));
+ const missing=[...new Set(managers.filter(m=>essential.has(m.script)&&['waiting-for-ram','needs-home-ram'].includes(m.state)&&!running.has(m.script)).map(m=>m.script))];
+ const persistent=processes.filter(p=>!p.temporary&&!/^(Temp|remote-control)\//.test(p.filename.replace(/^\//,''))&&homeRamWorkerKind(p)==='protected');
+ const footprint=persistent.reduce((sum,p)=>sum+Math.max(0,ns.getScriptRam(p.filename,'home'))*p.threads,0);
+ const required=footprint+missing.reduce((sum,name)=>sum+Math.max(0,ns.getScriptRam(name,'home')),0);
+ const maximum=ns.getServerMaxRam('home');let target=maximum;
+ if(!Number.isFinite(required)||!Number.isFinite(maximum)||maximum<=0)return null;
+ const configured=Number(ns.read('home-ram-reserve.txt'))||0;
+ while(target<2**30&&target<required+homeRamHeadroom(target,configured))target*=2;
+ return target>maximum?{target,required,missing}:null;
+}

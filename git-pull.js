@@ -31,15 +31,18 @@ export async function main(ns) {
         ns.getScriptName().substring(0, ns.getScriptName().lastIndexOf('/')); // Default to the current folder
     const baseUrl = `raw.githubusercontent.com/${options.github}/${options.repository}/${options.branch}/`;
     const filesToDownload = [...new Set(options['new-file'].concat(options.download.length > 0 ? options.download : await repositoryListing(ns)).map(trimSlash))];
+    let updated=0;
     for (const localFilePath of filesToDownload) {
         let fullLocalFilePath = pathJoin(options.subfolder, localFilePath);
         const remoteFilePath = `https://` + pathJoin(baseUrl, localFilePath);
         ns.print(`Trying to update "${fullLocalFilePath}" from ${remoteFilePath} ...`);
-        if (await ns.wget(`${remoteFilePath}?ts=${new Date().getTime()}`, fullLocalFilePath) && rewriteFileForSubfolder(ns, fullLocalFilePath))
+        if (await ns.wget(`${remoteFilePath}?ts=${new Date().getTime()}`, fullLocalFilePath) && rewriteFileForSubfolder(ns, fullLocalFilePath)){
+            updated++;
             ns.tprint(`SUCCESS: Updated "${fullLocalFilePath}" to the latest from ${remoteFilePath}`);
-        else
+        }else
             ns.tprint(`WARNING: "${fullLocalFilePath}" was not updated. (Currently running, or not located at ${remoteFilePath}?)`)
     }
+    if(updated!==filesToDownload.length){ns.tprint('WARNING: Pull incomplete: '+updated+'/'+filesToDownload.length+' files updated. Cleanup skipped; retry to finish updating.');return;}
     ns.tprint(`INFO: Pull complete. If you have any questions or issues, create an issue on github or join the ` +
         `Bitburner Discord channel "#Insight's-scripts": https://discord.com/channels/415207508303544321/935667531111342200`);
     // Remove any temp files / scripts from the prior version

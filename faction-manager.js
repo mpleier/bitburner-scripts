@@ -1,7 +1,7 @@
 import {augmentationCashReserve} from './spending-policy.js';
 import {ensureFactionJoinPlan} from './faction-joining.js';
 import {readNodeRoutePlan} from './node-route-policy.js';
-import { chooseNeuroFluxFaction,augmentationDonationTopUp,augmentationPrerequisiteChain,selectAugmentationBasketDrop,optimizeAugmentationOrder,futureAugmentationBasketCost,pruneAugmentationPrerequisites,neuroFluxLevels,augmentationCountCandidates,selectGangAugmentationGoal,factionJoinAllowed,rankFactionInvites,gangHostPreferences,factionForcedJoins, factionControlAllowed, factionPurchaseBatch } from './faction-policy.js';
+import { factionTerminalOutput,chooseNeuroFluxFaction,augmentationDonationTopUp,augmentationPrerequisiteChain,selectAugmentationBasketDrop,optimizeAugmentationOrder,futureAugmentationBasketCost,pruneAugmentationPrerequisites,neuroFluxLevels,augmentationCountCandidates,selectGangAugmentationGoal,factionJoinAllowed,rankFactionInvites,gangHostPreferences,factionForcedJoins, factionControlAllowed, factionPurchaseBatch } from './faction-policy.js';
 import { isScriptPaused } from './automation-control.js';
 import { achievementActionAllowed } from './achievement-policy.js';
 import {
@@ -47,7 +47,8 @@ const argsSchema = [ // The set of all command line arguments
     ['all', false], // Display all factions (spoilers), not just accessible factions
     ['a', false], // Flag-style alias for --all.
     ['hide-locked-factions', false], // Don't show factions that we don't currently have access to
-    ['verbose', null], // Print the terminal as well as the script logs. If left null, this defaults to true in code now, but can be disabled with an explicit `--verbose false`
+    ['log-only', false], // Keep all reports in script logs, overriding saved verbose settings. Used by automatic launches.
+    ['verbose', false], // Also print reports to the terminal when explicitly enabled. Routine output stays in script logs.
     ['v', false], // (Kept for backwards compatilily) this was an alias flag for setting --verbose to true when it previously defaulted to false.
     ['ignore-player-data', false], // Display stats for all factions and augs, despite what we already have (kind of a "mock" mode)
     ['i', false], // Flag alias for --ignore-player-data
@@ -116,7 +117,7 @@ export async function main(ns) {
     ownedAugmentations = [], simulatedOwnedAugmentations = [], effectiveSourceFiles = {}, allAugStats = [], priorityAugs = [], purchaseableAugs = []; preNeuroFluxPlan=null;
     factionData = {}, augmentationData = {}, bitNodeMults = {};
 
-    printToTerminal = (options.v || options.verbose === true || options.verbose === null) && !options['join-only'];
+    printToTerminal = factionTerminalOutput(options);
     ignorePlayerData = options.i || options['ignore-player-data'];
     const afterFactions = options['after-faction'].map(f => f.replaceAll("_", " "));
     const omitAugs = options['omit-aug'].map(f => f.replaceAll("_", " "));
@@ -137,7 +138,7 @@ export async function main(ns) {
     effectiveSourceFiles = await getActiveSourceFiles(ns, true);
     const sf4Level = effectiveSourceFiles[4] || 0; // If in BN4, singularity costs are as though you had SF4.3
     if (sf4Level == 0)
-        return log(ns, `ERROR: This script requires SF4 (singularity) functions to work.`, true, 'error');
+        return log(ns, `ERROR: This script requires SF4 (singularity) functions to work.`, printToTerminal, 'error');
     else if (sf4Level < 3)
         log(ns, `WARNING: This script makes heavy use of singularity functions, which are quite expensive before you have SF4.3. ` +
             `Unless you have a lot of free RAM for temporary scripts, you may get runtime errors.`);
@@ -160,7 +161,7 @@ export async function main(ns) {
         await getNsDataThroughFile(ns, 'ns.singularity.getOwnedAugmentations()', '/Temp/player-augs-installed.txt');
     numAugsAwaitingInstall = ownedAugmentations.length - installedAugmentations.length;
     const nfLevels=neuroFluxLevels(resetInfo,ownedAugmentations.slice(installedAugmentations.length));
-    if(!nfLevels)return log(ns,'Native NeuroFlux ownership data is unavailable; deferring augmentation planning.',true,'warning');
+    if(!nfLevels)return log(ns,'Native NeuroFlux ownership data is unavailable; deferring augmentation planning.',printToTerminal,'warning');
     nfLevelPurchased=nfLevels.purchased;
     if (options['neuroflux-disabled']) omitAugs.push(strNF);
     simulatedOwnedAugmentations = ignorePlayerData ? [] : ownedAugmentations.filter(a => a != strNF);
@@ -225,7 +226,7 @@ export async function main(ns) {
 
     if (options.purchase && ownedAugmentations.length <= 1 && 13 in ownedSourceFiles && !ownedAugmentations.includes(staneksGift) && !options['ignore-stanek'])
         log(ns, `WARNING: You have not yet accepted Stanek's Gift from the church in Chongqing. Purchasing augs will ` +
-            `prevent you from doing so for the rest of this BN. (Run with '--ignore-stanek' to bypass this warning.)`, true);
+            `prevent you from doing so for the rest of this BN. (Run with '--ignore-stanek' to bypass this warning.)`, printToTerminal);
     else if (options.purchase && purchaseableAugs) {
         await purchaseDesiredAugs(ns);
         ns.write(output_file, "", "w"); // Clear the file so it isn't misinterpreted on next reset.
@@ -487,7 +488,7 @@ async function updateAugmentationData(ns) {
                 pa.desired = true;
             } // Also propagate the "priority" status to any dependencies of priority augs (dependency must be made a higher priority)
             if (priorityAugs.includes(aug.name) && !priorityAugs.includes(prereqName)) {
-                log(ns, `INFO: Promoting aug "${prereqName}" to "priority" status, because priority aug "${aug.name}" depends on it.`, true);
+                log(ns, `INFO: Promoting aug "${prereqName}" to "priority" status, because priority aug "${aug.name}" depends on it.`, printToTerminal);
                 priorityAugs.splice(priorityAugs.indexOf(aug.name), 0, prereqName);
             }
             propagateDesired(pa); // Recurse on any nested prerequisites of this prerequisite aug.
@@ -609,7 +610,7 @@ async function joinFactions(ns, forceJoinFactions) {
                 faction.joined = true;
                 faction.augmentations.forEach(aug => accessibleAugmentations.add(aug));
                 joinedFactions.push(faction.name);
-                log(ns, `SUCCESS: Joined faction ${faction.name} (Response: ${response})`, true, 'success');
+                log(ns, `SUCCESS: Joined faction ${faction.name} (Response: ${response})`, printToTerminal, 'success');
                 joined++;
             } else
                 log(ns, `ERROR: Error joining faction ${faction.name}. Response: ${response}`, false, 'error');
@@ -765,7 +766,7 @@ async function managePurchaseableAugs(ns, outputRows, accessibleAugs) {
                 const aPa = priorityAugs.filter(name => purchaseableAugs.some(a => a.name == name));
                 if(!aPa.length)throw Error('No valid augmentation budget cut; deferring purchases');
                 const toDrop = aPa[aPa.length - 1];
-                log(ns, `WARNING: We can afford ${aPa.length} priority augs on their own, but not together. We must drop the lowest-priority one: ${toDrop}`, true, 'warning');
+                log(ns, `WARNING: We can afford ${aPa.length} priority augs on their own, but not together. We must drop the lowest-priority one: ${toDrop}`, printToTerminal, 'warning');
                 droppedPriorityAugs.push(toDrop);
                 restart = true;
                 break;

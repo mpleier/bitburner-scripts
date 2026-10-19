@@ -14,5 +14,5 @@ export async function main(ns) {
   }
   const result = await ns.dnet.setStasisLink(true);
   const after = ns.dnet.getStasisLinkedServers();
-  ns.tprint(`${self}: stasis link ${result?.success ? "set" : `not set (${result?.code}: ${result?.message})`} (${after.length}/${limit}).`);
+  ns.print(`${self}: stasis link ${result?.success ? "set" : `not set (${result?.code}: ${result?.message})`} (${after.length}/${limit}).`);
 }

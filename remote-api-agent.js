@@ -5,7 +5,7 @@ export async function main(ns) {
  ns.disableLog('ALL');
  if (ns.getHostname() !== 'home') { ns.tprint('Run remote-api-agent.js on home.'); return; }
  if (ns.ps('home').some(p => p.filename === ns.getScriptName() && p.pid !== ns.pid)) return;
- ns.tprint('Remote API command worker ready.');
+ ns.print('Remote API command worker ready.');
  const signature=scriptSignature(ns,ns.getScriptName());
  const legacyIndex=ns.args.indexOf('--legacy-policy');let savedHeartbeat;
  try{savedHeartbeat=JSON.parse(ns.read(heartbeatFile));}catch{}

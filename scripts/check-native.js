@@ -1,3 +1,6 @@
+import {readFileSync} from 'node:fs';
+import {checkNativeRamBudgets,schedulingMinima} from './ram-budget-core.js';
+import {ramBudgetGroups} from './ram-budget-groups.js';
 import {spawnSync} from 'node:child_process';
 import {existsSync} from 'node:fs';
 import {homedir} from 'node:os';
@@ -9,5 +12,13 @@ else{
  const result=spawnSync(process.execPath,[control,'automation.preflight',JSON.stringify(process.argv.slice(2)),'--wait','20'],{encoding:'utf8',timeout:30000,maxBuffer:512*1024});
  const checked=parseNativeQc(result.stdout);
  if(result.error||result.status!==0||!checked.ok){console.error(result.error?.message||checked.message||result.stderr);for(const row of checked.failures||[])console.error(row.script+': '+row.status+' '+(row.reason||''));process.exitCode=1;}
- else console.log('Native RAM preflight passed for '+checked.scripts.length+' managed entrypoints. Scripts were not executed.');
+ else {
+  console.log('Native RAM preflight passed for '+checked.scripts.length+' managed entrypoints. Scripts were not executed.');
+  const relevant=ramBudgetGroups.filter(g=>checked.scripts.some(s=>s.script===g.parent));
+  if(relevant.length){
+   const budgets=checkNativeRamBudgets(checked.native,JSON.parse(readFileSync(new URL('./api-surface.json',import.meta.url),'utf8')),relevant,schedulingMinima(readFileSync(new URL('../daemon.js',import.meta.url),'utf8')));
+   for(const row of budgets.groups)console.log(row.script+': parent + worker '+row.required+' GB / scheduler budget '+row.schedulerBudget+' GB ('+row.status+')');
+   if(!budgets.ok){console.error(budgets.reason);process.exitCode=1;}
+  }
+ }
 }

@@ -137,7 +137,7 @@ export async function main(ns) {
     }
     if (isScriptPaused(ns, ns.getScriptName())) return;
     await ns.write('tasks/stanek-status.json', JSON.stringify({at:Date.now(),pid:ns.pid,mode:'complete',target:maxCharges,fragments:await getActiveFragments(ns)}), 'w');
-    log(ns, `SUCCESS: All stanek fragments at desired charge ${maxCharges}`, true, 'success');
+    log(ns, `SUCCESS: All stanek fragments at desired charge ${maxCharges}`, false, 'success');
 
     // Run the completion script before shutting down
     let completionScript = options['on-completion-script'];

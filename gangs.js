@@ -172,7 +172,7 @@ async function initialize(ns) {
     const myGangInfo = await getNsDataThroughFile(ns, 'ns.gang.getGangInformation()');
     myGangFaction = myGangInfo.faction;
     if (loggedWaiting)
-        log(ns, `SUCCESS: Created gang ${myGangFaction} (At ${formatDuration(Date.now() - resetInfo.lastNodeReset)} into BitNode)`, true, 'success');
+        log(ns, `SUCCESS: Created gang ${myGangFaction} (At ${formatDuration(Date.now() - resetInfo.lastNodeReset)} into BitNode)`, false, 'success');
     isHackGang = myGangInfo.isHacking;
     strWantedReduction = isHackGang ? "Ethical Hacking" : "Vigilante Justice";
     importantStats = isHackGang ? ["hack"] : ["str", "def", "dex", "agi"];

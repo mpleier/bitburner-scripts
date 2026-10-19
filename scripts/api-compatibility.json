@@ -1,0 +1,47 @@
+{
+  "achievement-actions.js": {
+    "heart.break": "Intentional undocumented karma reader; preserved for game versions exposing ns.heart.break."
+  },
+  "achievement-worker-sources.js": {
+    "heart.break": "Intentional undocumented karma reader; preserved for game versions exposing ns.heart.break."
+  },
+  "crime.js": {
+    "heart.break": "Intentional undocumented karma reader; preserved for game versions exposing ns.heart.break."
+  },
+  "faction-manager.js": {
+    "heart.break": "Intentional undocumented karma reader; preserved for game versions exposing ns.heart.break."
+  },
+  "gangs.js": {
+    "heart.break": "Intentional undocumented karma reader; preserved for game versions exposing ns.heart.break."
+  },
+  "sleeve.js": {
+    "heart.break": "Intentional undocumented karma reader; preserved for game versions exposing ns.heart.break."
+  },
+  "stats.js": {
+    "heart.break": "Intentional undocumented karma reader; preserved for game versions exposing ns.heart.break."
+  },
+  "work-for-factions.js": {
+    "heart.break": "Intentional undocumented karma reader; preserved for game versions exposing ns.heart.break."
+  },
+  "achievement-bypass.js": {
+    "bypass": "Intentional single-player achievement API omitted from public definitions."
+  },
+  "achievement-puzzles.js": {
+    "openDevMenu": "Intentional single-player achievement API omitted from public definitions.",
+    "exploit": "Intentional single-player achievement API omitted from public definitions.",
+    "bypass": "Intentional single-player achievement API omitted from public definitions.",
+    "rainbow": "Intentional single-player achievement API omitted from public definitions."
+  },
+  "darknet-manager.js": {
+    "formatRam": "Guarded v2 formatting fallback; v3 first uses ns.format.ram."
+  },
+  "darknet-node.js": {
+    "formatRam": "Guarded v2 formatting fallback; v3 first uses ns.format.ram."
+  },
+  "helpers.js": {
+    "tFormat": "Guarded v2 formatting fallback; v3 uses ns.format.time."
+  },
+  "reset-backup.js": {
+    "singularity.hasExportGameBonus": "Version-selected generated source; emitted only after a native property-presence probe."
+  }
+}

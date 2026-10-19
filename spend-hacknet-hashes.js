@@ -275,7 +275,7 @@ export async function main(ns) {
                     } else if (nextPurchaseCost > capacity) // If we can't afford anything, and have maxed our hash capacity, we may as well shut down.
                         return log(ns, `SUCCESS: We've maxed all purchases. ${message}`); // Shut down, because we will never be able to buy anything further.
                     else if (!notifiedMaxCapacity) { // The first time we discover we are at max hash capacity (infinite cost) notify the user
-                        log(ns, `INFO: spend-hacknet-hashes.js ${message}`, true, 'info'); // Only inform the user of this the first time it happens.
+                        log(ns, `INFO: spend-hacknet-hashes.js ${message}`, false, 'info'); // Only inform the user of this the first time it happens.
                         notifiedMaxCapacity = true; // Set the flag to avoid repeated notifications
                     }
                 }

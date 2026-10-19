@@ -50,7 +50,7 @@ test('actual autopilot start block and supervisor recover together from RAM pres
  now=11000;assert.equal(upgradeRemoteWorker(ns,{...target,now}).state,'waiting-ram');await auto();assert.equal(calls.length,0);
  free=30;fail=true;now=12000;assert.equal(upgradeRemoteWorker(ns,{...target,now}).state,'start-failed');assert.equal(processes.length,0);
  fail=false;await auto();assert.equal(processes.length,1);const worker=processes[0],stop=Error('stop test'),original=Date.now;Date.now=()=>now;
- try{await assert.rejects(agent({...ns,pid:worker.pid,args:worker.args,getHostname:()=> 'home',getScriptName:()=> 'remote-api-agent.js',disableLog(){},tprint(){},sleep:async()=>{throw stop;}}),e=>e===stop);}finally{Date.now=original;}
+ try{await assert.rejects(agent({...ns,pid:worker.pid,args:worker.args,getHostname:()=> 'home',getScriptName:()=> 'remote-api-agent.js',disableLog(){},print(){},tprint(){},sleep:async()=>{throw stop;}}),e=>e===stop);}finally{Date.now=original;}
  for(let i=0;i<3;i++){await auto();assert.equal(upgradeRemoteWorker(ns,{...target,now}).state,'current');}
  assert.equal(calls.filter(c=>c[0]==='kill').length,1);assert.equal(calls.filter(c=>c[0]==='run').length,2);assert.equal(JSON.parse(files.get('remote-control/heartbeat.json')).policy,19);
 });

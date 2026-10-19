@@ -176,7 +176,7 @@ export async function main(ns) {
                         travelled = await getNsDataThroughFile(ns, `(${casinoControlAllowed.toString()})(ns,ns.args[1]) ? ns.singularity.travelToCity(ns.args[0]) : false`, null, ["Aevum",ns.pid]);
                     } catch { }
                     if (!travelled) // Note: While it would be nice to confirm whether we have SF4 for the message, it's not worth the cost.
-                        log(ns, "INFO: Canot use singularity travel to Aevum via singularity. We will try to go there manually for now.", true);
+                        log(ns, "INFO: Canot use singularity travel to Aevum via singularity. We will try to go there manually for now.", false);
                     // If automatic travel failed or couldn't be attempted, try clicking our way there!
                     if (!travelled) {
                         await click(await findRequiredElement("//div[@role='button' and ./div/p/text()='Travel']"));
@@ -449,7 +449,7 @@ export async function main(ns) {
         stoppedAutomation = receipt.some(process=>process.stopped);
         if (receipt.some(process=>!process.stopped)) throw new Error('Some competing scripts could not be stopped.');
         let pid;
-        log(ns, `INFO: Killed other scripts running on home...`, true);
+        log(ns, `INFO: Killed other scripts running on home...`, false);
 
         // Kill processes on all other servers
         const allServers = await getNsDataThroughFile(ns, 'scanAllServers(ns)');
@@ -457,14 +457,14 @@ export async function main(ns) {
         pid = await runCommand(ns, 'ns.args.forEach(host => ns.killall(host))',
             '/Temp/kill-all-scripts-on-servers.js', serversExceptHome);
         await waitForProcessToComplete(ns, pid);
-        log(ns, 'INFO: Killed all scripts running on other hosts...', true);
+        log(ns, 'INFO: Killed all scripts running on other hosts...', false);
 
         // If enabled, remove files on all other servers
         if (removeRemoteFiles) {
             pid = await runCommand(ns, 'ns.args.forEach(host => ns.ls(host).forEach(file => ns.rm(file, host)))',
                 '/Temp/delete-files-on-servers.js', serversExceptHome)
             await waitForProcessToComplete(ns, pid);
-            log(ns, 'INFO: Removed all files on other hosts...', true)
+            log(ns, 'INFO: Removed all files on other hosts...', false)
         }
     }
 
@@ -475,9 +475,9 @@ export async function main(ns) {
         casinoCompleted = true;
         await reportCasino('complete', {earnings:casinoEarnings()});
         if (kickedOutAfterPlaying)
-            log(ns, "SUCCESS: We've been kicked out of the casino.", true);
+            log(ns, "SUCCESS: We've been kicked out of the casino.", false);
         else
-            log(ns, "INFO: We appear to have been previously kicked out of the casino. Continuing without playing...", true);
+            log(ns, "INFO: We appear to have been previously kicked out of the casino. Continuing without playing...", false);
 
         // For convenience, route to the terminal (but no stress if it doesn't work)
         try {

@@ -557,7 +557,7 @@ async function liquidate(ns,explicit=false) {
       const [long,,short]=positions[sym];if(!long&&!short)continue;totalStocks++;
       for(const [count,action]of [[long,'sellStock'],[short,'sellShort']])if(count){const r=await transactStock(ns,sym,count,action,explicit);if(r.shares<count)failed++;if(!r.shares)continue;totalRevenue+=r.cash;if(action==='sellStock')totalSharesLong+=r.shares;else totalSharesShort+=r.shares;}
     }
-    log(ns,`Liquidated ${totalSharesLong} long and ${totalSharesShort} short shares in ${totalStocks} stocks; cash ${formatMoney(totalRevenue)}; failed positions ${failed}`,true,failed?'warning':'success');
+    log(ns,`Liquidated ${totalSharesLong} long and ${totalSharesShort} short shares in ${totalStocks} stocks; cash ${formatMoney(totalRevenue)}; failed positions ${failed}`,explicit||failed>0,failed?'warning':'success');
     return failed===0;
 }
 

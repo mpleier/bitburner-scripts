@@ -4,7 +4,15 @@
   "type": "module",
   "scripts": {
     "test": "node --test",
-    "check": "node scripts/check-syntax.js",
-    "check:game": "node scripts/check-native.js"
+    "check": "npm run check:syntax && node scripts/audit-project.js all",
+    "check:game": "node scripts/check-native.js",
+    "check:syntax": "node scripts/check-syntax.js",
+    "check:imports": "node scripts/audit-project.js imports",
+    "check:api": "node scripts/audit-project.js api",
+    "check:ram": "node scripts/audit-project.js ram",
+    "audit:surface": "node scripts/generate-api-surface.js"
+  },
+  "devDependencies": {
+    "typescript": "5.7.2"
   }
 }

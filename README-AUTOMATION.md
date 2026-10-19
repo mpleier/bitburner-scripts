@@ -34,11 +34,41 @@ run autopilot.js
 
 Autopilot launches the standalone `corporation-manager.js` script in BitNode 3 or with Source-File 3 access when it is not already running and enough RAM is free on home. All corporation decisions remain in the manager. Its daemon is told to leave corporation startup to autopilot. Use `run autopilot.js --disable-corporation` to disable automatic corporation startup; this option is saved in autopilot's configuration and does not stop an already running manager. All automation runs inside Bitburner, and obsolete PC lease files cannot block startup.
 
+## Read-only planning
+
+Run `run autopilot.js --dry-run` (or `--preview`) to inspect startup without registering automation, saving configuration, launching scripts, buying anything, or resetting. It reads saved autopilot settings and applies explicit flags. `run automation-preview.js` is a separate inspection command; add `--json` for structured output. Remote API clients can request `automation.preview` without arguments.
+
+The preview shows shared manager access gates, current home RAM/headroom, blocked launches, remaining current spending allowances, observed infrastructure quotes, and eligible remote share-worker capacity. Quotes require a live recheck before purchase; conditional casino, reset and parent-controller decisions are not simulated. Stateful managers remain on home to preserve authoritative status and quarantine files.
+
+The module manifest in `remote-api-command-policy.js` is shared by autopilot startup, supervision, Remote API permissions and native QC. A diagnostic entry does not grant permission to start or stop that script. Native checks now include cloud buying, home RAM, contractor workers and the preview.
+
+## Cloud decisions and remote contracts
+
+Cloud buying publishes `tasks/cloud-purchase-status.json` after every completed check, including cost, capacity, utilization and a readable deferral reason. The dashboard, read-only preview and Remote API status show recent decisions from the current reset, even after the one-shot manager exits.
+
+Contract collection and authoritative results stay on home. Validated solver batches of at most 64 contracts prefer rooted remote servers with enough native RAM; home is a fallback that respects its headroom reserve. Dependencies are copied from home before launch. Each worker must match a home-owned job lease and refresh home validation and quarantine before each submission.
+
+Workers return only a unique inbox receipt. Home checks its job ID, PID, host, solver version, reset, counters and quarantine scope before merging. Failed uploads are retried by home. Confirmed receipts are removed after acknowledgement; uncertain evidence is retained. If a worker disappears without a valid receipt, its batch is quarantined for that solver version rather than spending contract attempts again. Inspect `tasks/contracts-active.json` and `tasks/contract-quarantine.json` when investigating uncertain outcomes.
+
 ## Local checks
+
+Routine faction reports, controller launches, contract successes, Dark Net worker results, sleeve purchases, and RAM upgrades go to script logs. Faction-manager terminal reports are opt-in with `--verbose` or `-v`; automatic launches pass `--log-only`, which overrides saved verbose settings. `--join-only` remains quiet. Configuration errors, actionable failures, and major reset/BitNode notices can still appear in the terminal. Interactive commands such as `scan.js`, `grep.js`, and `run-command.js` retain their command results.
 
 Scripts do not open tail windows automatically. Use the Bitburner terminal command `tail autopilot.js`, `tail daemon.js`, or `tail corporation-manager.js` to open logs when you want them.
 
-With Node.js installed, run `npm test` for the local unit tests and `npm run check` to syntax-check all JavaScript scripts. The tests use Node's built-in test runner and need no dependency installation. They cover selected logic with mocked Bitburner APIs; they do not replace testing in a live save.
+With Node.js installed, run `npm ci` once to install the pinned local audit parser. Run `npm test` for regression tests and `npm run check` for syntax, missing modules/exports, API references and dynamic-import RAM gaps. Game scripts do not require Node packages. They cover selected logic with mocked Bitburner APIs; they do not replace testing in a live save.
+
+### Audit commands and limits
+
+- `npm run check:imports`: parse imports/reexports and verify exported names and deployment paths.
+- `npm run check:api`: check direct calls, namespace aliases and literal generated workers against the checked-in API snapshot. Intentional undocumented achievement APIs and guarded legacy fallbacks have file-specific reasons in `scripts/api-compatibility.json`.
+- `npm run check:ram`: audit static/dynamic import differences and report documented SF4 RAM subtotals. Indirect calls and generated templates still require native checks; these estimates are not complete script allocations.
+- `npm run check:game`: compile manifest entrypoints and verify the known cloud/contract parent-plus-worker scheduling budgets using current native parent allocations and active SF4 metadata. No gameplay scripts are executed by this check.
+- `npm run audit:surface -- path/to/NetscriptDefinitions.d.ts`: regenerate API paths and documented costs after updating game definitions. The snapshot includes the definition hash for provenance.
+
+Autopilot backs off persistent managers after two rapid exits. Retries start at 30 seconds and are capped at five minutes, with state scoped to script arguments, source signature and augmentation reset. Stable uptime or changed code clears the strikes. Explicit autopilot stops are excluded, and one-shot casino, faction purchase and reset hooks retain their existing scheduling. Current cooldowns appear in automation status and the read-only preview. Restarting autopilot clears its in-memory launch history.
+
+`git-pull.js` now reports partial downloads accurately and skips cleanup until every requested file succeeds. It still updates successful files immediately; it does not provide an atomic whole-project rollback.
 
 ## Added automation
 

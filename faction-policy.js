@@ -315,3 +315,9 @@ export function selectAugmentationBasketDrop(items,{owned=[],priority=[],route='
  }
  return best;
 }
+
+/** Terminal tables are explicitly requested; automated faction planning stays in logs. */
+export function factionTerminalOutput(options={}) {
+ const yes=value=>value===true||value==='true';
+ return !yes(options['log-only'])&&!options['join-only']&&(yes(options.v)||yes(options.verbose));
+}

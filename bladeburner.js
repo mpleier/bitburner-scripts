@@ -75,7 +75,7 @@ export async function main(ns) {
     const runOptions = getConfiguration(ns, argsSchema);
     if (!runOptions || await instanceCount(ns) > 1) return; // Prevent multiple instances of this script from being started, even with different args.
     const invalid=optionsError(runOptions);if(invalid)return log(ns,'ERROR: '+invalid,true,'error');
-    ownsRecruitment=false;levelPlanCache=null;actionProgress=null;
+    ownsRecruitment=false;levelPlanCache=null;actionProgress=null;nextHashWorkerCheck=0;hashWorkerStatus='';
     options = runOptions; // We don't set the global "options" until we're sure this is the only running instance
     disableLogs(ns, ['sleep'])
     player = await getNsDataThroughFile(ns, 'ns.getPlayer()');
@@ -583,7 +583,7 @@ async function beingInBladeburner(ns) {
                 if (9 in ownedSourceFiles && options['disable-spending-hashes'])
                     message += ' --disable-spending-hashes is set, but consider running the following command to give it a boost:\n' +
                         'run spend-hacknet-hashes.js --spend-on Exchange_for_Bladeburner_Rank --spend-on Exchange_for_Bladeburner_SP --liquidate';
-                log(ns, message, true, 'success');
+                log(ns, message, false, 'success');
                 break;
             } else
                 log(ns, 'WARNING: Failed to join Bladeburner despite physical stats. Will try again...', false, 'warning');
@@ -600,7 +600,11 @@ async function beingInBladeburner(ns) {
     return true;
 }
 
-let nextHashWorkerCheck=0;
+let nextHashWorkerCheck=0,hashWorkerStatus='';
+function reportHashWorkerStatus(ns,message){
+ if(message!==hashWorkerStatus||message.startsWith('WARNING:'))log(ns,message);
+ hashWorkerStatus=message;
+}
 function ensureBladeburnerHashWorker(ns){
  if(Date.now()<nextHashWorkerCheck)return true;
  nextHashWorkerCheck=Date.now()+60000;
@@ -608,15 +612,15 @@ function ensureBladeburnerHashWorker(ns){
     // If not disabled, launch an external script to spend hashes on bladeburner rank
     if (!(9 in ownedSourceFiles)) return true; // Hacknet not unlocked
     if (options['disable-spending-hashes'])
-        {log(ns, `INFO: Not spending hashes on bladeburner (--disable-spending-hashes flag is set)`);return true;}
+        {reportHashWorkerStatus(ns, `INFO: Not spending hashes on bladeburner (--disable-spending-hashes flag is set)`);return true;}
     if(!achievementActionAllowed(ns,'hashSpending'))return true;
     const fPath = getFilePath('spend-hacknet-hashes.js');
     const args = ['--automatic','--spend-on', 'Exchange_for_Bladeburner_Rank', '--spend-on', 'Exchange_for_Bladeburner_SP', '--liquidate'];
     const hashWorker=()=>hasBladeburnerHashWorker(ns.ps('home'));
-    if(hashWorker())log(ns, `INFO: Hash spending controller is already running; keeping its configured goals.`);
+    if(hashWorker())reportHashWorkerStatus(ns, `INFO: Hash spending controller is already running; keeping its configured goals.`);
     else if (ns.run(fPath, { preventDuplicates: true }, ...args))
-        log(ns, `INFO: Launched '${fPath}' to gain Bladeburner Rank and Skill Points more quickly (Can be disabled with --disable-spending-hashes)`);
-    else if(hashWorker())log(ns, `INFO: Hash spending controller started concurrently.`);
-    else log(ns, `WARNING: Could not start the hash spending controller. Check available RAM and script access.`);
+        reportHashWorkerStatus(ns, `INFO: Launched '${fPath}' to gain Bladeburner Rank and Skill Points more quickly (Can be disabled with --disable-spending-hashes)`);
+    else if(hashWorker())reportHashWorkerStatus(ns, `INFO: Hash spending controller started concurrently.`);
+    else reportHashWorkerStatus(ns, `WARNING: Could not start the hash spending controller. Check available RAM and script access.`);
     return true;
 }

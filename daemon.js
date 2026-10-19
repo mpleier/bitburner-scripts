@@ -420,7 +420,7 @@ export async function main(ns) {
             // Buy tor as soon as we can if we haven't already, and all the port crackers
             { interval: 25000, name: "/Tasks/tor-manager.js", infrastructure: true, infrastructureKind: 'tor', shouldRun: () => 4 in dictSourceFiles && !allHostNames.includes("darkweb") },
             { interval: 26000, name: "/Tasks/program-manager.js", infrastructure: true, infrastructureKind: 'programs', shouldRun: () => 4 in dictSourceFiles && ownedCracks.length != 5 },
-            { interval: 27000, name: "/Tasks/contractor.js", minRamReq: 14.2 }, // Periodically look for coding contracts that need solving
+            { interval: 27000, name: "/Tasks/contractor.js", minRamReq: 16 }, // Periodically look for coding contracts that need solving
             // Buy every hacknet upgrade with up to 4h payoff if it is less than 10% of our current money or 8h if it is less than 1% of our current money.
             // Buy upgrades regardless of payoff if they cost less than 0.1% of our money
             {   // Spend about 50% of un-reserved cash on home RAM upgrades (permanent) when they become available
@@ -428,19 +428,19 @@ export async function main(ns) {
                 shouldRun: () => 4 in dictSourceFiles && (homeServer.totalRam(true)<128 || shouldImproveHacking()) // Essential manager RAM also matters when hacking pays nothing
             },
             {   // Periodically check for new faction invites and join if deemed useful to be in that faction. Also determines how many augs we could afford if we installed right now
-                interval: 31000, name: "faction-manager.js", factionInvites: true, args: ['--verbose', 'false'],
+                interval: 31000, name: "faction-manager.js", factionInvites: true, args: ['--log-only'],
                 // Don't start auto-joining factions until we're holding 1 billion (so coding contracts returning money is probably less critical) or we've joined one already
                 shouldRun: () => 4 in dictSourceFiles && (_cachedPlayerInfo.factions.length > 0 || getPlayerMoney(ns) > 1e9 || factionInviteWake) &&
                     reqRam(128 / (2 ** dictSourceFiles[4])) // Uses singularity functions, and higher SF4 levels result in lower RAM requirements
             },
             {   // Periodically look to purchase new servers, but note that these are often not a great use of our money (hack income isn't everything) so we may hold-back.
-                interval: 32000, name: "host-manager.js", minRamReq: 6.55,
+                interval: 32000, name: "host-manager.js", minRamReq: 16, // Manager plus transient cloud purchase worker
                 // Restrict spending on new servers (i.e. temporary RAM for the current augmentation only) to be a % of total earned hack income.
                 shouldRun: () => shouldImproveHacking() && getHostManagerBudget() > 0,
                 args: () => ['--budget', getHostManagerBudget(), '--absolute-reserve', reservedMoney(ns),
                     // Mechanic to reserve more of our money the longer we've been in the BN. Starts at 0%, after 24h we should be reserving 92%.
                     '--reserve-by-time', true, '--reserve-by-time-decay-factor', 0.1, '--reserve-percent', 0,
-                    '--utilization-trigger', '0'], // Disable utilization-based restrictions on purchasing RAM
+                    '--utilization-trigger', 0.8], // Buy cloud RAM only when existing usable capacity is busy
             },
             // Check if any new servers can be backdoored. If there are many, this can eat up a lot of RAM, so make this the last script scheduled at startup.
             { interval: 33000, name: "/Tasks/backdoor-all-servers.js", backdoorUnlocks: true, shouldRun: () => 4 in dictSourceFiles && playerHackSkill() > 10 }, // Don't do this until we reach hack level 10. If we backdoor too early, it's very slow and eats up RAM for a long time,

@@ -1,0 +1,2454 @@
+{
+  "schemaVersion": 1,
+  "source": "Definitions exported by the connected Bitburner Remote API",
+  "sha256": "bfabb0f495cc89133ba042420f5d6d514c7f068502565e3bc5f90da5e60242ed",
+  "paths": {
+    "hacknet": "namespace",
+    "hacknet.numNodes": "function",
+    "hacknet.maxNumNodes": "function",
+    "hacknet.purchaseNode": "function",
+    "hacknet.getPurchaseNodeCost": "function",
+    "hacknet.getNodeStats": "function",
+    "hacknet.upgradeLevel": "function",
+    "hacknet.upgradeRam": "function",
+    "hacknet.upgradeCore": "function",
+    "hacknet.upgradeCache": "function",
+    "hacknet.getLevelUpgradeCost": "function",
+    "hacknet.getRamUpgradeCost": "function",
+    "hacknet.getCoreUpgradeCost": "function",
+    "hacknet.getCacheUpgradeCost": "function",
+    "hacknet.numHashes": "function",
+    "hacknet.hashCapacity": "function",
+    "hacknet.hashCost": "function",
+    "hacknet.spendHashes": "function",
+    "hacknet.getHashUpgrades": "function",
+    "hacknet.getHashUpgradeLevel": "function",
+    "hacknet.getStudyMult": "function",
+    "hacknet.getTrainingMult": "function",
+    "bladeburner": "namespace",
+    "bladeburner.getContractNames": "function",
+    "bladeburner.getOperationNames": "function",
+    "bladeburner.getBlackOpNames": "function",
+    "bladeburner.getNextBlackOp": "function",
+    "bladeburner.getGeneralActionNames": "function",
+    "bladeburner.getSkillNames": "function",
+    "bladeburner.startAction": "function",
+    "bladeburner.stopBladeburnerAction": "function",
+    "bladeburner.getCurrentAction": "function",
+    "bladeburner.getActionTime": "function",
+    "bladeburner.getActionCurrentTime": "function",
+    "bladeburner.getActionEstimatedSuccessChance": "function",
+    "bladeburner.getActionRepGain": "function",
+    "bladeburner.getActionRankGain": "function",
+    "bladeburner.getActionRankLoss": "function",
+    "bladeburner.getActionCountRemaining": "function",
+    "bladeburner.getActionMaxLevel": "function",
+    "bladeburner.getActionCurrentLevel": "function",
+    "bladeburner.getActionAutolevel": "function",
+    "bladeburner.getActionSuccesses": "function",
+    "bladeburner.setActionAutolevel": "function",
+    "bladeburner.setActionLevel": "function",
+    "bladeburner.getRank": "function",
+    "bladeburner.getBlackOpRank": "function",
+    "bladeburner.getSkillPoints": "function",
+    "bladeburner.getSkillLevel": "function",
+    "bladeburner.getSkillUpgradeCost": "function",
+    "bladeburner.upgradeSkill": "function",
+    "bladeburner.getTeamSize": "function",
+    "bladeburner.setTeamSize": "function",
+    "bladeburner.getCityEstimatedPopulation": "function",
+    "bladeburner.getCityCommunities": "function",
+    "bladeburner.getCityChaos": "function",
+    "bladeburner.getCity": "function",
+    "bladeburner.switchCity": "function",
+    "bladeburner.getStamina": "function",
+    "bladeburner.joinBladeburnerFaction": "function",
+    "bladeburner.joinBladeburnerDivision": "function",
+    "bladeburner.getBonusTime": "function",
+    "bladeburner.nextUpdate": "function",
+    "bladeburner.inBladeburner": "function",
+    "codingcontract": "namespace",
+    "codingcontract.attempt": "function",
+    "codingcontract.getContractType": "function",
+    "codingcontract.getDescription": "function",
+    "codingcontract.getData": "function",
+    "codingcontract.getContract": "function",
+    "codingcontract.getNumTriesRemaining": "function",
+    "codingcontract.createDummyContract": "function",
+    "codingcontract.getContractTypes": "function",
+    "cloud": "namespace",
+    "cloud.getServerCost": "function",
+    "cloud.purchaseServer": "function",
+    "cloud.getServerUpgradeCost": "function",
+    "cloud.upgradeServer": "function",
+    "cloud.renameServer": "function",
+    "cloud.deleteServer": "function",
+    "cloud.getServerNames": "function",
+    "cloud.getServerLimit": "function",
+    "cloud.getRamLimit": "function",
+    "dnet": "namespace",
+    "dnet.authenticate": "function",
+    "dnet.connectToSession": "function",
+    "dnet.heartbleed": "function",
+    "dnet.openCache": "function",
+    "dnet.probe": "function",
+    "dnet.setStasisLink": "function",
+    "dnet.getStasisLinkLimit": "function",
+    "dnet.getStasisLinkedServers": "function",
+    "dnet.getServerDetails": "function",
+    "dnet.induceServerMigration": "function",
+    "dnet.unleashStormSeed": "function",
+    "dnet.isDarknetServer": "function",
+    "dnet.memoryReallocation": "function",
+    "dnet.getBlockedRam": "function",
+    "dnet.getDepth": "function",
+    "dnet.promoteStock": "function",
+    "dnet.phishingAttack": "function",
+    "dnet.getDarknetInstability": "function",
+    "dnet.nextMutation": "function",
+    "dnet.getServerRequiredCharismaLevel": "function",
+    "dnet.labreport": "function",
+    "dnet.labradar": "function",
+    "format": "namespace",
+    "format.number": "function",
+    "format.ram": "function",
+    "format.percent": "function",
+    "format.time": "function",
+    "gang": "namespace",
+    "gang.createGang": "function",
+    "gang.inGang": "function",
+    "gang.getMemberNames": "function",
+    "gang.renameMember": "function",
+    "gang.getGangInformation": "function",
+    "gang.getAllGangInformation": "function",
+    "gang.getMemberInformation": "function",
+    "gang.canRecruitMember": "function",
+    "gang.getRecruitsAvailable": "function",
+    "gang.respectForNextRecruit": "function",
+    "gang.recruitMember": "function",
+    "gang.getTaskNames": "function",
+    "gang.setMemberTask": "function",
+    "gang.getTaskStats": "function",
+    "gang.getEquipmentNames": "function",
+    "gang.getEquipmentCost": "function",
+    "gang.getEquipmentType": "function",
+    "gang.getEquipmentStats": "function",
+    "gang.purchaseEquipment": "function",
+    "gang.ascendMember": "function",
+    "gang.getAscensionResult": "function",
+    "gang.getInstallResult": "function",
+    "gang.setTerritoryWarfare": "function",
+    "gang.getChanceToWinClash": "function",
+    "gang.getBonusTime": "function",
+    "gang.nextUpdate": "function",
+    "go": "namespace",
+    "go.makeMove": "function",
+    "go.passTurn": "function",
+    "go.opponentNextTurn": "function",
+    "go.getBoardState": "function",
+    "go.getMoveHistory": "function",
+    "go.getCurrentPlayer": "function",
+    "go.getGameState": "function",
+    "go.getOpponent": "function",
+    "go.resetBoardState": "function",
+    "go.analysis": "namespace",
+    "go.analysis.getValidMoves": "function",
+    "go.analysis.getChains": "function",
+    "go.analysis.getLiberties": "function",
+    "go.analysis.getControlledEmptyNodes": "function",
+    "go.analysis.getStats": "function",
+    "go.analysis.resetStats": "function",
+    "go.analysis.setTestingBoardState": "function",
+    "go.analysis.highlightPoint": "function",
+    "go.analysis.clearPointHighlight": "function",
+    "go.analysis.clearAllPointHighlights": "function",
+    "go.cheat": "namespace",
+    "go.cheat.getCheatSuccessChance": "function",
+    "go.cheat.getCheatCount": "function",
+    "go.cheat.removeRouter": "function",
+    "go.cheat.playTwoMoves": "function",
+    "go.cheat.repairOfflineNode": "function",
+    "go.cheat.destroyNode": "function",
+    "sleeve": "namespace",
+    "sleeve.getNumSleeves": "function",
+    "sleeve.getSleeve": "function",
+    "sleeve.getTask": "function",
+    "sleeve.setToIdle": "function",
+    "sleeve.setToShockRecovery": "function",
+    "sleeve.setToSynchronize": "function",
+    "sleeve.setToCommitCrime": "function",
+    "sleeve.setToFactionWork": "function",
+    "sleeve.setToCompanyWork": "function",
+    "sleeve.setToUniversityCourse": "function",
+    "sleeve.setToGymWorkout": "function",
+    "sleeve.travel": "function",
+    "sleeve.getSleeveAugmentations": "function",
+    "sleeve.getSleeveAugmentationPrice": "function",
+    "sleeve.getSleeveAugmentationRepReq": "function",
+    "sleeve.getSleevePurchasableAugs": "function",
+    "sleeve.purchaseSleeveAug": "function",
+    "sleeve.setToBladeburnerAction": "function",
+    "sleeve.purchaseSleeve": "function",
+    "sleeve.upgradeMemory": "function",
+    "sleeve.getSleeveCost": "function",
+    "sleeve.getMemoryUpgradeCost": "function",
+    "stock": "namespace",
+    "stock.getConstants": "function",
+    "stock.hasWseAccount": "function",
+    "stock.hasTixApiAccess": "function",
+    "stock.has4SData": "function",
+    "stock.has4SDataTixApi": "function",
+    "stock.getSymbols": "function",
+    "stock.getPrice": "function",
+    "stock.getOrganization": "function",
+    "stock.getAskPrice": "function",
+    "stock.getBidPrice": "function",
+    "stock.getPosition": "function",
+    "stock.getMaxShares": "function",
+    "stock.getPurchaseCost": "function",
+    "stock.getSaleGain": "function",
+    "stock.buyStock": "function",
+    "stock.sellStock": "function",
+    "stock.buyShort": "function",
+    "stock.sellShort": "function",
+    "stock.placeOrder": "function",
+    "stock.cancelOrder": "function",
+    "stock.getOrders": "function",
+    "stock.getVolatility": "function",
+    "stock.getForecast": "function",
+    "stock.purchase4SMarketData": "function",
+    "stock.purchase4SMarketDataTixApi": "function",
+    "stock.purchaseWseAccount": "function",
+    "stock.purchaseTixApi": "function",
+    "stock.getBonusTime": "function",
+    "stock.nextUpdate": "function",
+    "formulas": "namespace",
+    "formulas.mockServer": "function",
+    "formulas.mockPlayer": "function",
+    "formulas.mockPerson": "function",
+    "formulas.reputation": "namespace",
+    "formulas.reputation.calculateFavorToRep": "function",
+    "formulas.reputation.calculateRepToFavor": "function",
+    "formulas.reputation.repFromDonation": "function",
+    "formulas.reputation.donationForRep": "function",
+    "formulas.reputation.sharePower": "function",
+    "formulas.skills": "namespace",
+    "formulas.skills.calculateSkill": "function",
+    "formulas.skills.calculateExp": "function",
+    "formulas.hacking": "namespace",
+    "formulas.hacking.hackChance": "function",
+    "formulas.hacking.hackExp": "function",
+    "formulas.hacking.hackPercent": "function",
+    "formulas.hacking.growPercent": "function",
+    "formulas.hacking.growThreads": "function",
+    "formulas.hacking.growAmount": "function",
+    "formulas.hacking.hackTime": "function",
+    "formulas.hacking.growTime": "function",
+    "formulas.hacking.weakenTime": "function",
+    "formulas.hacking.weakenEffect": "function",
+    "formulas.hacknetNodes": "namespace",
+    "formulas.hacknetNodes.moneyGainRate": "function",
+    "formulas.hacknetNodes.levelUpgradeCost": "function",
+    "formulas.hacknetNodes.ramUpgradeCost": "function",
+    "formulas.hacknetNodes.coreUpgradeCost": "function",
+    "formulas.hacknetNodes.hacknetNodeCost": "function",
+    "formulas.hacknetNodes.constants": "function",
+    "formulas.hacknetServers": "namespace",
+    "formulas.hacknetServers.hashGainRate": "function",
+    "formulas.hacknetServers.levelUpgradeCost": "function",
+    "formulas.hacknetServers.ramUpgradeCost": "function",
+    "formulas.hacknetServers.coreUpgradeCost": "function",
+    "formulas.hacknetServers.cacheUpgradeCost": "function",
+    "formulas.hacknetServers.hashUpgradeCost": "function",
+    "formulas.hacknetServers.hacknetServerCost": "function",
+    "formulas.hacknetServers.constants": "function",
+    "formulas.gang": "namespace",
+    "formulas.gang.wantedPenalty": "function",
+    "formulas.gang.respectGain": "function",
+    "formulas.gang.wantedLevelGain": "function",
+    "formulas.gang.moneyGain": "function",
+    "formulas.gang.ascensionPointsGain": "function",
+    "formulas.gang.ascensionMultiplier": "function",
+    "formulas.work": "namespace",
+    "formulas.work.crimeSuccessChance": "function",
+    "formulas.work.crimeGains": "function",
+    "formulas.work.gymGains": "function",
+    "formulas.work.universityGains": "function",
+    "formulas.work.factionGains": "function",
+    "formulas.work.companyGains": "function",
+    "formulas.bladeburner": "namespace",
+    "formulas.bladeburner.skillMaxUpgradeCount": "function",
+    "formulas.dnet": "namespace",
+    "formulas.dnet.getAuthenticateTime": "function",
+    "formulas.dnet.getHeartbleedTime": "function",
+    "formulas.dnet.getExpectedRamBlockRemoved": "function",
+    "stanek": "namespace",
+    "stanek.giftWidth": "function",
+    "stanek.giftHeight": "function",
+    "stanek.chargeFragment": "function",
+    "stanek.fragmentDefinitions": "function",
+    "stanek.activeFragments": "function",
+    "stanek.clearGift": "function",
+    "stanek.canPlaceFragment": "function",
+    "stanek.placeFragment": "function",
+    "stanek.getFragment": "function",
+    "stanek.removeFragment": "function",
+    "stanek.acceptGift": "function",
+    "infiltration": "namespace",
+    "infiltration.getPossibleLocations": "function",
+    "infiltration.getInfiltration": "function",
+    "corporation": "namespace",
+    "corporation.sellMaterial": "function",
+    "corporation.sellProduct": "function",
+    "corporation.discontinueProduct": "function",
+    "corporation.setSmartSupply": "function",
+    "corporation.setSmartSupplyOption": "function",
+    "corporation.buyMaterial": "function",
+    "corporation.bulkPurchase": "function",
+    "corporation.getWarehouse": "function",
+    "corporation.getProduct": "function",
+    "corporation.getMaterial": "function",
+    "corporation.setMaterialMarketTA1": "function",
+    "corporation.setMaterialMarketTA2": "function",
+    "corporation.setProductMarketTA1": "function",
+    "corporation.setProductMarketTA2": "function",
+    "corporation.exportMaterial": "function",
+    "corporation.cancelExportMaterial": "function",
+    "corporation.purchaseWarehouse": "function",
+    "corporation.upgradeWarehouse": "function",
+    "corporation.makeProduct": "function",
+    "corporation.limitMaterialProduction": "function",
+    "corporation.limitProductProduction": "function",
+    "corporation.getUpgradeWarehouseCost": "function",
+    "corporation.hasWarehouse": "function",
+    "corporation.hireEmployee": "function",
+    "corporation.upgradeOfficeSize": "function",
+    "corporation.throwParty": "function",
+    "corporation.buyTea": "function",
+    "corporation.hireAdVert": "function",
+    "corporation.research": "function",
+    "corporation.getOffice": "function",
+    "corporation.getHireAdVertCost": "function",
+    "corporation.getHireAdVertCount": "function",
+    "corporation.getResearchCost": "function",
+    "corporation.hasResearched": "function",
+    "corporation.setJobAssignment": "function",
+    "corporation.getOfficeSizeUpgradeCost": "function",
+    "corporation.hasCorporation": "function",
+    "corporation.canCreateCorporation": "function",
+    "corporation.createCorporation": "function",
+    "corporation.hasUnlock": "function",
+    "corporation.getUnlockCost": "function",
+    "corporation.getUpgradeLevel": "function",
+    "corporation.getUpgradeLevelCost": "function",
+    "corporation.getInvestmentOffer": "function",
+    "corporation.getConstants": "function",
+    "corporation.getIndustryData": "function",
+    "corporation.getMaterialData": "function",
+    "corporation.acceptInvestmentOffer": "function",
+    "corporation.goPublic": "function",
+    "corporation.bribe": "function",
+    "corporation.getCorporation": "function",
+    "corporation.getDivision": "function",
+    "corporation.expandIndustry": "function",
+    "corporation.expandCity": "function",
+    "corporation.purchaseUnlock": "function",
+    "corporation.levelUpgrade": "function",
+    "corporation.issueDividends": "function",
+    "corporation.issueNewShares": "function",
+    "corporation.buyBackShares": "function",
+    "corporation.sellShares": "function",
+    "corporation.getBonusTime": "function",
+    "corporation.nextUpdate": "function",
+    "corporation.sellDivision": "function",
+    "ui": "namespace",
+    "ui.openTail": "function",
+    "ui.renderTail": "function",
+    "ui.moveTail": "function",
+    "ui.resizeTail": "function",
+    "ui.closeTail": "function",
+    "ui.setTailTitle": "function",
+    "ui.setTailFontSize": "function",
+    "ui.setTailMinimized": "function",
+    "ui.windowSize": "function",
+    "ui.getTheme": "function",
+    "ui.setTheme": "function",
+    "ui.resetTheme": "function",
+    "ui.getStyles": "function",
+    "ui.setStyles": "function",
+    "ui.resetStyles": "function",
+    "ui.getGameInfo": "function",
+    "ui.clearTerminal": "function",
+    "singularity": "namespace",
+    "singularity.getSaveData": "function",
+    "singularity.exportGame": "function",
+    "singularity.exportGameBonus": "function",
+    "singularity.universityCourse": "function",
+    "singularity.gymWorkout": "function",
+    "singularity.travelToCity": "function",
+    "singularity.purchaseTor": "function",
+    "singularity.purchaseProgram": "function",
+    "singularity.isBusy": "function",
+    "singularity.stopAction": "function",
+    "singularity.upgradeHomeRam": "function",
+    "singularity.upgradeHomeCores": "function",
+    "singularity.getUpgradeHomeRamCost": "function",
+    "singularity.getUpgradeHomeCoresCost": "function",
+    "singularity.getCompanyPositionInfo": "function",
+    "singularity.getCompanyPositions": "function",
+    "singularity.workForCompany": "function",
+    "singularity.quitJob": "function",
+    "singularity.applyToCompany": "function",
+    "singularity.getCompanyRep": "function",
+    "singularity.getCompanyFavor": "function",
+    "singularity.getCompanyFavorGain": "function",
+    "singularity.getFactionInviteRequirements": "function",
+    "singularity.getFactionEnemies": "function",
+    "singularity.checkFactionInvitations": "function",
+    "singularity.joinFaction": "function",
+    "singularity.workForFaction": "function",
+    "singularity.getFactionWorkTypes": "function",
+    "singularity.getFactionRep": "function",
+    "singularity.getFactionFavor": "function",
+    "singularity.getFactionFavorGain": "function",
+    "singularity.donateToFaction": "function",
+    "singularity.createProgram": "function",
+    "singularity.getHackingLevelRequirementOfProgram": "function",
+    "singularity.commitCrime": "function",
+    "singularity.getCrimeChance": "function",
+    "singularity.getCrimeStats": "function",
+    "singularity.getOwnedAugmentations": "function",
+    "singularity.getOwnedSourceFiles": "function",
+    "singularity.getAugmentationFactions": "function",
+    "singularity.getAugmentationsFromFaction": "function",
+    "singularity.getAugmentationPrereq": "function",
+    "singularity.getAugmentationPrice": "function",
+    "singularity.getAugmentationBasePrice": "function",
+    "singularity.getAugmentationRepReq": "function",
+    "singularity.purchaseAugmentation": "function",
+    "singularity.getAugmentationStats": "function",
+    "singularity.installAugmentations": "function",
+    "singularity.hospitalize": "function",
+    "singularity.softReset": "function",
+    "singularity.goToLocation": "function",
+    "singularity.getCurrentServer": "function",
+    "singularity.cat": "function",
+    "singularity.connect": "function",
+    "singularity.manualHack": "function",
+    "singularity.installBackdoor": "function",
+    "singularity.isFocused": "function",
+    "singularity.setFocus": "function",
+    "singularity.getDarkwebPrograms": "function",
+    "singularity.getDarkwebProgramCost": "function",
+    "singularity.b1tflum3": "function",
+    "singularity.destroyW0r1dD43m0n": "function",
+    "singularity.getCurrentWork": "function",
+    "singularity.getUnlockedAchievements": "function",
+    "grafting": "namespace",
+    "grafting.getAugmentationGraftPrice": "function",
+    "grafting.getAugmentationGraftTime": "function",
+    "grafting.getGraftableAugmentations": "function",
+    "grafting.graftAugmentation": "function",
+    "grafting.waitForOngoingGrafting": "function",
+    "args": "property",
+    "pid": "property",
+    "hack": "function",
+    "grow": "function",
+    "weaken": "function",
+    "weakenAnalyze": "function",
+    "hackAnalyzeThreads": "function",
+    "hackAnalyze": "function",
+    "hackAnalyzeSecurity": "function",
+    "hackAnalyzeChance": "function",
+    "growthAnalyze": "function",
+    "growthAnalyzeSecurity": "function",
+    "heart": "property",
+    "sleep": "function",
+    "asleep": "function",
+    "print": "function",
+    "printRaw": "function",
+    "printf": "function",
+    "tprint": "function",
+    "tprintRaw": "function",
+    "tprintf": "function",
+    "clearLog": "function",
+    "disableLog": "function",
+    "enableLog": "function",
+    "isLogEnabled": "function",
+    "getScriptLogs": "function",
+    "getRecentScripts": "function",
+    "scan": "function",
+    "hasTorRouter": "function",
+    "nuke": "function",
+    "brutessh": "function",
+    "ftpcrack": "function",
+    "relaysmtp": "function",
+    "httpworm": "function",
+    "sqlinject": "function",
+    "run": "function",
+    "exec": "function",
+    "spawn": "function",
+    "self": "function",
+    "kill": "function",
+    "killall": "function",
+    "exit": "function",
+    "scp": "function",
+    "ls": "function",
+    "ps": "function",
+    "hasRootAccess": "function",
+    "getHostname": "function",
+    "getIP": "function",
+    "getHackingLevel": "function",
+    "getHackingMultipliers": "function",
+    "getHacknetMultipliers": "function",
+    "getServer": "function",
+    "getServerMoneyAvailable": "function",
+    "getServerMaxMoney": "function",
+    "getServerGrowth": "function",
+    "getServerSecurityLevel": "function",
+    "getServerMinSecurityLevel": "function",
+    "getServerBaseSecurityLevel": "function",
+    "getServerMaxRam": "function",
+    "getServerUsedRam": "function",
+    "getServerRequiredHackingLevel": "function",
+    "getServerNumPortsRequired": "function",
+    "dnsLookup": "function",
+    "serverExists": "function",
+    "fileExists": "function",
+    "isRunning": "function",
+    "getRunningScript": "function",
+    "ramOverride": "function",
+    "write": "function",
+    "tryWritePort": "function",
+    "nextPortWrite": "function",
+    "read": "function",
+    "getFileMetadata": "function",
+    "peek": "function",
+    "clear": "function",
+    "clearPort": "function",
+    "writePort": "function",
+    "readPort": "function",
+    "getPortHandle": "function",
+    "rm": "function",
+    "scriptRunning": "function",
+    "scriptKill": "function",
+    "getScriptName": "function",
+    "getScriptRam": "function",
+    "getHackTime": "function",
+    "getGrowTime": "function",
+    "getWeakenTime": "function",
+    "getTotalScriptIncome": "function",
+    "getScriptIncome": "function",
+    "getTotalScriptExpGain": "function",
+    "getScriptExpGain": "function",
+    "sprintf": "function",
+    "vsprintf": "function",
+    "prompt": "function",
+    "alert": "function",
+    "toast": "function",
+    "wget": "function",
+    "getFavorToDonate": "function",
+    "getBitNodeMultipliers": "function",
+    "getPlayer": "function",
+    "getMoneySources": "function",
+    "atExit": "function",
+    "mv": "function",
+    "getResetInfo": "function",
+    "getFunctionRamCost": "function",
+    "flags": "function",
+    "share": "function",
+    "getSharePower": "function",
+    "dynamicImport": "function",
+    "enums": "property"
+  },
+  "costs": {
+    "hacknet.numNodes": {
+      "base": 0.5,
+      "singularityScaled": false
+    },
+    "hacknet.maxNumNodes": {
+      "base": 0.5,
+      "singularityScaled": false
+    },
+    "hacknet.purchaseNode": {
+      "base": 0.5,
+      "singularityScaled": false
+    },
+    "hacknet.getPurchaseNodeCost": {
+      "base": 0.5,
+      "singularityScaled": false
+    },
+    "hacknet.getNodeStats": {
+      "base": 0.5,
+      "singularityScaled": false
+    },
+    "hacknet.upgradeLevel": {
+      "base": 0.5,
+      "singularityScaled": false
+    },
+    "hacknet.upgradeRam": {
+      "base": 0.5,
+      "singularityScaled": false
+    },
+    "hacknet.upgradeCore": {
+      "base": 0.5,
+      "singularityScaled": false
+    },
+    "hacknet.upgradeCache": {
+      "base": 0.5,
+      "singularityScaled": false
+    },
+    "hacknet.getLevelUpgradeCost": {
+      "base": 0.5,
+      "singularityScaled": false
+    },
+    "hacknet.getRamUpgradeCost": {
+      "base": 0.5,
+      "singularityScaled": false
+    },
+    "hacknet.getCoreUpgradeCost": {
+      "base": 0.5,
+      "singularityScaled": false
+    },
+    "hacknet.getCacheUpgradeCost": {
+      "base": 0.5,
+      "singularityScaled": false
+    },
+    "hacknet.numHashes": {
+      "base": 0.5,
+      "singularityScaled": false
+    },
+    "hacknet.hashCapacity": {
+      "base": 0.5,
+      "singularityScaled": false
+    },
+    "hacknet.hashCost": {
+      "base": 0.5,
+      "singularityScaled": false
+    },
+    "hacknet.spendHashes": {
+      "base": 0.5,
+      "singularityScaled": false
+    },
+    "hacknet.getHashUpgrades": {
+      "base": 0.5,
+      "singularityScaled": false
+    },
+    "hacknet.getHashUpgradeLevel": {
+      "base": 0.5,
+      "singularityScaled": false
+    },
+    "hacknet.getStudyMult": {
+      "base": 0.5,
+      "singularityScaled": false
+    },
+    "hacknet.getTrainingMult": {
+      "base": 0.5,
+      "singularityScaled": false
+    },
+    "bladeburner.getContractNames": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "bladeburner.getOperationNames": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "bladeburner.getBlackOpNames": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "bladeburner.getNextBlackOp": {
+      "base": 2,
+      "singularityScaled": false
+    },
+    "bladeburner.getGeneralActionNames": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "bladeburner.getSkillNames": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "bladeburner.startAction": {
+      "base": 4,
+      "singularityScaled": false
+    },
+    "bladeburner.stopBladeburnerAction": {
+      "base": 2,
+      "singularityScaled": false
+    },
+    "bladeburner.getCurrentAction": {
+      "base": 1,
+      "singularityScaled": false
+    },
+    "bladeburner.getActionTime": {
+      "base": 4,
+      "singularityScaled": false
+    },
+    "bladeburner.getActionCurrentTime": {
+      "base": 4,
+      "singularityScaled": false
+    },
+    "bladeburner.getActionEstimatedSuccessChance": {
+      "base": 4,
+      "singularityScaled": false
+    },
+    "bladeburner.getActionRepGain": {
+      "base": 4,
+      "singularityScaled": false
+    },
+    "bladeburner.getActionRankGain": {
+      "base": 4,
+      "singularityScaled": false
+    },
+    "bladeburner.getActionRankLoss": {
+      "base": 4,
+      "singularityScaled": false
+    },
+    "bladeburner.getActionCountRemaining": {
+      "base": 4,
+      "singularityScaled": false
+    },
+    "bladeburner.getActionMaxLevel": {
+      "base": 4,
+      "singularityScaled": false
+    },
+    "bladeburner.getActionCurrentLevel": {
+      "base": 4,
+      "singularityScaled": false
+    },
+    "bladeburner.getActionAutolevel": {
+      "base": 4,
+      "singularityScaled": false
+    },
+    "bladeburner.getActionSuccesses": {
+      "base": 4,
+      "singularityScaled": false
+    },
+    "bladeburner.setActionAutolevel": {
+      "base": 4,
+      "singularityScaled": false
+    },
+    "bladeburner.setActionLevel": {
+      "base": 4,
+      "singularityScaled": false
+    },
+    "bladeburner.getRank": {
+      "base": 4,
+      "singularityScaled": false
+    },
+    "bladeburner.getBlackOpRank": {
+      "base": 2,
+      "singularityScaled": false
+    },
+    "bladeburner.getSkillPoints": {
+      "base": 4,
+      "singularityScaled": false
+    },
+    "bladeburner.getSkillLevel": {
+      "base": 4,
+      "singularityScaled": false
+    },
+    "bladeburner.getSkillUpgradeCost": {
+      "base": 4,
+      "singularityScaled": false
+    },
+    "bladeburner.upgradeSkill": {
+      "base": 4,
+      "singularityScaled": false
+    },
+    "bladeburner.getTeamSize": {
+      "base": 4,
+      "singularityScaled": false
+    },
+    "bladeburner.setTeamSize": {
+      "base": 4,
+      "singularityScaled": false
+    },
+    "bladeburner.getCityEstimatedPopulation": {
+      "base": 4,
+      "singularityScaled": false
+    },
+    "bladeburner.getCityCommunities": {
+      "base": 4,
+      "singularityScaled": false
+    },
+    "bladeburner.getCityChaos": {
+      "base": 4,
+      "singularityScaled": false
+    },
+    "bladeburner.getCity": {
+      "base": 4,
+      "singularityScaled": false
+    },
+    "bladeburner.switchCity": {
+      "base": 4,
+      "singularityScaled": false
+    },
+    "bladeburner.getStamina": {
+      "base": 4,
+      "singularityScaled": false
+    },
+    "bladeburner.joinBladeburnerFaction": {
+      "base": 4,
+      "singularityScaled": false
+    },
+    "bladeburner.joinBladeburnerDivision": {
+      "base": 4,
+      "singularityScaled": false
+    },
+    "bladeburner.getBonusTime": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "bladeburner.nextUpdate": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "bladeburner.inBladeburner": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "codingcontract.attempt": {
+      "base": 10,
+      "singularityScaled": false
+    },
+    "codingcontract.getContractType": {
+      "base": 5,
+      "singularityScaled": false
+    },
+    "codingcontract.getDescription": {
+      "base": 5,
+      "singularityScaled": false
+    },
+    "codingcontract.getData": {
+      "base": 5,
+      "singularityScaled": false
+    },
+    "codingcontract.getContract": {
+      "base": 15,
+      "singularityScaled": false
+    },
+    "codingcontract.getNumTriesRemaining": {
+      "base": 2,
+      "singularityScaled": false
+    },
+    "codingcontract.createDummyContract": {
+      "base": 2,
+      "singularityScaled": false
+    },
+    "codingcontract.getContractTypes": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "cloud.getServerCost": {
+      "base": 0.25,
+      "singularityScaled": false
+    },
+    "cloud.purchaseServer": {
+      "base": 2.25,
+      "singularityScaled": false
+    },
+    "cloud.getServerUpgradeCost": {
+      "base": 0.1,
+      "singularityScaled": false
+    },
+    "cloud.upgradeServer": {
+      "base": 0.25,
+      "singularityScaled": false
+    },
+    "cloud.renameServer": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "cloud.deleteServer": {
+      "base": 2.25,
+      "singularityScaled": false
+    },
+    "cloud.getServerNames": {
+      "base": 1.05,
+      "singularityScaled": false
+    },
+    "cloud.getServerLimit": {
+      "base": 0.05,
+      "singularityScaled": false
+    },
+    "cloud.getRamLimit": {
+      "base": 0.05,
+      "singularityScaled": false
+    },
+    "dnet.authenticate": {
+      "base": 0.4,
+      "singularityScaled": false
+    },
+    "dnet.connectToSession": {
+      "base": 0.05,
+      "singularityScaled": false
+    },
+    "dnet.heartbleed": {
+      "base": 0.6,
+      "singularityScaled": false
+    },
+    "dnet.openCache": {
+      "base": 2,
+      "singularityScaled": false
+    },
+    "dnet.probe": {
+      "base": 0.2,
+      "singularityScaled": false
+    },
+    "dnet.setStasisLink": {
+      "base": 12,
+      "singularityScaled": false
+    },
+    "dnet.getStasisLinkLimit": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "dnet.getStasisLinkedServers": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "dnet.getServerDetails": {
+      "base": 0.1,
+      "singularityScaled": false
+    },
+    "dnet.induceServerMigration": {
+      "base": 4,
+      "singularityScaled": false
+    },
+    "dnet.unleashStormSeed": {
+      "base": 0.1,
+      "singularityScaled": false
+    },
+    "dnet.isDarknetServer": {
+      "base": 0.1,
+      "singularityScaled": false
+    },
+    "dnet.memoryReallocation": {
+      "base": 1,
+      "singularityScaled": false
+    },
+    "dnet.getBlockedRam": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "dnet.getDepth": {
+      "base": 0.1,
+      "singularityScaled": false
+    },
+    "dnet.promoteStock": {
+      "base": 2,
+      "singularityScaled": false
+    },
+    "dnet.phishingAttack": {
+      "base": 2,
+      "singularityScaled": false
+    },
+    "dnet.nextMutation": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "dnet.getServerRequiredCharismaLevel": {
+      "base": 0.1,
+      "singularityScaled": false
+    },
+    "dnet.labreport": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "dnet.labradar": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "format.number": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "format.ram": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "format.percent": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "format.time": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "gang.createGang": {
+      "base": 1,
+      "singularityScaled": false
+    },
+    "gang.inGang": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "gang.getMemberNames": {
+      "base": 1,
+      "singularityScaled": false
+    },
+    "gang.renameMember": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "gang.getGangInformation": {
+      "base": 2,
+      "singularityScaled": false
+    },
+    "gang.getAllGangInformation": {
+      "base": 2,
+      "singularityScaled": false
+    },
+    "gang.getMemberInformation": {
+      "base": 2,
+      "singularityScaled": false
+    },
+    "gang.canRecruitMember": {
+      "base": 1,
+      "singularityScaled": false
+    },
+    "gang.getRecruitsAvailable": {
+      "base": 1,
+      "singularityScaled": false
+    },
+    "gang.respectForNextRecruit": {
+      "base": 1,
+      "singularityScaled": false
+    },
+    "gang.recruitMember": {
+      "base": 2,
+      "singularityScaled": false
+    },
+    "gang.getTaskNames": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "gang.setMemberTask": {
+      "base": 2,
+      "singularityScaled": false
+    },
+    "gang.getTaskStats": {
+      "base": 1,
+      "singularityScaled": false
+    },
+    "gang.getEquipmentNames": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "gang.getEquipmentCost": {
+      "base": 2,
+      "singularityScaled": false
+    },
+    "gang.getEquipmentType": {
+      "base": 2,
+      "singularityScaled": false
+    },
+    "gang.getEquipmentStats": {
+      "base": 2,
+      "singularityScaled": false
+    },
+    "gang.purchaseEquipment": {
+      "base": 4,
+      "singularityScaled": false
+    },
+    "gang.ascendMember": {
+      "base": 4,
+      "singularityScaled": false
+    },
+    "gang.getAscensionResult": {
+      "base": 2,
+      "singularityScaled": false
+    },
+    "gang.getInstallResult": {
+      "base": 2,
+      "singularityScaled": false
+    },
+    "gang.setTerritoryWarfare": {
+      "base": 2,
+      "singularityScaled": false
+    },
+    "gang.getChanceToWinClash": {
+      "base": 4,
+      "singularityScaled": false
+    },
+    "gang.getBonusTime": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "gang.nextUpdate": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "go.makeMove": {
+      "base": 4,
+      "singularityScaled": false
+    },
+    "go.passTurn": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "go.opponentNextTurn": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "go.getBoardState": {
+      "base": 4,
+      "singularityScaled": false
+    },
+    "go.getMoveHistory": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "go.getCurrentPlayer": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "go.getGameState": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "go.getOpponent": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "go.resetBoardState": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "go.analysis.getValidMoves": {
+      "base": 8,
+      "singularityScaled": false
+    },
+    "go.analysis.getChains": {
+      "base": 16,
+      "singularityScaled": false
+    },
+    "go.analysis.getLiberties": {
+      "base": 16,
+      "singularityScaled": false
+    },
+    "go.analysis.getControlledEmptyNodes": {
+      "base": 16,
+      "singularityScaled": false
+    },
+    "go.analysis.getStats": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "go.analysis.resetStats": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "go.analysis.setTestingBoardState": {
+      "base": 4,
+      "singularityScaled": false
+    },
+    "go.analysis.highlightPoint": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "go.analysis.clearPointHighlight": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "go.analysis.clearAllPointHighlights": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "go.cheat.getCheatSuccessChance": {
+      "base": 1,
+      "singularityScaled": false
+    },
+    "go.cheat.getCheatCount": {
+      "base": 1,
+      "singularityScaled": false
+    },
+    "go.cheat.removeRouter": {
+      "base": 8,
+      "singularityScaled": false
+    },
+    "go.cheat.playTwoMoves": {
+      "base": 8,
+      "singularityScaled": false
+    },
+    "go.cheat.repairOfflineNode": {
+      "base": 8,
+      "singularityScaled": false
+    },
+    "go.cheat.destroyNode": {
+      "base": 8,
+      "singularityScaled": false
+    },
+    "sleeve.getNumSleeves": {
+      "base": 4,
+      "singularityScaled": false
+    },
+    "sleeve.getSleeve": {
+      "base": 4,
+      "singularityScaled": false
+    },
+    "sleeve.getTask": {
+      "base": 4,
+      "singularityScaled": false
+    },
+    "sleeve.setToIdle": {
+      "base": 4,
+      "singularityScaled": false
+    },
+    "sleeve.setToShockRecovery": {
+      "base": 4,
+      "singularityScaled": false
+    },
+    "sleeve.setToSynchronize": {
+      "base": 4,
+      "singularityScaled": false
+    },
+    "sleeve.setToCommitCrime": {
+      "base": 4,
+      "singularityScaled": false
+    },
+    "sleeve.setToFactionWork": {
+      "base": 4,
+      "singularityScaled": false
+    },
+    "sleeve.setToCompanyWork": {
+      "base": 4,
+      "singularityScaled": false
+    },
+    "sleeve.setToUniversityCourse": {
+      "base": 4,
+      "singularityScaled": false
+    },
+    "sleeve.setToGymWorkout": {
+      "base": 4,
+      "singularityScaled": false
+    },
+    "sleeve.travel": {
+      "base": 4,
+      "singularityScaled": false
+    },
+    "sleeve.getSleeveAugmentations": {
+      "base": 4,
+      "singularityScaled": false
+    },
+    "sleeve.getSleeveAugmentationPrice": {
+      "base": 4,
+      "singularityScaled": false
+    },
+    "sleeve.getSleeveAugmentationRepReq": {
+      "base": 4,
+      "singularityScaled": false
+    },
+    "sleeve.getSleevePurchasableAugs": {
+      "base": 4,
+      "singularityScaled": false
+    },
+    "sleeve.purchaseSleeveAug": {
+      "base": 4,
+      "singularityScaled": false
+    },
+    "sleeve.setToBladeburnerAction": {
+      "base": 4,
+      "singularityScaled": false
+    },
+    "sleeve.purchaseSleeve": {
+      "base": 4,
+      "singularityScaled": false
+    },
+    "sleeve.upgradeMemory": {
+      "base": 4,
+      "singularityScaled": false
+    },
+    "sleeve.getSleeveCost": {
+      "base": 4,
+      "singularityScaled": false
+    },
+    "sleeve.getMemoryUpgradeCost": {
+      "base": 4,
+      "singularityScaled": false
+    },
+    "stock.getConstants": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "stock.hasWseAccount": {
+      "base": 0.05,
+      "singularityScaled": false
+    },
+    "stock.hasTixApiAccess": {
+      "base": 0.05,
+      "singularityScaled": false
+    },
+    "stock.has4SData": {
+      "base": 0.05,
+      "singularityScaled": false
+    },
+    "stock.has4SDataTixApi": {
+      "base": 0.05,
+      "singularityScaled": false
+    },
+    "stock.getSymbols": {
+      "base": 2,
+      "singularityScaled": false
+    },
+    "stock.getPrice": {
+      "base": 2,
+      "singularityScaled": false
+    },
+    "stock.getOrganization": {
+      "base": 2,
+      "singularityScaled": false
+    },
+    "stock.getAskPrice": {
+      "base": 2,
+      "singularityScaled": false
+    },
+    "stock.getBidPrice": {
+      "base": 2,
+      "singularityScaled": false
+    },
+    "stock.getPosition": {
+      "base": 2,
+      "singularityScaled": false
+    },
+    "stock.getMaxShares": {
+      "base": 2,
+      "singularityScaled": false
+    },
+    "stock.getPurchaseCost": {
+      "base": 2,
+      "singularityScaled": false
+    },
+    "stock.getSaleGain": {
+      "base": 2,
+      "singularityScaled": false
+    },
+    "stock.buyStock": {
+      "base": 2.5,
+      "singularityScaled": false
+    },
+    "stock.sellStock": {
+      "base": 2.5,
+      "singularityScaled": false
+    },
+    "stock.buyShort": {
+      "base": 2.5,
+      "singularityScaled": false
+    },
+    "stock.sellShort": {
+      "base": 2.5,
+      "singularityScaled": false
+    },
+    "stock.placeOrder": {
+      "base": 2.5,
+      "singularityScaled": false
+    },
+    "stock.cancelOrder": {
+      "base": 2.5,
+      "singularityScaled": false
+    },
+    "stock.getOrders": {
+      "base": 2.5,
+      "singularityScaled": false
+    },
+    "stock.getVolatility": {
+      "base": 2.5,
+      "singularityScaled": false
+    },
+    "stock.getForecast": {
+      "base": 2.5,
+      "singularityScaled": false
+    },
+    "stock.purchase4SMarketData": {
+      "base": 2.5,
+      "singularityScaled": false
+    },
+    "stock.purchase4SMarketDataTixApi": {
+      "base": 2.5,
+      "singularityScaled": false
+    },
+    "stock.purchaseWseAccount": {
+      "base": 2.5,
+      "singularityScaled": false
+    },
+    "stock.purchaseTixApi": {
+      "base": 2.5,
+      "singularityScaled": false
+    },
+    "stock.getBonusTime": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "stock.nextUpdate": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "stanek.giftWidth": {
+      "base": 0.4,
+      "singularityScaled": false
+    },
+    "stanek.giftHeight": {
+      "base": 0.4,
+      "singularityScaled": false
+    },
+    "stanek.chargeFragment": {
+      "base": 0.4,
+      "singularityScaled": false
+    },
+    "stanek.fragmentDefinitions": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "stanek.activeFragments": {
+      "base": 5,
+      "singularityScaled": false
+    },
+    "stanek.clearGift": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "stanek.canPlaceFragment": {
+      "base": 0.5,
+      "singularityScaled": false
+    },
+    "stanek.placeFragment": {
+      "base": 5,
+      "singularityScaled": false
+    },
+    "stanek.getFragment": {
+      "base": 5,
+      "singularityScaled": false
+    },
+    "stanek.removeFragment": {
+      "base": 0.15,
+      "singularityScaled": false
+    },
+    "stanek.acceptGift": {
+      "base": 2,
+      "singularityScaled": false
+    },
+    "infiltration.getPossibleLocations": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "infiltration.getInfiltration": {
+      "base": 15,
+      "singularityScaled": false
+    },
+    "corporation.sellMaterial": {
+      "base": 20,
+      "singularityScaled": false
+    },
+    "corporation.sellProduct": {
+      "base": 20,
+      "singularityScaled": false
+    },
+    "corporation.discontinueProduct": {
+      "base": 20,
+      "singularityScaled": false
+    },
+    "corporation.setSmartSupply": {
+      "base": 20,
+      "singularityScaled": false
+    },
+    "corporation.setSmartSupplyOption": {
+      "base": 20,
+      "singularityScaled": false
+    },
+    "corporation.buyMaterial": {
+      "base": 20,
+      "singularityScaled": false
+    },
+    "corporation.bulkPurchase": {
+      "base": 20,
+      "singularityScaled": false
+    },
+    "corporation.getWarehouse": {
+      "base": 10,
+      "singularityScaled": false
+    },
+    "corporation.getProduct": {
+      "base": 10,
+      "singularityScaled": false
+    },
+    "corporation.getMaterial": {
+      "base": 10,
+      "singularityScaled": false
+    },
+    "corporation.setMaterialMarketTA1": {
+      "base": 20,
+      "singularityScaled": false
+    },
+    "corporation.setMaterialMarketTA2": {
+      "base": 20,
+      "singularityScaled": false
+    },
+    "corporation.setProductMarketTA1": {
+      "base": 20,
+      "singularityScaled": false
+    },
+    "corporation.setProductMarketTA2": {
+      "base": 20,
+      "singularityScaled": false
+    },
+    "corporation.exportMaterial": {
+      "base": 20,
+      "singularityScaled": false
+    },
+    "corporation.cancelExportMaterial": {
+      "base": 20,
+      "singularityScaled": false
+    },
+    "corporation.purchaseWarehouse": {
+      "base": 20,
+      "singularityScaled": false
+    },
+    "corporation.upgradeWarehouse": {
+      "base": 20,
+      "singularityScaled": false
+    },
+    "corporation.makeProduct": {
+      "base": 20,
+      "singularityScaled": false
+    },
+    "corporation.limitMaterialProduction": {
+      "base": 20,
+      "singularityScaled": false
+    },
+    "corporation.limitProductProduction": {
+      "base": 20,
+      "singularityScaled": false
+    },
+    "corporation.getUpgradeWarehouseCost": {
+      "base": 10,
+      "singularityScaled": false
+    },
+    "corporation.hasWarehouse": {
+      "base": 10,
+      "singularityScaled": false
+    },
+    "corporation.hireEmployee": {
+      "base": 20,
+      "singularityScaled": false
+    },
+    "corporation.upgradeOfficeSize": {
+      "base": 20,
+      "singularityScaled": false
+    },
+    "corporation.throwParty": {
+      "base": 20,
+      "singularityScaled": false
+    },
+    "corporation.buyTea": {
+      "base": 20,
+      "singularityScaled": false
+    },
+    "corporation.hireAdVert": {
+      "base": 20,
+      "singularityScaled": false
+    },
+    "corporation.research": {
+      "base": 20,
+      "singularityScaled": false
+    },
+    "corporation.getOffice": {
+      "base": 10,
+      "singularityScaled": false
+    },
+    "corporation.getHireAdVertCost": {
+      "base": 10,
+      "singularityScaled": false
+    },
+    "corporation.getHireAdVertCount": {
+      "base": 10,
+      "singularityScaled": false
+    },
+    "corporation.getResearchCost": {
+      "base": 10,
+      "singularityScaled": false
+    },
+    "corporation.hasResearched": {
+      "base": 10,
+      "singularityScaled": false
+    },
+    "corporation.setJobAssignment": {
+      "base": 20,
+      "singularityScaled": false
+    },
+    "corporation.getOfficeSizeUpgradeCost": {
+      "base": 10,
+      "singularityScaled": false
+    },
+    "corporation.hasCorporation": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "corporation.canCreateCorporation": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "corporation.createCorporation": {
+      "base": 20,
+      "singularityScaled": false
+    },
+    "corporation.hasUnlock": {
+      "base": 10,
+      "singularityScaled": false
+    },
+    "corporation.getUnlockCost": {
+      "base": 10,
+      "singularityScaled": false
+    },
+    "corporation.getUpgradeLevel": {
+      "base": 10,
+      "singularityScaled": false
+    },
+    "corporation.getUpgradeLevelCost": {
+      "base": 10,
+      "singularityScaled": false
+    },
+    "corporation.getInvestmentOffer": {
+      "base": 10,
+      "singularityScaled": false
+    },
+    "corporation.getConstants": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "corporation.getIndustryData": {
+      "base": 10,
+      "singularityScaled": false
+    },
+    "corporation.getMaterialData": {
+      "base": 10,
+      "singularityScaled": false
+    },
+    "corporation.acceptInvestmentOffer": {
+      "base": 20,
+      "singularityScaled": false
+    },
+    "corporation.goPublic": {
+      "base": 20,
+      "singularityScaled": false
+    },
+    "corporation.bribe": {
+      "base": 20,
+      "singularityScaled": false
+    },
+    "corporation.getCorporation": {
+      "base": 10,
+      "singularityScaled": false
+    },
+    "corporation.getDivision": {
+      "base": 10,
+      "singularityScaled": false
+    },
+    "corporation.expandIndustry": {
+      "base": 20,
+      "singularityScaled": false
+    },
+    "corporation.expandCity": {
+      "base": 20,
+      "singularityScaled": false
+    },
+    "corporation.purchaseUnlock": {
+      "base": 20,
+      "singularityScaled": false
+    },
+    "corporation.levelUpgrade": {
+      "base": 20,
+      "singularityScaled": false
+    },
+    "corporation.issueDividends": {
+      "base": 20,
+      "singularityScaled": false
+    },
+    "corporation.issueNewShares": {
+      "base": 20,
+      "singularityScaled": false
+    },
+    "corporation.buyBackShares": {
+      "base": 20,
+      "singularityScaled": false
+    },
+    "corporation.sellShares": {
+      "base": 20,
+      "singularityScaled": false
+    },
+    "corporation.getBonusTime": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "corporation.nextUpdate": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "corporation.sellDivision": {
+      "base": 20,
+      "singularityScaled": false
+    },
+    "ui.openTail": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "ui.renderTail": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "ui.moveTail": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "ui.resizeTail": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "ui.closeTail": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "ui.setTailTitle": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "ui.setTailFontSize": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "ui.setTailMinimized": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "ui.windowSize": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "ui.getTheme": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "ui.setTheme": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "ui.resetTheme": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "ui.getStyles": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "ui.setStyles": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "ui.resetStyles": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "ui.getGameInfo": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "ui.clearTerminal": {
+      "base": 0.2,
+      "singularityScaled": false
+    },
+    "singularity.getSaveData": {
+      "base": 1,
+      "singularityScaled": true
+    },
+    "singularity.exportGame": {
+      "base": 1,
+      "singularityScaled": true
+    },
+    "singularity.exportGameBonus": {
+      "base": 0.5,
+      "singularityScaled": true
+    },
+    "singularity.universityCourse": {
+      "base": 2,
+      "singularityScaled": true
+    },
+    "singularity.gymWorkout": {
+      "base": 2,
+      "singularityScaled": true
+    },
+    "singularity.travelToCity": {
+      "base": 2,
+      "singularityScaled": true
+    },
+    "singularity.purchaseTor": {
+      "base": 2,
+      "singularityScaled": true
+    },
+    "singularity.purchaseProgram": {
+      "base": 2,
+      "singularityScaled": true
+    },
+    "singularity.isBusy": {
+      "base": 0.5,
+      "singularityScaled": true
+    },
+    "singularity.stopAction": {
+      "base": 1,
+      "singularityScaled": true
+    },
+    "singularity.upgradeHomeRam": {
+      "base": 3,
+      "singularityScaled": true
+    },
+    "singularity.upgradeHomeCores": {
+      "base": 3,
+      "singularityScaled": true
+    },
+    "singularity.getUpgradeHomeRamCost": {
+      "base": 1.5,
+      "singularityScaled": true
+    },
+    "singularity.getUpgradeHomeCoresCost": {
+      "base": 1.5,
+      "singularityScaled": true
+    },
+    "singularity.getCompanyPositionInfo": {
+      "base": 2,
+      "singularityScaled": true
+    },
+    "singularity.getCompanyPositions": {
+      "base": 2,
+      "singularityScaled": true
+    },
+    "singularity.workForCompany": {
+      "base": 3,
+      "singularityScaled": true
+    },
+    "singularity.quitJob": {
+      "base": 3,
+      "singularityScaled": true
+    },
+    "singularity.applyToCompany": {
+      "base": 3,
+      "singularityScaled": true
+    },
+    "singularity.getCompanyRep": {
+      "base": 1,
+      "singularityScaled": true
+    },
+    "singularity.getCompanyFavor": {
+      "base": 1,
+      "singularityScaled": true
+    },
+    "singularity.getCompanyFavorGain": {
+      "base": 0.75,
+      "singularityScaled": true
+    },
+    "singularity.getFactionInviteRequirements": {
+      "base": 3,
+      "singularityScaled": true
+    },
+    "singularity.getFactionEnemies": {
+      "base": 3,
+      "singularityScaled": true
+    },
+    "singularity.checkFactionInvitations": {
+      "base": 3,
+      "singularityScaled": true
+    },
+    "singularity.joinFaction": {
+      "base": 3,
+      "singularityScaled": true
+    },
+    "singularity.workForFaction": {
+      "base": 3,
+      "singularityScaled": true
+    },
+    "singularity.getFactionWorkTypes": {
+      "base": 1,
+      "singularityScaled": true
+    },
+    "singularity.getFactionRep": {
+      "base": 1,
+      "singularityScaled": true
+    },
+    "singularity.getFactionFavor": {
+      "base": 1,
+      "singularityScaled": true
+    },
+    "singularity.getFactionFavorGain": {
+      "base": 0.75,
+      "singularityScaled": true
+    },
+    "singularity.donateToFaction": {
+      "base": 5,
+      "singularityScaled": true
+    },
+    "singularity.createProgram": {
+      "base": 5,
+      "singularityScaled": true
+    },
+    "singularity.getHackingLevelRequirementOfProgram": {
+      "base": 5,
+      "singularityScaled": true
+    },
+    "singularity.commitCrime": {
+      "base": 5,
+      "singularityScaled": true
+    },
+    "singularity.getCrimeChance": {
+      "base": 5,
+      "singularityScaled": true
+    },
+    "singularity.getCrimeStats": {
+      "base": 5,
+      "singularityScaled": true
+    },
+    "singularity.getOwnedAugmentations": {
+      "base": 5,
+      "singularityScaled": true
+    },
+    "singularity.getOwnedSourceFiles": {
+      "base": 5,
+      "singularityScaled": false
+    },
+    "singularity.getAugmentationFactions": {
+      "base": 5,
+      "singularityScaled": true
+    },
+    "singularity.getAugmentationsFromFaction": {
+      "base": 5,
+      "singularityScaled": true
+    },
+    "singularity.getAugmentationPrereq": {
+      "base": 5,
+      "singularityScaled": true
+    },
+    "singularity.getAugmentationPrice": {
+      "base": 2.5,
+      "singularityScaled": true
+    },
+    "singularity.getAugmentationBasePrice": {
+      "base": 2.5,
+      "singularityScaled": true
+    },
+    "singularity.getAugmentationRepReq": {
+      "base": 2.5,
+      "singularityScaled": true
+    },
+    "singularity.purchaseAugmentation": {
+      "base": 5,
+      "singularityScaled": true
+    },
+    "singularity.getAugmentationStats": {
+      "base": 5,
+      "singularityScaled": true
+    },
+    "singularity.installAugmentations": {
+      "base": 5,
+      "singularityScaled": true
+    },
+    "singularity.hospitalize": {
+      "base": 0.25,
+      "singularityScaled": true
+    },
+    "singularity.softReset": {
+      "base": 5,
+      "singularityScaled": true
+    },
+    "singularity.goToLocation": {
+      "base": 5,
+      "singularityScaled": true
+    },
+    "singularity.getCurrentServer": {
+      "base": 2,
+      "singularityScaled": true
+    },
+    "singularity.connect": {
+      "base": 2,
+      "singularityScaled": true
+    },
+    "singularity.manualHack": {
+      "base": 2,
+      "singularityScaled": true
+    },
+    "singularity.installBackdoor": {
+      "base": 2,
+      "singularityScaled": true
+    },
+    "singularity.isFocused": {
+      "base": 0.1,
+      "singularityScaled": true
+    },
+    "singularity.setFocus": {
+      "base": 0.1,
+      "singularityScaled": true
+    },
+    "singularity.getDarkwebPrograms": {
+      "base": 1,
+      "singularityScaled": true
+    },
+    "singularity.getDarkwebProgramCost": {
+      "base": 0.5,
+      "singularityScaled": true
+    },
+    "singularity.b1tflum3": {
+      "base": 16,
+      "singularityScaled": true
+    },
+    "singularity.destroyW0r1dD43m0n": {
+      "base": 32,
+      "singularityScaled": true
+    },
+    "singularity.getCurrentWork": {
+      "base": 0.5,
+      "singularityScaled": true
+    },
+    "grafting.getAugmentationGraftPrice": {
+      "base": 3.75,
+      "singularityScaled": false
+    },
+    "grafting.getAugmentationGraftTime": {
+      "base": 3.75,
+      "singularityScaled": false
+    },
+    "grafting.getGraftableAugmentations": {
+      "base": 5,
+      "singularityScaled": false
+    },
+    "grafting.graftAugmentation": {
+      "base": 7.5,
+      "singularityScaled": false
+    },
+    "grafting.waitForOngoingGrafting": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "hack": {
+      "base": 0.1,
+      "singularityScaled": false
+    },
+    "grow": {
+      "base": 0.15,
+      "singularityScaled": false
+    },
+    "weaken": {
+      "base": 0.15,
+      "singularityScaled": false
+    },
+    "weakenAnalyze": {
+      "base": 1,
+      "singularityScaled": false
+    },
+    "hackAnalyzeThreads": {
+      "base": 1,
+      "singularityScaled": false
+    },
+    "hackAnalyze": {
+      "base": 1,
+      "singularityScaled": false
+    },
+    "hackAnalyzeSecurity": {
+      "base": 1,
+      "singularityScaled": false
+    },
+    "hackAnalyzeChance": {
+      "base": 1,
+      "singularityScaled": false
+    },
+    "growthAnalyze": {
+      "base": 1,
+      "singularityScaled": false
+    },
+    "growthAnalyzeSecurity": {
+      "base": 1,
+      "singularityScaled": false
+    },
+    "sleep": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "asleep": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "print": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "printRaw": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "printf": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "tprint": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "tprintRaw": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "tprintf": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "clearLog": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "disableLog": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "enableLog": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "isLogEnabled": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "getScriptLogs": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "getRecentScripts": {
+      "base": 0.2,
+      "singularityScaled": false
+    },
+    "scan": {
+      "base": 0.2,
+      "singularityScaled": false
+    },
+    "hasTorRouter": {
+      "base": 0.05,
+      "singularityScaled": false
+    },
+    "nuke": {
+      "base": 0.05,
+      "singularityScaled": false
+    },
+    "brutessh": {
+      "base": 0.05,
+      "singularityScaled": false
+    },
+    "ftpcrack": {
+      "base": 0.05,
+      "singularityScaled": false
+    },
+    "relaysmtp": {
+      "base": 0.05,
+      "singularityScaled": false
+    },
+    "httpworm": {
+      "base": 0.05,
+      "singularityScaled": false
+    },
+    "sqlinject": {
+      "base": 0.05,
+      "singularityScaled": false
+    },
+    "run": {
+      "base": 1,
+      "singularityScaled": false
+    },
+    "exec": {
+      "base": 1.3,
+      "singularityScaled": false
+    },
+    "spawn": {
+      "base": 2,
+      "singularityScaled": false
+    },
+    "self": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "kill": {
+      "base": 0.5,
+      "singularityScaled": false
+    },
+    "killall": {
+      "base": 0.5,
+      "singularityScaled": false
+    },
+    "exit": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "scp": {
+      "base": 0.6,
+      "singularityScaled": false
+    },
+    "ls": {
+      "base": 0.2,
+      "singularityScaled": false
+    },
+    "ps": {
+      "base": 0.2,
+      "singularityScaled": false
+    },
+    "hasRootAccess": {
+      "base": 0.05,
+      "singularityScaled": false
+    },
+    "getHostname": {
+      "base": 0.05,
+      "singularityScaled": false
+    },
+    "getIP": {
+      "base": 0.05,
+      "singularityScaled": false
+    },
+    "getHackingLevel": {
+      "base": 0.05,
+      "singularityScaled": false
+    },
+    "getHackingMultipliers": {
+      "base": 0.25,
+      "singularityScaled": false
+    },
+    "getHacknetMultipliers": {
+      "base": 0.25,
+      "singularityScaled": false
+    },
+    "getServer": {
+      "base": 2,
+      "singularityScaled": false
+    },
+    "getServerMoneyAvailable": {
+      "base": 0.1,
+      "singularityScaled": false
+    },
+    "getServerMaxMoney": {
+      "base": 0.1,
+      "singularityScaled": false
+    },
+    "getServerGrowth": {
+      "base": 0.1,
+      "singularityScaled": false
+    },
+    "getServerSecurityLevel": {
+      "base": 0.1,
+      "singularityScaled": false
+    },
+    "getServerMinSecurityLevel": {
+      "base": 0.1,
+      "singularityScaled": false
+    },
+    "getServerBaseSecurityLevel": {
+      "base": 0.1,
+      "singularityScaled": false
+    },
+    "getServerMaxRam": {
+      "base": 0.05,
+      "singularityScaled": false
+    },
+    "getServerUsedRam": {
+      "base": 0.05,
+      "singularityScaled": false
+    },
+    "getServerRequiredHackingLevel": {
+      "base": 0.1,
+      "singularityScaled": false
+    },
+    "getServerNumPortsRequired": {
+      "base": 0.1,
+      "singularityScaled": false
+    },
+    "dnsLookup": {
+      "base": 0.05,
+      "singularityScaled": false
+    },
+    "serverExists": {
+      "base": 0.1,
+      "singularityScaled": false
+    },
+    "fileExists": {
+      "base": 0.1,
+      "singularityScaled": false
+    },
+    "isRunning": {
+      "base": 0.1,
+      "singularityScaled": false
+    },
+    "getRunningScript": {
+      "base": 0.3,
+      "singularityScaled": false
+    },
+    "ramOverride": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "write": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "tryWritePort": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "nextPortWrite": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "read": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "getFileMetadata": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "peek": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "clear": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "clearPort": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "writePort": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "readPort": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "getPortHandle": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "rm": {
+      "base": 0.6,
+      "singularityScaled": false
+    },
+    "scriptRunning": {
+      "base": 1,
+      "singularityScaled": false
+    },
+    "scriptKill": {
+      "base": 1,
+      "singularityScaled": false
+    },
+    "getScriptName": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "getScriptRam": {
+      "base": 0.1,
+      "singularityScaled": false
+    },
+    "getHackTime": {
+      "base": 0.05,
+      "singularityScaled": false
+    },
+    "getGrowTime": {
+      "base": 0.05,
+      "singularityScaled": false
+    },
+    "getWeakenTime": {
+      "base": 0.05,
+      "singularityScaled": false
+    },
+    "getTotalScriptIncome": {
+      "base": 0.1,
+      "singularityScaled": false
+    },
+    "getScriptIncome": {
+      "base": 0.1,
+      "singularityScaled": false
+    },
+    "getTotalScriptExpGain": {
+      "base": 0.1,
+      "singularityScaled": false
+    },
+    "getScriptExpGain": {
+      "base": 0.1,
+      "singularityScaled": false
+    },
+    "sprintf": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "vsprintf": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "prompt": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "alert": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "toast": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "wget": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "getFavorToDonate": {
+      "base": 0.1,
+      "singularityScaled": false
+    },
+    "getBitNodeMultipliers": {
+      "base": 4,
+      "singularityScaled": false
+    },
+    "getPlayer": {
+      "base": 0.5,
+      "singularityScaled": false
+    },
+    "getMoneySources": {
+      "base": 1,
+      "singularityScaled": false
+    },
+    "atExit": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "mv": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "getResetInfo": {
+      "base": 1,
+      "singularityScaled": false
+    },
+    "getFunctionRamCost": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "flags": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "share": {
+      "base": 2.4,
+      "singularityScaled": false
+    },
+    "getSharePower": {
+      "base": 0.2,
+      "singularityScaled": false
+    },
+    "dynamicImport": {
+      "base": 0,
+      "singularityScaled": false
+    }
+  }
+}

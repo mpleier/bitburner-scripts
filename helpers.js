@@ -362,7 +362,7 @@ export async function runCommand_Custom(ns, fnRun, command, fileName, args = [],
         const oldContents = ns.read(fileName);
         if (oldContents != script) {
             if (oldContents) // Create some noise if temp scripts are being created with the same name but different contents
-                ns.tprint(`WARNING: Had to overwrite temp script ${fileName}\nOld Contents:\n${oldContents}\nNew Contents:\n${script}` +
+                ns.print(`WARNING: Had to overwrite temp script ${fileName}\nOld Contents:\n${oldContents}\nNew Contents:\n${script}` +
                     `\nThis warning is generated as part of an effort to switch over to using only 'immutable' temp scripts. ` +
                     `Please paste a screenshot in Discord at https://discord.com/channels/415207508303544321/935667531111342200`);
             ns.write(fileName, script, "w");
@@ -889,7 +889,7 @@ function isV3(ns) {
 
 export function formatTime(ns, milliseconds, milliPrecision) {
     if (isV3(ns)) {
-        return ns.ui.time(milliseconds, milliPrecision);
+        return ns.format.time(milliseconds, milliPrecision);
     }
     return ns.tFormat(milliseconds, milliPrecision);
 }

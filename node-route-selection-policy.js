@@ -95,13 +95,15 @@ export const trainBladeburnerEntrySource = String.raw`function trainBladeburnerE
  if(work?.type==='GRAFTING'||work?.type==='CREATE_PROGRAM')return {state:'protected-work'};
  if(work&&!(ownedCrime&&work.type==='CRIME'&&work.crimeType===ownedCrime)&&
   !ns.ps('home').some(p=>p.filename.replace(/^\//,'')==='work-for-factions.js'))return {state:'protected-work'};
- if(ownedCrime&&work?.type==='CRIME'&&work.crimeType===ownedCrime)return {state:'training',crime:ownedCrime};
  const choices=['Shoplift','Mug','Homicide'].map(name=>{
   const stats=ns.singularity.getCrimeStats(name),chance=ns.singularity.getCrimeChance(name);
-  const gain=missing.reduce((sum,key)=>sum+Math.max(0,Number(stats[key+'_exp'])||0),0);
+  // A crime that gives no XP to a missing stat cannot finish entry by itself.
+  const gains=missing.map(key=>Math.max(0,Number(stats[key+'_exp'])||0)/Math.max(1,100-p.skills[key]));
+  const gain=Math.min(...gains);
   return {name,score:gain*(.25+.75*chance)/stats.time,time:stats.time};
  }).filter(c=>Number.isFinite(c.score)&&c.score>0&&c.time>0&&c.time<=5000).sort((a,b)=>b.score-a.score||a.name.localeCompare(b.name));
  if(!choices.length||!allowed())return {state:'waiting'};
+ if(work?.type==='CRIME'&&work.crimeType===ownedCrime&&ownedCrime===choices[0].name)return {state:'training',crime:ownedCrime};
  const result=ns.singularity.commitCrime(choices[0].name,false);
  return result?{state:'training',crime:choices[0].name,at:now}:{state:'waiting'};
 }`;

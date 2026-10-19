@@ -1,6 +1,6 @@
 /** Conservative estimates for progression; no native actions or promised finish times. */
 const minute=60000;
-export function progressionSpeed({snapshot,previous,now=Date.now(),augReset,elapsed=0,node=1,firstBn9=false,combat=false,baseDelay=5*minute,homeRam=0,hackingGoal=false,combatRecovery=null,nodeReset=null,combatTarget=null,routeRemainingMs=null}){
+export function progressionSpeed({snapshot,previous,now=Date.now(),augReset,elapsed=0,node=1,firstBn9=false,combat=false,baseDelay=5*minute,homeRam=0,hackingGoal=false,combatRecovery=null,nodeReset=null,combatTarget=null,routeRemainingMs=null,casinoFunding=null}){
  const fallback={earlyInstall:false,delayMs:baseDelay,bottleneck:homeRam<64?'ram':hackingGoal?'hacking':'balanced',reason:'Waiting for fresh augmentation evidence'};
  if(!snapshot||snapshot.augReset!==augReset||!Number.isFinite(snapshot.at)||snapshot.at>now||now-snapshot.at>5*minute)return {...fallback,observation:previous};
  if(!Number.isFinite(snapshot.worth)||snapshot.worth<0)return {...fallback,observation:previous};
@@ -76,14 +76,21 @@ export function progressionSpeed({snapshot,previous,now=Date.now(),augReset,elap
   Number.isFinite(combatRecovery.at)&&combatRecovery.at<=now&&now-combatRecovery.at<=90000;
  const samples=recoveryValid&&Array.isArray(combatRecovery.samples)?combatRecovery.samples.filter(s=>typeof combatTarget==='string'&&s.target===combatTarget&&s.nodeReset===nodeReset&&Number.isFinite(s.finishedAt)&&s.finishedAt<=now&&Number.isFinite(s.durationMs)&&s.durationMs>=0&&s.durationMs<=24*60*minute):[];
  const recoveryBlocked=!!(recoveryValid&&combatRecovery.recovering);
- const warmup=combat?(samples.length?Math.max(minute,...samples.map(s=>s.durationMs)):20*minute):15*minute;
+ const casino=casinoFunding?.available===true&&casinoFunding.augReset===augReset&&casinoFunding.nodeReset===nodeReset&&
+  Number.isFinite(casinoFunding.at)&&casinoFunding.at<=now&&now-casinoFunding.at<=45000&&
+  Number.isFinite(casinoFunding.amount)&&casinoFunding.amount>0&&casinoFunding.amount<=1e10&&
+  Number.isFinite(casinoFunding.durationMs)&&casinoFunding.durationMs>=60000&&casinoFunding.durationMs<=5*60*minute?casinoFunding:null;
+ const baseWarmup=combat?(samples.length?Math.max(minute,...samples.map(s=>s.durationMs)):20*minute):15*minute;
+ const warmup=baseWarmup+(casino?.durationMs||0);
  const recoveryBasis=combat?(samples.length?'Measured time to regain the pre-install safe BlackOp':'Conservative combat recovery fallback'):'Conservative hacking recovery fallback';
  const gain=Math.max(countMilestone ? .5 : 0,Math.max(0,Math.min(2,Math.expm1(logGain)*.5)));
  const economics=snapshot.resetEconomics;
  const economicsKnown=!!economics?.known&&Number.isFinite(economics.replacementCost)&&economics.replacementCost>=0&&
   Number.isFinite(economics.gangLossPerSecond??0)&&(economics.gangLossPerSecond??0)>=0;
  const recoveryCost=economicsKnown?Math.max(0,economics.replacementCost||0)+Math.max(0,economics.gangLossPerSecond||0)*warmup/1000:firstBn9?null:0;
- const rebuildMs=recoveryCost===0?0:recoveryCost!==null&&cashRate>0?recoveryCost/cashRate*1000:Infinity;
+ const casinoCredit=economicsKnown&&casino?Math.min(recoveryCost,casino.amount):0;
+ const remainingRecoveryCost=recoveryCost===null?null:Math.max(0,recoveryCost-casinoCredit);
+ const rebuildMs=remainingRecoveryCost===0?0:remainingRecoveryCost!==null&&cashRate>0?remainingRecoveryCost/cashRate*1000:Infinity;
  const paybackMs=gain>0?warmup+warmup/gain+rebuildMs:Infinity,plateau=now-lastGrowthAt>=10*minute;
  let waitCandidate=null;const waitOptions=[];
  for(const candidate of waitBasketValid?waitCandidates:[]){
@@ -103,7 +110,7 @@ export function progressionSpeed({snapshot,previous,now=Date.now(),augReset,elap
  const earlyInstall=![8].includes(node)&&!protectFirstBn9&&elapsed>=30*minute&&ready.some(a=>a.name!=='NeuroFlux Governor')&&gain>=.2&&paybackMs<=Math.min(4*60*minute,Math.max(60*minute,elapsed))&&plateau;
  const imminent=!!waitCandidate;
  const delayMs=protectFirstBn9||node===8||gain===0?baseDelay:Math.min(baseDelay,30000);
- return {earlyInstall,delayMs,bottleneck,gain,resetPaysBack,waitCandidate,waitOptions:waitOptions.sort((a,b)=>b.waitWork-a.waitWork||a.etaMs-b.etaMs).slice(0,16),countMilestone,countProgress,recoveryBlocked,recoveryMs:warmup,recoveryBasis,resetEconomics:{known:economicsKnown,recoveryCost,rebuildMs:Number.isFinite(rebuildMs)?rebuildMs:null},paybackMs:Number.isFinite(paybackMs)?paybackMs:null,next:next&&{...next,eta:Number.isFinite(next.eta)?next.eta:null},reason:earlyInstall?'Useful augmentation gains outweigh estimated restart recovery':protectFirstBn9?(!economicsKnown?'Preserving first BN9 Hacknet infrastructure; rebuild cost is unknown':gain<.2?'Preserving first BN9 Hacknet infrastructure; available augmentations offer little route improvement':'Preserving first BN9 Hacknet infrastructure; estimated reset payback exceeds four hours'):imminent?'Another augmentation is close; allow a bounded wait':'No measured near-term augmentation improvement',observation};
+ return {earlyInstall,delayMs,bottleneck,gain,resetPaysBack,waitCandidate,waitOptions:waitOptions.sort((a,b)=>b.waitWork-a.waitWork||a.etaMs-b.etaMs).slice(0,16),countMilestone,countProgress,recoveryBlocked,recoveryMs:warmup,recoveryBasis,resetEconomics:{known:economicsKnown,recoveryCost,remainingRecoveryCost,casinoCredit,casinoDelayMs:casino?.durationMs||0,casinoFunding:casinoFunding||null,rebuildMs:Number.isFinite(rebuildMs)?rebuildMs:null},paybackMs:Number.isFinite(paybackMs)?paybackMs:null,next:next&&{...next,eta:Number.isFinite(next.eta)?next.eta:null},reason:earlyInstall?'Useful augmentation gains outweigh estimated restart recovery':protectFirstBn9?(!economicsKnown?'Preserving first BN9 Hacknet infrastructure; rebuild cost is unknown':gain<.2?'Preserving first BN9 Hacknet infrastructure; available augmentations offer little route improvement':'Preserving first BN9 Hacknet infrastructure; estimated reset payback exceeds four hours'):imminent?'Another augmentation is close; allow a bounded wait':'No measured near-term augmentation improvement',observation};
 }
 
 /** Observe actual recovery of the same previously safe BlackOp after an install. */

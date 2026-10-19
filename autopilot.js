@@ -1,11 +1,15 @@
+import {launchCooldown,recordLaunch,launchCooldownKey} from './launch-cooldown-policy.js';
+import {priorityManagerPlan,automaticManagerScripts,moduleManifest} from './automation-manifest.js';
+import {collectAutomationPreview,printAutomationPreview,previewOptions,previewRequested} from './automation-preview-policy.js';
+import {observeCasinoReset,forecastCasinoReset} from './casino-reset-policy.js';
 import {chooseNodeRoute,nodeRouteAvailability,routeContinuousXp,routeDevelopment} from './node-route-selection-policy.js';
 import {factionWorkerReady} from './early-game-policy.js';
 import {casinoSeedMoney,earnCasinoSeedSource,chooseCasinoSeedCrime,seedSleevesSource,essentialHomeRamSource} from './casino-bootstrap-policy.js';
 import {planRedPill,purchaseRedPillSource} from './red-pill-policy.js';
 import {nodeRouteFile,nodeRouteSnapshotSource,sampleRouteProgress,estimateDaemonRoute,estimateBladeburnerRoute} from './node-route-policy.js';
-import {homeRamReserve,reclaimHomeRam} from './home-ram-policy.js';
+import {homeRamReserve,reclaimHomeRam,essentialManagerRamTarget} from './home-ram-policy.js';
 import {observeCombatRecovery,augmentationResetDecision,progressionSpeed} from './progression-speed-policy.js';
-import {registerAutomation,automationHeartbeat,maintenanceRequested} from './runtime-policy.js';
+import {registerAutomation,automationHeartbeat,maintenanceRequested,scriptSignature} from './runtime-policy.js';
 import {campaignReady,challengeProfile,achievementNode,achievementActionAllowed} from './achievement-policy.js';
 import {achievementWorkerSources} from './achievement-worker-sources.js';
 import { autopilotSourceFiles, installedAugmentationsFromReset, daemonArgumentsChanged, autopilotOptionsError, autopilotStockReserve, priorityAugmentationReady, freshFactionManagerOutput } from './autopilot-policy.js';
@@ -24,6 +28,8 @@ import {
 } from './helpers.js'
 
 const argsSchema = [ // The set of all command line arguments
+    ['dry-run',false], // Read-only preview; returns before startup hooks or writes.
+    ['preview',false],
     ['intelligence-farming', false], // Dedicated, bounded fresh-reset session; disabled by default.
     ['intelligence-target', 200],
     ['intelligence-max-resets', 100],
@@ -77,6 +83,9 @@ export function autocomplete(data, args) {
  * global shared memory surviving between multiple invocations of this script.
  * @param {NS} ns **/
 export async function main(ns) {
+ if(previewRequested(ns)){
+  const options=previewOptions(ns,argsSchema);printAutomationPreview(ns,collectAutomationPreview(ns,options));return;
+ }
  registerAutomation(ns);
     if (isScriptPaused(ns, ns.getScriptName())) return;
     const persistentLog = "log.autopilot.txt";
@@ -86,6 +95,8 @@ export async function main(ns) {
 
     let achievementProfile, achievementState;
     let bnPriority;
+    const launchHistory=new Map(),launchSourceCache=new Map();
+    const trackedLaunches=new Set(moduleManifest.filter(m=>m.supervised||m.priority).map(m=>m.script));
     let options; // The options used at construction time
     let playerInGang = false, rushGang = false; // Tells us whether we're should be trying to work towards getting into a gang
     let playerInBladeburner = false; // Whether we've joined bladeburner
@@ -137,7 +148,7 @@ export async function main(ns) {
             try { if (JSON.parse(ns.read(ramReserveFile)).ownerPid === ns.pid) ns.rm(ramReserveFile, 'home'); } catch { }
         });
 
-        log(ns, "INFO: Auto-pilot engaged...", true, 'info');
+        log(ns, "INFO: Auto-pilot engaged...", false, 'info');
         // The game does not allow boolean flags to be turned "off" via command line, only on. Since this gets saved, notify the user about how they can turn it off.
         const flagsSet = ['disable-auto-destroy-bn', 'disable-bladeburner', 'disable-corporation', 'disable-wait-for-4s', 'disable-rush-gangs'].filter(f => options[f]);
         for (const flag of flagsSet)
@@ -247,7 +258,7 @@ export async function main(ns) {
         const currentConfig = ns.read(configPath);
         if ((strConfigChanges.length > 2 || currentConfig) && strConfigChanges != currentConfig) {
             await ns.write(configPath, strConfigChanges, "w");
-            log(ns, `INFO: Updated "${configPath}" to persist the most recent run args through resets: ${strConfigChanges}`, true, 'info');
+            log(ns, `INFO: Updated "${configPath}" to persist the most recent run args through resets: ${strConfigChanges}`, false, 'info');
         }
     }
 
@@ -387,7 +398,7 @@ export async function main(ns) {
             reservingMoneyForDaedalus = true; // Flag to pause all spending (set reserve.txt) until we've gotten the Daedalus invite
             if (player.money < moneyReq) { // Only liquidate stocks if we don't have enough cash lying around.
                 disableStockmasterForDaedalus = true; // Flag to keep stockmaster offline until we've gotten a daedalus invite
-                log(ns, "INFO: Temporarily liquidating stocks to earn an invite to Daedalus...", true, 'info');
+                log(ns, "INFO: Temporarily liquidating stocks to earn an invite to Daedalus...", false, 'info');
                 launchScriptHelper(ns, 'stockmaster.js', ['--liquidate']);
             } // else if we don't liquidate stocks, and our money dips below 100E9 again, we can always do it on the next loop
         } else if (resetInfo.currentNode == 8) {
@@ -509,7 +520,7 @@ export async function main(ns) {
         if(achievementGoals?.expiresAt>Date.now()&&ns.isRunning(achievementGoals.ownerPid)&&achievementGoals.nodeReset===resetInfo.lastNodeReset&&achievementGoals.minimumQueue>0) {
             const count=await getNsDataThroughFile(ns,'ns.singularity.getOwnedAugmentations(true).length-ns.singularity.getOwnedAugmentations(false).length');
             if(count<achievementGoals.minimumQueue){
-                const pid=launchScriptHelper(ns,'faction-manager.js',['--purchase']);
+                const pid=launchScriptHelper(ns,'faction-manager.js',['--purchase','--log-only']);
                 if(pid)await waitForProcessToComplete(ns,pid,true);
                 return setStatus(ns,'Red Pill queued; filling the active achievement queue requirement before installing');
             }
@@ -668,6 +679,7 @@ export async function main(ns) {
     async function killScript(ns, baseScriptName, runningScripts = null, processInfo = null) {
         processInfo = processInfo || findScriptHelper(baseScriptName, runningScripts || (await getRunningScripts(ns)))
         if (processInfo) {
+            for(const [key,record]of launchHistory)if(record.pid===processInfo.pid)launchHistory.delete(key);
             log(ns, `INFO: Killing script ${baseScriptName} with pid ${processInfo.pid} and args: [${processInfo.args.join(", ")}].`, false, 'info');
             return await getNsDataThroughFile(ns, 'ns.kill(ns.args[0])', null, [processInfo.pid]);
         }
@@ -691,6 +703,12 @@ export async function main(ns) {
             await ns.write('tasks/spending-plan.json',JSON.stringify(spendingPlan({money:player.money,reserve:Number(ns.read('reserve.txt'))||0,homeRam,node:resetInfo.currentNode,ownerPid:ns.pid,reset:resetInfo.lastAugReset,signals})), 'w');
         }
         let runningScripts = await getRunningScripts(ns); // Refresh after requested restarts.
+        launchSourceCache.clear();
+        for(const [key,record]of launchHistory){
+            if(!record.pid&&Date.now()-Math.max(record.retryAt,record.startedAt)>15*60000){launchHistory.delete(key);continue;}
+            launchHistory.set(key,{...record,...launchCooldown(record,{now:Date.now(),reset:resetInfo.lastAugReset,signature:scriptSignature(ns,record.path||getFilePath(record.script),launchSourceCache),alive:runningScripts.some(p=>p.pid===record.pid)})});
+        }
+
         const findScript = /** @param {(value: ProcessInfo, index: number, array: ProcessInfo[]) => unknown} filter @returns {ProcessInfo} */
             (baseScriptName, filter = null) => findScriptHelper(baseScriptName, runningScripts, filter);
 
@@ -838,36 +856,21 @@ export async function main(ns) {
         if(bootstrapOnly)return;
 
         // Leave RAM for absent priority managers while existing batches drain naturally.
-        const priorityManagers = [
-            { name: 'remote-api-agent.js', enabled: true },
-            { name: 'reliability-manager.js', enabled: true },
-            { name: 'contract-validation.js', enabled: homeRam >= 64 },
-            { name: 'stats.js', enabled: homeRam >= 64 },
-            { name: 'darknet-manager.js', enabled: homeRam >= 64 },
-            { name: 'grafting-manager.js', enabled: homeRam >= 64 && !!unlockedSFs[10] && !!unlockedSFs[4] },
-            { name: 'spend-hacknet-hashes.js', enabled: homeRam >= 64 && !!unlockedSFs[9] },
-            { name: 'bladeburner.js', enabled: homeRam >= 64 && !options['disable-bladeburner'] && !!(unlockedSFs[6] || unlockedSFs[7]) && bitNodeMults.BladeburnerRank !== 0 },
-            { name: 'sleeve.js', enabled: 10 in unlockedSFs },
-            { name: 'sleeve-expansion.js', enabled: resetInfo.currentNode === 10 },
-            { name: 'corporation-manager.js', enabled: corporationReady || !corporationKnown && !!findScript('corporation-manager.js') },
-            { name: 'achievement-manager.js', enabled: homeRam >= 64 && !options['disable-achievements'] && Number(unlockedSFs[4]) > 0 },
-            { name: 'soa-manager.js', enabled: homeRam >= 64 && Number(unlockedSFs[4]) > 0 },
-            { name: 'health-manager.js', enabled: homeRam >= 64 && Number(unlockedSFs[4]) > 0 },
-            { name: 'go.js', enabled: !options['disable-go'] && homeRam >= 32 },
-            { name: 'infiltration-manager.js', enabled: !options['disable-infiltration'] && homeRam >= 64 },
-            { name: 'work-for-factions.js', enabled: Number(unlockedSFs[4]) > 0 },
-        ];
+        const priorityManagers = priorityManagerPlan({homeRam,sourceFiles:unlockedSFs,node:resetInfo.currentNode,options,
+            bladeburnerRank:bitNodeMults.BladeburnerRank,corporationReady,corporationKnown,corporationRunning:!!findScript('corporation-manager.js')});
         let pending = !options['disable-achievements'] && findScript('achievement-manager.js') ? (achievementProfile?.active?8:48) : 0;
         const managerStatus = priorityManagers.map(manager => {
             const script = getFilePath(manager.name), process = findScript(manager.name);
             const ram = ns.fileExists(script, 'home') ? ns.getScriptRam(script, 'home') : 0;
+            const cooling=[...launchHistory.values()].filter(r=>r.script===manager.name&&r.retryAt>Date.now()).sort((a,b)=>b.retryAt-a.retryAt)[0];
             const state = isScriptPaused(ns, manager.name) ? 'paused' : !manager.enabled ? 'locked-or-disabled' :
-                process ? 'running' : ram <= 0 ? 'missing' : manager.name === 'work-for-factions.js' && activityBusy(ns) ? 'waiting-for-activity' : ram + pending + 16 > homeRam ? 'needs-home-ram' : 'waiting-for-ram';
+                process ? 'running' : cooling?'restart-cooldown':ram <= 0 ? 'missing' : manager.name === 'work-for-factions.js' && activityBusy(ns) ? 'waiting-for-activity' : ram + pending + 16 > homeRam ? 'needs-home-ram' : 'waiting-for-ram';
             if (state === 'waiting-for-ram' || state === 'waiting-for-activity') pending += ram;
-            return { script: manager.name, state, ram, pid: process?.pid || null };
+            return { script: manager.name, state, ram, pid: process?.pid || null,cooldownUntil:cooling?.retryAt??null }; 
         });
+        await ns.write('tasks/essential-home-ram.json',JSON.stringify({at:Date.now(),ownerPid:ns.pid,augReset:resetInfo.lastAugReset,nodeReset:resetInfo.lastNodeReset,...essentialManagerRamTarget(ns,managerStatus,runningScripts)}),'w');
         await ns.write(ramReserveFile, JSON.stringify({ ownerPid: ns.pid, expiresAt: Date.now() + 30000, ram: pending ? pending + 8 : 0 }), 'w');
-        await ns.write('tasks/automation-status.json', JSON.stringify({ at: Date.now(), ownerPid: ns.pid,
+        await ns.write('tasks/automation-status.json', JSON.stringify({ at: Date.now(), ownerPid: ns.pid,augReset:resetInfo.lastAugReset,nodeReset:resetInfo.lastNodeReset,
             bitNodePriority: bnPriority, nextAchievementNode:nextBn, achievementProfile, managers: managerStatus, processes: runningScripts.map(p => ({ script: p.filename, pid: p.pid })), priority: 'casino, completed BitNode, active graft, infiltration, faction work' }), 'w');
 
         // Maintain the Remote API mailbox after normal automation restarts.
@@ -895,7 +898,7 @@ export async function main(ns) {
             }
         }
 
-        for (const manager of ['reliability-manager.js', 'contract-validation.js', 'achievement-manager.js', 'soa-manager.js', 'health-manager.js', 'stats.js', 'darknet-manager.js', 'grafting-manager.js', 'spend-hacknet-hashes.js', 'bladeburner.js', 'go.js', 'infiltration-manager.js']) {
+        for (const manager of automaticManagerScripts) {
             const status = managerStatus.find(item => item.script === manager);
             if (status?.state === 'waiting-for-ram' && reclaimHomeRam(ns,status.ram+homeRamReserve(ns)))
                 launchScriptHelper(ns, manager);
@@ -1033,7 +1036,7 @@ export async function main(ns) {
             log(ns, `WARNING: We think it's a good idea to accept Stanek's Gift, but it appears to be too late - other augmentations have been installed. Trying Anyway...`);
         // Use the API to accept Stanek's gift
         if (await getNsDataThroughFile(ns, 'ns.stanek.acceptGift()')) {
-            log(ns, `SUCCESS: Accepted Stanek's Gift!`, true, 'success');
+            log(ns, `SUCCESS: Accepted Stanek's Gift!`, false, 'success');
             installedAugmentations.push(augStanek); // Manually add Genesis to installed augmentations so checkOnRunningScripts picks up on the change.
         } else
             log(ns, `WARNING: autopilot.js tried to accepted Stanek's Gift, but was denied.`, true, 'warning');
@@ -1182,7 +1185,7 @@ export async function main(ns) {
         if (reservedPurchase && installCountdown <= Date.now()) {
             log(ns, "INFO: Manually running faction-manager.js to ensure previously reserved purchase is still obtainable.");
             await ns.write(factionManagerOutputFile, "", "w"); // Reset the output file to ensure it isn't stale
-            const pid = launchScriptHelper(ns, 'faction-manager.js');
+            const pid = launchScriptHelper(ns, 'faction-manager.js', ['--log-only']);
             if (!pid) return setStatus(ns, 'Faction manager could not start; retaining the planned purchase and retrying.');
             await waitForProcessToComplete(ns, pid, true); // Wait for the script to shut down (and output to be generated)
         }
@@ -1192,7 +1195,7 @@ export async function main(ns) {
         if (!facman) {
             if(Date.now()>=nextFactionSummaryRefresh){
                 nextFactionSummaryRefresh=Date.now()+31000;
-                launchScriptHelper(ns,'faction-manager.js');
+                launchScriptHelper(ns,'faction-manager.js',['--log-only']);
             }
             setStatus(ns,'Waiting for a fresh faction-manager summary for this reset.');
             return reservedPurchase = 0;
@@ -1235,7 +1238,17 @@ export async function main(ns) {
 
         if(!speedObservation)try{speedObservation=JSON.parse(ns.read('tasks/speed-observation.json'));}catch{}
         const previousSnapshotAt=speedObservation?.at;
-        const speed=progressionSpeed({snapshot:facman.speedSnapshot,previous:speedObservation,augReset:resetInfo.lastAugReset,elapsed:getTimeInAug(),node:resetInfo.currentNode,firstBn9:inFirstBn9Aug,combatRecovery,nodeReset:resetInfo.lastNodeReset,combatTarget:routePlan?.development?.nextBlackOp?.name??null,routeRemainingMs:routePlan?.routes?.[routePlan.selected]?.etaMs,combat:routePlan?.selected?routePlan.selected==='bladeburner':[6,7].includes(resetInfo.currentNode),baseDelay:options['install-countdown'],homeRam,hackingGoal:routeContinuousXp(options,routePlan)||(prioritizeHackForDaedalus&&routePlan?.selected!=='bladeburner')||prioritizeHackForWd});
+        let casinoStatus,casinoEvidence;
+        try{casinoStatus=JSON.parse(ns.read('tasks/casino-status.json'));}catch{}
+        try{casinoEvidence=JSON.parse(ns.read('tasks/casino-reset-evidence.json'));}catch{}
+        casinoEvidence=observeCasinoReset(casinoEvidence,casinoStatus,resetInfo);
+        await ns.write('tasks/casino-reset-evidence.json',JSON.stringify(casinoEvidence),'w');
+        const casinoFunding=forecastCasinoReset(casinoEvidence,{reset:resetInfo,
+            enabled:!options['disable-casino'],paused:isScriptPaused(ns,'casino.js'),allowed:achievementActionAllowed(ns,'casino'),
+            seedFundable:installedAugmentations.concat(facman.affordable_augs||[],facman.awaiting_install_augs||[]).includes('CashRoot Starter Kit')||
+                !!unlockedSFs[4]&&!isScriptPaused(ns,'crime.js')&&achievementActionAllowed(ns,'crime'),
+            homeRam,casinoRam:ns.getScriptRam(getFilePath('casino.js'),'home'),status:casinoStatus,incomePerSecond:speedObservation?.cashRate||0});
+        const speed=progressionSpeed({snapshot:facman.speedSnapshot,previous:speedObservation,casinoFunding,augReset:resetInfo.lastAugReset,elapsed:getTimeInAug(),node:resetInfo.currentNode,firstBn9:inFirstBn9Aug,combatRecovery,nodeReset:resetInfo.lastNodeReset,combatTarget:routePlan?.development?.nextBlackOp?.name??null,routeRemainingMs:routePlan?.routes?.[routePlan.selected]?.etaMs,combat:routePlan?.selected?routePlan.selected==='bladeburner':[6,7].includes(resetInfo.currentNode),baseDelay:options['install-countdown'],homeRam,hackingGoal:routeContinuousXp(options,routePlan)||(prioritizeHackForDaedalus&&routePlan?.selected!=='bladeburner')||prioritizeHackForWd});
         speedObservation=speed.observation;
         if(speedObservation&&speedObservation.at!==previousSnapshotAt)await ns.write('tasks/speed-observation.json',JSON.stringify(speedObservation),'w');
         await ns.write('tasks/progression-speed.json',JSON.stringify({at:Date.now(),augReset:resetInfo.lastAugReset,...speed,observation:undefined}),'w');
@@ -1337,7 +1350,7 @@ export async function main(ns) {
                         purchaseChangeLog = purchaseChangeLog + ' Resetting the timer before we install augmentations.'
                     }
                 }
-                log(ns, purchaseChangeLog, true);
+                log(ns, purchaseChangeLog, false);
             }
             await ns.write("reserve.txt", totalCost, "w"); // Should prevent other scripts from spending this money
         }
@@ -1528,13 +1541,25 @@ export async function main(ns) {
         if (!options['no-tail-windows'])
             tail(ns); // If we're going to be launching scripts, show our tail window so that we can easily be killed if the user wants to interrupt.
         const script=convertFileName?getFilePath(baseScriptName):baseScriptName;
+        const track=trackedLaunches.has(baseScriptName.replace(/^\//,''));
+        const launchKey=launchCooldownKey(script,args);
+        const existing=launchHistory.get(launchKey);
+        const live=!!existing?.pid&&ns.isRunning(existing.pid);
+        if(live)return existing.pid;
+        const prior=track?launchCooldown(existing,{now:Date.now(),reset:resetInfo.lastAugReset,signature:scriptSignature(ns,script,launchSourceCache),alive:false}):null;
+        if(track&&existing)launchHistory.set(launchKey,{...existing,...prior});
+        if(prior?.retryAt>Date.now()){
+            log_once(ns,'INFO: '+baseScriptName+' exited repeatedly; retrying after '+new Date(prior.retryAt).toISOString(),false);return 0;
+        }
         const required=ns.getScriptRam(script,'home');
         if(!(required>0)||!reclaimHomeRam(ns,required+homeRamReserve(ns)))return 0;
         let pid, err;
         try { pid = ns.run(convertFileName ? getFilePath(baseScriptName) : baseScriptName, 1, ...args); }
         catch (e) { err = e; }
+        if(track&&launchHistory.size>=64&&!launchHistory.has(launchKey))launchHistory.delete([...launchHistory].sort((a,b)=>a[1].startedAt-b[1].startedAt)[0][0]);
+        if(track)launchHistory.set(launchKey,{...recordLaunch(prior,pid,Date.now()),script:baseScriptName.replace(/^\//,''),path:script});
         if (pid)
-            log(ns, `INFO: Launched ${baseScriptName} (pid: ${pid}) with args: [${args.join(", ")}]`, true);
+            log(ns, `INFO: Launched ${baseScriptName} (pid: ${pid}) with args: [${args.join(", ")}]`, false);
         else
             log(ns, `ERROR: Failed to launch ${baseScriptName} with args: [${args.join(", ")}]` +
                 (err ? `\nCaught: ${getErrorInfo(err)}` : ''), true, 'error');

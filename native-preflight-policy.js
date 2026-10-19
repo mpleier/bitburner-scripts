@@ -7,7 +7,10 @@ export function nativeScriptPreflight(ns,names,now=Date.now()) {
    return {script,ram:Number.isFinite(ram)?ram:null,status:Number.isFinite(ram)&&ram>0?'ready':'invalid',reason:ram>0?undefined:'Native RAM calculation failed'};
   }catch(error){return {script,status:'unavailable',ram:null,reason:String(error).slice(0,256)};}
  });
- return {schemaVersion:1,at:now,nodeReset:reset.lastNodeReset,augReset:reset.lastAugReset,check:'native-ram',ok:scripts.length>0&&scripts.every(s=>s.status==='ready'),scripts,limitations:'Read-only RAM preflight; scripts are not run and runtime API access is not verified'};
+ const sf=value=>value instanceof Map?Object.fromEntries(value):value||{};
+ const overrides=sf(reset.bitNodeOptions?.sourceFileOverrides),owned=sf(reset.ownedSF);
+ const sourceFile4=Number(4 in overrides?overrides[4]:reset.currentNode===4?Math.max(3,Number(owned[4])||0):owned[4])||0;
+ return {schemaVersion:1,sourceFile4,at:now,nodeReset:reset.lastNodeReset,augReset:reset.lastAugReset,check:'native-ram',ok:scripts.length>0&&scripts.every(s=>s.status==='ready'),scripts,limitations:'Read-only RAM preflight; scripts are not run and runtime API access is not verified'};
 }
 /** One named managed script, at most four instances and ten bounded lines per instance. */
 export function freshManagedLogs(ns,script,now=Date.now()) {

@@ -167,7 +167,7 @@ async function manageSleeveAugs(ns, i, budget, reserve, sleeve, actualTask) {
             '/Temp/sleeve-purchase.txt', [i, JSON.stringify(toPurchase.map(a => a.name)), Math.min(budget,plan.cost), reserve,ns.pid,!options['disable-adaptive-augmentations']]);
         availableAugs[i] = null;recoveryOffers=null;
         if (receipt.purchased.length) {
-            log(ns, `SUCCESS: Sleeve ${i} purchased ${receipt.purchased.length} augmentations for ${formatMoney(receipt.spent)}.`, true, 'success');
+            log(ns, `SUCCESS: Sleeve ${i} purchased ${receipt.purchased.length} augmentations for ${formatMoney(receipt.spent)}.`, false, 'success');
             [lastSleeveHp[i], lastSleeveShock[i]] = [undefined, undefined]; // Sleeve stats are reset on installation of augs, so forget saved health info
         } else {
             const reasons=[...new Set((receipt.skipped||[]).map(s=>s.reason))].join('; ')||'no augmentation purchased';
@@ -606,7 +606,7 @@ async function setSleeveTask(ns, i, designatedTask, command, args) {
         const faction = args[1]; // Hack: Not obvious, but the second argument will be the faction name in this case.
         let nextWorkIndex = (workByFaction[faction] || 0) + 1;
         if (nextWorkIndex >= works.length) {
-            log(ns, `WARN: Failed to ${strAction}. None of the ${works.length} work types appear to be supported. Will loop back and try again.`, true, 'warning');
+            log(ns, `WARN: Failed to ${strAction}. None of the ${works.length} work types appear to be supported. Will loop back and try again.`, false, 'warning');
             nextWorkIndex = 0;
         } else
             log(ns, `INFO: Failed to ${strAction} - work type may not be supported. Trying the next work type (${works[nextWorkIndex]})`);

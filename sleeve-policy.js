@@ -176,10 +176,25 @@ export function sleeveStartupPlan({sleeves=[],tasks=[],crimes={},money=0,casinoP
     const full=sleeves.map(s=>rate(s,'karma'));
     const rates=sleeves.map((s,i)=>full[i]*Math.max(0,Math.min(100,Number(s.sync)||0))/100);
     const remaining=Math.max(0,54000+karma);
+    // Very weak, shocked sleeves lose most training XP. Recover them while a productive
+    // worker keeps karma moving, unless the gang milestone is already close.
+    const conditioning=new Set(sleeves.map((s,i)=>{
+      const name=bestSleeveCrime(s,crimes,'karma',nodeMultiplier),stats=crimes[name];
+      const int=Math.max(0,Number(s.skills?.intelligence)||0);
+      const recoverySeconds=Math.max(0,Number(s.shock)||0)/(.0015*(1+.75*Math.pow(int,.8)/600));
+      const total=rates.reduce((sum,r)=>sum+r,0);
+      return s.shock>25&&sleeveCrimeChance(s,stats,nodeMultiplier)<.1&&
+        total>0&&remaining/total>recoverySeconds?i:null;
+    }).filter(i=>i!==null));
+    // Keep the best currently available worker when every sleeve needs conditioning.
+    if(conditioning.size===sleeves.length&&sleeves.length)
+      conditioning.delete(rates.indexOf(Math.max(...rates)));
+    result.conditioning=[...conditioning];
     // Enumerate at most 256 subsets for the native maximum of eight sleeves.
     // Cost = gang ETA plus mean extra recovery time caused by postponing recovery.
     const evaluate=workers=>{
       const total=workers.reduce((sum,i)=>sum+rates[i],0);
+      if(workers.some(i=>conditioning.has(i)))return {workers,eta:Infinity,score:Infinity};
       if(!(total>0))return {workers,eta:Infinity,score:Infinity};
       const eta=remaining/total;
       const debt=workers.reduce((sum,i)=>{

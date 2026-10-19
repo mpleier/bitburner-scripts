@@ -89,3 +89,44 @@ export function studyCommand(action) {
  if (action === 'stop') return 'ns.singularity.getCurrentWork()?.type === "CLASS" ? ns.singularity.stopAction() : false';
  throw new Error('Unknown study action');
 }
+
+/** Credit only observable XP work or native stamina-recovery work, never an invented cash rate.
+ * Half of the modeled time saving is credited. Unknown action/chance improvements remain unpriced. */
+export function graftProgressionValue({stats={},factor=1,duration,cost,lostIncome=0,maxPayback=14400000,
+ route,reset,cash,incomeLossPerSecond=0,now=Date.now()}={}) {
+ const no=reason=>({eligible:false,reason,payback:null,netSavedMs:0});
+ if(!route||!reset||route.nodeReset!==reset.lastNodeReset||route.augReset!==reset.lastAugReset||
+  !Number.isFinite(route.at)||route.at>now||now-route.at>45000)return no('Fresh route evidence unavailable');
+ const forecast=route.routes?.[route.selected],remaining=forecast?.lowerMs;
+ if(forecast?.actionable!==true||!Number.isFinite(remaining)||remaining<=0||
+  !Number.isFinite(forecast.upperMs)||forecast.upperMs<remaining)return no('Comparable route duration unavailable');
+ if(![duration,cost,lostIncome,maxPayback,factor,incomeLossPerSecond].every(Number.isFinite)||duration<=0||cost<0||lostIncome<0||maxPayback<=0||factor<=0||incomeLossPerSecond<0)return no('Invalid graft quote');
+ const evidence=cash?.cashObservation,samples=Array.isArray(evidence?.samples)?evidence.samples.slice(-2):[];
+ if(cash?.augReset!==reset.lastAugReset||!Number.isFinite(cash.at)||cash.at>now||now-cash.at>120000||
+  evidence?.schemaVersion!==1||evidence.augReset!==reset.lastAugReset||evidence.mode!=='sources-v1'||samples.length!==2||
+  !samples.every(s=>s&&Number.isFinite(s.at)&&s.at<=now&&now-s.at<=300000&&Number.isFinite(s.rate)&&s.rate>0)||
+  samples[0].at>=samples[1].at||now-samples[1].at>120000||!Number.isFinite(cash.cashRate)||cash.cashRate<=0)return no('Confirmed recurring cash evidence unavailable');
+ const rate=Math.min(cash.cashRate,...samples.map(s=>s.rate))-incomeLossPerSecond;
+ if(rate<=0)return no('Entropy would exhaust the measured cash replacement rate');
+ const mult=key=>{
+  const value=stats[key]??1;return Number.isFinite(value)&&value>0?value*factor:NaN;
+ };
+ let saved=0,basis;
+ if(route.selected==='hacking'){
+  if(forecast.phase!=='xp'||!Number.isFinite(forecast.xpRate)||forecast.xpRate<=0)return no('Dedicated hacking XP forecast unavailable');
+  if(!['hacking','hacking_chance','hacking_speed','hacking_grow'].every(key=>mult(key)>=1))return no('Entropy would weaken hacking capability');
+  const xp=mult('hacking_exp');
+  if(!(xp>1))return no('No priced XP improvement');
+  saved=remaining*(1-1/xp)*.5;basis='measured-xp-half-credit';
+ }else if(route.selected==='bladeburner'){
+  if(!['hacking','strength','defense','dexterity','agility','charisma','bladeburner_success_chance','bladeburner_max_stamina','bladeburner_analysis'].every(key=>mult(key)>=1))return no('Entropy would weaken known Bladeburner capability');
+  const regen=forecast.staminaRecovery?.regen,hrc=forecast.staminaRecovery?.hrc,gain=mult('bladeburner_stamina_gain');
+  if(forecast.recoveryModel!=='amortized-native'||![regen,hrc,forecast.recoveryMs].every(Number.isFinite)||regen<=0||hrc<0||forecast.recoveryMs<=0||!(gain>1))return no('No priced native stamina recovery improvement');
+  saved=Math.min(remaining,forecast.recoveryMs)*(1-(regen+hrc)/(regen*gain+hrc))*.5;basis='native-stamina-half-credit';
+ }else return no('Unknown progression route');
+ const cashRebuildMs=(cost+lostIncome)/rate*1000,overhead=duration+cashRebuildMs;
+ const payback=saved>0?overhead/(saved/remaining):Infinity,netSavedMs=saved-overhead;
+ return {eligible:Number.isFinite(payback)&&payback<=Math.min(maxPayback,remaining*.75)&&netSavedMs>=Math.max(60000,remaining*.05),
+  reason:'Discounted route saving after graft time and cash replacement',basis,payback:Number.isFinite(payback)?payback:null,
+  netSavedMs,savedMs:saved,overheadMs:overhead,cashRebuildMs,remainingMs:remaining};
+}

@@ -402,3 +402,39 @@ export function stabilizeAugmentationIncome({snapshot,baseline,previous,augReset
  if(!samples.length||samples.at(-1).at<now)samples=[...samples,{at:now,rate:raw,factionRate:factionRaw}].slice(-5);
  return result(sourced?(samples.length<2?'Waiting for confirmed recurring income':'Stable recurring income'):'Smoothed legacy net-worth fallback');
 }
+
+/** A stock upgrade can postpone an otherwise approved install only for a short, funded window.
+ * History survives reloads; changed prices, routes or income cannot extend an existing deadline. */
+export function augmentationFourSigmaWait({route,reset,now=Date.now(),worth,cost,threshold=.9,
+ stock,stockPid,income,window=null,paybackMs=null,remainingMs=null}={}) {
+ const no=reason=>({wait:false,reason,window});
+ if(route!=='hacking')return no('The selected route does not need a 4S installation delay');
+ if(!reset||![reset.lastNodeReset,reset.lastAugReset,now].every(Number.isFinite)||now<reset.lastAugReset)return no('Reset timing unavailable');
+ if(!Number.isFinite(worth)||worth<0||!Number.isFinite(cost)||cost<=0||!Number.isFinite(threshold)||threshold<0||threshold>1)return no('4S quote unavailable');
+ if(worth/cost<threshold)return no('Below the configured 4S proximity threshold');
+ if(!Number.isSafeInteger(stockPid)||stockPid<=0||stock?.pid!==stockPid||stock.nodeReset!==reset.lastNodeReset||stock.augReset!==reset.lastAugReset||
+  !Number.isFinite(stock.at)||stock.at>now||now-stock.at>60000||stock.fourSigmaFunding?.enabled!==true)return no('No live enabled stock controller quote');
+ const fraction=stock.fourSigmaFunding.budgetFraction,reserve=stock.reserve;
+ if(!Number.isFinite(fraction)||fraction<=0||fraction>1||!Number.isFinite(reserve)||reserve<0)return no('Stock purchase budget cannot fund 4S');
+ const target=(cost+reserve)/fraction;
+ if(!Number.isFinite(target))return no('Stock funding target unavailable');
+ const gap=Math.max(0,target-worth);
+ let rate=0;
+ const evidence=income?.cashObservation,samples=Array.isArray(evidence?.samples)?evidence.samples.slice(-2):[];
+ if(income?.augReset===reset.lastAugReset&&Number.isFinite(income.at)&&income.at<=now&&now-income.at<=120000&&
+  evidence?.schemaVersion===1&&evidence.augReset===reset.lastAugReset&&evidence.mode==='sources-v1'&&samples.length===2&&
+  samples.every(s=>s&&Number.isFinite(s.at)&&s.at<=now&&now-s.at<=300000&&Number.isFinite(s.rate)&&s.rate>=0)&&samples[0].at<samples[1].at&&
+  now-samples[1].at<=120000&&Number.isFinite(income.cashRate)&&income.cashRate>0)
+  rate=Math.min(income.cashRate,...samples.map(s=>s.rate));
+ const etaMs=gap===0?0:rate>0?gap/rate*1000:Infinity;
+ const limit=Math.min(15*minute,Number.isFinite(paybackMs)?Math.max(0,paybackMs)*.25:15*minute,
+  Number.isFinite(remainingMs)&&remainingMs>=0?remainingMs*.1:15*minute);
+ if(!Number.isFinite(etaMs)||etaMs>limit||limit<=0)return no('4S funding would delay a useful install too long');
+ const same=window?.schemaVersion===1&&window.nodeReset===reset.lastNodeReset&&window.augReset===reset.lastAugReset;
+ if(same&&(!Number.isFinite(window.startedAt)||window.startedAt<reset.lastAugReset||window.startedAt>now||!Number.isFinite(window.expiresAt)||
+  window.expiresAt<=window.startedAt||window.expiresAt-window.startedAt>15*minute))return no('Invalid saved 4S deadline; proceeding with install');
+ const next=same?window:{schemaVersion:1,nodeReset:reset.lastNodeReset,augReset:reset.lastAugReset,startedAt:now,expiresAt:now+limit};
+ const deadline=Math.min(next.expiresAt,next.startedAt+limit);
+ if(now>=deadline||now+etaMs>deadline)return {wait:false,reason:'The bounded 4S wait has expired or cannot fund in time',window:{...next,expiresAt:deadline}};
+ return {wait:true,reason:'4S funding is near enough to wait briefly',window:{...next,expiresAt:deadline},etaMs,target,deadline};
+}

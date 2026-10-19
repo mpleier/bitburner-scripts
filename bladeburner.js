@@ -39,7 +39,7 @@ let resetInfo = (/**@returns{ResetInfo}*/() => undefined)(); // Information abou
 let options,teamBudget,teamLastTick,lastAssignedCount,ownsRecruitment=false;
 let interruptionWarnings=new Map();
 let rankSamples=[];
-let levelPlanCache=null,actionProgress=null;
+let levelPlanCache=null,actionProgress=null,lastStartDeferral=null;
 const teamStatusFile='tasks/bladeburner-team.json';
 
 const argsSchema = [
@@ -75,7 +75,7 @@ export async function main(ns) {
     const runOptions = getConfiguration(ns, argsSchema);
     if (!runOptions || await instanceCount(ns) > 1) return; // Prevent multiple instances of this script from being started, even with different args.
     const invalid=optionsError(runOptions);if(invalid)return log(ns,'ERROR: '+invalid,true,'error');
-    ownsRecruitment=false;levelPlanCache=null;actionProgress=null;nextHashWorkerCheck=0;hashWorkerStatus='';
+    ownsRecruitment=false;lastStartDeferral=null;levelPlanCache=null;actionProgress=null;nextHashWorkerCheck=0;hashWorkerStatus='';
     options = runOptions; // We don't set the global "options" until we're sure this is the only running instance
     disableLogs(ns, ['sleep'])
     player = await getNsDataThroughFile(ns, 'ns.getPlayer()');
@@ -479,19 +479,34 @@ async function mainLoop(ns) {
     // Change actions if we're not currently doing the desired action
     const bestActionType = nextBlackOp == bestActionName ? "Black Operations" : contractNames.includes(bestActionName) ? "Contracts" :
         operationNames.includes(bestActionName) ? "Operations" : "General";
-    const success = await getNsDataThroughFile(ns, `(${startBladeburnerPlannedAction.toString()})(ns.bladeburner,ns.args[0],ns.args[1],JSON.parse(ns.args[6]),ns.args[3],ns.args[2],ns.args[4],()=>ns.isRunning(ns.args[5])&&(${bbMutationGuard})&&(()=>{const plan=JSON.parse(ns.args[6]);if(ns.args[0]!=="Operations"||!plan?.team)return true;try{const support=Array.from({length:ns.sleeve.getNumSleeves()},(_,i)=>ns.sleeve.getTask(i)).filter(t=>t?.type==="SUPPORT").length;return plan.team<=Math.max(0,ns.bladeburner.getTeamSize()-support-ns.args[4]);}catch{return false;}})()&&(${bladeburnerWorkAllowed.toString()})({getCurrentWork:()=>ns.singularity.getCurrentWork(),getOwnedAugmentations:q=>ns.singularity.getOwnedAugmentations(q)},ns.args[7]),(${bladeburnerStaminaChance.toString()}),JSON.parse(ns.args[8]))`,'/Temp/bladeburner-start-action.txt',[bestActionType,bestActionName,blackOpsRanks[bestActionName]||0,options['success-threshold'],Number.isInteger(teamPlan.required)?teamPlan.required:bestActionType==='Operations'?options['team-cap']:0,ns.pid,JSON.stringify(levelPlans[bestActionName]||null),options['ignore-busy-status'],JSON.stringify({...bladeburnerDifficulty,...Object.fromEntries(Object.entries(blackOpMetadata).map(([name,data])=>[name,{base:data.baseDifficulty,factor:1}]))})]);
-    const expectedDuration = await getBBInfo(ns, `getActionTime(ns.args[0], ns.args[1])`, bestActionType, bestActionName);
-    log(ns, (success ? `INFO: Switched to Bladeburner ${bestActionType} "${bestActionName}" (${reason}${levelPlans[bestActionName]?', level '+levelPlans[bestActionName].level:''}). ETA: ${formatDuration(expectedDuration)}` :
-        `ERROR: Failed to switch to Bladeburner ${bestActionType} "${bestActionName}" (Count: ${getCount(bestActionName)}, ` +
-        `ETA: ${formatDuration(expectedDuration)}, Details: ${reason})`),
-        !success, success ? (options['toast-operations'] ? 'info' : undefined) : 'error');
-    // Ensure we perform this new action at least once before interrupting it
-    lastAssignedTask = success ? bestActionName : null;
-    lastAssignedCount = success ? getCount(bestActionName) : null;
+    const startResult = await getNsDataThroughFile(ns, `(()=>{let reason=null;const success=(${startBladeburnerPlannedAction.toString()})(ns.bladeburner,ns.args[0],ns.args[1],JSON.parse(ns.args[6]),ns.args[3],ns.args[2],ns.args[4],()=>ns.isRunning(ns.args[5])&&(${bbMutationGuard})&&(()=>{const plan=JSON.parse(ns.args[6]);if(ns.args[0]!=="Operations"||!plan?.team)return true;try{const support=Array.from({length:ns.sleeve.getNumSleeves()},(_,i)=>ns.sleeve.getTask(i)).filter(t=>t?.type==="SUPPORT").length;return plan.team<=Math.max(0,ns.bladeburner.getTeamSize()-support-ns.args[4]);}catch{return false;}})()&&(${bladeburnerWorkAllowed.toString()})({getCurrentWork:()=>ns.singularity.getCurrentWork(),getOwnedAugmentations:q=>ns.singularity.getOwnedAugmentations(q)},ns.args[7]),(${bladeburnerStaminaChance.toString()}),JSON.parse(ns.args[8]),value=>{reason=value;});return {success,reason};})()`,'/Temp/bladeburner-start-action.txt',[bestActionType,bestActionName,blackOpsRanks[bestActionName]||0,options['success-threshold'],Number.isInteger(teamPlan.required)?teamPlan.required:bestActionType==='Operations'?options['team-cap']:0,ns.pid,JSON.stringify(levelPlans[bestActionName]||null),options['ignore-busy-status'],JSON.stringify({...bladeburnerDifficulty,...Object.fromEntries(Object.entries(blackOpMetadata).map(([name,data])=>[name,{base:data.baseDifficulty,factor:1}]))})]);
+    const success=startResult===true||startResult?.success===true;
+    if(!success){
+        const reason=startResult?.reason||'rejected-by-game';
+        const key=bestActionType+':'+bestActionName+':'+reason,now=Date.now();
+        if(lastStartDeferral?.key!==key||now-lastStartDeferral.at>=30000){
+            log(ns,(reason==='rejected-by-game'?'WARNING: ':'INFO: ')+`Bladeburner ${bestActionType} "${bestActionName}" deferred: ${reason}.`,false);
+            lastStartDeferral={key,at:now};
+        }
+        await ns.write(teamStatusFile,JSON.stringify({at:now,pid:ns.pid,...teamBudget,...teamPlan,target:nextBlackOp,
+            budgetMinutes:options['recruitment-budget-minutes'],recruiting:currentAction?.name==='Recruitment',
+            lastStart:{at:now,action:bestActionName,type:bestActionType,success:false,reason}}),'w');
+        // A denied switch restores native level/team settings. Keep tracking the action already in progress.
+        return;
+    }
+    const expectedDuration=await getBBInfo(ns,'getActionTime(ns.args[0], ns.args[1])',bestActionType,bestActionName);
+    log(ns,`INFO: Switched to Bladeburner ${bestActionType} "${bestActionName}" (${reason}${levelPlans[bestActionName]?', level '+levelPlans[bestActionName].level:''}). ETA: ${formatDuration(expectedDuration)}`,
+        false,options['toast-operations']?'info':undefined);
+    lastStartDeferral=null;
+    lastAssignedTask=bestActionName;
+    lastAssignedCount=getCount(bestActionName);
     actionProgress=null;
-    if(success)ownsRecruitment=bestActionName==='Recruitment';
-    if(success)await ns.write(teamStatusFile,JSON.stringify({at:Date.now(),pid:ns.pid,...teamBudget,...teamPlan,target:nextBlackOp,budgetMinutes:options['recruitment-budget-minutes'],recruiting:bestActionName==='Recruitment',reason:recruitmentDecision.reason,expectedRecruitmentMs:recruitmentDecision.expectedMs}),'w');
-    currentTaskEndTime = !success ? 0 : Date.now() + expectedDuration + 10; // Pad this a little to ensure we don't interrupt it.
+    ownsRecruitment=bestActionName==='Recruitment';
+    await ns.write(teamStatusFile,JSON.stringify({at:Date.now(),pid:ns.pid,...teamBudget,...teamPlan,target:nextBlackOp,
+        budgetMinutes:options['recruitment-budget-minutes'],recruiting:ownsRecruitment,reason:recruitmentDecision.reason,
+        expectedRecruitmentMs:recruitmentDecision.expectedMs,lastStart:{at:Date.now(),action:bestActionName,type:bestActionType,success:true,reason:'started'}}),'w');
+    currentTaskEndTime=Date.now()+expectedDuration+10;
+
 }
 
 /** @param {NS} ns

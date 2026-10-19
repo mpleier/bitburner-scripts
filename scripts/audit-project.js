@@ -1,3 +1,4 @@
+import {auditBindings} from './audit-bindings.js';
 import {readdir,readFile} from 'node:fs/promises';
 import {join,relative} from 'node:path';
 import {auditImports,auditApis,auditDynamicRam,apiReferences,estimateRam} from './audit-core.js';
@@ -9,6 +10,7 @@ if(process.argv[1]?.replaceAll('\\','/').endsWith('/audit-project.js')){
  const files=await projectSources(),surface=JSON.parse(await readFile(new URL('./api-surface.json',import.meta.url),'utf8'));
  let compatibility={};try{compatibility=JSON.parse(await readFile(new URL('./api-compatibility.json',import.meta.url),'utf8'));}catch{}
  const mode=process.argv[2]||'all',results=[];
+ if(['all','bindings'].includes(mode))results.push(auditBindings(files));
  if(['all','imports'].includes(mode))results.push(auditImports(files));
  if(['all','api'].includes(mode))results.push(auditApis(files,surface,compatibility));
  if(['all','ram'].includes(mode))results.push(auditDynamicRam(files,surface));

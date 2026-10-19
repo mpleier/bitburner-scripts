@@ -1347,7 +1347,7 @@ export async function main(ns) {
         for (const [x, y] of moves) {
             for (const pattern of def)
                 if (isPattern(x, y, pattern)) {
-                    const msg = sprintf("Def Pattern: %s\n%s\n%s", pattern.length, pattern.join("\n"), "---------------")
+                    const msg = `Def Pattern: ${pattern.length}\n${pattern.join("\n")}\n---------------`
                     return {
                         coords: [x, y],
                         msg: msg
@@ -1367,7 +1367,7 @@ export async function main(ns) {
         for (const [x, y] of moves) {
             for (const pattern of disrupt)
                 if (isPattern(x, y, pattern)) {
-                    const msg = sprintf("Eye Disruption: %s\n%s\n%s", pattern.length, pattern.join("\n"), "---------------")
+                    const msg = `Eye Disruption: ${pattern.length}\n${pattern.join("\n")}\n---------------`
                     return {
                         coords: [x, y],
                         msg: msg

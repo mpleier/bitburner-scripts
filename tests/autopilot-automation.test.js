@@ -61,5 +61,5 @@ test('autopilot defaults to installing Simulacrum through the guarded reset path
  const source=await readFile(new URL('../autopilot.js',import.meta.url),'utf8');
  assert.ok(source.includes(`['install-for-augs', ["The Red Pill", "The Blade's Simulacrum"]]`));
  assert.ok(source.includes("priorityAugmentationReady(options['install-for-augs'], facman)"));
- assert.ok(source.includes('await shouldDelayInstall(ns, player, facman)'));
+ assert.ok(source.includes('await shouldDelayInstall(ns, player, facman, speed)'));
 });

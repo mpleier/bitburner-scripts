@@ -85,13 +85,13 @@ test('v3 time formatter uses the current API',()=>{
 
 function installer({files=['a.js'],failed=[],subfolder='',stale=false,args={}}={}){
  const store=new Map(stale?[['git-pull.js','old installer']]:[]),downloads=[],messages=[],runs=[];
- const ns={flags:s=>({...Object.fromEntries(s),download:files,subfolder,...args}),getScriptName:()=> 'git-pull.js',pid:7,
-  print:m=>messages.push(m),tprint:m=>messages.push(m),wget:async(url,file)=>{downloads.push({url,file});if(failed.includes(file))return false;store.set(file,"export const value=1;\n");return true;},
-  read:f=>store.get(f)||'',write:(f,s)=>store.set(f,s),run:(...a)=>{runs.push(a);return 1;},ls:()=>[]};
+ const ns={flags:s=>({...Object.fromEntries(s),download:files,subfolder,branch:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",...args}),getScriptName:()=> 'git-pull.js',pid:7,
+  print:m=>messages.push(m),tprint:m=>messages.push(m),wget:async(url,file)=>{downloads.push({url,file});if(failed.some(name=>file.endsWith('/'+name)))return false;store.set(file,"export const value=1;\n");return true;},
+  fileExists:f=>store.has(f),rm:f=>store.delete(f),read:f=>store.get(f)||'',write:(f,s)=>store.set(f,s),run:(...a)=>{runs.push(a);return 1;},ls:()=>[]};
  return {ns,store,downloads,messages,runs};
 }
 test('installer successfully updates nested files and forwards ref/subfolder settings',async()=>{
- const f=installer({files:['Tasks/a.js','helpers.js'],subfolder:'folder',args:{branch:'feature/test'}});await gitPull(f.ns);assert.equal(f.downloads.length,2);assert.ok(f.downloads.every(d=>d.url.includes('/feature/test/')));assert.deepEqual(f.runs,[['folder/cleanup.js']]);
+ const f=installer({files:['Tasks/a.js','helpers.js'],subfolder:'folder',args:{branch:'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'}});await gitPull(f.ns);assert.equal(f.downloads.length,2);assert.ok(f.downloads.every(d=>d.url.includes('/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/')));assert.deepEqual(f.runs,[['folder/cleanup.js']]);
 });
 test('partial downloads report incomplete results and do not run cleanup',async()=>{
  const f=installer({files:['a.js','b.js'],failed:['b.js']});await gitPull(f.ns);assert.equal(f.runs.length,0);assert.ok(f.messages.some(m=>m.includes('Pull incomplete: 1/2')));assert.ok(!f.messages.some(m=>m.includes('Pull complete.')));

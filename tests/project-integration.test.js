@@ -29,14 +29,14 @@ test('idle cleanup removes only the actual Temp directory',async()=>{
 test('git-pull filters tooling, deduplicates files and rewrites imports safely',async()=>{
  const old=globalThis.fetch,requests=[],downloads=[],files=new Map();
  globalThis.fetch=async url=>{requests.push(url);return {ok:true,json:async()=>url.includes('/contents/Tasks?')?[{type:'file',path:'Tasks/a.js'}]:[{type:'dir',path:'tests'},{type:'dir',path:'scripts'},{type:'dir',path:'Tasks'},{type:'file',path:'helpers.js'}]};};
- try{await gitPull({flags:s=>({...Object.fromEntries(s),subfolder:"folder'quoted",'new-file':['helpers.js']}),getScriptName:()=> 'git-pull.js',print(){},tprint(){},wget:async(url,file)=>{downloads.push(file);files.set(file,"const subfolder = '';\nimport { x } from './other.js';");return true;},read:f=>files.get(f)||'',write:(f,s)=>files.set(f,s),run:()=>0});}
+ try{await gitPull({flags:s=>({...Object.fromEntries(s),branch:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",subfolder:"folder'quoted",'new-file':['helpers.js']}),getScriptName:()=> 'git-pull.js',print(){},tprint(){},wget:async(url,file)=>{downloads.push(file);files.set(file,"const subfolder = '';\nimport { x } from './other.js';");return true;},fileExists:f=>files.has(f),rm:f=>files.delete(f),read:f=>files.get(f)||'',write:(f,s)=>files.set(f,s),run:()=>0});}
  finally{globalThis.fetch=old;}
  assert.equal(requests.length,2);assert.equal(downloads.length,2);assert.ok(downloads.every(f=>!f.startsWith('/')));
  const source=files.get("folder'quoted/helpers.js");assert.doesNotThrow(()=>new Function(source.replace(/^import.*$/m,'')));assert.ok(source.includes(`from "folder'quoted/other.js"`));
 });
 test('GitHub listing failures keep local config and tooling files out of fallback downloads',async()=>{
  const old=globalThis.fetch,files=[];globalThis.fetch=async()=>({ok:false,status:429});
- try{await gitPull({flags:s=>Object.fromEntries(s),getScriptName:()=> 'git-pull.js',print(){},tprint(){},ls:()=>['main.js','main.js.config.txt','Temp/a.js','tests/a.js','scripts/a.js','Tasks/a.js'],wget:async(url,file)=>{files.push(file);return false;},run:()=>0});}finally{globalThis.fetch=old;}
+ try{await gitPull({flags:s=>({...Object.fromEntries(s),branch:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}),getScriptName:()=> 'git-pull.js',print(){},tprint(){},ls:()=>['main.js','main.js.config.txt','Temp/a.js','tests/a.js','scripts/a.js','Tasks/a.js'],wget:async(url,file)=>{files.push(new URL(url).pathname.split('/').slice(4).join('/'));return false;},run:()=>0});}finally{globalThis.fetch=old;}
  assert.deepEqual(files,['main.js','Tasks/a.js']);
 });
 test('malformed same-epoch spending counters recover without dropping cash limits',()=>{

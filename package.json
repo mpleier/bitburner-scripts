@@ -10,7 +10,8 @@
     "check:imports": "node scripts/audit-project.js imports",
     "check:api": "node scripts/audit-project.js api",
     "check:ram": "node scripts/audit-project.js ram",
-    "audit:surface": "node scripts/generate-api-surface.js"
+    "audit:surface": "node scripts/generate-api-surface.js",
+    "check:bindings": "node scripts/audit-project.js bindings"
   },
   "devDependencies": {
     "typescript": "5.7.2"

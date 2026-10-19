@@ -103,7 +103,7 @@ test('ordinary command names remain compatible and distinct complex commands sta
 });
 test('Bladeburner action starts use a stable explicit native result path',async()=>{
  const source=await readFile(new URL('../bladeburner.js',import.meta.url),'utf8');
- const call=source.match(/const success = await getNsDataThroughFile\(ns,([\s\S]*?)\n    const expectedDuration/);
+ const call=source.match(/const startResult = await getNsDataThroughFile\(ns,([\s\S]*?)\n    const success=/);
  assert.ok(call,'guarded action start call exists');
  assert.match(call[1],/`,\s*'\/Temp\/bladeburner-start-action.txt'/);
 });

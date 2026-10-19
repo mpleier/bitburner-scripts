@@ -203,36 +203,39 @@ export function planBladeburnerLevels(api,actions,threshold,rate,allowed,recover
 }
 
 /** Commit a selected level only at action start, restoring settings if the start fails. */
-export function startBladeburnerPlannedAction(api,type,name,plan,threshold,rankRequired,teamRequired,allowed,forecast=null,difficulty=null) {
- if(!allowed())return false;
+export function startBladeburnerPlannedAction(api,type,name,plan,threshold,rankRequired,teamRequired,allowed,forecast=null,difficulty=null,report=null) {
+ const deny=reason=>{if(report)report(reason);return false;};
+ if(!allowed())return deny('protected-work');
  let previous,restore=false;
  try {
   if(plan&&['Contracts','Operations'].includes(type)) {
-   if(!Number.isSafeInteger(plan.level)||plan.level<1||plan.level>api.getActionMaxLevel(type,name))return false;
+   if(!Number.isSafeInteger(plan.level)||plan.level<1||plan.level>api.getActionMaxLevel(type,name))return deny('invalid-level');
    previous={level:api.getActionCurrentLevel(type,name),auto:api.getActionAutolevel(type,name),team:type==='Operations'&&plan.team!==undefined?api.getTeamSize(type,name):null};restore=true;
    if(type==='Operations'&&plan.team!==undefined){
-    if(!Number.isInteger(plan.team)||plan.team<0||plan.team>Math.max(0,api.getTeamSize()-teamRequired))return false;
-    if(api.setTeamSize(type,name,plan.team)!==plan.team)return false;
+    if(!Number.isInteger(plan.team)||plan.team<0||plan.team>Math.max(0,api.getTeamSize()-teamRequired))return deny('team-reserved');
+    if(api.setTeamSize(type,name,plan.team)!==plan.team)return deny('team-assignment-changed');
    }
    api.setActionAutolevel(type,name,false);api.setActionLevel(type,name,plan.level);
    const chance=api.getActionEstimatedSuccessChance(type,name);
-   if(!Array.isArray(chance)||!Number.isFinite(chance[0])||chance[0]<threshold)return false;
+   if(!Array.isArray(chance)||!Number.isFinite(chance[0])||chance[0]<threshold)return deny('chance-changed');
   }
   if(type==='Black Operations') {
    const chance=api.getActionEstimatedSuccessChance(type,name);
-   if(api.getRank()<rankRequired||!Array.isArray(chance)||!Number.isFinite(chance[0])||chance[0]<threshold)return false;
+   if(api.getRank()<rankRequired)return deny('rank-not-ready');
+   if(!Array.isArray(chance)||!Number.isFinite(chance[0])||chance[0]<threshold)return deny('chance-changed');
   }
   if(forecast&&['Contracts','Operations','Black Operations'].includes(type)){
    const data=difficulty?.[name];
-   if(!data||![data.base,data.factor].every(Number.isFinite)||data.base<=0||data.factor<1)return false;
+   if(!data||![data.base,data.factor].every(Number.isFinite)||data.base<=0||data.factor<1)return deny('stamina-forecast-unavailable');
    const level=type==='Black Operations'?1:api.getActionCurrentLevel(type,name);
    const projected=forecast(api.getActionEstimatedSuccessChance(type,name),api.getStamina(),data.base*Math.pow(data.factor,level-1));
-   if(!projected||projected[0]<threshold)return false;
+   if(!projected||projected[0]<threshold)return deny('stamina-changed');
   }
-  if(name==='Recruitment'&&api.getTeamSize()>=teamRequired)return false;
-  if(!allowed())return false;
+  if(name==='Recruitment'&&api.getTeamSize()>=teamRequired)return deny('team-target-met');
+  if(!allowed())return deny('protected-work');
   const success=!!api.startAction(type,name);
   if(success)restore=false;
+  if(report)report(success?'started':'rejected-by-game');
   return success;
  } finally {
   if(restore){try{api.setActionLevel(type,name,previous.level);}finally{try{api.setActionAutolevel(type,name,previous.auto);}finally{if(previous.team!==null)api.setTeamSize(type,name,Math.min(previous.team,api.getTeamSize()));}}}

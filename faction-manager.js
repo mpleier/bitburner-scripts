@@ -1,7 +1,7 @@
 import {augmentationCashReserve} from './spending-policy.js';
 import {ensureFactionJoinPlan} from './faction-joining.js';
 import {readNodeRoutePlan} from './node-route-policy.js';
-import { factionTerminalOutput,chooseNeuroFluxFaction,augmentationDonationTopUp,augmentationPrerequisiteChain,selectAugmentationBasketDrop,optimizeAugmentationOrder,futureAugmentationBasketCost,pruneAugmentationPrerequisites,neuroFluxLevels,augmentationCountCandidates,selectGangAugmentationGoal,factionJoinAllowed,rankFactionInvites,gangHostPreferences,factionForcedJoins, factionControlAllowed, factionPurchaseBatch } from './faction-policy.js';
+import { augmentationStatFilters,factionTerminalOutput,chooseNeuroFluxFaction,augmentationDonationTopUp,augmentationPrerequisiteChain,selectAugmentationBasketDrop,optimizeAugmentationOrder,futureAugmentationBasketCost,pruneAugmentationPrerequisites,neuroFluxLevels,augmentationCountCandidates,selectGangAugmentationGoal,factionJoinAllowed,rankFactionInvites,gangHostPreferences,factionForcedJoins, factionControlAllowed, factionPurchaseBatch } from './faction-policy.js';
 import { isScriptPaused } from './automation-control.js';
 import { achievementActionAllowed } from './achievement-policy.js';
 import {
@@ -147,6 +147,9 @@ export async function main(ns) {
 
     log(ns, `Player has sf11Level ${sf11Level}, so the multiplier after each aug purchased is ${augCountMult}.`);
 
+    // Count planning and all augmentation quotes must use this node's native multipliers.
+    bitNodeMults = await tryGetBitNodeMultipliers(ns);
+
     // Collect information about the player
     const gangInfo = await getGangInfo(ns);
     gangFaction = gangInfo ? gangInfo.faction : null;
@@ -168,17 +171,8 @@ export async function main(ns) {
     // Clear "priority" / "desired" lists of any augs we already own
     priorityAugs = priorityAugs.filter(name => !simulatedOwnedAugmentations.includes(name));
     desiredAugs = desiredAugs.filter(name => !simulatedOwnedAugmentations.includes(name));
-    // Determine the set of desired augmentation stats. If not specified by the user, it's based on our situation
-    desiredStatsFilters = options['stat-desired'];
-    if ((desiredStatsFilters?.length ?? 0) == 0) { // If the user does has not specified stats or augmentations to prioritize, use sane defaults
-        // There are some situations where we will accept any augmentation whatsoever...
-        const willTakeAnyAug = (ownedAugmentations.length > 40) || // Once we have more than N augs, switch to buying up anything and everything
-            (bitNode == 6 || bitNode == 7 || playerData.factions.includes("Bladeburners")) || // If doing bladeburners, combat augs matter too, so just get everything
-            ((Date.now() - resetInfo.lastAugReset) < 20 * 60 * 1000); // If we've been in the bitnode for less than 20 minutes, autopilot is configured to "quick-install", any aug is worthwhile in this time window 
-        desiredStatsFilters = willTakeAnyAug ? ['*'] : // Take any aug if one of the above criteria is met
-            bitNode == 8 ? ['hacking_level', 'hacking_exp'] : // In BN8, we only want to install if we will be boosting our hack level (to unlock Daedalus). We don't need rep as much, since it can be purchased immediately.
-                ['hacking', 'faction_rep', 'company_rep', 'charisma', 'hacknet', 'crime_money']; // Otherwise get hacking + rep boosting, etc. for unlocking augs more quickly
-    }
+    const augmentationRoute=readNodeRoutePlan(ns)?.selected||([6,7].includes(bitNode)||playerData.factions.includes('Bladeburners')?'bladeburner':'hacking');
+    desiredStatsFilters=augmentationStatFilters({route:augmentationRoute,node:bitNode,explicit:options['stat-desired']});
     log(ns, 'Desired stats filter: ' + JSON.stringify(desiredStatsFilters));
 
     // Prepare global data sets of faction and augmentation information
@@ -187,7 +181,7 @@ export async function main(ns) {
     log(ns, 'Getting all augmentation data...');
     await updateAugmentationData(ns);
 
-    if(!options['disable-count-building']&&!options['stat-desired'].length&&!playerData.factions.includes('Daedalus')){
+    if(augmentationRoute!=='bladeburner'&&!options['disable-count-building']&&!options['stat-desired'].length&&!playerData.factions.includes('Daedalus')){
         const needed=bitNodeMults.DaedalusAugsRequirement||30;
         const candidates=Object.values(augmentationData).filter(a=>!omitAugs.includes(a.name)).map(a=>({name:a.name,price:a.price,rep:a.reputation,
             prereqs:a.prereqs,available:a.joinedFactionsWithAug().length>0}));
@@ -211,9 +205,6 @@ export async function main(ns) {
     if (hideSummaryStats.length == 0) hideSummaryStats = default_hidden_stats;
     const sort = unshorten(options.sort || desiredStatsFilters[0]);
     displayFactionSummary(ns, sort, options.u || options.unique, afterFactions, hideSummaryStats);
-
-    // Determine the current bitnode multipliers
-    bitNodeMults = await tryGetBitNodeMultipliers(ns);
 
     // Create the table of all augmentations, and the breakdown of what we can afford
     const redPill=readNodeRoutePlan(ns)?.redPill;

@@ -115,7 +115,7 @@ export function estimateBladeburnerRoute(bb, threshold=.99) {
     // Native bonus time is consumed at up to 5x speed. Allow recovery, chaos and recruitment overhead.
     const wall=duration=>Math.max(duration/5,duration-Math.max(0,bb.bonusTime||0));
     return {etaMs:wall(work/.75),lowerMs:wall(work),upperMs:wall(work/.5),actionable:true,
-        reason:'Current safe actions, finite supply and ordered BlackOps; '+(recoveryKnown?'native recovery costs plus chaos/recruitment allowance':'recovery unknown; 50–100% active duty range'),recoveryMs:recoveryKnown?recoveryWork:null,recoveryModel:recoveryKnown?'amortized-native':'duty-range',next:bb.ops[0]?.name};
+        reason:'Current safe actions, finite supply and ordered BlackOps; '+(recoveryKnown?'native recovery costs plus chaos/recruitment allowance':'recovery unknown; 50–100% active duty range'),recoveryMs:recoveryKnown?recoveryWork:null,recoveryModel:recoveryKnown?'amortized-native':'duty-range',staminaRecovery:recoveryKnown?{regen:bb.recovery.regen,hrc:bb.recovery.hrc}:null,next:bb.ops[0]?.name};
 }
 
 /** Require a 25% advantage across estimate ranges for two minutes before a priority switch. */

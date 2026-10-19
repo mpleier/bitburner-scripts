@@ -1,10 +1,11 @@
+import {readNodeRoutePlan} from './node-route-policy.js';
 import {graftResetBlocked} from './progression-improvements-policy.js';
 import {registerAutomation,automationHeartbeat,maintenanceRequested} from './runtime-policy.js';
 import { claimSpending } from './spending-policy.js';
 import { isScriptPaused } from './automation-control.js';
 import { activityBusy, markActivitySupport } from './activity-coordination.js';
 import { transitionActive, transitionFile } from './progression-coordination.js';
-import { graftEconomics } from './automation-policy.js';
+import { graftEconomics,graftProgressionValue } from './automation-policy.js';
 
 /** Choose useful, affordable grafts; do not interrupt grafting or program creation. */
 export function graftTick(ns, fraction = 0.25, maxPayback = 4 * 3600_000) {
@@ -39,20 +40,30 @@ export function graftTick(ns, fraction = 0.25, maxPayback = 4 * 3600_000) {
     const sources = ns.getMoneySources().sinceInstall;
     rates = Object.fromEntries(Object.entries(sources).map(([key, value]) => [key, Math.max(0, Number(value) || 0) / elapsed]));
   } catch { /* Missing income evidence means no speculative graft purchases. */ }
+  const route=readNodeRoutePlan(ns);
+  let cash;try{cash=JSON.parse(ns.read('tasks/speed-observation.json'));}catch{}
   const candidates = [];
   for (const name of ns.grafting.getGraftableAugmentations()) {
     if (owned.has(name) || !ns.singularity.getAugmentationPrereq(name).every(required => installed.has(required))) continue;
     const cost = ns.grafting.getAugmentationGraftPrice(name);
     const duration = ns.grafting.getAugmentationGraftTime(name);
     if (!(cost > 0) || cost > budget || !(duration > 0)) continue;
-    const economics = graftEconomics({ stats: ns.singularity.getAugmentationStats(name), cost, duration,
+    const stats=ns.singularity.getAugmentationStats(name);
+    const economics = graftEconomics({ stats, cost:cost+travel, duration,
       entropy: player.entropy, immune: installed.has('Congruity Implant'), congruity: name === 'Congruity Implant',
       focusImmune: installed.has('Neuroreceptor Management Implant'), hackingIncome, rates, maxPayback });
-    if (!economics.eligible) continue;
-    candidates.push({ name, cost, ...economics });
+    const factor=name==='Congruity Implant'?1/(.98**Math.max(0,Number(player.entropy)||0)):installed.has('Congruity Implant')?1:.98;
+    const progression=graftProgressionValue({stats,factor,duration:economics.duration,cost:cost+travel,
+      lostIncome:economics.lostIncome,incomeLossPerSecond:Math.max(0,-economics.incrementalIncome),maxPayback,route,reset,cash});
+    const remaining=route?.routes?.[route.selected]?.lowerMs;
+    const cashEligible=economics.eligible&&(!Number.isFinite(remaining)||economics.payback<remaining*.75);
+    if(!cashEligible&&!progression.eligible)continue;
+    const basis=progression.eligible&&(!cashEligible||progression.payback<economics.payback)?'progression':'cash';
+    candidates.push({name,cost,...economics,eligible:true,basis,progression,cashPayback:economics.payback,
+      payback:basis==='progression'?progression.payback:economics.payback});
   }
   const choice = candidates.sort((a, b) => a.payback - b.payback || b.benefit - a.benefit || a.cost - b.cost)[0];
-  if (!choice) return { status: 'waiting' };
+  if (!choice) return {status:'waiting',route:route?.selected??null,reason:'No affordable graft has a measured cash or progression repayment within limits'};
   try{plan=JSON.parse(ns.read('tasks/augmentation-reset-plan.json'));}catch{plan=null;}
   if(graftResetBlocked(plan,ns.getResetInfo(),ns.ps('home')))return {status:'reset-pending'};
   if(!claimSpending(ns,'graft',choice.cost+travel))return {status:'waiting-for-budget'};
@@ -80,7 +91,7 @@ export async function main(ns) {
       const result = graftTick(ns, Number(options['budget-fraction']), maxPayback);
       await ns.write('tasks/grafting-status.json', JSON.stringify({ at: Date.now(), pid: ns.pid, maxPaybackHours: maxPayback / 3600_000, ...result }), 'w');
       if (result.status === 'unavailable') { ns.print('Grafting requires Grafting and Singularity access.'); return; }
-      if (result.status === 'started') ns.print(`Grafting ${result.name}: estimated repayment ${(result.payback / 3600_000).toFixed(2)}h including graft time and lost cash income.`);
+      if (result.status === 'started') ns.print(`Grafting ${result.name}: estimated ${result.basis||'cash'} repayment ${(result.payback / 3600_000).toFixed(2)}h including graft time and cash opportunity cost.`);
     } catch (error) { ns.print(`Grafting waiting: ${String(error)}`); }
     await ns.sleep(60_000);
   }

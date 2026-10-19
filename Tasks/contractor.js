@@ -1,3 +1,4 @@
+import {contractCollectionPlan} from '../contract-policy.js';
 import {reconcileContractDelivery,dispatchContractDelivery} from '../contract-delivery-policy.js';
 import { instanceCount, getFilePath, getNsDataThroughFile, disableLogs, log } from '../helpers.js'
 const scriptSolver = getFilePath("/Tasks/contractor.js.solver.js");
@@ -21,18 +22,32 @@ export async function main(ns) {
         .map(o => o.contracts.map(contract => ({ contract, hostname: o.hostname }))).flat();
     if (contractsDb.length == 0){if(ns.getHostname()==='home')await ns.write('tasks/contracts-status.json',JSON.stringify({at:Date.now(),queued:0,types:[]}), 'w');return ns.print('Found no contracts to solve.');}
 
-    // Spawn temporary scripts to gather the remainder of contract data required for solving
-    ns.print(`Found ${contractsDb.length} contracts to solve. Gathering contract data via separate scripts..."`);
-    const serializedContractDb = JSON.stringify(contractsDb);
-    let contractsDictCommand = async (command, tempName) => await getNsDataThroughFile(ns,
-        `Object.fromEntries(JSON.parse(ns.args[0]).map(c => [JSON.stringify([c.hostname,c.contract]), ${command}]))`, tempName, [serializedContractDb]);
-    let dictContractTypes = await contractsDictCommand('ns.codingcontract.getContractType(c.contract, c.hostname)', '/Temp/contract-types.txt');
-    let dictContractDataStrings = await contractsDictCommand('JSON.stringify(ns.codingcontract.getData(c.contract, c.hostname), jsonReplacer)', '/Temp/contract-data-stringified.txt');
-    contractsDb.forEach(c => c.type = dictContractTypes[JSON.stringify([c.hostname,c.contract])]);
-    contractsDb.forEach(c => c.dataJson = dictContractDataStrings[JSON.stringify([c.hostname,c.contract])]);
-
-    const job=await dispatchContractDelivery(ns,scriptSolver,contractsDb,servers);
+    let validation;try{validation=JSON.parse(ns.read('tasks/contract-validation.json'));}catch{}
+    const status=(ready,reason,job={},dataErrors=0)=>ns.write('tasks/contracts-status.json',JSON.stringify({
+        at:Date.now(),discovered:contractsDb.length,queued:ready.length,deferred:contractsDb.length-ready.length,
+        dataErrors,types:[...new Set(contractsDb.map(c=>c.type).filter(Boolean))],
+        solverPid:job.pid||0,solverHost:job.host??null,jobId:job.jobId??null,reason}),'w');
+    if(!contractCollectionPlan([],validation).validationReady){
+        await status([],'waiting-for-validation');return ns.print('Contract collection deferred: waiting for solver validation.');
+    }
+    // Read types first. Only independently validated types need potentially large input payloads.
+    const contractsDictCommand = (batch,command,tempName) => getNsDataThroughFile(ns,
+        `Object.fromEntries(JSON.parse(ns.args[0]).map(c => [JSON.stringify([c.hostname,c.contract]), (()=>{try{return ${command};}catch{return null;}})()]))`,
+        tempName,[JSON.stringify(batch)]);
+    const dictContractTypes = await contractsDictCommand(contractsDb,'ns.codingcontract.getContractType(c.contract, c.hostname)','/Temp/contract-types.txt');
+    contractsDb.forEach(c=>c.type=dictContractTypes[JSON.stringify([c.hostname,c.contract])]);
+    const plan=contractCollectionPlan(contractsDb,validation);
+    if(!plan.eligible.length){await status([],plan.reason);return ns.print('Contract collection deferred: no validated contract types.');}
+    const dictContractDataStrings = await contractsDictCommand(plan.eligible,'JSON.stringify(ns.codingcontract.getData(c.contract, c.hostname), jsonReplacer)','/Temp/contract-data-stringified.txt');
+    const ready=plan.eligible.filter(c=>{
+        const data=dictContractDataStrings[JSON.stringify([c.hostname,c.contract])];
+        if(typeof data!=='string')return false;
+        c.dataJson=data;return true;
+    });
+    const dataErrors=plan.eligible.length-ready.length;
+    if(!ready.length){await status([],'contract-data-unavailable',{},dataErrors);return ns.print('Contract collection deferred: inputs disappeared or could not be read.');}
+    const job=await dispatchContractDelivery(ns,scriptSolver,ready,servers);
     if(!job.pid)ns.print('Contract solver deferred: '+job.reason);
     else ns.print('Contract solver running on '+job.host+' (PID '+job.pid+', '+job.count+' contracts).');
-    await ns.write('tasks/contracts-status.json',JSON.stringify({at:Date.now(),queued:contractsDb.length,types:[...new Set(contractsDb.map(c=>c.type))],solverPid:job.pid,solverHost:job.host??null,jobId:job.jobId??null,reason:job.reason??'running'}),'w');
+    await status(ready,job.reason??'running',job,dataErrors);
 }

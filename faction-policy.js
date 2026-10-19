@@ -321,3 +321,12 @@ export function factionTerminalOutput(options={}) {
  const yes=value=>value===true||value==='true';
  return !yes(options['log-only'])&&!options['join-only']&&(yes(options.v)||yes(options.verbose));
 }
+
+/** Automatic filters follow the current route; explicit filters retain wildcard support. */
+export function augmentationStatFilters({route='hacking',node=1,explicit=[]}={}) {
+ if(explicit.length)return [...explicit];
+ if(node===8)return ['hacking_level','hacking_exp'];
+ return route==='bladeburner'?
+  ['strength','defense','dexterity','agility','bladeburner','hacking_level','charisma','faction_rep','hacknet_node_money']:
+  ['hacking','faction_rep','company_rep','charisma','hacknet','crime_money','work_money'];
+}

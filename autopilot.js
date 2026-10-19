@@ -8,7 +8,7 @@ import {casinoSeedMoney,earnCasinoSeedSource,chooseCasinoSeedCrime,seedSleevesSo
 import {planRedPill,purchaseRedPillSource} from './red-pill-policy.js';
 import {nodeRouteFile,nodeRouteSnapshotSource,sampleRouteProgress,estimateDaemonRoute,estimateBladeburnerRoute} from './node-route-policy.js';
 import {homeRamReserve,reclaimHomeRam,essentialManagerRamTarget} from './home-ram-policy.js';
-import {observeCombatRecovery,augmentationResetDecision,progressionSpeed} from './progression-speed-policy.js';
+import {observeCombatRecovery,augmentationResetDecision,augmentationFourSigmaWait,progressionSpeed} from './progression-speed-policy.js';
 import {registerAutomation,automationHeartbeat,maintenanceRequested,scriptSignature} from './runtime-policy.js';
 import {campaignReady,challengeProfile,achievementNode,achievementActionAllowed} from './achievement-policy.js';
 import {achievementWorkerSources} from './achievement-worker-sources.js';
@@ -58,7 +58,7 @@ const argsSchema = [ // The set of all command line arguments
     ['disable-corporation', false], // Prevent autopilot and its daemon from starting corporation-manager.js.
     ['disable-go', false], // Prevent automatic IPvGO launches.
     ['disable-infiltration', false], // Leave infiltration entry and minigames manual.
-    ['wait-for-4s-threshold', 0.9], // Set to 0 to not reset until we have 4S. If money is above this ratio of the 4S Tix API cost, don't reset until we buy it.
+    ['wait-for-4s-threshold', 0.9], // Minimum fraction of the 4S price before considering a bounded funding wait; 0 removes only this proximity gate.
     ['disable-wait-for-4s', false], // If true, will doesn't wait for the 4S Tix API to be acquired under any circumstantes
     ['disable-rush-gangs', false], // Set to true to disable focusing work-for-faction on Karma until gangs are unlocked
     ['disable-casino', false], // Set to true to disable running the casino.js script automatically
@@ -1327,7 +1327,7 @@ export async function main(ns) {
         if(totalCost===0&&pendingAugInclNfCount>0)totalCost=1; // Give queued-only installations the same bounded countdown.
         await ns.write('tasks/augmentation-reset-plan.json', JSON.stringify({ pending: true, augReset:resetInfo.lastAugReset, ownerPid: ns.pid, expiresAt: Date.now() + 120000 }), 'w');
         // If we want to reset, but there is a reason to delay, don't reset
-        if (await shouldDelayInstall(ns, player, facman)) // If we're currently in a state where we should not be resetting, skip reset logic
+        if (await shouldDelayInstall(ns, player, facman, speed)) // If we're currently in a state where we should not be resetting, skip reset logic
             return reservedPurchase = 0;
 
         // Ensure the money needed for the above augs doesn't get ripped out from under us by reserving it
@@ -1396,7 +1396,7 @@ export async function main(ns) {
      *           affordable_augs: string[], affordable_count: number, affordable_count_nf: number, affordable_count_ex_nf: number,
      *           total_rep_cost: number, total_aug_cost: number, unowned_count: number }} facmanOutput
     */
-    async function shouldDelayInstall(ns, player, facmanOutput) {
+    async function shouldDelayInstall(ns, player, facmanOutput, speed) {
         // Don't install if we're currently grafting an augmentation
         if (await checkIfGrafting(ns))
             return true;
@@ -1410,13 +1410,17 @@ export async function main(ns) {
             const totalWorth = player.money + await getStocksValue(ns);
             const totalCost = 25E9 * bitNodeMults.FourSigmaMarketDataApiCost +
                 (have4SData ? 0 : 1E9 * bitNodeMults.FourSigmaMarketDataCost);
-            const ratio = totalWorth / totalCost;
-            // If we're e.g. 50% of the way there, hold off, regardless of the '--wait-for-4s' setting
-            // TODO: If ratio is > 1, we can afford it - but stockmaster won't buy until it has e.g. 20% more than the cost
-            //       (so it still has money to invest). It doesn't know we want to restart ASAP. Perhaps we should purchase ourselves?
-            if (ratio >= options['wait-for-4s-threshold']) {
-                setStatus(ns, `Not installing until scripts purchase the 4SDataTixApi because we have ` +
-                    `${(100 * totalWorth / totalCost).toFixed(0)}% of the cost (controlled by --wait-for-4s-threshold)`);
+            let stock,window;
+            try{stock=JSON.parse(ns.read('tasks/stock-status.json'));}catch{}
+            try{window=JSON.parse(ns.read('tasks/augmentation-4s-wait.json'));}catch{}
+            const stockPid=isScriptPaused(ns,'stockmaster.js')?0:ns.ps('home').find(p=>p.filename.replace(/^\//,'')==='stockmaster.js'&&p.pid===stock?.pid)?.pid;
+            const decision=augmentationFourSigmaWait({route:routePlan?.selected||([6,7].includes(resetInfo.currentNode)?'bladeburner':'hacking'),
+                reset:resetInfo,now:Date.now(),worth:totalWorth,cost:totalCost,threshold:options['wait-for-4s-threshold'],
+                stock,stockPid,income:speedObservation,window,paybackMs:speed?.paybackMs,remainingMs:routePlan?.routes?.[routePlan.selected]?.etaMs});
+            if(decision.window)await ns.write('tasks/augmentation-4s-wait.json',JSON.stringify({...decision.window,at:Date.now(),ownerPid:ns.pid,
+                active:decision.wait,reason:decision.reason,etaMs:decision.etaMs??null,target:decision.target??null}),'w');
+            if(decision.wait){
+                setStatus(ns,`Waiting up to ${formatDuration(decision.deadline-Date.now())} for 4S funding (estimated ${formatDuration(decision.etaMs)}).`);
                 return true;
             }
         }

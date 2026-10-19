@@ -110,7 +110,10 @@ export async function main(ns) {
     /** @param {NS} ns */
     async function start() {
         const runOptions = getConfiguration(ns, argsSchema);
-        if (!runOptions || (await instanceCount(ns)) > 1) return; // Prevent multiple instances of this script from being started, even with different args.
+        if (!runOptions) return;
+        goStatus={at:Date.now(),pid:ns.pid,state:'initializing',error:null};
+        await ns.write('tasks/go-status.json',JSON.stringify(goStatus),'w');
+        if ((await instanceCount(ns)) > 1) return; // Prevent duplicate controllers, even with different args.
 
         goOptions=runOptions;
         boardSizeExplicit=ns.args.some(a=>a==='--board-size'||typeof a==='string'&&a.startsWith('--board-size='));
@@ -196,6 +199,25 @@ export async function main(ns) {
 
     async function go_passTurn(ns) {ensurePlaying();return await ns.go.passTurn();}
 
+    /** Resume from native state, without relying on a prior move's promise surviving reloads. */
+    async function waitForGoTurn(ns) {
+        let nextStatus = 0;
+        while (true) {
+            ensurePlaying();
+            automationHeartbeat(ns);
+            const player = ns.go.getCurrentPlayer();
+            if (player === 'None') return {type:'gameOver',x:null,y:null};
+            if (player === 'Black') return {type:'move',x:null,y:null};
+            if (player !== 'White') throw new Error('Unknown Go turn state: '+player);
+            if (Date.now() >= nextStatus) {
+                nextStatus = Date.now()+5000;
+                goStatus={...goStatus,at:Date.now(),pid:ns.pid,state:'waiting-for-opponent',error:null,opponent:ns.go.getOpponent()};
+                await ns.write('tasks/go-status.json',JSON.stringify(goStatus),'w');
+            }
+            await ns.sleep(200);
+        }
+    }
+
     /** @param {NS} ns */
     async function playGo(ns) {
         ensurePlaying();
@@ -216,7 +238,9 @@ export async function main(ns) {
             if (inProgress) break
         }
         startedGame=typeof ns.go.getCurrentPlayer==='function'?ns.go.getCurrentPlayer()!=='None':inProgress;
-        const currentGame = await ns.go.opponentNextTurn(false)
+        goStatus={...goStatus,at:Date.now(),pid:ns.pid,state:'waiting-for-opponent',error:null,opponent:ns.go.getOpponent(),boardSize:startBoard.length};
+        await ns.write('tasks/go-status.json',JSON.stringify(goStatus),'w');
+        const currentGame = await waitForGoTurn(ns);
         await checkNewGame(ns, currentGame)
         let playStyle = getStyle(ns);
         while (true) {

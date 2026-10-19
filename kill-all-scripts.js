@@ -1,40 +1,30 @@
-import { scanAllServers } from './helpers.js'
+import { scanAllServers } from './helpers.js';
 
-// the purpose of cascade kill is to kill all scripts running on any server in the game
-// but saving the host that you run it on for last (so that it doesn't kill itself prematurely)
-/** @param {NS} ns **/
+/** Stop controllers before draining workers. Script files are always preserved.
+ * @param {NS} ns */
 export async function main(ns) {
-    var startingNode = ns.getHostname();
-    const serverList = scanAllServers(ns);
-
-    // Send the kill command to all servers
-    for (const server of serverList) {
-        // skip if this host, we save it for last
-        if (server == startingNode)
-            continue;
-
-        // skip if not running anything
-        if (ns.ps(server).length === 0)
-            continue;
-
-        // kill all scripts
-        ns.killall(server);
-    }
-
-    // idle for things to die
-    for (const server of serverList) {
-        // skip if this host, we save it for last
-        if (server == startingNode)
-            continue;
-        // idle until they're dead, this is to avoid killing the cascade before it's finished.
-        while (ns.ps(server).length > 0) {
-            await ns.sleep(20);
+    // Home controllers must stop before the first await, even when launched remotely.
+    const hosts = [...new Set(['home', ...scanAllServers(ns), ns.getHostname()])];
+    const pending = () => {
+        const processes = [];
+        for (const host of hosts) {
+            try {
+                for (const process of ns.ps(host))
+                    if (process.pid !== ns.pid) processes.push({ host, pid: process.pid });
+            } catch { /* A cloud server may disappear during shutdown. */ }
         }
-        // Remove script files the daemon would have copied over (in case we update the source)
-        for (let file of ns.ls(server, '.js'))
-            ns.rm(file, server)
+        return processes;
+    };
+    // Recheck every host: delayed exits and late workers cannot escape an earlier sweep.
+    for (let attempt = 0; attempt < 100; attempt++) {
+        const processes = pending();
+        if (!processes.length) return;
+        for (const { pid } of processes) {
+            try { ns.kill(pid); } catch { /* Report survivors after bounded retries. */ }
+        }
+        await ns.sleep(50);
     }
-
-    // wait to kill these. This kills itself, obviously.
-    ns.killall(startingNode);
+    const remaining = pending();
+    if (remaining.length)
+        ns.tprint('WARNING: Shutdown incomplete after 5 seconds: ' + remaining.map(p => p.host + ':' + p.pid).join(', '));
 }

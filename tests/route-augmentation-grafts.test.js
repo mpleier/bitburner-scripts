@@ -73,3 +73,14 @@ test('actual graft manager preserves reserve, queued ownership and stale-evidenc
   assert.equal(graftTick(f.ns).status,'waiting');assert.equal(f.started.length,0);
  }
 });
+
+test('native Bladeburner forecast exposes the regeneration terms used by graft valuation',()=>{
+ const operation=name=>({name,time:1000,chance:[1,1],required:0,gain:1,loss:0,staminaCost:1});
+ const result=estimateBladeburnerRoute({rank:1,ops:[operation('First'),operation('Last')],actions:[],recovery:{regen:.1,hrc:.2}});
+ assert.equal(result.actionable,true);assert.equal(result.recoveryModel,'amortized-native');assert.deepEqual(result.staminaRecovery,{regen:.1,hrc:.2});assert.ok(result.recoveryMs>0);
+});
+test('known imminent completion also blocks a slow cash graft',()=>{
+ const f=fixture(),route={...f.plan,routes:{hacking:{...f.plan.routes.hacking,lowerMs:10000,upperMs:20000}}};
+ f.store.set('tasks/node-route-plan.json',JSON.stringify(route));f.ns.getTotalScriptIncome=()=>[1e6,0];f.ns.singularity.getAugmentationStats=()=>({hacking_money:2});
+ assert.equal(graftTick(f.ns).status,'waiting');assert.equal(f.started.length,0);
+});

@@ -57,7 +57,7 @@ test('game measurements record elapsed time and reward once and keep twenty rece
 test('partial, ambiguous, reset, invalid and paused-long games do not become throughput evidence',()=>{
  const buckets={};for(const g of [game({wins:0}),game({startedAt:62000}),game({startedAt:-2e6}),game({size:19}),game({bonus:NaN})])assert.equal(recordGoPerformance(buckets,g,stats,61000),buckets);
 });
-function bucket(size,extra={}){return {opponent:'Netburners',size,cheats:false,games:3,completed:3,wins:3,totalMs:180000,totalBonus:3,...extra};}
+function bucket(size,extra={}){return {opponent:'Netburners',size,cheats:false,games:3,completed:3,wins:3,totalMs:180000,totalBonus:3,rewardVersion:2,...extra};}
 test('adaptive boards establish a 13x13 baseline and sample alternatives gradually',()=>{
  assert.equal(chooseGoBoardSize('Netburners',{}),13);
  assert.equal(chooseGoBoardSize('Netburners',{a:bucket(13,{games:2,completed:2})}),13);
@@ -129,4 +129,38 @@ test('reward measurements honor the special 5x5 Illuminati multiplier and native
 test('measured node power distinguishes board throughput from diminishing percentage bonuses',()=>{
  const rows={a:bucket(13,{completed:8,totalBonus:10,totalReward:100,totalMs:100000}),b:bucket(7,{completed:8,totalBonus:1,totalReward:100,totalMs:20000})};
  assert.equal(chooseGoBoardSize('Netburners',rows),7);
+});
+
+
+test('board comparison never mixes node power with percentage bonus units',()=>{
+ const rows={a:bucket(13,{completed:8,totalReward:100,totalBonus:1}),b:bucket(7,{completed:8,totalBonus:3,rewardVersion:undefined})};
+ assert.equal(chooseGoBoardSize('Netburners',rows,false,false),7);
+ rows.b.totalReward=50;rows.b.rewardVersion=2;
+ assert.equal(chooseGoBoardSize('Netburners',rows,false,false),13);
+ // A genuine zero is measured data, not permission to switch units for that row.
+ rows.a.totalReward=0;
+ assert.equal(chooseGoBoardSize('Netburners',rows,false,false),7);
+});
+test('legacy or invalid rewards fall back to bonus units for every candidate',()=>{
+ for(const invalid of [null,NaN,-1,Infinity]){
+  const rows={a:bucket(13,{completed:8,totalReward:100,totalBonus:1}),b:bucket(7,{completed:8,totalReward:invalid,totalBonus:3})};
+  assert.equal(chooseGoBoardSize('Netburners',rows,false,false),7);
+ }
+ const legacy={a:bucket(13,{completed:8,totalReward:100,totalBonus:1,rewardVersion:undefined}),b:bucket(7,{completed:8,totalReward:1,totalBonus:3})};
+ assert.equal(chooseGoBoardSize('Netburners',legacy,false,false),7);
+});
+test('critical cheat losses receive zero reward despite a nonzero final score',()=>{
+ const g=game({cheats:true,winStreak:4}),final={blackScore:50,whiteScore:60,komi:1.5};
+ const result=recordGoPerformance({},g,{Netburners:{wins:5,losses:2,bonusPercent:10,winStreak:-1}},61000,final)['Netburners:13:cheats'];
+ assert.equal(result.totalReward,0);assert.equal(result.history[0].reward,0);assert.equal(result.history[0].bonus,0);assert.equal(result.rewardVersion,2);
+});
+test('ordinary losses with actual bonus gain retain their native reward',()=>{
+ const result=recordGoPerformance({},game({winStreak:4}),{Netburners:{wins:5,losses:2,bonusPercent:11,winStreak:-1}},61000,{blackScore:50,whiteScore:60,komi:1.5})['Netburners:13:normal'];
+ assert.equal(result.totalReward,12.5);
+});
+test('new observations repair old phantom rewards for zero-gain losses',()=>{
+ const prior={'Netburners:13:normal':{completed:2,history:[{ms:60000,win:0,bonus:0,reward:100,logGain:0}]}};
+ const result=recordGoPerformance(prior,game({winStreak:1}),{Netburners:{wins:6,losses:1,bonusPercent:11,winStreak:2}},61000,{blackScore:20,komi:1.5})['Netburners:13:normal'];
+ assert.equal(result.history[0].reward,0);assert.equal(result.totalReward,15);
+ assert.equal(prior['Netburners:13:normal'].history[0].reward,100);
 });

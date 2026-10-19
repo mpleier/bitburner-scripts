@@ -158,6 +158,8 @@ export async function main(ns) {
         let startUpRan = false, keepRunning = true;
         while (keepRunning) {
             automationHeartbeat(ns);
+            if (isScriptPaused(ns, ns.getScriptName())) return;
+            if (maintenanceRequested(ns)) { await ns.sleep(options['interval']); continue; }
             try {
                 // Start-up actions, wrapped in error handling in case of temporary failures
                 if (!startUpRan) startUpRan = await startUp(ns);
@@ -468,7 +470,7 @@ export async function main(ns) {
             const old=routePlan?.selected;
             const availability=nodeRouteAvailability(resetInfo,unlockedSFs,options,{paused:isScriptPaused(ns,'bladeburner.js'),allowed:achievementActionAllowed(ns,'bladeburner')});
             routePlan={...chooseNodeRoute(routes,routePlan,{now,augReset:s.augReset,nodeReset:s.nodeReset,node:s.node,override:options['node-route'],adaptive:options['adaptive-node-route'],availability}),
-                ownerPid:ns.pid,simulacrum:s.simulacrum,sampling:routeObservation.sampling,development:routeDevelopment(s,routeObservation),
+                ownerPid:ns.pid,simulacrum:s.simulacrum,xpCapacity:s.xpCapacity,sampling:routeObservation.sampling,development:routeDevelopment(s,routeObservation),
                 assumptions:['BitNode preferences are priors, not completion forecasts','Unknown prerequisites never count as zero time',
                     'Bladeburner recovery, chaos and recruitment use a 50 to 100 percent duty range','Automatic switches require a 25 percent advantage for two minutes']};
             if(!combatRecovery)try{combatRecovery=JSON.parse(ns.read('tasks/combat-recovery.json'));}catch{}
@@ -1540,7 +1542,7 @@ export async function main(ns) {
     /** Helper to launch a script and log whether if it succeeded or failed
      * @param {NS} ns */
     function launchScriptHelper(ns, baseScriptName, args = [], convertFileName = true) {
-        if (isScriptPaused(ns, baseScriptName)) return 0;
+        if (isScriptPaused(ns, ns.getScriptName()) || maintenanceRequested(ns) || isScriptPaused(ns, baseScriptName)) return 0;
         if (activityBusy(ns) && /(^|\/)(work-for-factions|grafting-manager)\.js$/.test(baseScriptName)) return 0;
         if (!options['no-tail-windows'])
             tail(ns); // If we're going to be launching scripts, show our tail window so that we can easily be killed if the user wants to interrupt.

@@ -2,7 +2,6 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { main as programs } from '../Tasks/program-manager.js';
-import { main as killScripts } from '../kill-all-scripts.js';
 import { parseCommandArgs } from '../run-command.js';
 import { canLaunchFactionWorker, chooseSleeveCrime, studyCommand } from '../automation-policy.js';
 import { isScriptPaused, pauseFile, setScriptPaused } from '../automation-control.js';
@@ -53,11 +52,6 @@ test('silent command parsing preserves command and forwarded arguments', () => {
  assert.equal(parseCommandArgs(['-s']).args.length,0);
  assert.equal(parseCommandArgs(["'ns.args[0]'",'argument','-s']).escaped,true);
  assert.deepEqual(parseCommandArgs(["'ns.args[0]'",'argument','-s']).args,["'ns.args[0]'",'argument']);
-});
-test('kill-all waits for process arrays to empty before removing files', async () => {
- let active=true,waits=0;const actions=[];
- await killScripts({print:()=>{},getHostname:()=> 'home',scan:host=>host==='home'?['remote']:['home'],ps:()=>active?[{pid:2}]:[],killall:host=>actions.push('kill:'+host),sleep:async()=>{waits++;active=false;},ls:()=>['worker.js'],rm:()=>{assert.equal(active,false);actions.push('remove');}});
- assert.equal(waits,1);assert.deepEqual(actions,['kill:remote','remove','kill:home']);
 });
 test('persistent pauses normalize paths and resume explicitly', async () => {
  const files=new Map();const ns={read:file=>files.get(file)||'',write:async(file,value)=>files.set(file,value),rm:file=>files.delete(file)};

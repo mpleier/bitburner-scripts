@@ -72,8 +72,8 @@ test('actual autopilot launcher backs off fast exits but leaves one-shot progres
  const text=readFileSync(new URL('../autopilot.js',import.meta.url),'utf8'),start=text.indexOf('    function launchScriptHelper('),end=text.indexOf('    let lastStatusLog',start),code=text.slice(start,end);
  let now=100000,pid=0,runs=0;const map=new Map();class Clock extends Date{static now(){return now;}}
  const context={Date:Clock,launchCooldown,recordLaunch,launchCooldownKey,launchHistory:map,launchSourceCache:new Map(),trackedLaunches:new Set(['bladeburner.js']),resetInfo:{lastAugReset:1},options:{'no-tail-windows':true},
-  isScriptPaused:()=>false,activityBusy:()=>false,getFilePath:x=>x,scriptSignature:()=> 'v1',homeRamReserve:()=>0,reclaimHomeRam:()=>true,log(){},log_once(){},getErrorInfo:String,
-  ns:{getScriptRam:()=>2,isRunning:()=>false,run:()=>{runs++;return ++pid;}}};
+  isScriptPaused:()=>false,maintenanceRequested:()=>false,activityBusy:()=>false,getFilePath:x=>x,scriptSignature:()=> 'v1',homeRamReserve:()=>0,reclaimHomeRam:()=>true,log(){},log_once(){},getErrorInfo:String,
+  ns:{getScriptName:()=> 'autopilot.js',getScriptRam:()=>2,isRunning:()=>false,run:()=>{runs++;return ++pid;}}};
  vm.runInNewContext(code+';globalThis.launch=launchScriptHelper;',context);
  context.launch(context.ns,'bladeburner.js');now+=10000;context.launch(context.ns,'bladeburner.js');now+=10000;assert.equal(context.launch(context.ns,'bladeburner.js'),0);assert.equal(runs,2);
  now+=10000;assert.equal(context.launch(context.ns,'bladeburner.js'),0);now=150000;assert.ok(context.launch(context.ns,'bladeburner.js')>0);

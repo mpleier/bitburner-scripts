@@ -130,10 +130,10 @@ export function recordGoPerformance(buckets,game,stats,now=Date.now(),finalState
  if(![5,7,9,13].includes(game.size)||!Number.isFinite(elapsed)||elapsed<1000||elapsed>1800000||wins+losses!==1||![0,1].includes(wins)||![0,1].includes(losses))return buckets;
  const bonus=Math.max(0,Number(current.bonusPercent)-game.bonus);if(!Number.isFinite(bonus))return buckets;
  const key=game.opponent+':'+game.size+':'+(game.cheats?'cheats':'normal');
- const reward=finalState?goNodePowerReward(finalState.blackScore,finalState.komi,game.size,Number(current.winStreak),Number(game.winStreak)):null;
- const old=buckets[key],history=[...(Array.isArray(old?.history)?old.history.filter(g=>g&&Number.isFinite(g.ms)&&g.ms>0&&[0,1].includes(g.win)&&Number.isFinite(g.bonus)&&g.bonus>=0):[]),{ms:elapsed,win:wins,bonus,reward,turns:game.turns||0,at:now,logGain:Math.log1p(bonus/(100+Math.max(0,Number(game.bonus)||0)))}].slice(-20);
+ const reward=losses===1&&bonus===0?0:finalState?goNodePowerReward(finalState.blackScore,finalState.komi,game.size,Number(current.winStreak),Number(game.winStreak)):null;
+ const old=buckets[key],history=[...(Array.isArray(old?.history)?old.history.filter(g=>g&&Number.isFinite(g.ms)&&g.ms>0&&[0,1].includes(g.win)&&Number.isFinite(g.bonus)&&g.bonus>=0).map(g=>g.win===0&&g.bonus===0?{...g,reward:0}:g):[]),{ms:elapsed,win:wins,bonus,reward,turns:game.turns||0,at:now,logGain:Math.log1p(bonus/(100+Math.max(0,Number(game.bonus)||0)))}].slice(-20);
  return {...buckets,[key]:{opponent:game.opponent,size:game.size,cheats:!!game.cheats,completed:(Number.isSafeInteger(old?.completed)&&old.completed>=0?old.completed:0)+1,games:history.length,wins:history.reduce((s,g)=>s+g.win,0),
-  totalReward:history.every(g=>Number.isFinite(g.reward))?history.reduce((s,g)=>s+g.reward,0):null,totalMs:history.reduce((s,g)=>s+g.ms,0),totalBonus:history.reduce((s,g)=>s+g.bonus,0),history,at:now}};
+  rewardVersion:2,totalReward:history.every(g=>Number.isFinite(g.reward)&&g.reward>=0)?history.reduce((s,g)=>s+g.reward,0):null,totalMs:history.reduce((s,g)=>s+g.ms,0),totalBonus:history.reduce((s,g)=>s+g.bonus,0),history,at:now}};
 }
 
 export function chooseGoBoardSize(opponent,buckets={},cheats=false,explore=true) {
@@ -144,7 +144,9 @@ export function chooseGoBoardSize(opponent,buckets={},cheats=false,explore=true)
  const order=opponent==='Illuminati'?[5,7,9]:[7,9,5];
  if(explore&&games%8===3){const size=order.find(n=>(rows.find(r=>r.size===n)?.games||0)<3);if(size)return size;}
  const reliable=rows.filter(r=>r.games>=3&&r.wins/r.games>=.8&&Number.isFinite(r.totalBonus)&&r.totalBonus>0);
- const rate=r=>(Number.isFinite(r.totalReward)&&r.totalReward>0?r.totalReward:r.totalBonus)/r.totalMs;
+ // Compare all candidates in the same units. Legacy rewards may include failed cheats.
+ const useRewards=reliable.length>0&&reliable.every(r=>r.rewardVersion===2&&Number.isFinite(r.totalReward)&&r.totalReward>=0);
+ const rate=r=>(useRewards?r.totalReward:r.totalBonus)/r.totalMs;
  reliable.sort((a,b)=>rate(b)*(b.wins+2)/(b.games+4)-rate(a)*(a.wins+2)/(a.games+4));
  return reliable[0]?.size||13;
 }

@@ -1,3 +1,4 @@
+import {createXpCapacityRecord} from './xp-capacity-policy.js';
 import {readStockManipulationSnapshot} from './stock-policy.js';
 import {hackingWorker,commitHackingCapacity,withHackingLoopCapacity,ownedHackingLoopCounts,requestStockHackingDrain,coordinateHackingDrain} from './hacking-drain-policy.js';
 import {hashSpendingDecision,spendHashesWithPolicy} from './hash-spending-policy.js';
@@ -99,6 +100,7 @@ export function autocomplete(data, args) {
 /** @param {NS} ns **/
 export async function main(ns) {
  registerAutomation(ns);
+ ns.atExit?.(()=>{try{ns.rm('tasks/xp-capacity-'+ns.pid+'.json','home');}catch{}});
     if (isScriptPaused(ns, ns.getScriptName())) return;
     // --- CONSTANTS ---
     // track how costly (in security) a growth/hacking thread is.
@@ -179,6 +181,7 @@ export async function main(ns) {
     // Property to avoid log churn if our status hasn't changed since the last loop
     let lastUpdate = "";
     let lastUpdateTime = Date.now();
+    let lastXpCapacityAt=0;
     let lowUtilizationIterations = 0;
     let highUtilizationIterations = 0;
     let lastShareTime = 0; // Tracks when share was last invoked so we can respect the configured share-cooldown
@@ -291,6 +294,7 @@ export async function main(ns) {
         // TODO: Can probably get rid of all of this now that the entire script is wrapped in the main function.
         lastUpdate = "";
         lastUpdateTime = Date.now();
+        lastXpCapacityAt=0;
         maxTargets = 2;
         lowUtilizationIterations = highUtilizationIterations = 0;
         allHostNames = [], _allServers = [], homeServer = null;
@@ -1093,6 +1097,20 @@ export async function main(ns) {
                         lastShareTime = Date.now();
                     }
                 } //else log(ns, `Not Sharing. workCapped: ${isWorkCapped()} utilizationPercent: ${utilizationPercent} maxShareUtilization: ${maxShareUtilization} cooldown: ${formatDuration(Date.now() - lastShareTime)} networkRam: ${network.totalMaxRam}`);
+
+                // Reuse cached inventory. Finite batch PIDs and transient usage never enter the signature.
+                if(Date.now()-lastXpCapacityAt>=10000){
+                    lastXpCapacityAt=Date.now();
+                    let capacity;
+                    try{
+                        const hosts=getAllServers().filter(s=>s.hasRoot()&&dictServerMaxRam[s.name]>0)
+                            .map(s=>({host:s.name,maxRam:dictServerMaxRam[s.name],usableRam:Math.max(0,s.totalRam()),cores:s.server.cpuCores??1}));
+                        const workers=hosts.flatMap(h=>processList(ns,h.host).map(p=>hackingWorker({...p,host:h.host})).filter(w=>w?.owner===ns.pid&&w.loop));
+                        capacity=createXpCapacityRecord({ownerPid:ns.pid,reset:resetInfo,mode:xpOnly?'xp':'income',config:ns.args,
+                            targets:targetsByExp.map(s=>s.name),hosts,workers,now:lastXpCapacityAt});
+                    }catch(error){capacity={schemaVersion:1,state:'unavailable',ownerPid:ns.pid,at:lastXpCapacityAt,reason:String(error).slice(0,200)};}
+                    await ns.write('tasks/xp-capacity-'+ns.pid+'.json',JSON.stringify(capacity),'w');
+                }
 
                 // Log some status updates
                 let keyUpdates = `Of ${allHostNames.length} total servers:\n > ${noMoney.length} were ignored (owned or no money)`;
@@ -2505,18 +2523,24 @@ export async function main(ns) {
     // script entry point
     /** @param {NS} ns **/
     async function startup_withRetries(ns) {
-        let startupAttempts = 0;
-        while (startupAttempts++ <= 5) {
+        for (let attempt = 1; attempt <= 5; attempt++) {
+            if (isScriptPaused(ns, ns.getScriptName())) return;
+            while (maintenanceRequested(ns)) {
+                await ns.sleep(1000);
+                if (isScriptPaused(ns, ns.getScriptName())) return;
+            }
             try {
                 await startup(ns);
+                return; // Successful completion includes --run-once and a cooperative pause.
             } catch (err) {
-                if (startupAttempts == 5)
+                if (err?.env?.stopFlag) return;
+                if (attempt === 5) {
                     log(ns, `ERROR: daemon.js Keeps catching a fatal error during startup: ${getErrorInfo(err)}`, true, 'error');
-                else {
-                    log(ns, `WARN: daemon.js Caught an error during startup: ${getErrorInfo(err)}` +
-                        `\nWill try again (attempt ${startupAttempts} of 5)`, false, 'warning');
-                    await ns.sleep(5000);
+                    return;
                 }
+                log(ns, `WARN: daemon.js Caught an error during startup: ${getErrorInfo(err)}` +
+                    `\nWill try again (attempt ${attempt + 1} of 5)`, false, 'warning');
+                await ns.sleep(5000);
             }
         }
     }

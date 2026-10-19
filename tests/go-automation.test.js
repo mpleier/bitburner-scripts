@@ -37,7 +37,7 @@ test('opponent ranking sanitizes numeric strings and malformed native stats',()=
 async function controller(ns,overrides={}) {
  const source=await readFile(new URL('../go.js',import.meta.url),'utf8');
  const context={registerAutomation(){},automationHeartbeat(){},maintenanceRequested:()=>false,...policy,...opponentPolicy,performance:{now:()=>0},isScriptPaused:()=>false,achievementActionAllowed:()=>true,ns,...overrides};
- const injection=`globalThis.harness={checkNewGame,getAllValidMoves,go_cheat_playTwoMoves,go_makeMove,go_passTurn,moveSnakeEyes,setRunOnce:value=>{runOnce=value;startedGame=false;},set:(b,v,t,o={goal:'auto',opponent:''})=>{board=b;validMove=v;contested=b.map(r=>'?'.repeat(r.length));turn=t;goOptions=o;runOnce=false;}};`;
+ const injection=`globalThis.harness={start,waitForGoTurn,checkNewGame,getAllValidMoves,go_cheat_playTwoMoves,go_makeMove,go_passTurn,moveSnakeEyes,setRunOnce:value=>{runOnce=value;startedGame=false;},set:(b,v,t,o={goal:'auto',opponent:''})=>{board=b;validMove=v;contested=b.map(r=>'?'.repeat(r.length));turn=t;goOptions=o;runOnce=false;}};`;
  await vm.runInNewContext(source.replace(/^import\s[\s\S]*?from\s+['"][^'"]+['"];?\r?$/gm,'').replace('export async function main','async function main').replace('export function autocomplete','function autocomplete').replace('    await start();',injection)+';main(ns)',context);
  return context.harness;
 }
@@ -112,4 +112,32 @@ test('Go tactical move selection rejects non-capturing self-atari and follows na
 test('Go pause guard also stops moves during maintenance',async()=>{
  const ns=nsMock(),h=await controller(ns,{maintenanceRequested:()=>true});
  await assert.rejects(h.go_passTurn(ns),e=>typeof e==='symbol');
+});
+
+
+test('startup publishes status before instance discovery waits',async()=>{
+ const ns=nsMock(),writes=[];ns.write=async(path,text)=>writes.push([path,JSON.parse(text)]);
+ const h=await controller(ns,{getConfiguration:()=>({}),instanceCount:async()=>{assert.equal(writes[0][1].state,'initializing');return 2;}});
+ await h.start();assert.equal(writes[0][1].pid,1);
+});
+test('resume never waits for an old opponent promise on Black or completed boards',async()=>{
+ for(const [player,type]of [['Black','move'],['None','gameOver']]){
+  const ns=nsMock();ns.go.getCurrentPlayer=()=>player;ns.go.opponentNextTurn=()=>assert.fail('stale promise must not be used');
+  const h=await controller(ns);assert.equal((await h.waitForGoTurn(ns)).type,type);
+ }
+});
+test('resume polls White until ready, maintains heartbeat and remains cancellable',async()=>{
+ const ns=nsMock();let player='White',sleeps=0,beats=0;
+ ns.go.getCurrentPlayer=()=>player;ns.go.getOpponent=()=> 'Tetrads';
+ ns.sleep=async()=>{if(++sleeps===2)player='Black';};
+ const h=await controller(ns,{automationHeartbeat:()=>beats++});
+ assert.equal((await h.waitForGoTurn(ns)).type,'move');assert.equal(sleeps,2);assert.equal(beats,3);
+ let paused=false;player='White';ns.sleep=async()=>{paused=true;};
+ const stopped=await controller(ns,{isScriptPaused:()=>paused});
+ await assert.rejects(stopped.waitForGoTurn(ns),e=>typeof e==='symbol');
+});
+test('resume recognizes game completion during an opponent wait and rejects invalid state',async()=>{
+ const ns=nsMock();let player='White';ns.go.getCurrentPlayer=()=>player;ns.go.getOpponent=()=> 'Tetrads';ns.sleep=async()=>{player='None';};
+ const h=await controller(ns);assert.equal((await h.waitForGoTurn(ns)).type,'gameOver');
+ player='unexpected';await assert.rejects(h.waitForGoTurn(ns),/Unknown Go turn state/);
 });

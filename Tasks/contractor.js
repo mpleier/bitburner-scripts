@@ -1,3 +1,4 @@
+import {readSharedNetwork} from '../network-snapshot-policy.js';
 import {contractCollectionPlan} from '../contract-policy.js';
 import {reconcileContractDelivery,dispatchContractDelivery} from '../contract-delivery-policy.js';
 import { instanceCount, getFilePath, getNsDataThroughFile, disableLogs, log } from '../helpers.js'
@@ -14,10 +15,11 @@ export async function main(ns) {
     if(previous.busy)return ns.print('Contract worker is still running or delivering results.');
     disableLogs(ns, ["scan"]);
     ns.print("Getting server list...");
-    const servers = await getNsDataThroughFile(ns, 'scanAllServers(ns)');
+    const cached=readSharedNetwork(ns);
+    const servers = cached?.servers ?? await getNsDataThroughFile(ns, 'scanAllServers(ns)');
     ns.print(`Got ${servers.length} servers. Searching for contracts on each...`);
     // Retrieve all contracts and convert them to objects with the required information to solve
-    const contractsDb = servers.map(hostname => ({ hostname, contracts: ns.ls(hostname, '.cct') }))
+    const contractsDb = servers.map(hostname => {try{return {hostname,contracts:ns.ls(hostname,'.cct')};}catch{return {hostname,contracts:[]};}})
         .filter(o => o.contracts.length > 0)
         .map(o => o.contracts.map(contract => ({ contract, hostname: o.hostname }))).flat();
     if (contractsDb.length == 0){if(ns.getHostname()==='home')await ns.write('tasks/contracts-status.json',JSON.stringify({at:Date.now(),queued:0,types:[]}), 'w');return ns.print('Found no contracts to solve.');}

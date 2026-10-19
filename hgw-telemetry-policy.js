@@ -23,6 +23,14 @@ export function collectHgwTelemetry(ns,reset,ownerPid,now=Date.now()) {
  }
  if(pending?.augReset===reset.lastAugReset&&pending?.nodeReset===reset.lastNodeReset) {
   status.counts=mergeCounts(status.counts,pending.counts);
+  status.income||={};
+  for(const [key,v]of Object.entries(pending.income||{})){
+   if(!v||key!==JSON.stringify([v.owner,v.target])||!Number.isSafeInteger(v.owner)||v.owner<=0||typeof v.target!=='string'||
+    !Number.isFinite(v.at)||v.at>now||!Number.isFinite(v.money)||v.money<0||!Number.isSafeInteger(v.completions)||v.completions<0||!Number.isSafeInteger(v.risks)||v.risks<0)continue;
+   const old=status.income[key]||{};
+   status.income[key]={...v,money:(old.money||0)+v.money,completions:(old.completions||0)+v.completions,risks:(old.risks||0)+v.risks};
+  }
+  status.income=Object.fromEntries(Object.entries(status.income).sort((a,b)=>b[1].at-a[1].at).slice(0,64));
   status.targets||={};for(const [key,value]of Object.entries(pending.targets||{}))
    status.targets[key]={...mergeCounts(status.targets[key],value),at:value.at};
   status.targets=Object.fromEntries(Object.entries(status.targets).sort((a,b)=>(b[1].at||0)-(a[1].at||0)).slice(0,64));

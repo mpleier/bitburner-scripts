@@ -244,3 +244,20 @@ statistics; when the terminal UI is unavailable the script prints a text map ins
 `cleanup.js` removes only the actual Temp directory and defers while other home scripts are active. `git-pull.js` excludes runtime files, tests and Node tooling from normal repository discovery, preserves local configuration files in fallback listings, and deduplicates downloads.
 
 See PROJECT-QA.md for the latest project check and its coverage limits.
+
+
+## Background job health and scheduling
+
+`run automation-dashboard.js` shows recent daemon-managed job dispatches: launches, already-running jobs, expected blocking reasons, failures, and average dispatch time. Each job retains at most 64 observations from the last five minutes. Observed execution durations are ranges; seeing a process exit does not confirm it completed successfully. The reset-scoped report is saved in `tasks/background-jobs.json` and included in the supervisor dashboard.
+
+Ordinary periodic work receives a small deterministic delay to spread bursts. RAM, compilation, activity, maintenance, and launch failures retry with bounded backoff. Infrastructure affordability, faction invitations, and backdoor unlocks retain their immediate wakeups.
+
+Daemon publishes its complete discovered host list every ten seconds. Contract collection reuses it only on home while its owner is alive, the reset matches, and it is under fifteen seconds old; otherwise collection scans normally. Contract files, permissions, money, and RAM are still read live. Disappearing hosts are skipped.
+
+
+## Measured optimization controls
+
+- Daemon's `--max-hacking-processes` defaults to 2048 live HGW workers across the observed network. Threads do not count as separate processes. A complete inventory is refreshed every five seconds; locally admitted workers consume slots immediately. Three sustained scheduling delays of at least 250 ms reduce new-worker admission, and clean samples restore capacity gradually. Existing workers are never killed to meet the cap. The dashboard shows observed counts and scheduling lag. Other scripts can still launch independently between samples.
+- Automatic hash investments in server money/security require native hacking formulas, current owned income workers, and recent profitability analysis. Projections use rounded one-core HWGW batches before and after the upgrade, fixed allocated RAM, cash opportunity cost, and one batch-cycle allowance for retuning. These are projections, not measured income gains. Upgrades are requoted individually; unavailable formulas defer the investment. Explicit manual spending remains available.
+- `tasks/hacking-income.json` records owner-scoped hack receipts per sampled RAM-second. Qualified windows need at least 120 seconds, 30 hack completions, stable player/target settings and allocation, and clean hack/grow/weaken timing. Fresh observed throughput can only reduce hash server-upgrade projections; missing evidence retains the native estimate. Samples expire after ten minutes and invalidate on reset, owner changes, telemetry gaps, counter rollback, allocation changes, or timing errors. Successful boosts are journaled in `tasks/hash-server-upgrades.json`; comparable post-retuning windows include explicitly observational before/after rates, without claiming isolated upgrade gains. Manual-hack allocations are excluded.
+- IPvGO defaults to `--search-mode shadow`: a bounded two-ply challenger proposes a move every eighth eligible turn while the current tactical solver keeps playing. `--search-mode off` removes this measurement cost. `--search-mode play` is experimental; it can choose search proposals after urgent tactical moves, with final native legality checks. Search defaults to a 5 ms cooperative budget and 64 hypothetical moves (`--search-ms`, `--search-nodes`). Achievement streak/failure tasks skip search. Search-play performance history is isolated from tactical history. Shadow comparisons measure cost and agreement, not reward improvements.

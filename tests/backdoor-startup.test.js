@@ -1,3 +1,4 @@
+import {backgroundJobDue,backgroundJobDispatched} from '../background-job-policy.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
@@ -66,7 +67,7 @@ test('scheduler consumes a TOR handoff after success and retries RAM failures wi
  const s=await readFile(new URL('../daemon.js',import.meta.url),'utf8'),a=s.indexOf('    async function runPeriodicScripts('),b=s.indexOf('    async function tryRunTool(',a),body=s.slice(a,b);
  let now=100000,attempts=0;const record={at:100000,token:'tor:1',augReset:1,nodeReset:2};
  const script={name:'programs',infrastructure:true,infrastructureKind:'programs',interval:26000,lastRun:99000,lastCashBand:4};
- const context={periodicScripts:[script],resetInfo:reset,Date:{now:()=>now},torProgramsHandoff,infrastructureAffordable,infrastructureCashBand,getPlayerMoney:()=>1e6,
+ const context={backgroundJobDue,backgroundJobDispatched,periodicScripts:[script],resetInfo:reset,Date:{now:()=>now},torProgramsHandoff,infrastructureAffordable,infrastructureCashBand,getPlayerMoney:()=>1e6,
   getTool:s=>s,tryRunTool:async()=>++attempts>1,dictSourceFiles:{},options:{}};
  const ns={read:f=>f.includes('tor-ready')?JSON.stringify(record):f.includes('infrastructure')?'null':'0',sleep:async()=>{}};
  vm.runInNewContext(body.slice(0,body.lastIndexOf('    }')+5)+';globalThis.execute=runPeriodicScripts;',context);

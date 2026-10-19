@@ -64,7 +64,7 @@ test('damage pending on another target remains in the manifest while one target 
 });
 test('daemon stamps capacity once before splitting and checks it before scheduling more work',()=>{
  const s=readFileSync(new URL('../daemon.js',import.meta.url),'utf8');
- assert.ok(s.indexOf('args=withHackingLoopCapacity')<s.indexOf('const pid = await exec(ns, tool.name, targetServer.name'));
+ assert.ok(s.indexOf('args=withHackingLoopCapacity')<s.indexOf('pid=await exec(ns, tool.name, targetServer.name'));
  assert.ok(s.includes('{checkCapacity:loopingMode}'));
 });
 const keys=['hacking','strength','defense','dexterity','agility','charisma'];

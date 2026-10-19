@@ -1,3 +1,4 @@
+import {backgroundJobDue,backgroundJobDispatched} from '../background-job-policy.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
@@ -28,7 +29,7 @@ async function scheduler(){
  const s=await readFile(new URL('../daemon.js',import.meta.url),'utf8');const a=s.indexOf('    async function runPeriodicScripts('),b=s.indexOf('    async function tryRunTool(',a),body=s.slice(a,b);
  let now=100000,money=749999;const launched=[],quote={at:100000,augReset:1,nodeReset:2,cost:750000,budget:1};
  const script={name:'programs',infrastructure:true,infrastructureKind:'programs',interval:26000,lastRun:99500,lastCashBand:2};
- const context={periodicScripts:[script],Date:{now:()=>now},resetInfo:reset,infrastructureCashBand,infrastructureAffordable,torProgramsHandoff,
+ const context={backgroundJobDue,backgroundJobDispatched,periodicScripts:[script],Date:{now:()=>now},resetInfo:reset,infrastructureCashBand,infrastructureAffordable,torProgramsHandoff,
   getPlayerMoney:()=>money,reservedMoney:()=>0,tryRunTool:async(ns,s)=>{launched.push(s.name);return true;},getTool:s=>s,dictSourceFiles:{},options:{}};
  vm.runInNewContext(body.slice(0,body.lastIndexOf('    }')+5)+';globalThis.run=runPeriodicScripts;',context);
  const ns={read:f=>f.includes('infrastructure')?JSON.stringify(quote):'0',sleep:async()=>{}};

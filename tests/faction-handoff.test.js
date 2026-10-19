@@ -1,3 +1,4 @@
+import {backgroundJobDue,backgroundJobDispatched} from '../background-job-policy.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
@@ -31,7 +32,7 @@ async function rooting(){
  const source=await readFile(new URL('../daemon.js',import.meta.url),'utf8'),a=source.indexOf('    async function prioritizeFactionRooting('),b=source.indexOf('    // Main targeting loop',a);
  let now=100000,paused=false,free=100,fails=false,ports=1;const rooted=new Set(),calls=[];
  const servers=['n00dles',...factionBackdoorServers].map((name,i)=>({name,canCrack:()=>i<=ports}));
- const context={Date:{now:()=>now},factionBackdoorServers,factionRootAttempts:new Map(),daemonHost:'home',getAllServers:()=>servers,getFilePath:s=>s,
+ const context={backgroundJobDue,backgroundJobDispatched,Date:{now:()=>now},factionBackdoorServers,factionRootAttempts:new Map(),daemonHost:'home',getAllServers:()=>servers,getFilePath:s=>s,
   isScriptPaused:()=>paused,maintenanceRequested:()=>false,getServerByName:()=>({ramAvailable:()=>free}),log(){},doRoot:async(ns,s)=>{calls.push(s.name);if(fails)throw Error('RAM race');rooted.add(s.name);}};
  vm.runInNewContext(source.slice(a,b)+';globalThis.execute=prioritizeFactionRooting;',context);
  const ns={getScriptName:()=> 'daemon.js',hasRootAccess:h=>rooted.has(h),getScriptRam:()=>2};
@@ -52,7 +53,7 @@ async function scheduler(){
  const s=await readFile(new URL('../daemon.js',import.meta.url),'utf8'),a=s.indexOf('    async function runPeriodicScripts('),b=s.indexOf('    async function tryRunTool(',a),body=s.slice(a,b);
  let now=100000,active=false,canLaunch=false,attempts=0;const files={'tasks/backdoor-completed-CSEC.json':JSON.stringify(event())};
  const script={name:'faction-manager.js',factionInvites:true,interval:31000,lastRun:99000};
- const context={factionBackdoorServers,observeBackdoorCompletions,acknowledgeBackdoorCompletions,factionCompletionState:null,factionInviteWake:false,
+ const context={backgroundJobDue,backgroundJobDispatched,factionBackdoorServers,observeBackdoorCompletions,acknowledgeBackdoorCompletions,factionCompletionState:null,factionInviteWake:false,
   periodicScripts:[script],resetInfo:reset,Date:{now:()=>now},dictSourceFiles:{},options:{},infrastructureCashBand,infrastructureAffordable,torProgramsHandoff,
   getPlayerMoney:()=>0,getTool:s=>s,whichServerIsRunning:()=>active?['home',7]:[null,null],tryRunTool:async()=>{attempts++;return canLaunch;}};
  vm.runInNewContext(body.slice(0,body.lastIndexOf('    }')+5)+';globalThis.execute=runPeriodicScripts;',context);

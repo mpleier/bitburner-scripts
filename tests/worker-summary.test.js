@@ -1,3 +1,5 @@
+import {readHackingProcessBudget} from '../hacking-process-policy.js';
+import {readBackgroundHealth} from '../background-job-policy.js';
 import {currentCloudPurchase} from '../cloud-status-policy.js';
 import {commandPolicyVersion} from '../remote-api-command-policy.js';
 import {collectControllerDiagnostics} from '../diagnostic-cadence-policy.js';
@@ -69,7 +71,7 @@ async function supervise({script='gangs.js',protectedWork=true,activity=false,fa
  files.set('tasks/runtime/8.json',JSON.stringify({pid:8,signature:'old',startedAt:1,at:now}));
  const stop=Error('test complete');
  const ns={pid:7,args:[],disableLog(){},getScriptName:()=> 'reliability-manager.js',getResetInfo:()=>reset,atExit(){},read:f=>files.get(f)||'',write:(f,s)=>{writes.push({file:f,at:now});files.set(f,s);},rm:f=>files.delete(f),ps:()=>processes,getScriptRam:()=>10,getRunningScript:()=>({ramUsage:10,threads:2}),getServerMaxRam:()=>512,getServerUsedRam:()=>512-free,getScriptLogs:()=>[],ls:()=>[],isRunning:p=>processes.some(x=>x.pid===p),print(){},kill:p=>{calls.push(['kill',p]);processes=processes.filter(x=>x.pid!==p);return true;},run:(name,threads,...args)=>{calls.push(['run',name,threads,...args]);if(failRuns-->0)return 0;pid++;processes.push({pid,filename:name,threads,args});files.set('tasks/runtime/'+pid+'.json',JSON.stringify({pid,signature:runtime.scriptSignature(ns,name),startedAt:now,at:now}));return pid;},sleep:async()=>{pass++;onSleep({setFree:n=>free=n});now+=10000;if(pass>=loops)throw stop;}};
- const context={currentCloudPurchase,collectControllerDiagnostics,...runtime,Date:{now:()=>now},upgradeRemoteWorker:()=>({state:'test'}),commandPolicyVersion:20,boundedDiagnostics:diagnosticBound,hackingDrainActive:()=>false,collectHashSpendingStatus:()=>[],homeRamReserve:()=>8,reclaimHomeRam:()=>true,isScriptPaused:()=>false,activityRecord:()=>activity?{ownerPid:99}:null,getNsDataThroughFile:async()=>protectedWork,autopilotSourceFiles:()=>({4:3}),ns};
+ const context={readHackingProcessBudget,readBackgroundHealth,currentCloudPurchase,collectControllerDiagnostics,...runtime,Date:{now:()=>now},upgradeRemoteWorker:()=>({state:'test'}),commandPolicyVersion:20,boundedDiagnostics:diagnosticBound,hackingDrainActive:()=>false,collectHashSpendingStatus:()=>[],homeRamReserve:()=>8,reclaimHomeRam:()=>true,isScriptPaused:()=>false,activityRecord:()=>activity?{ownerPid:99}:null,getNsDataThroughFile:async()=>protectedWork,autopilotSourceFiles:()=>({4:3}),ns};
  vm.runInNewContext(text.replace('export async function','async function')+';globalThis.run=main;',context);await assert.rejects(context.run(ns),e=>e===stop);return {files,calls,writes};
 }
 test('executed supervisor reloads gangs during graft protection without global maintenance',async()=>{

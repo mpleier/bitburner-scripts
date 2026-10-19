@@ -15,6 +15,9 @@ export function rankGoOpponents(stats={},goal='auto',node=1,performance={}) {
 }
 
 export function goOptionsError(o) {
+ if(o['search-mode']!==undefined&&!['off','shadow','play'].includes(o['search-mode']))return 'search-mode must be off, shadow, or play.';
+ if(o['search-ms']!==undefined&&(!Number.isFinite(o['search-ms'])||o['search-ms']<1||o['search-ms']>50))return 'search-ms must be between 1 and 50.';
+ if(o['search-nodes']!==undefined&&(!Number.isSafeInteger(o['search-nodes'])||o['search-nodes']<16||o['search-nodes']>1024))return 'search-nodes must be an integer between 16 and 1024.';
  try{rankGoOpponents({},o.goal);}catch{return 'Unknown Go goal: '+o.goal;}
  if(o['board-size']!==undefined&&![5,7,9,13].includes(o['board-size']))return 'board-size must be 5, 7, 9, or 13.';
  if(o.opponent&&!goOpponents.includes(o.opponent))return 'Unknown Go opponent: '+o.opponent;

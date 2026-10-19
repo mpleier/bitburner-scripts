@@ -132,17 +132,64 @@ export function hashSpendingDecision(ns,action,options={}) {
   if(action==='Increase Maximum Money'||action==='Reduce Minimum Security'){
    const analysis=read('/Temp/analyze-hack.txt'),meta=read('/Temp/analyze-hack-meta.txt');
    const daemon=processes.find(p=>p.filename.replace(/^\//,'')==='daemon.js');
-   if(!daemon||daemon.args.includes('--xp-only'))return result(false,'No income-mode hacking allocation',common);
+   if(!daemon||daemon.args.some(a=>['--xp-only','-x','--x','--hack-only','-h'].includes(a)))return result(false,'No ordinary income-mode hacking allocation',common);
    const target=options.target,rate=Array.isArray(analysis)?analysis.find(s=>s.hostname===target)?.gainRate:0;
    if(!(meta?.at<=now&&now-meta.at<300000&&meta.augReset===reset.lastAugReset&&meta.nodeReset===reset.lastNodeReset))return result(false,'Fresh server profitability analysis needed',common);
-   // gainRate is dollars per RAM-second. Attribute only RAM actually allocated to the target.
-   let ram=0;const visited=new Set(),queue=['home'];
+   // Attribute only currently owned workers; remote inventory errors invalidate the quote.
+   let ram=0,inventoryComplete=true;const visited=new Set(),queue=['home'];
    while(queue.length&&visited.size<1024){const host=queue.shift();if(visited.has(host))continue;visited.add(host);
-    try{queue.push(...ns.scan(host).filter(h=>!visited.has(h)));for(const p of ns.ps(host))if(/(?:hack|grow|weak)-target\.js$/.test(p.filename)&&p.args.includes(target))ram+=ns.getScriptRam(p.filename,host)*p.threads;}catch{}
+    try{queue.push(...ns.scan(host).filter(h=>!visited.has(h)));for(const p of ns.ps(host)){
+     const weak=/weak-target\.js$/.test(p.filename),owner=p.args?.[weak?6:7];
+     if(/manualhack-target\.js$/.test(p.filename)&&p.args?.[0]===target&&owner===daemon.pid)inventoryComplete=false;
+     if(/^\/?Remote\/(?:hack|grow|weak)-target\.js$/.test(p.filename)&&p.args?.[0]===target&&owner===daemon.pid&&Number.isFinite(p.threads)&&p.threads>0)ram+=ns.getScriptRam(p.filename,host)*p.threads;
+    }}catch{inventoryComplete=false;}
    }
-   const server=ns.getServer(target),relative=action==='Increase Maximum Money'?server.moneyMax>=1e13?0:.02:server.minDifficulty>1?Math.min(.02,(server.minDifficulty-1)/server.minDifficulty):0;
-   const benefit=Math.max(0,rate||0)*ram*relative,remaining=Math.min(3600,Math.max(0,Number(options.remainingSeconds)||1800));
-   if(!(benefit>0&&cashCost/benefit<=remaining))return result(false,'Server boost does not repay before the planning horizon',{...common,estimatedIncomeGain:benefit,paybackSeconds:benefit>0?cashCost/benefit:null});
+   if(queue.length||!inventoryComplete||!(ram>0&&Number.isFinite(rate)&&rate>0))return result(false,'Complete owned income allocation needed',common);
+   let projection;
+   try{
+    const server=ns.getServer(target),player=ns.getPlayer(),f=ns.formulas.hacking,potency=ns.weakenAnalyze(1,1);
+    if(!(Number.isFinite(server.moneyMax)&&server.moneyMax>0&&Number.isFinite(server.minDifficulty)&&server.minDifficulty>=1&&potency>0))throw Error('Invalid native inputs');
+    const upgraded={...server};
+    if(action==='Increase Maximum Money')upgraded.moneyMax=Math.min(1e13,server.moneyMax*1.02);
+    else upgraded.minDifficulty=Math.max(1,server.minDifficulty*.98);
+    if(upgraded.moneyMax<server.moneyMax||upgraded.moneyMax===server.moneyMax&&upgraded.minDifficulty===server.minDifficulty)return result(false,'Server boost has no conservatively valued effect',common);
+    // Same bounded batch model before and after: rounded threads, minimum security, one core.
+    const quote=s=>{
+     const base={...s,hackDifficulty:s.minDifficulty,moneyAvailable:s.moneyMax};
+     const percent=f.hackPercent(base,player),chance=f.hackChance(base,player),time=f.weakenTime(base,player)/1000;
+     if(!(Number.isFinite(percent)&&percent>0&&Number.isFinite(chance)&&chance>0&&chance<=1&&Number.isFinite(time)&&time>0))throw Error('No viable native batch');
+     let best=null;
+     for(const fraction of [.01,.025,.05,.1,.2,.4,.6,.75]){
+      const hack=Math.max(1,Math.floor(fraction/percent)),stolen=hack*percent;if(stolen>=.99)continue;
+      const grow=Math.ceil(f.growThreads({...base,moneyAvailable:s.moneyMax*(1-stolen)},player,s.moneyMax,1));
+      if(!Number.isSafeInteger(grow)||grow<0)continue;
+      const weak1=Math.ceil(hack*.002/potency),weak2=Math.ceil(grow*.004/potency);
+      const batchRam=hack*1.7+(grow+weak1+weak2)*1.75;
+      const income=s.moneyMax*stolen*chance/(batchRam*time);
+      if(Number.isFinite(income)&&income>0&&(!best||income>best.income))best={income,hack,grow,weak1,weak2,batchRam,time};
+     }
+     if(!best)throw Error('No finite native batch');return best;
+    };
+    const before=quote(server),after=quote(upgraded),relative=Math.max(0,after.income/before.income-1);
+    // Calibrate absolute throughput only; an observational ratio is not a measured causal upgrade gain.
+    const observation=read('tasks/hacking-income.json'),sample=observation?.targets?.[target];
+    const savedPacing=read('tasks/hgw-pacing.json');
+    const pacing=savedPacing?.pid===daemon.pid&&savedPacing.at<=now&&now-savedPacing.at<15000?
+     [savedPacing.cycleMs,savedPacing.queueMs,savedPacing.targetCap]:null;
+    const signature=JSON.stringify([server.moneyMax,server.minDifficulty,player.skills,player.mults,daemon.args,pacing]);
+    const context=JSON.stringify([player.skills,player.mults,daemon.args,pacing]);
+    const qualified=observation?.version===1&&observation.ownerPid===daemon.pid&&observation.nodeReset===reset.lastNodeReset&&observation.augReset===reset.lastAugReset&&
+     observation.at<=now&&now-observation.at<15000&&sample?.signature===signature&&sample.measuredAt<=now&&now-sample.measuredAt<600000&&
+     sample.durationSeconds>=120&&sample.completions>=30&&sample.risks===0&&Number.isFinite(sample.incomePerRamSecond)&&sample.incomePerRamSecond>=0&&
+     Number.isFinite(sample.ram)&&sample.ram>0&&Math.abs(sample.ram/ram-1)<=.05;
+    const calibration=qualified?Math.min(1,sample.incomePerRamSecond/rate):1;
+    const benefit=rate*ram*relative*calibration,retuneSeconds=Math.max(before.time,after.time);
+    const remaining=options.remainingSeconds===undefined?1800:Math.min(3600,Math.max(0,Number(options.remainingSeconds)));
+    const payback=benefit>0?cashCost/benefit+retuneSeconds:null;
+    projection={basis:'Native formulas; fixed allocated RAM; one-core rounded batches; one-cycle retuning allowance',relative,estimatedIncomeGain:benefit,paybackSeconds:payback,retuneSeconds,allocatedRam:ram,before,after,calibration:{factor:calibration,context,basis:qualified?'Observed income per RAM-second; downward adjustment only':'Uncalibrated native estimate',observation:qualified?{at:sample.measuredAt,durationSeconds:sample.durationSeconds,completions:sample.completions,incomePerRamSecond:sample.incomePerRamSecond}:null}};
+    if(!(Number.isFinite(payback)&&payback<=remaining))return result(false,'Server boost does not repay before the planning horizon',{...common,serverProjection:projection});
+   }catch{return result(false,'Native hacking formulas unavailable or invalid; server boost deferred',common);}
+   common.serverProjection=projection;
   }else if(action==='Improve Gym Training'||action==='Improve Studying'){
    const mult=action==='Improve Studying'?ns.hacknet.getStudyMult():ns.hacknet.getTrainingMult();
    const seconds=Math.max(0,Number(options.trainingSeconds)||0),savedSeconds=seconds*.2/(mult+.2);
@@ -166,11 +213,20 @@ export function spendHashesWithPolicy(ns,action,target,quantity=1,options={},dec
  const record={at:Date.now(),pid:options.ownerPid||ns.pid,script:options.script||'hash-worker',action,target:target??null,...decision};
  const finish=(success,spent=0)=>{const receipt={...record,success,spent};ns.write('tasks/hash-spending-'+(options.ownerPid||ns.pid)+'.json',JSON.stringify(receipt),'w');return receipt;};
  if(!decision.allowed||!Number.isSafeInteger(quantity)||quantity<1)return finish(false);
+ if(options.automatic!==false&&quantity!==1&&['Increase Maximum Money','Reduce Minimum Security'].includes(action))return finish(false); // Requote each scaling server upgrade.
  let cost;try{cost=ns.hacknet.hashCost(action,quantity);}catch{return finish(false);}
  if(!Number.isFinite(cost)||cost>decision.budget||cost>ns.hacknet.numHashes())return finish(false);
  let beforeRank=null,beforeSp=null;
  if(action==='Exchange for Bladeburner Rank'&&typeof options.observeRank==='function')try{const r=options.observeRank();if(Number.isFinite(r?.rank)&&Number.isFinite(r?.points)){beforeRank=r.rank;beforeSp=r.points;}}catch{}
  const before=ns.hacknet.numHashes(),success=ns.hacknet.spendHashes(action,target,quantity);
+ if(success&&decision.serverProjection)try{
+  // Journal observed baseline and native target change without replaying successful purchases on write failures.
+  const r=ns.getResetInfo(),server=ns.getServer(target);let old;
+  try{old=JSON.parse(ns.read('tasks/hash-server-upgrades.json'));}catch{}
+  const entries=old?.nodeReset===r.lastNodeReset&&old.augReset===r.lastAugReset&&Array.isArray(old.entries)?old.entries:[];
+  ns.write('tasks/hash-server-upgrades.json',JSON.stringify({nodeReset:r.lastNodeReset,augReset:r.lastAugReset,entries:[...entries,
+   {at:Date.now(),action,target,quantity,moneyMax:server.moneyMax,minDifficulty:server.minDifficulty,projection:decision.serverProjection}].slice(-32)}),'w');
+ }catch{}
  if(success&&beforeRank!==null)try{
   const r=ns.getResetInfo(),observation=options.observeRank(),rank=observation.rank,gain=observation.points-beforeSp;
   record.observedSpGain=gain;record.observedRankGain=rank-beforeRank;

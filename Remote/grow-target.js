@@ -53,6 +53,14 @@ function report(ns,meta,event,silent) {
   const add=(record)=>{for(const [key,n]of Object.entries(counters))record[key]=(Number(record[key])||0)+n;
    record.maxLateMs=Math.max(Number(record.maxLateMs)||0,event.lateMs);return record;};
   data.counts=add(data.counts||{});data.targets||={};
+  // Owner-scoped actual receipts; zero yields count as completions, never as money.
+  if(Number.isSafeInteger(event.owner)&&event.owner>0){
+   data.income||={};const k=JSON.stringify([event.owner,event.target]),old=data.income[k]||{};
+   data.income[k]={owner:event.owner,target:event.target,at:event.at,
+    money:(Number(old.money)||0)+(event.tool==='hack'&&Number.isFinite(event.value)&&event.value>0&&!event.error?event.value:0),
+    completions:(Number(old.completions)||0)+Number(event.tool==='hack'),risks:(Number(old.risks)||0)+Number(!!event.error||event.lateMs>event.toleranceMs)};
+   data.income=Object.fromEntries(Object.entries(data.income).sort((a,b)=>b[1].at-a[1].at).slice(0,64));
+  }
   const key=event.tool+':'+event.target;data.targets[key]={...add(data.targets[key]||{}),at:event.at};
   const keys=Object.keys(data.targets);if(keys.length>64)delete data.targets[keys.sort((a,b)=>data.targets[a].at-data.targets[b].at)[0]];
   data.at=event.at;data.firstAt=Number.isFinite(data.firstAt)?Math.min(data.firstAt,event.at):event.at;

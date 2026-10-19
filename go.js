@@ -1,3 +1,4 @@
+import {searchGoMove} from './go-search-policy.js';
 import {registerAutomation,automationHeartbeat,maintenanceRequested} from './runtime-policy.js';
 import {autopilotSourceFiles} from './autopilot-policy.js';
 import {achievementActionAllowed} from './achievement-policy.js';
@@ -21,6 +22,9 @@ import {
 } from './helpers.js'
 
 const argsSchema = [
+    ['search-mode','shadow'], // off, shadow (measure proposals), play (experimental move selection).
+    ['search-ms',5], // Maximum search time per sampled move, in milliseconds.
+    ['search-nodes',64], // Maximum hypothetical moves per sampled search.
     ['goal','auto'], // auto, money, speed, hacking, reputation, combat, crime, hacknet
     ['allow-self-atari',false], // Permit non-capturing moves that leave the played group with only one liberty.
     ['adaptive-boards',true], // Measure bonus per minute and gradually compare board sizes unless board-size is explicit.
@@ -60,7 +64,8 @@ export async function main(ns) {
     // Global variables initialized in this way get strong typing throughout
     let moveOutcomes = new Map(),boardAnalysis=null;
     const patternCache=new Map();
-    let performanceBuckets={},gameRecord=null,boardSizeExplicit=false;
+    let performanceBuckets={},gameRecord=null,boardSizeExplicit=false,goEngine='tactical';
+    let searchProposal=null;const searchStats={attempts:0,proposals:0,comparisons:0,agreements:0,nodes:0,totalMs:0,last:null};
     let board = (/**@returns{string[]}*/() => undefined)(); // The current board state
     let currentValidMoves = (/**@returns{number[][]}*/() => undefined)(); //All valid moves for this turn
     let currentValidContestedMoves = (/**@returns{number[][]}*/() => undefined)(); //All valid moves that occupy a contested space
@@ -116,10 +121,11 @@ export async function main(ns) {
         if ((await instanceCount(ns)) > 1) return; // Prevent duplicate controllers, even with different args.
 
         goOptions=runOptions;
+        goEngine=runOptions['search-mode']==='play'?'search-v1':'tactical';
         boardSizeExplicit=ns.args.some(a=>a==='--board-size'||typeof a==='string'&&a.startsWith('--board-size='));
         try{const config=JSON.parse(ns.read('go.js.config.txt')||'{}');const values=Array.isArray(config)?Object.fromEntries(config):config;
             if(values&&Object.prototype.hasOwnProperty.call(values,'board-size'))boardSizeExplicit=true;}catch{}
-        try{const saved=JSON.parse(ns.read('tasks/go-performance.json'));if(saved.nodeReset===ns.getResetInfo().lastNodeReset&&saved.augReset===ns.getResetInfo().lastAugReset&&saved.version===2&&saved.buckets&&typeof saved.buckets==='object')performanceBuckets=saved.buckets;}catch{}
+        try{const saved=JSON.parse(ns.read('tasks/go-performance.json'));if(saved.nodeReset===ns.getResetInfo().lastNodeReset&&saved.augReset===ns.getResetInfo().lastAugReset&&saved.version===2&&(saved.engine||'tactical')===goEngine&&saved.buckets&&typeof saved.buckets==='object')performanceBuckets=saved.buckets;}catch{}
         // Warm static pattern variants before any candidate searches.
         for(const pattern of [...disrupt4,...disrupt5,...def5])getAllPatterns(pattern);
         const invalid=goOptionsError(goOptions);if(invalid)return ns.tprint(invalid);
@@ -188,6 +194,9 @@ export async function main(ns) {
         ensurePlaying();
         const latest=await go_analysis_getValidMoves(ns);ensurePlaying();
         if(latest[x]?.[y]!==true)throw new Error('Go board changed before move submission; refreshing.');
+        if(searchProposal&&searchProposal.signature===board.join('/')){
+            searchStats.comparisons++;if(searchProposal.coords[0]===x&&searchProposal.coords[1]===y)searchStats.agreements++;searchProposal=null;
+        }
         return await ns.go.makeMove(x,y);
         // Note to self - I decided against ram-dodging this request because the "await" actually blocks for a long time.
         // This program spends 99% of its time waiting for makeMove to complete (which is time-throttled by the game)
@@ -251,7 +260,7 @@ export async function main(ns) {
             board = snapshot.board;
             if(!validGoBoard(board))throw new Error('Malformed Go board; waiting for native state.');
             startedGame=true;
-            if(Date.now()-lastStatusAt>=5000){goStatus={...goStatus,at:Date.now(),pid:ns.pid,state:'playing',error:null,opponent:ns.go.getOpponent(),turn,boardSize:board.length,cheats};await ns.write('tasks/go-status.json',JSON.stringify(goStatus),'w');lastStatusAt=Date.now();}
+            if(Date.now()-lastStatusAt>=5000){goStatus={...goStatus,at:Date.now(),pid:ns.pid,state:'playing',error:null,opponent:ns.go.getOpponent(),turn,boardSize:board.length,cheats,engine:goEngine,search:{...searchStats,mode:goOptions['search-mode']||'off'}};await ns.write('tasks/go-status.json',JSON.stringify(goStatus),'w');lastStatusAt=Date.now();}
             contested = snapshot.contested;
             validMove = snapshot.valid;
             validLibMoves = snapshot.liberties;
@@ -280,7 +289,15 @@ export async function main(ns) {
                 if(moves.length>=2){failureAttempts++;results=await go_cheat_playTwoMoves(ns,...moves[0],...moves[1]);}
                 if(results?.type==='gameOver'){await checkNewGame(ns,results);continue;}
             }
-            if (!results)results=await movePiece(ns,goTacticalMove(board,validMove,moveOutcomes));
+            const tactical=goTacticalMove(board,validMove,moveOutcomes);
+            searchProposal=null;
+            if(!results&&(!tactical||goOptions['search-mode']==='shadow')&&!achievement?.goStreak&&!achievement?.goFailure&&['shadow','play'].includes(goOptions['search-mode'])&&(goOptions['search-mode']==='play'||turn%8===0)){
+                const searched=searchGoMove(board,validMove,{maxNodes:goOptions['search-nodes'],maxMs:goOptions['search-ms'],history:ns.go.getMoveHistory()});
+                searchStats.attempts++;searchStats.nodes+=searched.nodes;searchStats.totalMs+=searched.elapsedMs;searchStats.last={nodes:searched.nodes,elapsedMs:searched.elapsedMs,bounded:searched.bounded,coords:searched.move?.coords||null};
+                if(searched.move){searchStats.proposals++;searchProposal={signature:board.join('/'),coords:searched.move.coords};
+                    if(goOptions['search-mode']==='play')results=await movePiece(ns,searched.move);}
+            }
+            if (!results)results=await movePiece(ns,tactical);
             if (!results && turn < 3)
                 results = await movePiece(ns, getOpeningMove(ns))
 
@@ -447,7 +464,7 @@ export async function main(ns) {
             ensurePlaying();
             const finishedStats=ns.go.analysis.getStats();
             if(gameRecord){performanceBuckets=recordGoPerformance(performanceBuckets,gameRecord,finishedStats,Date.now(),typeof ns.go.getGameState==='function'?ns.go.getGameState():null);gameRecord=null;
-                await ns.write('tasks/go-performance.json',JSON.stringify({version:2,nodeReset:ns.getResetInfo().lastNodeReset,augReset:ns.getResetInfo().lastAugReset,buckets:performanceBuckets}),'w');}
+                await ns.write('tasks/go-performance.json',JSON.stringify({version:2,engine:goEngine,nodeReset:ns.getResetInfo().lastNodeReset,augReset:ns.getResetInfo().lastAugReset,buckets:performanceBuckets}),'w');}
             if (runOnce&&startedGame){await ns.write('tasks/go-status.json',JSON.stringify({...goStatus,at:Date.now(),pid:ns.pid,state:'completed',error:null}),'w');throw stopPlaying;}
             const stats=finishedStats,achievement=liveGoGoals(ns),now=Date.now();
             const context={...goProgressionContext(ns,sourceFile14,now),cheats,boardSizeExplicit,protectStreak:!!achievement?.goStreak,currentOpponent:goStatus?.selected?.name,

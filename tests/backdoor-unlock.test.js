@@ -1,3 +1,4 @@
+import {backgroundJobDue,backgroundJobDispatched} from '../background-job-policy.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
@@ -31,7 +32,7 @@ async function scheduler(){
  const s=await readFile(new URL('../daemon.js',import.meta.url),'utf8'),a=s.indexOf('    async function runPeriodicScripts('),b=s.indexOf('    async function tryRunTool(',a),body=s.slice(a,b);
  let now=100000,hacking=49,root=true,active=false,canLaunch=true,attempts=0;
  const script={name:'/Tasks/backdoor-all-servers.js',backdoorUnlocks:true,interval:33000,lastRun:99500};
- const context={periodicScripts:[script],resetInfo:reset,factionBackdoorState:null,factionBackdoorServers,observeBackdoorUnlocks,acknowledgeBackdoorUnlocks,
+ const context={backgroundJobDue,backgroundJobDispatched,periodicScripts:[script],resetInfo:reset,factionBackdoorState:null,factionBackdoorServers,observeBackdoorUnlocks,acknowledgeBackdoorUnlocks,
   infrastructureCashBand,infrastructureAffordable,torProgramsHandoff,Date:{now:()=>now},dictSourceFiles:{4:3},options:{},dictInitialServerInfos:{CSEC:{backdoorInstalled:false}},
   getAllServers:()=>[{name:'CSEC',requiredHackLevel:50}],playerHackSkill:()=>hacking,getPlayerMoney:()=>0,
   getTool:s=>s,whichServerIsRunning:()=>active?['home',77]:[null,null],tryRunTool:async()=>{attempts++;return canLaunch;}};
@@ -64,5 +65,5 @@ test('daemon unlock state shares controller scope and keeps native launch guards
  assert.ok(s.indexOf('let factionBackdoorState = null;')<s.indexOf('    async function startup('));
  assert.equal((s.match(/let factionBackdoorState/g)||[]).length,1);
  assert.match(s,/backdoorUnlocks: true, shouldRun: \(\) => 4 in dictSourceFiles/);
- assert.match(s,/await tryRunTool\(ns, getTool\(script\)\)/);
+ assert.match(s,/await tryRunTool\(ns, tool\)/);
 });

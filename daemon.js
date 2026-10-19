@@ -1,9 +1,13 @@
+import {updateHackingProcessBudget,hackingProcessInventory,reserveHackingProcess,releaseHackingProcess} from './hacking-process-policy.js';
+import {runBackgroundCheck,backgroundHealthSnapshot,backgroundJobDue,backgroundJobDispatched} from './background-job-policy.js';
+import {sharedNetworkSnapshot} from './network-snapshot-policy.js';
 import {createXpCapacityRecord} from './xp-capacity-policy.js';
 import {readStockManipulationSnapshot} from './stock-policy.js';
 import {hackingWorker,commitHackingCapacity,withHackingLoopCapacity,ownedHackingLoopCounts,requestStockHackingDrain,coordinateHackingDrain} from './hacking-drain-policy.js';
 import {hashSpendingDecision,spendHashesWithPolicy} from './hash-spending-policy.js';
 import {restoreHgwTiming,adaptiveHgwTiming} from './progression-improvements-policy.js';
 import {collectHgwTelemetry} from './hgw-telemetry-policy.js';
+import {collectHackingIncome} from './hacking-income-policy.js';
 import {factionBackdoorServers,observeBackdoorUnlocks,acknowledgeBackdoorUnlocks,observeBackdoorCompletions,acknowledgeBackdoorCompletions} from './backdoor-unlock-policy.js';
 import {daemonHomeReserve,infrastructureCashBand,infrastructureAffordable,torProgramsHandoff} from './early-game-policy.js';
 import {homeRamReserve,reclaimHomeRam} from './home-ram-policy.js';
@@ -69,6 +73,7 @@ const argsSchema = [
     ['cycle-timing-delay', 4000], // (ms) Length of a hack cycle. The smaller this is, the more batches (HWGW) we can schedule before the first cycle fires, but the greater the chance of a misfire
     ['queue-delay', 1000], // (ms) Delay before the first script begins, to give time for all scripts to be scheduled
     ['recovery-thread-padding', 1], // Multiply the number of grow/weaken threads needed by this amount to automatically recover more quickly from misfires.
+    ['max-hacking-processes', 2048], // Global live HGW worker cap; threads do not count as processes.
     ['max-batches', 40], // Maximum overlapping cycles to schedule in advance. Note that once scheduled, we must wait for all batches to complete before we can schedule mor
     ['max-steal-percentage', 0.75], // Don't steal more than this in case something goes wrong with timing or scheduling, it's hard to recover frome
 
@@ -142,6 +147,7 @@ export async function main(ns) {
     // Allows some home ram to be reserved for ad-hoc terminal script running and when home is explicitly set as the "preferred server" for starting a helper
     let homeReservedRam = 0; // (Set in command line args)
 
+    let discoveredHostNames=[];
     let allHostNames = (/**@returns {string[]}*/() => [])(); // simple name array of servers that have been discovered
     let _allServers = (/**@returns{Server[]}*/() => [])(); // Array of Server objects - our internal model of servers for hacking
     let homeServer = (/**@returns{Server}*/() => [])(); // Quick access to the home server object.
@@ -162,6 +168,7 @@ export async function main(ns) {
     let useHacknetNodes = false; // "-n" command line arg - Can toggle using hacknet nodes for extra hacking ram
     let loopingMode = false;
     let hackingDrain=null,lastLoopInventoryAt=0,loopJobSequence=0;
+    let hackingProcessBudget=null,lastProcessInventoryAt=0,lastSchedulingLagMs=0;
     let recoveryThreadPadding = 1; // How many multiples to increase the weaken/grow threads to recovery from misfires automatically (useful when RAM is abundant and timings are tight)
 
     let daemonHost = null; // the name of the host of this daemon, so we don't have to call the function more than once.
@@ -181,7 +188,7 @@ export async function main(ns) {
     // Property to avoid log churn if our status hasn't changed since the last loop
     let lastUpdate = "";
     let lastUpdateTime = Date.now();
-    let lastXpCapacityAt=0;
+    let lastXpCapacityAt=0,lastBackgroundHealthAt=0,lastNetworkSnapshotAt=0;
     let lowUtilizationIterations = 0;
     let highUtilizationIterations = 0;
     let lastShareTime = 0; // Tracks when share was last invoked so we can respect the configured share-cooldown
@@ -275,6 +282,8 @@ export async function main(ns) {
         daemonHost = "home"; // ns.getHostname(); // get the name of this node (realistically, will always be home)
         const runOptions = getConfiguration(ns, argsSchema);
         if (!runOptions) return;
+        if(!Number.isSafeInteger(runOptions['max-hacking-processes'])||runOptions['max-hacking-processes']<4||runOptions['max-hacking-processes']>100000)
+            return ns.tprint('max-hacking-processes must be an integer between 4 and 100000.');
 
         // Ensure no other copies of this script are running (they share memory)
         const scriptName = ns.getScriptName();
@@ -294,9 +303,11 @@ export async function main(ns) {
         // TODO: Can probably get rid of all of this now that the entire script is wrapped in the main function.
         lastUpdate = "";
         lastUpdateTime = Date.now();
-        lastXpCapacityAt=0;
+        lastXpCapacityAt=0;lastBackgroundHealthAt=0;lastNetworkSnapshotAt=0;
+        hackingProcessBudget=null;lastProcessInventoryAt=0;lastSchedulingLagMs=0;
         maxTargets = 2;
         lowUtilizationIterations = highUtilizationIterations = 0;
+        discoveredHostNames=[];
         allHostNames = [], _allServers = [], homeServer = null;
         resetServerSortCache();
         ownedCracks = [];
@@ -464,6 +475,8 @@ export async function main(ns) {
 
         await buildToolkit(ns, [...asynchronousHelpers, ...periodicScripts, ...hackTools]); // build toolkit
         await buildServerList(ns, false); // create the exhaustive server list
+        lastProcessInventoryAt=Date.now();
+        hackingProcessBudget=updateHackingProcessBudget(null,{now:lastProcessInventoryAt,inventory:hackingProcessInventory(ns,discoveredHostNames),maxWorkers:options['max-hacking-processes']});
 
         // If we ascended less than 10 minutes ago, start with some study and/or XP cycles to quickly restore hack XP
         const timeSinceLastAug = Date.now() - resetInfo.lastAugReset;
@@ -653,7 +666,7 @@ export async function main(ns) {
             const milestone = script.infrastructure && (band > (script.lastCashBand ?? -1)||script.affordabilityWake) && timeSinceLastRun >= 1000;
             const backdoorWake=script.backdoorUnlocks&&factionBackdoorState?.pending.length>0&&timeSinceLastRun>=1000;
             const inviteWake=script.factionInvites&&factionInviteWake&&timeSinceLastRun>=1000;
-            if (timeSinceLastRun <= script.interval && !milestone && !backdoorWake && !inviteWake) continue;
+            if (!backgroundJobDue(script,Date.now(),!!(milestone||backdoorWake||inviteWake))) continue;
             // A running manager may have taken its snapshot before this unlock. Keep it pending until a new dispatch.
             if((backdoorWake||inviteWake)&&whichServerIsRunning(ns,getTool(script).name,false)[0]!=null)continue;
             const pendingInvites=script.factionInvites?[...(factionCompletionState?.pending||[])]:[];
@@ -661,7 +674,10 @@ export async function main(ns) {
             script.affordabilityWake=false;
             script.lastCashBand = band;
             script.lastRun = Date.now(); // Update the last run date whether we successfully ran it or not           
-            if (await tryRunTool(ns, getTool(script))){ // Failed RAM/pause checks retain the TOR handoff for a bounded retry.
+            const tool=getTool(script);let ran=false;
+            try{ran=await tryRunTool(ns, tool);}
+            finally{backgroundJobDispatched(script,tool.lastOutcome||(ran?'launched':'failed'),Date.now());}
+            if (ran){ // Failed RAM/pause checks retain the TOR handoff for a bounded retry.
                 if(handoff)script.lastTorToken=torReady.token;
                 if(script.factionInvites&&factionCompletionState){
                     factionCompletionState=acknowledgeBackdoorCompletions(factionCompletionState,pendingInvites);
@@ -689,30 +705,36 @@ export async function main(ns) {
      * @param {NS} ns
      * @param {Tool} tool */
     async function tryRunTool(ns, tool) {
-        if (isScriptPaused(ns, tool.name)) return false;
-        if (activityBusy(ns) && /(^|\/)(work-for-factions|grafting-manager|infiltration-manager)\.js$/.test(tool.name)) return false;
+        return await runBackgroundCheck(ns,tool,()=>tryRunToolImpl(ns,tool));
+    }
+    async function tryRunToolImpl(ns, tool) {
+        const blocked=reason=>{tool.lastOutcome='blocked:'+reason;return false;};
+        if (isScriptPaused(ns, tool.name)) return blocked('paused');
+        if (maintenanceRequested(ns)) return blocked('maintenance');
+        if (activityBusy(ns) && /(^|\/)(work-for-factions|grafting-manager|infiltration-manager)\.js$/.test(tool.name)) return blocked('activity');
         if (options['disable-script'].includes(tool.name)) { // Ensure the script hasn't been disabled
             if (verbose) log(ns, `Tool ${tool.name} was not launched as it was specified with --disable-script`);
-            return false;
+            return blocked('disabled');
         }
         if (tool.shouldRun != null && !(await tool.shouldRun())) { // Check the script's own conditions for being run
             if (verbose) log(ns, `INFO: Tool ${tool.name} was not launched as its shouldRun() function returned false.`);
-            return false;
+            return blocked('condition');
         }
         if (!(await doesFileExist(ns, tool.name))) { // Ensure the script exists
             log(ns, `ERROR: Tool ${tool.name} was not found on ${daemonHost}`, true, 'error');
-            return false;
+            return blocked('missing');
         }
         let [runningOnServer, runningPid] = whichServerIsRunning(ns, tool.name, false);
         if (runningOnServer != null) { // Ensure the script isn't already running
             if (verbose) log(ns, `INFO: Tool ${tool.name} is already running on server ${runningOnServer} as pid ${runningPid}.`);
+            tool.lastOutcome='running';
             return true;
         }
         // Source/dependency updates can change RAM costs after the toolkit was built.
         const nativeCost=ns.getScriptRam(tool.name,daemonHost);
         if(!(nativeCost>0)||!Number.isFinite(nativeCost)){
             if(!tool.compileWaitLogged)log(ns,'WARN: Tool '+tool.name+' has no valid RAM estimate; waiting for its file or imports to be repaired.',false,'warning');
-            tool.compileWaitLogged=true;return false;
+            tool.compileWaitLogged=true;return blocked('compile');
         }
         tool.compileWaitLogged=false;tool.cost=Math.max(nativeCost,tool.minimumRam||0);
         // If all criteria pass, launch the script on home, or wherever we have space for it.
@@ -726,7 +748,7 @@ export async function main(ns) {
                     log(ns, `INFO: Delaying ${tool.name} until enough RAM is free (needs ${formatRam(tool.cost)}, has ${formatRam(availableRam)}).`);
                     tool.ramWaitLogged = true;
                 }
-                return false;
+                return blocked('ram');
             }
             tool.ramWaitLogged = false;
         }
@@ -734,7 +756,10 @@ export async function main(ns) {
             (await arbitraryExecution(ns, tool, 1, args, getServerByName(backupServerName).hasRoot() ? backupServerName : daemonHost)) :
             (await exec(ns, tool.name, daemonHost, tool.runOptions, ...args));
         if (runResult) {
+            tool.lastOutcome='launched';
+            if(Number.isSafeInteger(runResult))tool.lastPid=runResult;
             [runningOnServer, runningPid] = whichServerIsRunning(ns, tool.name, false);
+            if(runningPid)tool.lastPid=runningPid;
             //if (verbose)
             log(ns, `INFO: Ran tool: ${tool.name} ` + (args.length > 0 ? `with args ${JSON.stringify(args)} ` : '') +
                 (runningPid ? `on server ${runningOnServer} (pid ${runningPid}).` : 'but it shut down right away.'));
@@ -817,6 +842,11 @@ export async function main(ns) {
         //let isHelperListLaunched = false; // Uncomment this and related code to keep trying to start helpers
         do {
             automationHeartbeat(ns);
+            if(Date.now()-lastBackgroundHealthAt>=5000){
+                lastBackgroundHealthAt=Date.now();
+                const health=backgroundHealthSnapshot(ns,[...new Set(Object.values(toolsByShortName||{}))],resetInfo,lastBackgroundHealthAt);
+                ns.write('tasks/background-jobs.json',JSON.stringify(health),'w');
+            }
             try{
                 if(loopingMode&&Date.now()-lastLoopInventoryAt>=5000){
                     try{const inventory=ownedHackingLoopCounts(allHostNames.flatMap(host=>ns.ps(host)),ns.pid);
@@ -835,13 +865,20 @@ export async function main(ns) {
                 if(!timingControl.savedAt||Date.now()-timingControl.savedAt>=5000){timingControl.savedAt=Date.now();ns.write('tasks/hgw-pacing.json',JSON.stringify({...timingControl,pid:ns.pid}),'w');}
             }catch(error){ns.print('INFO: HGW timing measurements unavailable: '+String(error));}
             loops++;
-            if (loops > 0) await ns.sleep(loopInterval);
+            if (loops > 0) {const sleepAt=Date.now();await ns.sleep(loopInterval);lastSchedulingLagMs=Math.max(0,Date.now()-sleepAt-loopInterval);}
             if(isScriptPaused(ns,ns.getScriptName()))return;
             if(maintenanceRequested(ns)){await ns.sleep(Math.max(100,loopInterval));continue;}
             try {
                 let start = Date.now();
                 psCache = {}; // Clear the cache of the process list we update once per loop
                 await buildServerList(ns, true); // Check if any new servers have been purchased by the external host_manager process
+                if(Date.now()-lastProcessInventoryAt>=5000||!hackingProcessBudget){
+                    lastProcessInventoryAt=Date.now();
+                    const inventory=hackingProcessInventory(ns,discoveredHostNames,ns.pid);
+                    collectHackingIncome(ns,resetInfo,ns.pid,inventory,lastProcessInventoryAt,lastSchedulingLagMs);
+                    hackingProcessBudget=updateHackingProcessBudget(hackingProcessBudget,{now:lastProcessInventoryAt,inventory,lagMs:lastSchedulingLagMs,maxWorkers:options['max-hacking-processes']});
+                    ns.write('tasks/hgw-process-budget.json',JSON.stringify({...hackingProcessBudget,ownerPid:ns.pid,nodeReset:resetInfo.lastNodeReset,augReset:resetInfo.lastAugReset}),'w');
+                }
                 await updateCachedServerData(ns); // Update server data that only needs to be refreshed once per loop
                 await updatePortCrackers(ns); // Check if any new port crackers have been purchased
                 await getPlayerInfo(ns); // Force an update of _cachedPlayerInfo               
@@ -1554,7 +1591,9 @@ export async function main(ns) {
         const start = Date.now();
         const scheduledTasks = [];
         if (!snapshot) return;
-        const maxCycles = Math.min(snapshot.optimalPacedCycles, snapshot.maxCompleteCycles);
+        const processCycles=hackingProcessBudget?.ready?Math.max(0,Math.floor((hackingProcessBudget.limit-hackingProcessBudget.used)/(hackOnly?1:4))):0;
+        const maxCycles = Math.min(snapshot.optimalPacedCycles, snapshot.maxCompleteCycles,processCycles);
+        if(!maxCycles)return false; // Capacity pressure is ordinary backpressure, not an incomplete batch.
         if (maxCycles === 0)
             return log(ns, `WARNING: Attempt to schedule ${getTargetSummary(currentTarget)} returned 0 max cycles? ${JSON.stringify(snapshot)}`, false, 'warning');
         if (currentTarget.getHackThreadsNeeded() === 0)
@@ -1835,8 +1874,13 @@ export async function main(ns) {
             // Manifest I/O yields; recompute capacity against the current home reserve and RAM.
             maxThreadsHere=Math.min(remainingThreads,computeMaxThreads(targetServer));
             if(maxThreadsHere<=0||(!splitting&&maxThreadsHere<remainingThreads))return false;
-            const pid = await exec(ns, tool.name, targetServer.name, { threads: maxThreadsHere, temporary: (tool.runOptions.temporary ?? true) }, ...(args || []));
+            const limited=['hack','manualhack','grow','weak'].includes(tool.shortName);
+            if(limited&&!reserveHackingProcess(hackingProcessBudget))return false;
+            let pid;
+            try{pid=await exec(ns, tool.name, targetServer.name, { threads: maxThreadsHere, temporary: (tool.runOptions.temporary ?? true) }, ...(args || []));}
+            catch(error){if(limited)releaseHackingProcess(hackingProcessBudget);throw error;}
             if (pid == 0) {
+                if(limited)releaseHackingProcess(hackingProcessBudget);
                 log(ns, `ERROR: Failed to exec ${tool.name} on server ${targetServer.name} with ${maxThreadsHere} threads`, false, 'error');
                 return false;
             }
@@ -2292,6 +2336,12 @@ export async function main(ns) {
     async function buildServerList(ns, verbose = false) {
         // Get list of servers (i.e. all servers on first scan, or newly purchased servers on subsequent scans)
         let scanResult = await getNsDataThroughFile(ns, 'scanAllServers(ns)');
+        discoveredHostNames=scanResult.slice(); // Include hosts excluded from our own RAM allocation in the global process count.
+        // Publish the complete list before filtering hosts from this daemon's allocation policy.
+        if(Date.now()-lastNetworkSnapshotAt>=10000){
+            const snapshot=sharedNetworkSnapshot(scanResult,ns.pid,resetInfo);
+            if(snapshot){ns.write('tasks/network-snapshot.json',JSON.stringify(snapshot),'w');lastNetworkSnapshotAt=snapshot.at;}
+        }
         // Ignore hacknet node servers if we are not supposed to run scripts on them (reduces their hash rate when we do)
         if (!useHacknetNodes)
             scanResult = scanResult.filter(hostName => !hostName.startsWith('hacknet-server-') && !hostName.startsWith('hacknet-node-'))

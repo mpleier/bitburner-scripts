@@ -1,3 +1,4 @@
+import {backgroundJobDue,backgroundJobDispatched} from '../background-job-policy.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
@@ -59,7 +60,7 @@ test('actual periodic scheduler wakes infrastructure on growing cash without wak
  const start=s.indexOf('    async function runPeriodicScripts('),end=s.indexOf('    async function tryRunTool(',start);
  // Exclude the documentation immediately before the next declaration.
  const body=s.slice(start,end);const periodicScripts=[{name:'tor',interval:25000,infrastructure:true,lastRun:98000,lastCashBand:0},{name:'other',interval:30000,lastRun:98000}];
- const launched=[],context={periodicScripts,Date:{now:()=>100000},infrastructureCashBand,infrastructureAffordable,torProgramsHandoff,resetInfo:{},getPlayerMoney:()=>1e10,
+ const launched=[],context={backgroundJobDue,backgroundJobDispatched,periodicScripts,Date:{now:()=>100000},infrastructureCashBand,infrastructureAffordable,torProgramsHandoff,resetInfo:{},getPlayerMoney:()=>1e10,
   tryRunTool:async(ns,tool)=>{launched.push(tool.name);return true;},getTool:s=>s,dictSourceFiles:{},options:{}};
  // The slice ends in an open documentation comment, so retain only the balanced function body.
  const close=body.lastIndexOf('    }');vm.runInNewContext(body.slice(0,close+5)+';globalThis.run=runPeriodicScripts;',context);

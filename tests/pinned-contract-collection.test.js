@@ -1,3 +1,4 @@
+import {readSharedNetwork} from '../network-snapshot-policy.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
@@ -51,7 +52,7 @@ function collector(validation=passed,missingType=null,missingData=null){
  const types={'good.cct':'good','other.cct':'good','bad.cct':'bad','waiting.cct':'waiting','unknown.cct':'unknown'};
  const ns={pid:9,args:[],getHostname:()=> 'home',print:m=>messages.push(m),ls:()=>files,read:f=>store.get(f)||'',write:(f,s)=>store.set(f,s),
  codingcontract:{getContractType:file=>{if(file===missingType)throw Error('gone');return types[file];},getData:file=>{dataReads.push(file);if(file===missingData)throw Error('gone');return 9;}}};
- const context={contractCollectionPlan,scriptSolver:'Tasks/contractor.js.solver.js',instanceCount:async()=>1,reconcileContractDelivery:async()=>({busy:false}),disableLogs(){},log(){},
+ const context={readSharedNetwork,contractCollectionPlan,scriptSolver:'Tasks/contractor.js.solver.js',instanceCount:async()=>1,reconcileContractDelivery:async()=>({busy:false}),disableLogs(){},log(){},
  dispatchContractDelivery:async(_ns,_script,batch)=>{dispatched.push(batch);return {pid:42,host:'remote',count:batch.length};},
  getNsDataThroughFile:async(_ns,command,_temp,args=[])=>{
   if(command==='scanAllServers(ns)')return ['home'];

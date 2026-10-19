@@ -14,7 +14,8 @@ function fixture(extra={}){
  files['tasks/hash-bladeburner-state.json']=JSON.stringify({at:now,nodeReset:1,augReset:1,ownerPid:2,rank:state.rank});
  const processes=[{pid:1,filename:'autopilot.js',args:[]},{pid:2,filename:'test.js',args:[]}];
  const ns={pid:2,args:[],getResetInfo:()=>reset,read:f=>files[f]||'',write:(f,v)=>{files[f]=v;writes.push(f);},getPlayer:()=>({money:state.money}),
- ps:h=>h==='home'?processes:[],scan:()=>[],ls:()=>[],getScriptRam:()=>2,getServer:()=>({moneyMax:1e9,minDifficulty:2}),
+ ps:h=>h==='home'?processes:[],scan:()=>[],ls:()=>[],getScriptRam:()=>2,getServer:()=>({moneyMax:1e9,minDifficulty:2,hackDifficulty:2,moneyAvailable:1e9}),weakenAnalyze:()=>.05,
+ formulas:{hacking:{hackPercent:s=>.001*(100-s.hackDifficulty)/100,hackChance:()=>1,weakenTime:s=>10000+s.hackDifficulty*1000,growThreads:(s,p,target)=>Math.log(target/Math.max(1,s.moneyAvailable))/Math.log(1+.03/s.hackDifficulty)}},
  hacknet:{numHashes:()=>state.hashes,hashCapacity:()=>state.capacity,hashCost:(a,q=1)=>state.costs[a]*q,getStudyMult:()=>1,getTrainingMult:()=>1,
  spendHashes:(a,target,q=1)=>{calls.push([a,target,q]);const cost=state.costs[a]*q;if(cost>state.hashes)return false;state.hashes-=cost;if(a===cash)state.money+=1000000*q;
  if(a===rank){state.rank+=100*q;state.points+=(state.rank>(state.maximumRank??0)?33:0)*q;state.costs[rank]+=250*q;}return true;}},
@@ -97,7 +98,7 @@ test('contract generation respects verified solvers and unresolved backlog',()=>
 });
 test('server boosts require fresh analysis, assigned income RAM and a short payback',()=>{
  const f=fixture();assert.equal(hashSpendingDecision(f.ns,'Increase Maximum Money',{target:'n00dles'}).allowed,false);
- f.processes.push({pid:3,filename:'daemon.js',args:[]},{pid:4,filename:'Remote/hack-target.js',args:['n00dles'],threads:100});
+ f.processes.push({pid:3,filename:'daemon.js',args:[]},{pid:4,filename:'Remote/hack-target.js',args:['n00dles',0,0,'test',false,false,false,3],threads:100});
  f.files['/Temp/analyze-hack.txt']=JSON.stringify([{hostname:'n00dles',gainRate:1e9}]);
  f.files['/Temp/analyze-hack-meta.txt']=JSON.stringify({at:Date.now(),augReset:1,nodeReset:1});
  assert.equal(hashSpendingDecision(f.ns,'Increase Maximum Money',{target:'n00dles'}).allowed,true);

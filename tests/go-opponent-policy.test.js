@@ -118,3 +118,11 @@ test('performance records relative gain, time and bounded legacy history safely'
  const h=b['Netburners:13:normal'].history;assert.equal(h.length,1);assert.equal(h[0].at,now);assert.equal(h[0].logGain,Math.log1p(2/200));
  assert.equal(row(planGoOpponents(stats,opts,9,b,ctx),'Netburners').samples,1);
 });
+
+test('opponent throughput includes only interruption cost from its thirty-minute window',()=>{
+ const base=bucket('Netburners'),options={goal:'hacknet',opponent:'Netburners','board-size':13,'adaptive-boards':false};
+ const before=planGoOpponents({},options,9,{a:base},ctx).ranked[0];
+ const rows={a:{...base,interruptions:[{id:'partial',at:now,ms:180000},{id:'old',at:now-1800001,ms:180000}]}};
+ const after=planGoOpponents({},options,9,rows,ctx).ranked[0];assert.ok(Math.abs(after.logGainPerMinute-before.logGainPerMinute/2)<1e-12);
+ assert.equal(after.samples,before.samples);
+});

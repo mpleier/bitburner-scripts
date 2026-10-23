@@ -28,6 +28,65 @@ test('income windows measure actual receipts per allocated RAM-second after suff
  assert.equal(r.durationSeconds,120);assert.equal(r.completions,48);assert.equal(r.incomePerRamSecond,200);
  assert.equal(r.risks,0);assert.match(s.basis,/not causal/);
 });
+
+test('combat and social progression preserve completed and accumulating income windows',()=>{
+ const f=fixture();let s;
+ for(let i=0;i<=24;i++){
+  f.player.skills.strength=i;f.player.skills.defense=i;f.player.skills.dexterity=i;f.player.skills.agility=i;f.player.skills.charisma=i;
+  f.player.mults.strength=1+i/100;f.player.mults.faction_rep=1+i/100;
+  s=f.sample(1000+i*5000);
+ }
+ assert.equal(s.targets.target.measuredAt,121000);assert.equal(s.targets.target.incomePerRamSecond,200);
+ const before=s.targets.target;f.player.skills.strength++;
+ const after=f.sample(126000).targets.target;
+ assert.equal(after.measuredAt,before.measuredAt);assert.equal(after.continuitySignature,before.continuitySignature);
+ assert.notEqual(after.signature,before.signature);
+ assert.equal(after.signature,JSON.stringify([f.server.moneyMax,f.server.minDifficulty,f.player.skills,f.player.mults,[],null]));
+});
+
+test('hacking intelligence and all hacking multipliers invalidate income continuity',()=>{
+ for(const key of ['hacking','intelligence']){
+  const f=fixture();f.warm();f.player.skills[key]=(f.player.skills[key]||0)+1;
+  assert.equal(f.sample(126000).targets.target.measuredAt,undefined,key);
+ }
+ for(const key of ['hacking','hacking_exp','hacking_chance','hacking_speed','hacking_money','hacking_grow','hacking_future']){
+  const f=fixture();f.warm();f.player.mults[key]=(f.player.mults[key]||1)+.01;
+  assert.equal(f.sample(126000).targets.target.measuredAt,undefined,key);
+ }
+});
+
+test('legacy income rows rewarm and multiplier key order cannot disrupt continuity',()=>{
+ const legacy=fixture();legacy.warm();const saved=JSON.parse(legacy.files['tasks/hacking-income.json']);
+ delete saved.targets.target.continuitySignature;legacy.files['tasks/hacking-income.json']=JSON.stringify(saved);
+ assert.equal(legacy.sample(126000).targets.target.measuredAt,undefined);
+ const ordered=fixture();ordered.player.mults={hacking_money:1,hacking_speed:1};ordered.warm();
+ ordered.player.mults={hacking_speed:1,hacking_money:1};
+ assert.equal(ordered.sample(126000).targets.target.measuredAt,121000);
+});
+
+test('retained combat-era income remains usable by serialized hash calibration with a fresh full signature',()=>{
+ const f=fixture(),now=Date.now();
+ f.ns.ps=()=>[{pid:7,filename:'daemon.js',args:[]},{filename:'Remote/hack-target.js',threads:100,args:['target',0,0,0,0,0,0,7]}];
+ f.ns.getPlayer=()=>({...f.player,money:1e12});
+ f.files['/Temp/analyze-hack.txt']=JSON.stringify([{hostname:'target',gainRate:100000}]);
+ f.files['/Temp/analyze-hack-meta.txt']=JSON.stringify({at:now,augReset:2,nodeReset:1});
+ for(let i=0;i<=24;i++)f.sample(now-125000+i*5000);
+ f.player.skills.strength=100;const row=f.sample(now).targets.target;assert.equal(row.measuredAt,now-5000);
+ const decide=Function('return ('+hashSpendingDecision.toString()+')')();
+ let d=decide(f.ns,'Increase Maximum Money',{target:'target'});
+ assert.equal(d.serverProjection.calibration.observation.incomePerRamSecond,200);
+ assert.equal(d.serverProjection.calibration.factor,.002);
+ f.player.skills.intelligence=1;
+ d=decide(f.ns,'Increase Maximum Money',{target:'target'});assert.equal(d.serverProjection.calibration.observation,null);
+});
+
+test('serialized income collector retains continuity across combat progression without imported helpers',()=>{
+ const f=fixture();f.warm();f.player.skills.agility=123;
+ const record=JSON.parse(f.files['tasks/hgw-misfires.json']);record.at=126000;
+ f.files['tasks/hgw-misfires.json']=JSON.stringify(record);
+ const collect=Function('return ('+collectHackingIncome.toString()+')')();
+ assert.equal(collect(f.ns,reset,7,f.inventory,126000).targets.target.measuredAt,121000);
+});
 test('income samples invalidate on player, server, owner, allocation, gaps, risks, counters and incomplete evidence',()=>{
  for(const change of [f=>f.player.skills.hacking++,f=>f.server.moneyMax++,f=>f.inventory.allocations.target.ram*=2,f=>f.setRisks(1),f=>f.files["tasks/hgw-pacing.json"]=JSON.stringify({pid:7,at:126000,cycleMs:2000,queueMs:500,targetCap:1}),f=>f.inventory.complete=false,f=>f.inventory.allocations.target.manual=true]){
   const f=fixture();assert.ok(f.warm().targets.target.measuredAt);change(f);

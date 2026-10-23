@@ -3,7 +3,7 @@ import {readNodeRoutePlan} from './node-route-policy.js';
 import {registerAutomation,automationHeartbeat,maintenanceRequested} from './runtime-policy.js';
 import {achievementActionAllowed} from './achievement-policy.js';
 import { claimSpending } from './spending-policy.js';
-import { treasuryPolicy, recoveryJobCounts, priorSaleMultiplier, partySpendPerEmployee, materialSalePrice, outputBacklog, boostPurchaseBudget, productPriceStep, researchAffordable, salesPotential, formulaSalePrice, inferProductMarkup, supportAdvertLimit, clearCorporationBuyRates, optimizedOfficeJobs, corporationDevelopmentCity, executeCorporationGrowth, usefulUpkeepResearch, productReplacementReady, corporationAdvertBenefit, corporationResearchGoal, corporationCoreFunding, corporationScienceFactor } from './corporation-policy.js';
+import { observeCorporationGrowth,scoreCorporationGrowth,treasuryPolicy, recoveryJobCounts, priorSaleMultiplier, partySpendPerEmployee, materialSalePrice, outputBacklog, boostPurchaseBudget, productPriceStep, researchAffordable, salesPotential, formulaSalePrice, inferProductMarkup, supportAdvertLimit, clearCorporationBuyRates, optimizedOfficeJobs, corporationDevelopmentCity, executeCorporationGrowth, usefulUpkeepResearch, productReplacementReady, corporationAdvertBenefit, corporationResearchGoal, corporationCoreFunding, corporationScienceFactor } from './corporation-policy.js';
 import { researchParents, extraResearch, productInvestment, investmentDecision, rescueShareIssue, shareSale, shareBuyback, recipeInputPlan, corporationDividendRate, corporationLiquidityTarget, estimateShareProceeds } from './corporation-lifecycle.js';
 import { getNsDataThroughFile } from './helpers.js';
 import { isScriptPaused } from './automation-control.js';
@@ -206,10 +206,11 @@ export async function main(ns) {
     if (Number.isFinite(cost) && funds() > cost + reserve)
       capitalPurchase(`Buy ${unlock}`,cost,()=>c.purchaseUnlock(unlock),1/cost,2);
   };
-  const growthPlans=new Map();let growthDecisions=[];
-  const capitalPurchase = (label,cost,fn,score=1/Math.max(1,cost),priority=0,commit=0) => {
+  const growthPlans=new Map();let growthDecisions=[];const marketRows=new Map();let growthMarket=null;
+  try{const m=JSON.parse(ns.read('tasks/corporation-growth-market.json'));if(m.scope===JSON.stringify([resetInfo.lastNodeReset,corp()?.name])&&Number.isFinite(m.at)&&m.at<=Date.now()&&Date.now()-m.at<=120000)growthMarket=m;}catch{}
+  const capitalPurchase = (label,cost,fn,score=1/Math.max(1,cost),priority=0,commit=0,market=null) => {
     if(recovering||!Number.isFinite(cost)||cost<=0)return false;
-    const plan={label,cost,score,priority,commit,run:()=>{if(!canManage()||funds()<=reserve+cost)return false;return attempt(label,fn);}};
+    const plan={label,cost,score,priority,commit,market,run:()=>{if(!canManage()||funds()<=reserve+cost)return false;return attempt(label,fn);}};
     // Foundation unlocks/first core divisions must exist before this pass can assign work.
     if(priority>=2){const result=executeCorporationGrowth([plan],growthBank,funds,()=>reserve,canManage);growthBank=result.remaining;growthDecisions.push(...result.decisions);return result.decisions.some(d=>d.state==='purchased');}
     growthPlans.set(label,plan);return false;
@@ -226,7 +227,7 @@ export async function main(ns) {
       return;
     const benefit=corporationAdvertBenefit(d,safe('Advert industry',()=>c.getIndustryData(d.industry))||{},safe('Advert analytics',()=>c.getUpgradeLevel('Wilson Analytics'))||0);
     if(benefit<=0&&!goals?.finance)return;
-    capitalPurchase(`Hire AdVert (${division})`,adCost,()=>c.hireAdVert(division),Math.max(.001,benefit)/adCost);
+    capitalPurchase(`Hire AdVert (${division})`,adCost,()=>c.hireAdVert(division),Math.max(.001,benefit)/adCost,0,0,{kind:'sales',division});
   };
 
   // ---- IPO / dividends --------------------------------------------------
@@ -457,7 +458,7 @@ export async function main(ns) {
       if(add>3&&cost>growthBank){add=3;cost=safe("Get incremental office cost",()=>c.getOfficeSizeUpgradeCost(division,city,add));}
       if (Number.isFinite(cost) && funds() > cost + reserve) {
         const fraction=Math.pow((office.size+add)/Math.max(1,office.size),developing?.34:.4)-1;
-        capitalPurchase('Upgrade office '+division+'/'+city,cost,()=>c.upgradeOfficeSize(division,city,add),fraction*(developing?3:1)/cost,developing?(options['development-speed']?2:1):0);
+        capitalPurchase('Upgrade office '+division+'/'+city,cost,()=>c.upgradeOfficeSize(division,city,add),fraction*(developing?3:1)/cost,developing?(options['development-speed']?2:1):0,0,{kind:developing?'development':'production',division,city});
         office = safe("Refresh office", () => c.getOffice(division, city)) ?? office;
       }
     }
@@ -575,7 +576,7 @@ export async function main(ns) {
     capitalPurchase('Boost inventory '+division+'/'+city,committed,()=>{
       for(const p of plan)if(!attempt('Set boost order',()=>c.buyMaterial(division,city,p.name,p.need*scale/cycleSeconds))){clearBoostRates(division,city);return false;}
       reserve+=committed;return true;
-    },benefit/Math.max(1,committed),0,committed);
+    },benefit/Math.max(1,committed),0,committed,{kind:'production',division,city});
 
   };
 
@@ -636,12 +637,20 @@ export async function main(ns) {
     if (divisionData?.makesProducts) for (const product of divisionData.products || [])
       outputs.push(safe('Read warehouse product', () => c.getProduct(division, city, product)));
     const backlog = outputBacklog(outputs);
+    const mature=outputs.filter(o=>o&&(o.developmentProgress===undefined||o.developmentProgress>=100));
+    const known=mature.length>0&&mature.every(o=>[o.productionAmount,o.actualSellAmount,o.stored].every(v=>Number.isFinite(v)&&v>=0));
+    const sellThrough=known?Math.min(1,...mature.map(o=>o.productionAmount>0?o.actualSellAmount/o.productionAmount:o.stored>0&&o.actualSellAmount===0?0:1)):null;
+    const revenue=divisionData?.lastCycleRevenue,expenses=divisionData?.lastCycleExpenses;
+    if(wh&&[revenue,expenses].every(Number.isFinite))marketRows.set(division+'/'+city,{key:division+'/'+city,division,city,
+      profitPerSecond:(revenue-expenses)/Math.max(1,divisionData.cities.length),expectedCities:divisionData.cities.length,
+      outputs:known&&mature.length===outputs.length?mature.map(o=>({name:o.name,sold:o.actualSellAmount,produced:o.productionAmount})):null,
+      sellThrough,backlog:known&&backlog,pressure:wh.sizeUsed/Math.max(1,wh.size)});
     let used = wh ? wh.sizeUsed / Math.max(1, wh.size) : 0;
     if (used > 0.8) storagePressure = true;
     for (let level = 0; level < 5 && used > 0.7 && !backlog; level++) {
       const cost = safe("Get warehouse upgrade cost", () => c.getUpgradeWarehouseCost(division, city));
       if (!Number.isFinite(cost) || funds() <= cost + reserve) break;
-      capitalPurchase('Upgrade warehouse '+division+'/'+city,cost,()=>c.upgradeWarehouse(division,city),Math.max(.1,used-.7)*3/cost);
+      capitalPurchase('Upgrade warehouse '+division+'/'+city,cost,()=>c.upgradeWarehouse(division,city),Math.max(.1,used-.7)*3/cost,0,0,{kind:'storage',division,city});
       break;
       const next = safe("Refresh warehouse", () => c.getWarehouse(division, city));
       used = next ? next.sizeUsed / Math.max(1, next.size) : 0;
@@ -865,6 +874,7 @@ export async function main(ns) {
       // START applies the previous cycle's results before the next purchases.
       // Manage once per full cycle; the first pass also handles startup mid-cycle.
       if (managedOnce && info.prevState && info.prevState !== 'START') { await c.nextUpdate(); continue; }
+      const completedCycle=managedOnce;
       managedOnce = true;
       const treasury = treasuryPolicy(info, cycleSeconds);
       reserve = treasury.reserve;
@@ -886,7 +896,7 @@ export async function main(ns) {
       manageDividends(); // Let share-sale policy consider the dividend rate selected for this cycle.
       manageShares();
 
-      growthPlans.clear();growthDecisions=[];staffingGoals.clear();
+      growthPlans.clear();growthDecisions=[];marketRows.clear();staffingGoals.clear();
       advertQueue.clear();
       exportRoutes.clear(); // Reinspect persistent routes every cycle; deduplicate calls within this pass.
       storagePressure = false;
@@ -993,7 +1003,7 @@ export async function main(ns) {
         if (growingProducts) {
           const cost = safe("Wilson cost", () => c.getUpgradeLevelCost("Wilson Analytics"));
           if (Number.isFinite(cost) && cost <= cash * 0.35 && cash > cost + reserve) {
-            if (capitalPurchase("Level Wilson Analytics", cost, () => {c.levelUpgrade("Wilson Analytics");lastUpgrade=Date.now();},upgradeReturn("Wilson Analytics",c.getUpgradeLevel("Wilson Analytics"),cost,false))) {
+            if (capitalPurchase("Level Wilson Analytics", cost, () => {c.levelUpgrade("Wilson Analytics");lastUpgrade=Date.now();},upgradeReturn("Wilson Analytics",c.getUpgradeLevel("Wilson Analytics"),cost,false),0,0,{kind:"sales"})) {
               lastUpgrade = Date.now();
               bought++;
             }
@@ -1016,7 +1026,7 @@ export async function main(ns) {
           for (const { upgrade, cost } of ranked) {
             const cap = storagePressure && upgrade === "Smart Storage" ? 0.35 : 0.20;
             if (Number.isFinite(cost) && cost <= cash * cap && funds() > cost + reserve) {
-              if (capitalPurchase(`Level ${upgrade}`, cost, () => {c.levelUpgrade(upgrade);lastUpgrade=Date.now();},upgradeReturn(upgrade,c.getUpgradeLevel(upgrade),cost,storagePressure))) {
+              if (capitalPurchase(`Level ${upgrade}`, cost, () => {c.levelUpgrade(upgrade);lastUpgrade=Date.now();},upgradeReturn(upgrade,c.getUpgradeLevel(upgrade),cost,storagePressure),0,0,{kind:upgrade==="Smart Storage"?"storage":upgrade==="ABC SalesBots"?"sales":upgrade==="Project Insight"?"research":"production"})) {
                 lastUpgrade = Date.now();
                 bought++;
               }
@@ -1048,7 +1058,9 @@ export async function main(ns) {
         boostBudget=remainingBoostBudget/(boostLocations.length-index);const allowance=boostBudget;
         manageBoosts(boostLocations[index].city,boostLocations[index].division);remainingBoostBudget-=allowance-boostBudget;
       }
-      const growth=executeCorporationGrowth([...growthPlans.values()],growthBank,funds,()=>reserve,canManage);growthBank=growth.remaining;growthDecisions.push(...growth.decisions);
+      if(completedCycle)growthMarket=observeCorporationGrowth(growthMarket,{scope:JSON.stringify([resetInfo.lastNodeReset,info.name]),at:Date.now(),rows:[...marketRows.values()]});
+      const rankedGrowth=scoreCorporationGrowth([...growthPlans.values()],growthMarket);
+      const growth=executeCorporationGrowth(rankedGrowth,growthBank,funds,()=>reserve,canManage);growthBank=growth.remaining;growthDecisions.push(...growth.decisions);
       manageHacknetServers();
 
       const spentOn = spendHashes();
@@ -1061,6 +1073,7 @@ export async function main(ns) {
       }
 
       const liveStatus = corp() || info;
+      if(growthMarket)await ns.write('tasks/corporation-growth-market.json',JSON.stringify(growthMarket),'w');
       await ns.write(productMetricsFile,JSON.stringify({nodeReset:resetInfo.lastNodeReset,corporation:info.name,divisions:productMetrics}),'w');
       await ns.write(productStateFile,JSON.stringify({at:lastProductAt,nodeReset:resetInfo.lastNodeReset,corporation:info.name}),'w');
       await ns.write(otherProductStateFile,JSON.stringify({nodeReset:resetInfo.lastNodeReset,corporation:info.name,divisions:otherProductTimes}),'w');

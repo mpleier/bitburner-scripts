@@ -1,3 +1,5 @@
+import {captureAugmentationEconomics,augmentationEconomicsChange,invalidateAugmentationFunding} from '../augmentation-economics-policy.js';
+import {captureAugmentationOwnership} from '../augmentation-ownership-policy.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
@@ -30,6 +32,27 @@ test('augmentation purchases check each fresh price and preserve cash reserves',
  const stopped=market();assert.equal(factionPurchaseBatch(stopped.api,[{augmentation:'a'}],()=>false,()=>0),0);
 });
 
+test('augmentation purchases and donations reject malformed reserves and player cash',()=>{
+ for(const donations of [false,true])for(const reserve of ['corrupt',NaN,Infinity,-1]){
+  const m=market();
+  assert.equal(factionPurchaseBatch(m.api,[{faction:'a',augmentation:'a',targetRep:80.001,repDonation:500}],()=>true,()=>reserve,donations),0);
+  assert.deepEqual(m.bought,[]);assert.deepEqual(m.donated,[]);
+ }
+ for(const donations of [false,true])for(const cash of [NaN,Infinity,-1,undefined]){
+  const m=market();m.api.player=()=>({money:cash,mults:{faction_rep:2}});
+  assert.equal(factionPurchaseBatch(m.api,[{faction:'a',augmentation:'a',targetRep:80.001,repDonation:500}],()=>true,()=>0,donations),0);
+  assert.deepEqual(m.bought,[]);assert.deepEqual(m.donated,[]);
+ }
+});
+
+test('augmentation reserves accept empty files and numeric text, and recheck between purchases',()=>{
+ const blank=market();assert.equal(factionPurchaseBatch(blank.api,[{augmentation:'a'}],()=>true,()=>''),1);
+ const text=market();assert.equal(factionPurchaseBatch(text.api,[{augmentation:'a'}],()=>true,()=> '700'),0);
+ const m=market();let calls=0;
+ assert.equal(factionPurchaseBatch(m.api,[{augmentation:'a'},{augmentation:'b'}],()=>true,()=>++calls===1?'0':'corrupt'),1);
+ assert.deepEqual(m.bought,['a']);
+});
+
 test('donations shrink with fresh reputation and skip zero gains or insufficient reserves',()=>{
  const m=market();const orders=[{faction:'a',targetRep:80.001,repDonation:1000}];
  assert.equal(factionPurchaseBatch(m.api,orders,()=>true,()=>0,true,1),1);assert.ok(m.donated[0]<=501);
@@ -42,9 +65,9 @@ function load(source,context,append){vm.runInNewContext(source.replace(/^import[
 
 test('serialized faction spending workers recheck reserve and parent ownership',async()=>{
  const source=await readFile(new URL('../faction-manager.js',import.meta.url),'utf8'),m=market();
- const ns={pid:1,isRunning:()=>true,read:f=>f==='reserve.txt'?'700':'',getPlayer:m.api.player,singularity:{getAugmentationPrice:m.api.price,purchaseAugmentation:m.api.buy}};
- const context={factionControlAllowed,factionPurchaseBatch,achievementActionAllowed:()=>true,getNsDataThroughFile:async(ns,expression,file,args)=>{assert.ok(args.every(a=>['number','boolean','string'].includes(typeof a)));ns.args=args;return vm.runInNewContext(expression,{ns});}};
- load(source,context,';options={};bitNodeMults={FactionWorkRepGain:1};globalThis.execute=executeFactionPurchases;');
+ const ns={pid:1,getResetInfo:()=>({lastAugReset:1,lastNodeReset:1,ownedAugs:{}}),getFavorToDonate:()=>150,isRunning:()=>true,read:f=>f==='reserve.txt'?'700':'',getPlayer:m.api.player,singularity:{getOwnedAugmentations:()=>[],getAugmentationPrice:m.api.price,purchaseAugmentation:m.api.buy}};
+ const context={captureAugmentationOwnership,captureAugmentationEconomics,augmentationEconomicsChange,factionControlAllowed,factionPurchaseBatch,achievementActionAllowed:()=>true,getNsDataThroughFile:async(ns,expression,file,args)=>{assert.ok(args.every(a=>['number','boolean','string'].includes(typeof a)));ns.args=args;return vm.runInNewContext(expression,{ns});}};
+ context.ns=ns;load(source,context,';ownershipSnapshot=captureAugmentationOwnership(ns);economicsSnapshot=captureAugmentationEconomics(ns,{augmentations:[],factions:[]});options={};bitNodeMults={FactionWorkRepGain:1};globalThis.execute=executeFactionPurchases;');
  assert.equal(await context.execute(ns,[{faction:'a',augmentation:'a'}]),0);assert.deepEqual(m.bought,[]);
 });
 

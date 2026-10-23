@@ -1,7 +1,7 @@
 import { achievementActionAllowed } from './achievement-policy.js';
 import { isScriptPaused } from './automation-control.js';
 import { registerAutomation, automationHeartbeat, maintenanceRequested } from './runtime-policy.js';
-import { hacknetProduction, hacknetServerMode, hacknetOptionsError, hacknetPayoffLimit, hacknetTierEligible } from './hacknet-policy.js';
+import { quoteHacknetInvestment, hacknetProduction, hacknetServerMode, hacknetOptionsError, hacknetPayoffLimit, hacknetTierEligible } from './hacknet-policy.js';
 import { claimSpending } from './spending-policy.js';
 import { getConfiguration, disableLogs, formatDuration, formatMoney, tryGetBitNodeMultipliers, } from './helpers.js'
 
@@ -109,9 +109,19 @@ export function upgradeHacknet(ns,maxSpend,maxPayoffTimeSeconds=3600,options={})
   isCashBottleneck=payoffLimit<maxPayoffTimeSeconds||(reset.currentNode!==9&&ownerAlive&&plan?.reset===reset.lastAugReset&&plan?.expiresAt>now&&plan?.epoch<=now&&plan?.signals?.bottleneck==='cash');
  }
  const useful=candidates.filter(c=>c.payoff<=payoffLimit&&(!options['adaptive-tiers']||hacknetTierEligible(c,ns.getPlayer().money))).sort((a,b)=>a.payoff-b.payoff);
- const best=useful.find(c=>c.cost<=funds);
+ const affordable=useful.filter(c=>c.cost<=funds);
+ let best=affordable[0];
  if(!best){setStatus(ns,useful.length?'Hacknet waiting for funds or spending limit.':`No production upgrades meet the ${formatDuration(payoffLimit*1000)} payoff limit${isCashBottleneck?' (cash bottleneck)':''}.`);return options['adaptive-tiers']&&options.productionMultiplier!==0?0:useful.some(c=>c.cost<=maxSpend)?0:false;}
- if(!claimSpending(ns,'hacknet',best.cost))return 0;
+ // Check a bounded set: a reserved wallet can reject the best ratio while a smaller upgrade fits.
+ best=null;
+ for(const candidate of affordable.slice(0,8)){
+  const price=candidate.kind==='node'?ns.hacknet.getPurchaseNodeCost():candidate.kind==='level'?ns.hacknet.getLevelUpgradeCost(candidate.index,1):candidate.kind==='ram'?ns.hacknet.getRamUpgradeCost(candidate.index,1):ns.hacknet.getCoreUpgradeCost(candidate.index,1);
+  if(price!==candidate.cost)continue;
+  let investment=null;
+  if(achievementActionAllowed(ns,'hacknetMoney')&&(!servers||achievementActionAllowed(ns,'hashSpending')))investment=quoteHacknetInvestment(ns,candidate);
+  if(claimSpending(ns,'hacknet',candidate.cost,investment)){best=candidate;break;}
+ }
+ if(!best)return 0;
  const success=best.kind==='node'?ns.hacknet.purchaseNode()>=0:best.kind==='level'?ns.hacknet.upgradeLevel(best.index,1):best.kind==='ram'?ns.hacknet.upgradeRam(best.index,1):ns.hacknet.upgradeCore(best.index,1);
  const message=success?`Purchased Hacknet ${best.kind} for ${formatMoney(best.cost)}; payoff ${formatDuration(best.payoff*1000)}`:'Hacknet purchase failed; will recheck costs and funds.';
  setStatus(ns,message);if(success&&options.toast)ns.toast(message,'success');

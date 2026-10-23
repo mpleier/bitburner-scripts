@@ -1,7 +1,9 @@
+import {captureAugmentationOwnership} from './augmentation-ownership-policy.js';
 import {hashSpendingDecision,spendHashesWithPolicy} from './hash-spending-policy.js';
 import {observeFactionMembership,acknowledgeFactionMembership,augmentationFundingWorkTargets} from './faction-reassessment-policy.js';
 import {ensureFactionJoinPlan} from './faction-joining.js';
 import {readNodeRoutePlan} from './node-route-policy.js';
+import {gangProviderPreferred} from './faction-policy.js';
 import { factionJoinAllowed,rankFactionInvites,factionControlAllowed,planGangHost,gangHostPreferences } from './faction-policy.js';
 import { isScriptPaused } from './automation-control.js';
 import { registerAutomation, automationHeartbeat, maintenanceRequested } from './runtime-policy.js';
@@ -110,6 +112,7 @@ const statusUpdateInterval = 60 * 1000; // 1 minute (outside of this, minor upda
 const checkForNewPrioritiesInterval = 10 * 60 * 1000; // 10 minutes. Interrupt whatever we're doing and check whether we could be doing something more useful.
 const waitForFactionInviteTime = 30 * 1000; // The game will only issue one new invite every 25 seconds, so if you earned two by travelling to one city, might have to wait a while
 
+let augmentationOwnershipSignature=null,augmentationOwnershipChanged=false,lastOwnershipProbeAt=0,ownershipProbeWarned=false;
 let shouldFocus; // Whether we should focus on work or let it be backgrounded (based on whether "Neuroreceptor Management Implant" is owned, or "--no-focus" is specified)
 // And a bunch of globals because managing state and encapsulation is hard.
 let hasFocusPenalty, hasSimulacrum, favorToDonate, fulcrumHackReq, notifiedAboutDaedalus, playerInBladeburner, wasGrafting, currentBitnode;
@@ -126,13 +129,14 @@ export function autocomplete(data, args) {
 }
 
 // Bit of an ugly afterthought, but this is all over the place to break out of whatever we're doing and return to the main loop.
-const breakToMainLoop = () => { if(activeNs)automationHeartbeat(activeNs); return factionMembershipState?.changed===true || Date.now() > mainLoopStart + checkForNewPrioritiesInterval || !!activeNs&&(isScriptPaused(activeNs,activeNs.getScriptName())||maintenanceRequested(activeNs)||activityBusy(activeNs)); };
+const breakToMainLoop = () => { if(activeNs)automationHeartbeat(activeNs); return augmentationOwnershipChanged || factionMembershipState?.changed===true || Date.now() > mainLoopStart + checkForNewPrioritiesInterval || !!activeNs&&(isScriptPaused(activeNs,activeNs.getScriptName())||maintenanceRequested(activeNs)||activityBusy(activeNs)); };
 
 /** @param {NS} ns */
 export async function main(ns) {
     if(isScriptPaused(ns,ns.getScriptName()))return;
     activeNs=ns; lastWorkStatusAt=0; lastWorkStatusKey="";
     factionMembershipState=null;lastMembershipProbeAt=0;membershipProbeWarned=false;
+    augmentationOwnershipSignature=null;augmentationOwnershipChanged=false;lastOwnershipProbeAt=0;ownershipProbeWarned=false;
     await markActivitySupport(ns);
     const runOptions = getConfiguration(ns, argsSchema);
     if (!runOptions || await instanceCount(ns) > 1) return; // Prevent multiple instances of this script from being started, even with different args.
@@ -215,8 +219,10 @@ async function loadStartupData(ns) {
     const augmentationNames = [...new Set(Object.values(dictFactionAugs).flat())];
     const dictAugRepReqs = await getNsDataThroughFile(ns, dictCommand('ns.singularity.getAugmentationRepReq(o)'), '/Temp/getAugmentationRepReqs.txt', augmentationNames);
     const dictAugStats = await getNsDataThroughFile(ns, dictCommand('ns.singularity.getAugmentationStats(o)'), '/Temp/getAugmentationStats.txt', augmentationNames);
-    const ownedAugmentations = await getNsDataThroughFile(ns, `ns.singularity.getOwnedAugmentations(true)`, '/Temp/player-augs-purchased.txt');
-    const installedAugmentations = await getNsDataThroughFile(ns, `ns.singularity.getOwnedAugmentations()`, '/Temp/player-augs-installed.txt');
+    const ownership=await getNsDataThroughFile(ns,`(${captureAugmentationOwnership.toString()})(ns)`,'/Temp/faction-work-ownership.txt');
+    if(!ownership?.complete)throw Error('Native augmentation ownership unavailable');
+    const ownedAugmentations=ownership.owned,installedAugmentations=ownership.installed;
+    augmentationOwnershipSignature=ownership.signature;augmentationOwnershipChanged=false;lastOwnershipProbeAt=Date.now();ownershipProbeWarned=false;
     // Based on what augmentations we own, we can change our own behaviour (e.g. whether to allow work to steal focus)
     hasFocusPenalty = !installedAugmentations.includes("Neuroreceptor Management Implant"); // Check if we have an augmentation that lets us not have to focus at work (always nicer if we can background it)
     shouldFocus = !options['no-focus'] && hasFocusPenalty; // Focus at work for the best rate of rep gain, unless focus activities are disabled via command line
@@ -227,11 +233,19 @@ async function loadStartupData(ns) {
     const gangInfo = await getGangInfo(ns);
     playerGang = gangInfo ? gangInfo.faction : null;
     if (playerGang && !options['disable-treating-gang-as-sole-provider-of-its-augs']) {
-        // Whatever augmentations the gang provides are so easy to get from them, might as well ignore any other factions that have them.
-        const gangAugs = dictFactionAugs[playerGang];
-        ns.print(`Your gang ${playerGang} provides easy access to ${gangAugs.length} augs. Ignoring these augs from the original factions that provide them.`);
+        const gangAugs = new Set(dictFactionAugs[playerGang]||[]);
+        const nativeRep=await getNsDataThroughFile(ns,dictCommand('ns.singularity.getFactionRep(o)'),'/Temp/gang-provider-reputation.txt',allKnownFactions);
+        let rates={};
+        try{const record=JSON.parse(ns.read('tasks/progression-speed.json')),c=record.reputationPlanningContext,r=ns.getResetInfo();
+            if(c?.at<=Date.now()&&Date.now()-c.at<=60000&&c.nodeReset===r.lastNodeReset&&c.augReset===r.lastAugReset&&c.ownershipSignature===ownership.signature)
+                rates=c.repRates||{};
+        }catch{}
+        const nativeGangRate=Math.max(0,gangInfo.respectGainRate||0)*5*playerInfo.mults.faction_rep*(1+(dictFactionFavors[playerGang]||0)/100)/75;
+        const gangRate=Math.min(nativeGangRate,Math.max(0,rates[playerGang]||0));
         for (const faction of allKnownFactions.filter(f => f != playerGang))
-            dictFactionAugs[faction] = dictFactionAugs[faction].filter(a => !gangAugs.includes(a));
+            dictFactionAugs[faction] = dictFactionAugs[faction].filter(a => !gangAugs.has(a)||!gangProviderPreferred(dictAugRepReqs[a],{
+                gangRep:nativeRep[playerGang],gangRate,otherRep:nativeRep[faction],otherRate:rates[faction]||0}));
+        ns.print(`Compared gang augmentation providers using current reputation and fresh measured rates; retained unlocked or potentially faster alternatives.`);
     }
 
     mostExpensiveAugByFaction = Object.fromEntries(allKnownFactions.map(f => [f,
@@ -288,6 +302,10 @@ async function mainLoop(ns) {
         ns.print((lastMainLoopMessage = loopMessage));
 
     // Immediately accept any outstanding faction invitations for factions we want to earn rep with soon
+    if(augmentationOwnershipChanged||await checkAugmentationOwnership(ns)){
+        await loadStartupData(ns);scope=1;
+        ns.print('INFO: Augmentation ownership changed; refreshed faction reputation and focus targets.');
+    }
     // TODO: If check if we would qualify for an invite to any factions just by travelling, and do so to start earning passive rep
     const invites = await checkFactionInvites(ns);
     const gangInvites=!playerGang&&dictSourceFiles[2]?planGangHost([],gangHostPreferences(ns),options.skip).inviteOrder:[];
@@ -829,9 +847,23 @@ async function getPlayerInfo(ns) {
     return player;
 }
 
+// Also probe during long reputation grinds so manual purchases need no controller restart.
+async function checkAugmentationOwnership(ns) {
+    if(augmentationOwnershipChanged)return true;
+    if(!augmentationOwnershipSignature||Date.now()-lastOwnershipProbeAt<loopSleepInterval)return false;
+    lastOwnershipProbeAt=Date.now();
+    try{
+        const snapshot=await getNsDataThroughFile(ns,`(${captureAugmentationOwnership.toString()})(ns)`,'/Temp/faction-work-ownership-current.txt');
+        if(!snapshot?.complete)throw Error('Native ownership unavailable');
+        augmentationOwnershipChanged=snapshot.signature!==augmentationOwnershipSignature;ownershipProbeWarned=false;
+    }catch(error){if(!ownershipProbeWarned)ns.print('WARN: Augmentation ownership refresh deferred: '+String(error));ownershipProbeWarned=true;}
+    return augmentationOwnershipChanged;
+}
+
 // Reputation loops otherwise have no player snapshot. Probe at most once per ordinary five-second work poll.
 async function checkFactionMembership(ns) {
     if(isScriptPaused(ns,ns.getScriptName())||maintenanceRequested(ns)||activityBusy(ns))return true;
+    if(augmentationOwnershipSignature&&await checkAugmentationOwnership(ns))return true;
     if(Date.now()-lastMembershipProbeAt<loopSleepInterval)return factionMembershipState?.changed===true;
     lastMembershipProbeAt=Date.now();
     try{

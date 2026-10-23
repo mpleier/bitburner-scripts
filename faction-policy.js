@@ -1,3 +1,5 @@
+import {combatAugmentationValue} from './combat-growth-policy.js';
+import {augmentationReputationForecast} from './augmentation-reputation-policy.js';
 /** Normalize flag values without changing faction names containing spaces. */
 export function factionForcedJoins(value,node,gang,gangAvailable,karma,preferences={}) {
  const names=value==null?[...(node===10?['The Covenant']:[]),...(!gang&&gangAvailable&&(node===2||karma<=-53000)?planGangHost([],preferences).inviteOrder:[])]:[value].flat(Infinity);
@@ -20,7 +22,9 @@ export function factionPurchaseBatch(api,orders,allowed,reserve,donations=false,
  let successes=0;
  for(const o of orders){
   if(!allowed())break;
-  const cash=api.player().money,keep=Math.max(0,Number(reserve())||0);
+  const cash=api.player().money,keep=Number(reserve());
+  // Missing files read as an empty string (zero); malformed budgets must never release cash.
+  if(!Number.isFinite(cash)||cash<0||!Number.isFinite(keep)||keep<0)break;
   if(donations){
    const gap=Math.max(0,o.targetRep-api.rep(o.faction));
    if(gap===0){successes++;continue;}
@@ -144,13 +148,31 @@ export function augmentationCountCandidates(augmentations,owned,required,money,b
  return chosen;
 }
 
-export function selectGangAugmentationGoal(augmentations,{owned=[],money=0,rep=0,cashRate=0,repRate=0}={}) {
- const names=new Set(owned);
- const candidates=augmentations.filter(a=>a.desired&&a.name!=='NeuroFlux Governor'&&!names.has(a.name)&&a.prereqs.every(p=>names.has(p))&&Number.isFinite(a.cost)&&a.cost>=0&&Number.isFinite(a.rep)&&a.rep>=0);
- const eta=(gap,rate)=>gap<=0?0:rate>0?gap/rate:Infinity;
- const scored=candidates.map(a=>({...a,eta:Math.max(eta(a.cost-money,cashRate),eta(a.rep-rep,repRate))}));
- scored.sort((a,b)=>a.eta-b.eta||a.cost-b.cost||a.rep-b.rep);
- const target=scored[0];return target?{name:target.name,cost:target.cost,rep:target.rep,etaSeconds:Number.isFinite(target.eta)?target.eta:null}:null;
+export function selectGangAugmentationGoal(augmentations,{owned=[],money=0,rep=0,cashRate=0,repRate=0,multiplier=1.9}={}) {
+ if(!Array.isArray(augmentations)||![money,rep,cashRate,repRate,multiplier].every(Number.isFinite)||money<0||rep<0||cashRate<0||repRate<0||multiplier<1)return null;
+ const names=new Set(owned),catalog=Object.fromEntries(augmentations.map(a=>[a.name,{...a,price:a.cost}]));
+ const eta=(gap,rate)=>gap<=0?0:rate>0?gap/rate:Infinity,scored=[];
+ for(const a of augmentations){
+  if(!a.desired||a.name==='NeuroFlux Governor'||names.has(a.name))continue;
+  const chain=augmentationPrerequisiteChain(a.name,catalog,{owned,allowed:item=>Number.isFinite(item.rep)&&item.rep>=0});
+  if(!chain)continue;
+  const ordered=optimizeAugmentationOrder(chain,multiplier);
+  const cost=ordered.reduce((sum,item,i)=>sum+item.price*multiplier**i,0),requiredRep=Math.max(...chain.map(item=>item.rep));
+  if(!Number.isFinite(cost))continue;
+  scored.push({name:a.name,cost,rep:requiredRep,chain:ordered.map(item=>item.name),eta:Math.max(eta(cost-money,cashRate),eta(requiredRep-rep,repRate))});
+ }
+ scored.sort((a,b)=>a.eta-b.eta||a.cost-b.cost||a.rep-b.rep||a.name.localeCompare(b.name));
+ const target=scored[0];return target?{name:target.name,cost:target.cost,rep:target.rep,chain:target.chain,etaSeconds:Number.isFinite(target.eta)?target.eta:null}:null;
+}
+
+/** Suppress alternate work only when a fresh gang forecast is at least as fast.
+ * Unknown alternative rates retain the option; already-unlocked suppliers always remain. */
+export function gangProviderPreferred(requiredRep,{gangRep=0,gangRate=0,otherRep=0,otherRate=0}={}) {
+ if(![requiredRep,gangRep,gangRate,otherRep,otherRate].every(Number.isFinite)||requiredRep<0||gangRep<0||otherRep<0||gangRate<0||otherRate<0)return false;
+ if(otherRep>=requiredRep)return false;
+ if(gangRep>=requiredRep)return true;
+ if(gangRate<=0||otherRate<=0)return false;
+ return (requiredRep-gangRep)/gangRate<=(requiredRep-otherRep)/otherRate;
 }
 
 /** Repeatedly remove missing prerequisite chains after any change to a purchase basket. */
@@ -295,14 +317,23 @@ export function sharedAugmentationDonationCost(items,requirements) {
 
 /** Select a safe marginal basket cut; prerequisite closures and priority milestones remain intact.
  * Savings use the valid retained order, before a subsequent optimizer can lower its cost further. */
-export function selectAugmentationBasketDrop(items,{owned=[],priority=[],route='hacking',multiplier=1.9,countWeight=0,donationCost=()=>0}={}) {
+export function selectAugmentationBasketDrop(items,{owned=[],priority=[],route='hacking',multiplier=1.9,countWeight=0,donationCost=()=>0,combatContext=null,reputationContext=null,reputationEstimator=null}={}) {
  if(!Number.isFinite(multiplier)||multiplier<1)return null;
+ const repEnabled=!!reputationContext&&typeof reputationEstimator==='function'&&Number.isFinite(reputationContext.horizonMs)&&reputationContext.horizonMs>0&&Array.isArray(reputationContext.targets);
  const weights=route==='bladeburner'?{strength:1,defense:1,dexterity:1,agility:1,strength_exp:.4,defense_exp:.4,dexterity_exp:.4,agility_exp:.4,bladeburner_success_chance:4,bladeburner_max_stamina:2,bladeburner_stamina_gain:2,bladeburner_analysis:.5,faction_rep:.2}:
   {hacking:3,hacking_exp:2,hacking_speed:2,hacking_chance:1,hacking_money:1,hacking_grow:1,faction_rep:1,company_rep:.5,company_rep_exp:.1};
- const value=a=>Math.max(0,Object.entries(a.stats||{}).reduce((sum,[key,v])=>Number.isFinite(v)&&v>0?sum+(weights[key]||0)*Math.log(v):sum,0))+
+ const value=a=>{const combat=route==='bladeburner'&&combatContext?combatAugmentationValue(a.stats,combatContext):null;return combat===null?genericValue(a):combat+(repEnabled?0:(weights.faction_rep||0)*(Number.isFinite(a.stats?.faction_rep)&&a.stats.faction_rep>1?Math.log(a.stats.faction_rep):0));};
+ const genericValue=a=>Math.max(0,Object.entries(a.stats||{}).reduce((sum,[key,v])=>Number.isFinite(v)&&v>0?sum+(key==='faction_rep'&&repEnabled?0:weights[key]||0)*Math.log(v):sum,0))+
   (a.name!=='NeuroFlux Governor'?Math.max(0,Number(countWeight)||0):0);
  const cost=list=>list.reduce((sum,a,i)=>sum+a.price*Math.pow(multiplier,i),0)+donationCost(list),before=cost(items),protectedNames=new Set(priority);
  if(!Number.isFinite(before))return null;
+ const repCache=new Map(),repValue=list=>{
+  if(!repEnabled)return 0;
+  const boost=list.reduce((m,a)=>m*(a.stats?.faction_rep??1),1),names=new Set(list.map(a=>a.name));
+  const key=JSON.stringify([boost,reputationContext.targets?.filter(t=>names.has(t.name)).map(t=>t.name).sort()]);
+  if(!repCache.has(key))repCache.set(key,augmentationReputationForecast(list,reputationContext,reputationEstimator,{marginal:true}).grossSavingsMs/reputationContext.horizonMs);
+  return repCache.get(key);
+ },reputationBefore=repValue(items);
  let best=null;
  for(const item of items){
   if(protectedNames.has(item.name))continue;
@@ -310,7 +341,7 @@ export function selectAugmentationBasketDrop(items,{owned=[],priority=[],route='
   const removed=items.filter(a=>!names.has(a.name));
   if(removed.some(a=>protectedNames.has(a.name)))continue;
   const savings=before-cost(remaining);if(!(savings>=0&&Number.isFinite(savings)))continue;
-  const lostBenefit=removed.reduce((sum,a)=>sum+value(a),0),ratio=savings>0?lostBenefit/savings:Infinity;
+  const lostBenefit=removed.reduce((sum,a)=>sum+value(a),0)+Math.max(0,reputationBefore-repValue(remaining)),ratio=savings>0?lostBenefit/savings:Infinity;
   if(!best||ratio<best.ratio||ratio===best.ratio&&savings>best.savings)best={name:item.name,remaining,removed:removed.map(a=>a.name),savings,lostBenefit,ratio};
  }
  return best;

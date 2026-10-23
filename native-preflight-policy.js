@@ -21,3 +21,19 @@ export function freshManagedLogs(ns,script,now=Date.now()) {
  });
  return {at:now,source:'native',script,processCount:matches.length,omittedProcesses:Math.max(0,matches.length-logs.length),logs};
 }
+
+/** Compile only the fixed snapshot readers, without executing them or changing gameplay. */
+export async function nativeBladeburnerSnapshotPreflight(ns,workers){
+ const rows=[];
+ for(const worker of workers){
+  const file='Temp/bladeburner-snapshot-qc-'+ns.pid+'-'+worker.name+'.js';
+  try {
+   await ns.write(file,'export function main(ns){return '+worker.source+';}','w');
+   const ram=ns.getScriptRam(file,'home');
+   rows.push({name:worker.name,ram:Number.isFinite(ram)?ram:null,status:Number.isFinite(ram)&&ram>0&&ram<=24?'ready':'invalid'});
+  }catch(error){rows.push({name:worker.name,status:'unavailable',reason:String(error).slice(0,160)});}
+  finally{ns.rm(file,'home');}
+ }
+ const parentRam=ns.getScriptRam('bladeburner.js','home');
+ return {check:'bladeburner-snapshot-ram',ok:rows.length===5&&rows.every(r=>r.status==='ready'),workers:rows,parentRam,workerLimit:24,limitations:'Workers compiled only; full Bladeburner controller and other workers may require more than 32 GB.'};
+}

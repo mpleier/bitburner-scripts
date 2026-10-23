@@ -27,15 +27,15 @@ test('native skill-goal helper serializes without external dependencies',()=>{
 
 test('executed production skill worker publishes its post-purchase goal without altering the purchase result',async()=>{
  const source=await readFile(new URL('../bladeburner.js',import.meta.url),'utf8');
- const start=source.indexOf('async function spendSkillPoints(ns)'),end=source.indexOf('/** @param {NS} ns',start);
+ const start=source.indexOf('async function spendSkillPoints('),end=source.indexOf('/** @param {NS} ns',start);
  let level=89,points=5,upgrades=0;const files={};
  const api={getRank:()=>1000,getSkillPoints:()=>points,getSkillLevel:()=>level,getSkillUpgradeCost:()=>10,getStamina:()=>[100,100],
   upgradeSkill:()=>{upgrades++;level++;points-=10;return true;}};
  const ns={pid:7,read:file=>files[file]||'',write:(file,value)=>files[file]=value,isRunning:()=>true,getResetInfo:()=>({lastNodeReset:1,lastAugReset:2}),
   getPlayer:()=>({skills:{},mults:{bladeburner_max_stamina:1}}),bladeburner:api};
  const read=async(_ns,expression,_file,args)=>{const worker={...ns,args};return Function('ns','return '+expression)(worker);};
- const make=Function('getNsDataThroughFile','spendBladeburnerSkills','bladeburnerSkillGoal','nextBladeburnerProgressSkill','nextSkill','bbMutationGuard','resetInfo','skillNames','costAdjustments','remainingBlackOpsNames','blackOpsRanks','options','blackOpMetadata','log',source.slice(start,end)+'return spendSkillPoints;');
- const run=make(read,spendBladeburnerSkills,bladeburnerSkillGoal,nextBladeburnerProgressSkill,nextSkill,'true',{lastNodeReset:1},['Overclock'],{},[],{},{'success-threshold':.99},{},()=>{});
+ const make=Function('getNsDataThroughFile','spendBladeburnerSkills','bladeburnerSkillGoal','nextBladeburnerProgressSkill','nextSkill','bbMutationGuard','resetInfo','skillNames','costAdjustments','remainingBlackOpsNames','blackOpsRanks','options','blackOpMetadata','bladeburnerDifficulty','log','cityPlanCache','levelPlanCache',source.slice(start,end)+'return spendSkillPoints;');
+ const run=make(read,spendBladeburnerSkills,bladeburnerSkillGoal,nextBladeburnerProgressSkill,nextSkill,'true',{lastNodeReset:1},['Overclock'],{},[],{},{'success-threshold':.99},{},{},()=>{});
  await run(ns);let goal=JSON.parse(files['tasks/hash-skill-goal.json']);
  assert.equal(goal.name,'Overclock');assert.equal(goal.shortfall,5);assert.equal(goal.ownerPid,7);assert.equal(goal.augReset,2);assert.equal(upgrades,0);
  points=10;await run(ns);goal=JSON.parse(files['tasks/hash-skill-goal.json']);

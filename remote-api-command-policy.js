@@ -1,7 +1,7 @@
 // Import-free module registry and command validation shared with the local listener.
 export const commandFile = 'remote-control/request.json';
 export const heartbeatFile = 'remote-control/heartbeat.json';
-export const commandPolicyVersion = 22;
+export const commandPolicyVersion = 25;
 export const resultFile = id => 'remote-control/results/' + id + '.json';
 // Authoritative module metadata lives beside import-free command validation so the local
 // listener can hot-reload both together without stale dependency caches.
@@ -33,6 +33,7 @@ export const moduleManifest=Object.freeze([
  Object.freeze({"script":"spend-hacknet-hashes.js","remoteControl":false,"supervised":true,"diagnostic":true,"homeOnly":true,"statusFile":"tasks/hacknet-hash-status.json","priority":7,"launchOrder":9,"watched":true}),
  Object.freeze({"script":"stanek.js","remoteControl":false,"supervised":true,"diagnostic":true,"homeOnly":true,"statusFile":"tasks/stanek-status.json","watched":true}),
  Object.freeze({"script":"host-manager.js","remoteControl":false,"supervised":false,"diagnostic":true,"homeOnly":true,"statusFile":"tasks/cloud-purchase-status.json","watched":false}),
+ Object.freeze({"script":"Tasks/bladeburner-training.js","remoteControl":false,"supervised":false,"diagnostic":true,"homeOnly":true,"watched":false}),
  Object.freeze({"script":"Tasks/ram-manager.js","remoteControl":false,"supervised":false,"diagnostic":true,"homeOnly":true,"watched":false}),
  Object.freeze({"script":"Tasks/contractor.js","remoteControl":false,"supervised":false,"diagnostic":true,"homeOnly":true,"watched":false}),
  Object.freeze({"script":"Tasks/contractor.js.solver.js","remoteControl":false,"supervised":false,"diagnostic":true,"homeOnly":false,"requiresLease":true,"watched":false}),
@@ -48,8 +49,10 @@ export function validateCommand(command, now = Date.now()) {
  if (!Array.isArray(command.args) || command.args.length > 100) throw new Error('Invalid arguments');
  if (['start','stop'].includes(command.method)) {
   if (command.args.length !== 1 || !managedScripts.includes(command.args[0])) throw new Error('Choose a managed project script; custom arguments are not supported');
+ } else if(command.method==='automation.bladeburnerSnapshotPreflight'){
+  if(command.args.length)throw Error('Snapshot preflight takes no arguments');
  } else if(command.method==='automation.preflight'){
-  if(command.args.length>32||command.args.some(s=>!diagnosticScripts.includes(s)))throw new Error('Choose managed entrypoints for native preflight');
+  if(command.args.length>48||command.args.some(s=>!diagnosticScripts.includes(s)))throw new Error('Choose managed entrypoints for native preflight');
  } else if(command.method==='automation.logsFresh'){
   if(command.args.length!==1||!diagnosticScripts.includes(command.args[0]))throw new Error('Choose one managed script for fresh logs');
  } else if(command.method==='automation.logs'){
@@ -58,6 +61,8 @@ export function validateCommand(command, now = Date.now()) {
   if(command.args.length>2||command.args.some((n,i)=>!Number.isSafeInteger(n)||n<(i===0?0:1)||i===1&&n>100))throw new Error('File audit requires a nonnegative offset and a limit of 1 through 100');
  } else if(command.method==='automation.preview'){
   if(command.args.length)throw new Error('Automation preview takes no arguments');
+ } else if(['automation.goReplay','automation.hgwTiming'].includes(command.method)){
+  if(command.args.length)throw new Error('Diagnostic query takes no arguments');
  } else if(command.method==='automation.status'){
   if(command.args.length)throw new Error('Automation status takes no arguments');
  } else if (command.method === 'measurement.xp') {

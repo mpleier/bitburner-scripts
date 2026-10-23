@@ -1,3 +1,5 @@
+import {summarizeHgwBatches} from './hgw-batch-policy.js';
+import {combatAugmentationValue} from './combat-growth-policy.js';
 /** Decisions driven by recent evidence; no native mutations. */
 export function adaptiveHgwTiming(previous,telemetry,{now=Date.now(),baseCycleMs=4000,baseQueueMs=100,targetCount=2}={}) {
  const base=Number.isFinite(baseCycleMs)&&baseCycleMs>0?baseCycleMs:4000;
@@ -33,7 +35,13 @@ export function adaptiveHgwTiming(previous,telemetry,{now=Date.now(),baseCycleMs
      Math.min(base*16,Math.ceil(Math.max(...[...distinct.values()].map(e=>e.lateMs))*8)));
     state.changedAt=now;
    }}
-   else if(bad/n<=.01){state.cleanWindows++;if(state.cleanWindows>=(lowTraffic?2:3)&&now-state.changedAt>=120000){state.multiplier=Math.max(1,state.multiplier/1.25);state.latencyFloorMs=(state.latencyFloorMs||0)/1.25;if(state.latencyFloorMs<=base)state.latencyFloorMs=0;state.changedAt=now;state.cleanWindows=0;}}
+   else if(bad/n<=.01){
+    const owner=telemetry.ownerPid,prefix=[telemetry.nodeReset,telemetry.augReset,owner].join(':')+':';
+    const ordered=Number.isSafeInteger(owner)&&owner>0?summarizeHgwBatches(telemetry.recent,owner,now).filter(b=>b.state==='ordered'&&b.lastAt>state.windowAt&&b.batchId.startsWith(prefix)&&['hack','grow','weaken'].every(tool=>b.steps.some(s=>s.tool===tool))):[];
+    const fastRecovery=spacingComplete&&bad===0&&ordered.length>=3;
+    const decay=fastRecovery?1.5:1.25;
+    state.recoveryEvidence={batches:ordered.length,decay};
+    state.cleanWindows++;if(state.cleanWindows>=(lowTraffic?2:3)&&now-state.changedAt>=120000){state.multiplier=Math.max(1,state.multiplier/decay);state.latencyFloorMs=(state.latencyFloorMs||0)/decay;if(fastRecovery){const recent=telemetry.recent.filter(e=>e.owner===owner&&e.at>state.windowAt&&e.at<=now&&Number.isFinite(e.lateMs)&&e.lateMs>=0);state.latencyFloorMs=Math.max(state.latencyFloorMs,Math.min(base*16,Math.ceil(Math.max(0,...recent.map(e=>e.lateMs))*8)));}if(state.latencyFloorMs<=base)state.latencyFloorMs=0;state.changedAt=now;state.cleanWindows=0;}}
    else state.cleanWindows=0;
    state.windowAt=now;state.operations=operations;state.late=late;state.spacingSamples=counts?.spacingSamples||0;state.spacingRisks=counts?.spacingRisks||0;
   }
@@ -74,15 +82,31 @@ export function currentCorporationStatus(record,reset,processes,now=Date.now()) 
 }
 
 /** Reserve a reachable, useful augmentation bill; far-away targets do not freeze spending. */
-export function augmentationSavingsTarget(snapshot,reset,money,route,now=Date.now()) {
+export function augmentationSavingsTarget(snapshot,reset,money,route,now=Date.now(),economics=null) {
  if(!snapshot||snapshot.augReset!==reset.lastAugReset||!Number.isFinite(snapshot.at)||snapshot.at>now||now-snapshot.at>300000||!(money>0))return null;
  const useful=stats=>route==='bladeburner'?['strength','defense','dexterity','agility','strength_exp','defense_exp','dexterity_exp','agility_exp','bladeburner_success_chance','bladeburner_max_stamina','bladeburner_stamina_gain'].some(k=>Number(stats?.[k])>=1.05):
   ['hacking','hacking_exp','hacking_speed','faction_rep'].some(k=>Number(stats?.[k])>=1.05);
- return (snapshot.targets||[]).filter(t=>Number.isFinite(t.directCost)&&t.directCost>money*.25&&t.directCost<=money*3&&
+ const candidates=(snapshot.targets||[]).filter(t=>Number.isFinite(t.directCost)&&t.directCost>money*.25&&t.directCost<=money*3&&
   t.factions?.some(f=>Number(snapshot.reputation?.[f])>=t.rep)&&
-  (['The Red Pill',"The Blade's Simulacrum"].includes(t.name)||useful(t.stats)))
-  .sort((a,b)=>Number(!['The Red Pill',"The Blade's Simulacrum"].includes(a.name))-Number(!['The Red Pill',"The Blade's Simulacrum"].includes(b.name))||a.directCost-b.directCost)
-  .map(t=>({name:t.name,cost:t.directCost}))[0]||null;
+  (['The Red Pill',"The Blade's Simulacrum"].includes(t.name)||useful(t.stats)));
+ const milestones=['The Red Pill',"The Blade's Simulacrum"];
+ const measured=economics&&[economics.cashRate,economics.recoveryMs,economics.rebuildMs].every(Number.isFinite)&&economics.cashRate>0&&economics.recoveryMs>=0&&economics.rebuildMs>=0;
+ const channels=route==='bladeburner'?{strength:.15,defense:.15,dexterity:.15,agility:.15,strength_exp:.08,defense_exp:.08,dexterity_exp:.08,agility_exp:.08,bladeburner_success_chance:.4,bladeburner_max_stamina:.12,bladeburner_stamina_gain:.12}:{hacking:.35,hacking_exp:.15,hacking_speed:.2,hacking_money:.15,faction_rep:.15};
+ const ranked=candidates.map(t=>{
+  let logGain=0;for(const [key,weight]of Object.entries(channels)){const v=t.stats?.[key]??1;if(!Number.isFinite(v)||v<=0)return null;logGain+=weight*Math.log(v);}
+  const local=route==='bladeburner'?combatAugmentationValue(t.stats,economics?.combat):null;
+  const gain=Math.max(0,Math.min(2,Math.expm1(Math.min(2,local??logGain))*.5));
+  const waitMs=measured?Math.max(0,t.directCost-money)/economics.cashRate*1000:null;
+  const delayMs=measured?waitMs+economics.recoveryMs+economics.rebuildMs:null;
+  const milestone=milestones.includes(t.name);
+  if(measured&&!milestone&&gain<=0)return null;
+  if(!milestone&&measured&&Number.isFinite(economics.remainingMs)&&economics.remainingMs>=0&&delayMs>=economics.remainingMs)return null;
+  return {name:t.name,cost:t.directCost,milestone,gain,waitMs,recoveryMs:measured?economics.recoveryMs:null,rebuildMs:measured?economics.rebuildMs:null,
+   score:measured?gain/Math.max(60000,delayMs)*3600000:null};
+ }).filter(Boolean).sort((a,b)=>Number(b.milestone)-Number(a.milestone)||(measured?b.score-a.score:0)||a.cost-b.cost||a.name.localeCompare(b.name));
+ const best=ranked[0];if(!best)return null;
+ if(!measured)return {name:best.name,cost:best.cost};
+ return {...best,source:'growth-ranked',basis:'Estimated route gain per hour including cash wait and install recovery'};
 }
 
 /** Shared hash reserve, recalculated immediately before every native purchase. */

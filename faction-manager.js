@@ -1,3 +1,8 @@
+import {readAugmentationReputationContext} from './augmentation-reputation-policy.js';
+import {estimateMixedAugmentationWait} from './progression-speed-policy.js';
+import {readCombatGrowthContext} from './combat-growth-policy.js';
+import {captureAugmentationEconomics,augmentationEconomicsChange,invalidateAugmentationFunding} from './augmentation-economics-policy.js';
+import {captureAugmentationOwnership} from './augmentation-ownership-policy.js';
 import {augmentationCashReserve} from './spending-policy.js';
 import {ensureFactionJoinPlan} from './faction-joining.js';
 import {readNodeRoutePlan} from './node-route-policy.js';
@@ -32,6 +37,7 @@ let favorToDonate = 0; // Based on the current BitNode Multipliers, the favour r
 let playerData = (/**@returns{Player}*/() => null)(), bitNode = 0, gangFaction = "";
 let numAugsAwaitingInstall = 0, nfLevelPurchased = 0, startingPlayerMoney = 0, stockValue = 0; // If the player holds stocks, their liquidation value will be determined
 let factionNames = [""], joinedFactions = [""], desiredAugs = [""], desiredStatsFilters = [""], purchaseFactionDonations = [];
+let ownershipSnapshot=null,economicsSnapshot=null;
 let ownedAugmentations = [""], simulatedOwnedAugmentations = [""], allAugStats = [""], priorityAugs = [""];
 let effectiveSourceFiles = (/**@returns {{[bitNode: number]: number}}*/() => ({}))();
 let factionData = (/**@returns {{[factionName: string]: FactionData}}*/() => ({}))();
@@ -159,11 +165,13 @@ export async function main(ns) {
     joinedFactions = ignorePlayerData ? [] : playerData.factions;
     log(ns, 'In factions: ' + joinedFactions);
     // Get owned augmentations (whether they've been installed or not). Ignore strNF because you can always buy more.
-    ownedAugmentations = await getNsDataThroughFile(ns, 'ns.singularity.getOwnedAugmentations(true)', '/Temp/player-augs-purchased.txt');
-    const installedAugmentations = (/**@returns {string[]}*/() => null)() ??
-        await getNsDataThroughFile(ns, 'ns.singularity.getOwnedAugmentations()', '/Temp/player-augs-installed.txt');
-    numAugsAwaitingInstall = ownedAugmentations.length - installedAugmentations.length;
-    const nfLevels=neuroFluxLevels(resetInfo,ownedAugmentations.slice(installedAugmentations.length));
+    ownershipSnapshot=await getNsDataThroughFile(ns,`(${captureAugmentationOwnership.toString()})(ns)`,'/Temp/faction-augmentation-ownership.txt');
+    if(!ownershipSnapshot?.complete||ownershipSnapshot.augReset!==resetInfo.lastAugReset||ownershipSnapshot.nodeReset!==resetInfo.lastNodeReset)
+        return log(ns,'Augmentation ownership is unavailable or reset changed; deferring planning.',printToTerminal,'warning');
+    ownedAugmentations=ownershipSnapshot.owned;
+    const installedAugmentations=ownershipSnapshot.installed;
+    numAugsAwaitingInstall=ownershipSnapshot.queued.length;
+    const nfLevels=neuroFluxLevels({ownedAugs:Object.fromEntries(ownershipSnapshot.levels)},ownershipSnapshot.queued);
     if(!nfLevels)return log(ns,'Native NeuroFlux ownership data is unavailable; deferring augmentation planning.',printToTerminal,'warning');
     nfLevelPurchased=nfLevels.purchased;
     if (options['neuroflux-disabled']) omitAugs.push(strNF);
@@ -180,6 +188,7 @@ export async function main(ns) {
     await updateFactionData(ns, options['ignore-faction'].map(f => f.replaceAll("_", " ")));
     log(ns, 'Getting all augmentation data...');
     await updateAugmentationData(ns);
+    if(!ignorePlayerData&&!await refreshAugmentationQuotes(ns))return log(ns,'Native augmentation quotes unavailable; deferring planning.',printToTerminal);
 
     if(augmentationRoute!=='bladeburner'&&!options['disable-count-building']&&!options['stat-desired'].length&&!playerData.factions.includes('Daedalus')){
         const needed=bitNodeMults.DaedalusAugsRequirement||30;
@@ -197,6 +206,7 @@ export async function main(ns) {
         const forceJoinFactions = factionForcedJoins(options['force-join'],bitNode,gangFaction,Number(effectiveSourceFiles[2])>0,ns.heart.break(),gangHostPreferences(ns));
         let joined = await joinFactions(ns, forceJoinFactions);
         if (joined) log(ns, `SUCCESS: Joined ${joined} factions.`);
+        if(joined&&!await refreshAugmentationQuotes(ns))return log(ns,'Quotes unavailable after joining factions; deferring planning.',printToTerminal);
         displayJoinedFactionSummary(ns);
     }
 
@@ -223,7 +233,7 @@ export async function main(ns) {
         ns.write(output_file, "", "w"); // Clear the file so it isn't misinterpreted on next reset.
     } else if (!ignorePlayerData) { // Don't do this next part if we were "mocking" the player for this run
         // Write a file that summarizes what augs we could afford if we could ascend right now. (used by autopilot.js)
-        const augsAwaitingInstall = ownedAugmentations.slice(installedAugmentations.length); // Assumes augs are returned in purchased order
+        const augsAwaitingInstall = ownershipSnapshot.queued;
         // Native total NF levels minus explicitly queued levels gives installed NF levels
         const nfInstalled = nfLevelPurchased - augsAwaitingInstall.filter(a => a == strNF).length;
         const readyAugs=augsAwaitingInstall.concat(purchaseableAugs.map(a=>a.name));
@@ -259,12 +269,12 @@ export async function main(ns) {
                 .map(a=>({name:a.name,desired:a.desired,cost:a.price,rep:a.reputation,prereqs:a.prereqs})),
                 {owned:ownedAugmentations,money:Math.max(0,playerData.money-(Number(ns.read('reserve.txt'))||0)),rep:f?.reputation||0,
                  repRate:Math.max(0,gangInfo.respectGainRate||0)*5*playerData.mults.faction_rep*(1+(f?.favor||0)/100)/75,
-                 cashRate:Math.max(0,gangInfo.moneyGainRate||0)*5});
+                 cashRate:Math.max(0,gangInfo.moneyGainRate||0)*5,multiplier:augCountMult});
             await ns.write('tasks/gang-purchase-goal.json',JSON.stringify({at:Date.now(),nodeReset:resetInfo.lastNodeReset,augReset:resetInfo.lastAugReset,faction:gangFaction,goal}),'w');
         }
         let income=null;
-        try{income=await getNsDataThroughFile(ns,'({at:Date.now(),sources:ns.getMoneySources().sinceInstall})','/Temp/augmentation-income-sources.txt');}catch{}
-        const speedSnapshot={income,resetEconomics,installedCount:installedAugmentations.filter(n=>n!==strNF).length,requiredCount:bitNodeMults.DaedalusAugsRequirement||30,at:Date.now(),augReset:resetInfo.lastAugReset,worth:playerData.money+stockValue,
+        try{income=await getNsDataThroughFile(ns,'({at:Date.now(),sources:ns.getMoneySources().sinceInstall,...((w)=>({workFaction:w?.type==="FACTION"?w.factionName:null,workType:w?.factionWorkType??null}))(ns.singularity.getCurrentWork())})','/Temp/augmentation-income-sources.txt');}catch{}
+        const speedSnapshot={income,resetEconomics,gangFaction,gangRepRate:gangFaction?Math.max(0,gangInfo.respectGainRate||0)*5*playerData.mults.faction_rep*(1+(factionData[gangFaction]?.favor||0)/100)/75:0,workFaction:income?.workFaction,workType:income?.workType,repMultiplier:playerData.mults.faction_rep,factionFavor:Object.fromEntries(Object.values(factionData).filter(f=>f.joined).map(f=>[f.name,f.favor])),nodeReset:resetInfo.lastNodeReset,ownershipSignature:ownershipSnapshot.signature,donationUnitCost:playerData.mults.faction_rep>0&&bitNodeMults.FactionWorkRepGain>0?1e6/playerData.mults.faction_rep/bitNodeMults.FactionWorkRepGain:null,installedCount:installedAugmentations.filter(n=>n!==strNF).length,requiredCount:bitNodeMults.DaedalusAugsRequirement||30,at:Date.now(),augReset:resetInfo.lastAugReset,worth:playerData.money+stockValue,
             ready:readyAugs.map(name=>({name,stats:augmentationData[name]?.stats||{}})),
             waitReady:futureReadyAugs.map(name=>({name,stats:augmentationData[name]?.stats||{}})),
             reputation:Object.fromEntries(Object.values(factionData).filter(f=>f.joined).map(f=>[f.name,f.reputation])),
@@ -274,7 +284,7 @@ export async function main(ns) {
                         allowed:item=>!omitAugs.includes(item.name)&&item.joinedFactionsWithAug().length>0});
                     if(!chain)return null;
                     const requirements=chain.map(item=>({rep:item.reputation,factions:item.joinedFactionsWithAug().map(f=>f.name),
-                        providers:item.joinedFactionsWithAug().map(f=>({faction:f.name,requiredDonation:f.reputation>=item.reputation?0:
+                        providers:item.joinedFactionsWithAug().map(f=>({faction:f.name,canDonate:f.donationsUnlocked&&!options['disable-donations'],requiredDonation:f.reputation>=item.reputation?0:
                             f.donationsUnlocked&&!options['disable-donations']?getReqDonationForAug(item,f.name):null}))}));
                     const credits={...futureDonationPlan};let donationCost=0;
                     for(const item of chain){
@@ -294,7 +304,23 @@ export async function main(ns) {
                         priority:priorityAugs.indexOf(a.name),standaloneCost:priorityAugs.includes(a.name)&&a.prereqs.every(p=>simulatedOwnedAugmentations.includes(p))?a.price:null,
                         rep:a.reputation,factions:a.joinedFactionsWithAug().map(f=>f.name),donationCost};
                 }).filter(Boolean)};
+        // Native catalog and committed basket let reset planning price shared gang bundles once.
+        speedSnapshot.gangBundlePlan=gangFaction?{ownershipSignature:ownershipSnapshot.signature,faction:gangFaction,multiplier:augCountMult,donations:plannedDonations,
+            owned:[...simulatedOwnedAugmentations],base:futurePurchaseAugs.map(a=>({name:a.name,price:a.price,prereqs:a.prereqs})),
+            catalog:Object.values(augmentationData).filter(a=>!a.owned&&!omitAugs.includes(a.name)&&a.name!==strNF&&a.joinedFactionsWithAug().some(f=>f.name===gangFaction))
+                .map(a=>({name:a.name,price:a.price,rep:a.reputation,prereqs:a.prereqs,stats:a.stats,desired:a.desired}))}:null;
+        const finalOwnership=await getNsDataThroughFile(ns,`(${captureAugmentationOwnership.toString()})(ns)`,'/Temp/faction-augmentation-ownership-final.txt');
+        if(!finalOwnership?.complete||finalOwnership.signature!==ownershipSnapshot.signature){
+            await ns.write(output_file,'','w');
+            return log(ns,'Augmentation ownership changed during planning; waiting for a fresh plan.',printToTerminal);
+        }
+        const finalEconomics=await getNsDataThroughFile(ns,`(${captureAugmentationEconomics.toString()})(ns,JSON.parse(ns.args[0]))`,
+            '/Temp/faction-augmentation-economics-final.txt',[JSON.stringify(economicsSnapshot.watch)]);
+        const quoteChange=augmentationEconomicsChange(economicsSnapshot,finalEconomics,{allowRepDrift:true});
+        if(quoteChange.changed){await ns.write(output_file,'','w');return log(ns,'Augmentation plan changed during calculation: '+quoteChange.reason,printToTerminal);}
         await ns.write(output_file, JSON.stringify({
+            economics:economicsSnapshot,
+            ownershipSignature:ownershipSnapshot.signature,
             schemaVersion:1,at:Date.now(),augReset:resetInfo.lastAugReset,nodeReset:resetInfo.lastNodeReset,
             speedSnapshot,
             // Augs we already have installed
@@ -562,8 +588,8 @@ class AugmentationData {
         const budget = playerData.money + stockValue;
         const augNameShort = this.displayName.length <= (augColWidth - fCreep) ? this.displayName :
             `${this.displayName.slice(0, Math.ceil(augColWidth / 2 - 3 - fCreep))}...${this.displayName.slice(this.displayName.length - Math.floor(augColWidth / 2))}`;
-        return `${this.desired ? '*' : ' '} Price: ${formatMoney(this.price, 4).padEnd(7)} ${this.price <= budget ? '✓' : '✗'}  ` +
-            `Rep: ${formatNumberShort(this.reputation, 4).padEnd(6)} ${this.canAfford() ? '✓' : this.canAffordWithDonation() ? '$' : '✗'}  ` +
+        return `${this.desired ? '*' : ' '} Price: ${formatMoney(this.price, 4).padEnd(7)} ${this.price <= budget ? 'Ã¢Å“â€œ' : 'Ã¢Å“â€”'}  ` +
+            `Rep: ${formatNumberShort(this.reputation, 4).padEnd(6)} ${this.canAfford() ? 'Ã¢Å“â€œ' : this.canAffordWithDonation() ? '$' : 'Ã¢Å“â€”'}  ` +
             `Faction: ${factionName.padEnd(factionColWidth)}  Aug: ${augNameShort.padEnd(augColWidth - fCreep)}  ` +
             `${statsString.length <= statsColWidth ? statsString : (statsString.substring(0, statsColWidth - 4) + '... }')}`;
     }
@@ -648,7 +674,7 @@ async function manageUnownedAugmentations(ns, ignoredAugs) {
         await manageFilteredSubset(ns, outputRows, 'Unavailable', unavailableAugs, true, false);
     // Prepare and display a little legend of what symbols in our augmentation list mean
     const legendTitle = 'Optimized Purchase Order Legend';
-    outputRows.push(legendTitle, '-'.repeat(legendTitle.length), "✓  Can afford", "✗  Cannot afford", "$  Can donate for rep",
+    outputRows.push(legendTitle, '-'.repeat(legendTitle.length), "Ã¢Å“â€œ  Can afford", "Ã¢Å“â€”  Cannot afford", "$  Can donate for rep",
         `*  Desired aug/stats (${desiredStatsFilters.join(", ")})`, '-'.repeat(legendTitle.length));
     const countAvailable = availableAugs?.length || 0; // Get a count of available augs (including NF) to determine whether to prepare a purchase order
     // Display available augs. We use the return value to "lock in" the new sort order. If enabled, subsequent tables are displayed if the filtered sort order changes.
@@ -721,7 +747,7 @@ async function manageFilteredSubset(ns, outputRows, subsetName, subset, printLis
     let [repCostByFaction, totalRepCost, totalAugCost] = computeCosts(subsetSorted, reorder);
     // By default, if the purchase order is unchanged after filtering out augmentations, don't bother reprinting the full list
     if (printList === true || printList !== false && options['show-all-purchase-lists'] && !subset.every((v, i) => v == subsetSorted[i]))
-        outputRows.push(`${subset.length} ${subsetName} Augmentations in Optimized Purchase Order:\n  ${subsetSorted.join('\n  ')}`);
+        outputRows.push(`${subset.length} ${subsetName} Augmentations in Optimized Purchase Order:\nÃ‚Â  ${subsetSorted.join('\nÃ‚Â Ã‚Â ')}`);
     outputRows.push(`Total Cost of ${subset.length} ${subsetName}:`.padEnd(37) + ` ${getCostString(totalAugCost, totalRepCost)}` +
         (totalRepCost == 0 ? '' : `  Donate: {${Object.keys(repCostByFaction).map(f => `"${f}":${formatNumberShort(repCostByFaction[f], 4)}`).join(", ")}}`));
     return subsetSorted;
@@ -748,10 +774,11 @@ async function managePurchaseableAugs(ns, outputRows, accessibleAugs) {
         dropped = [];
         purchaseableAugs = filterMissingPrereqs(ns, accessibleAugs.slice().filter(a => !droppedPriorityAugs.includes(a.name) && a.price + getReqDonationForAug(a) <= budget));
         [purchaseFactionDonations, totalRepCost, totalAugCost] = computeCosts(purchaseableAugs);
+        const reputationContext=readAugmentationReputationContext(ns,ownershipSnapshot);
         // Cut the least route benefit per dollar saved, including dependent augmentations.
         while (totalAugCost + totalRepCost > budget && purchaseableAugs.length > 0) {
             // Price each retained basket with fresh providers, then restore the committed plan.
-            const cut=selectAugmentationBasketDrop(purchaseableAugs,{owned:simulatedOwnedAugmentations,priority:priorityAugs,route:selectedRoute,multiplier:augCountMult,countWeight,donationCost:previewAugmentationDonationCost});
+            const cut=selectAugmentationBasketDrop(purchaseableAugs,{owned:simulatedOwnedAugmentations,priority:priorityAugs,route:selectedRoute,multiplier:augCountMult,countWeight,donationCost:previewAugmentationDonationCost,combatContext:readCombatGrowthContext(ns,playerData),reputationContext,reputationEstimator:estimateMixedAugmentationWait});
             const augToDrop=cut?purchaseableAugs.find(a=>a.name===cut.name):null;
             if (!augToDrop) { // If there is nothing but "priority augs" left, then we need the user to deprioritize one or the other
                 const aPa = priorityAugs.filter(name => purchaseableAugs.some(a => a.name == name));
@@ -868,8 +895,8 @@ async function managePurchaseableAugs(ns, outputRows, accessibleAugs) {
         if (totalCostWithNextNf > budget || nextNfRep > augNfFaction.reputation && !augNfFaction.donationsUnlocked) {
             nextUpNf = `Next NF (L${nextNfLevel}) will be available at:`.padEnd(37) +
                 ` ${getCostString(totalAugCost + nextNfCost, totalRepCost + nextNfRepCost)}  Money (` +
-                `${(totalCostWithNextNf > budget ? '✗' : '✓')}) and ${formatNumberShort(nextNfRep)} Reputation with "${augNfFaction.name}" (` +
-                (nextNfRep > augNfFaction.reputation && !augNfFaction.donationsUnlocked ? '✗' : '✓') +
+                `${(totalCostWithNextNf > budget ? 'Ã¢Å“â€”' : 'Ã¢Å“â€œ')}) and ${formatNumberShort(nextNfRep)} Reputation with "${augNfFaction.name}" (` +
+                (nextNfRep > augNfFaction.reputation && !augNfFaction.donationsUnlocked ? 'Ã¢Å“â€”' : 'Ã¢Å“â€œ') +
                 ` have ${formatNumberShort(augNfFaction.reputation)}` + (nextNfRep <= augNfFaction.reputation ? '' :
                     augNfFaction.donationsUnlocked ? ', can donate' : ', donations unavailable') + `)`;
             break; // If we cannot afford the next NF, break
@@ -972,7 +999,10 @@ async function purchaseDesiredAugs(ns) {
             `(We had ${formatMoney(startingPlayerMoney)} at startup). Will proceed with buying most of the purchase order.`, printToTerminal, 'warning');
     // Donate to factions if necessary (using a ram-dodging script of course)
     if (Object.keys(purchaseFactionDonations).length > 0 && Object.values(purchaseFactionDonations).some(v => v > 0)) {
-        if (await executeFactionPurchases(ns,Object.keys(purchaseFactionDonations).map(f => ({ faction:f,repDonation:purchaseFactionDonations[f],targetRep:Math.max(...purchaseableAugs.filter(a=>a.getFromJoined()===f).map(a=>a.reputation),0) })),true)===Object.keys(purchaseFactionDonations).length)
+        const donationResult=await executeFactionPurchases(ns,Object.keys(purchaseFactionDonations).map(f => ({ faction:f,repDonation:purchaseFactionDonations[f],targetRep:Math.max(...purchaseableAugs.filter(a=>a.getFromJoined()===f).map(a=>a.reputation),0) })),true);
+        if(donationResult===-2)return log(ns,'Augmentation prices or reputation changed before donation; deferring to a fresh plan.',printToTerminal);
+        if(donationResult===-1)return log(ns,'Augmentation ownership changed before donation; deferring to a fresh plan.',printToTerminal);
+        if(donationResult===Object.keys(purchaseFactionDonations).length)
             log(ns, `SUCCESS: Donated to ${Object.keys(purchaseFactionDonations).length} factions to gain access to desired augmentations.`, printToTerminal, 'success')
         else
             log(ns, `ERROR: One or more attempts to donate to factions for reputation failed. Go investigate!`, printToTerminal, 'error');
@@ -981,6 +1011,8 @@ async function purchaseDesiredAugs(ns) {
     if (purchaseableAugs.length == 0)
         return log(ns, `INFO: Cannot afford to buy any augmentations at this time.`, printToTerminal)
     const purchased = await executeFactionPurchases(ns,purchaseableAugs.map(aug => ({faction:aug.getFromJoined(),augmentation:aug.name})));
+    if(purchased===-2)return log(ns,'Augmentation prices or reputation changed before purchase; deferring to a fresh plan.',printToTerminal);
+    if(purchased===-1)return log(ns,'Augmentation ownership changed before purchase; deferring to a fresh plan.',printToTerminal);
     if (purchased == purchaseableAugs.length)
         log(ns, `SUCCESS: Purchased ${purchased} desired augmentations in optimal order!`, printToTerminal, 'success')
     else
@@ -995,9 +1027,9 @@ function displayJoinedFactionSummary(ns) {
     let summary = `${joinedFactions.length} Joined Factions:`
     let noaugs = joinedFactions.filter(f => f.unownedAugmentations().length == 0)
     if (noaugs.length > 0)
-        summary += `\n  ${noaugs.length} joined factions have no unowned augs remaining: "${noaugs.map(f => f.name).join('", "')}"`;
+        summary += `\nÃ‚Â Ã‚Â ${noaugs.length} joined factions have no unowned augs remaining: "${noaugs.map(f => f.name).join('", "')}"`;
     for (const faction of joinedFactions.filter(f => !noaugs.includes(f)))
-        summary += `\n  ${faction.name}: ${faction.unownedAugmentations().length} augs remaining (${faction.unownedAugmentations().join(", ")})`;
+        summary += `\nÃ‚Â Ã‚Â ${faction.name}: ${faction.unownedAugmentations().length} augs remaining (${faction.unownedAugmentations().join(", ")})`;
     log(ns, summary, printToTerminal);
 }
 
@@ -1016,13 +1048,13 @@ function displayFactionSummary(ns, sortBy, unique, overrideFinishedFactions, exc
     // Grab disctinct augmentations stats
     const relevantAugStats = allAugStats.filter(s => !excludedStats.find(excl => s.includes(excl)) &&
         undefined !== summaryFactions.find(f => f.unownedAugmentations().find(aug => 1 != (augmentationData[aug].stats[s] || 1))));
-    summary += `${summaryFactions.length} factions with augmentations (✓=Joined ✉=Invited ✗=Locked, sorted by total ${sortBy}):`;
+    summary += `${summaryFactions.length} factions with augmentations (Ã¢Å“â€œ=Joined Ã¢Å“â€°=Invited Ã¢Å“â€”=Locked, sorted by total ${sortBy}):`;
     // Creates the table header row
-    let getHeaderRow = countName => `\n   Faction Name ${countName.padStart(9)} / Total Augs ` + relevantAugStats.map(key => shorten(key).padStart(4)).join(' ');
+    let getHeaderRow = countName => `\nÃ‚Â Ã‚Â Ã‚Â Faction Name ${countName.padStart(9)} / Total Augs ` + relevantAugStats.map(key => shorten(key).padStart(4)).join(' ');
     // Creates the string to display a single faction's stats in the table
     let getFactionSummary = faction => {
         const totalMults = faction.totalUnownedMults();
-        return `\n ${faction.joined ? '✓' : faction.invited ? '✉' : '✗'} ${faction.name} `.padEnd(32) +
+        return `\nÃ‚Â ${faction.joined ? 'Ã¢Å“â€œ' : faction.invited ? 'Ã¢Å“â€°' : 'Ã¢Å“â€”'} ${faction.name} `.padEnd(32) +
             `${String(faction.unownedAugmentations().length).padStart(2)} / ${String(faction.augmentations.length).padEnd(2)} ` +
             relevantAugStats.map(key => (totalMults[key] === undefined ? '-' : totalMults[key].toPrecision(3)).padStart(Math.max(shorten(key).length, 4))).join(' ');
     };
@@ -1069,5 +1101,33 @@ function displayFactionSummary(ns, sortBy, unique, overrideFinishedFactions, exc
 async function executeFactionPurchases(ns,orders,donations=false) {
  if(donations&&options['disable-donations'])return 0;
  const adapter=donations?'rep:f=>ns.singularity.getFactionRep(f),donate:(f,a)=>ns.singularity.donateToFaction(f,a)':'price:a=>ns.singularity.getAugmentationPrice(a),buy:(f,a)=>ns.singularity.purchaseAugmentation(f,a)';
- return await getNsDataThroughFile(ns,`(${factionPurchaseBatch.toString()})({player:()=>ns.getPlayer(),${adapter}},JSON.parse(ns.args[0]),()=>(${factionControlAllowed.toString()})({isRunning:p=>ns.isRunning(p),read:f=>ns.read(f)},ns.args[1],"faction-manager.js")&&(${achievementActionAllowed.toString()})(ns,"cashSpending"),()=>ns.read("reserve.txt"),ns.args[2],ns.args[3])`,donations?'/Temp/facman-donate.txt':'/Temp/facman-purchase-augs.txt',[JSON.stringify(orders),ns.pid,donations,bitNodeMults.FactionWorkRepGain]);
+ const result=await getNsDataThroughFile(ns,`(() => {
+  const snapshot=(${captureAugmentationOwnership.toString()})(ns);
+  if(!snapshot?.complete||snapshot.signature!==ns.args[4])return {count:-1};
+  const expected=JSON.parse(ns.args[5]),market=(${captureAugmentationEconomics.toString()})(ns,expected?.watch);
+  if((${augmentationEconomicsChange.toString()})(expected,market,{allowRepDrift:true}).changed)return {count:-2};
+  const count=(${factionPurchaseBatch.toString()})({player:()=>ns.getPlayer(),${adapter}},JSON.parse(ns.args[0]),
+   ()=>(${factionControlAllowed.toString()})({isRunning:p=>ns.isRunning(p),read:f=>ns.read(f)},ns.args[1],"faction-manager.js")&&(${achievementActionAllowed.toString()})(ns,"cashSpending"),
+   ()=>ns.read("reserve.txt"),ns.args[2],ns.args[3]);
+  return {count,market:ns.args[2]?(${captureAugmentationEconomics.toString()})(ns,expected.watch):null};
+ })()`,donations?'/Temp/facman-donate.txt':'/Temp/facman-purchase-augs.txt',
+ [JSON.stringify(orders),ns.pid,donations,bitNodeMults.FactionWorkRepGain,ownershipSnapshot?.signature||'',JSON.stringify(economicsSnapshot)]);
+ if(donations&&result?.count>=0&&result.market?.complete)economicsSnapshot=result.market; // Own donations must not invalidate the following purchase phase.
+ return result?.count??0;
+}
+
+/** Refresh before price-sensitive count selection and after our own membership changes. */
+async function refreshAugmentationQuotes(ns) {
+        const watch={augmentations:Object.values(augmentationData).filter(a=>!a.owned||a.name===strNF).map(a=>a.name).sort(),
+            factions:Object.values(factionData).map(f=>({name:f.name,augmentations:f.augmentations.filter(n=>!augmentationData[n]?.owned||n===strNF)})).sort((a,b)=>a.name.localeCompare(b.name))};
+        economicsSnapshot=await getNsDataThroughFile(ns,`(${captureAugmentationEconomics.toString()})(ns,JSON.parse(ns.args[0]))`,
+            '/Temp/faction-augmentation-economics.txt',[JSON.stringify(watch)]);
+        if(!economicsSnapshot?.complete)return false;
+        for(const [name,q]of Object.entries(economicsSnapshot.quotes)){augmentationData[name].price=q.price;augmentationData[name].reputation=q.rep;}
+        favorToDonate=economicsSnapshot.favorToDonate;playerData.mults.faction_rep=economicsSnapshot.repMultiplier;
+        for(const [name,f]of Object.entries(economicsSnapshot.factions)){
+            factionData[name].reputation=f.rep;factionData[name].favor=f.favor;factionData[name].joined=f.joined;
+            factionData[name].donationsUnlocked=f.favor>=favorToDonate&&![gangFaction,...factionsWithoutDonation].includes(name);
+        }
+    return true;
 }

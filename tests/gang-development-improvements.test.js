@@ -68,9 +68,10 @@ test('adaptive native ascension eligibility uses economic threshold and rejects 
 test('controller retains recruit protection, individual cooldown, one ascension and explicit money/equipment priorities',()=>{
  const source=readFileSync(new URL('../gangs.js',import.meta.url),'utf8');
  assert.match(source,/plannedAscensions.delete\(member\)/);assert.match(source,/await saveGangTraining\(ns\);break;/);
- assert.match(source,/lastMemberReset\[member\]\|\|0\)<60000/);
- assert.match(source,/forecast.train&&!\(imminentRecruit&&now.value>0\)/);
- assert.match(source,/bootstrapBudget=options\['money-focus'\]/);
- assert.match(source,/horizonSeconds:options\['growth-horizon-minutes'\]\*60/);
+ assert.match(source,/lastMemberReset\[member\]\|\|0\)<\(options\['power-focus'\]&&!options\['disable-adaptive-growth'\]\?2000:60000\)/);
+ assert.match(source,/planGangTrainingBursts\(rows,trainingEpisodes,at,crew.jointPlan,\{growthFirst:true\}\)/);
+ assert.match(source,/name:'recruit',resource:'respect'/);assert.match(source,/allowJointTraining:true,activeTraining/);
+ assert.match(source,/gangEquipmentBudgets\(\{money:homeMoney/);assert.match(source,/moneyFocus:options\['money-focus'\]/);
+ assert.match(source,/horizonSeconds:growthHorizon.seconds/);
  assert.match(source,/restoreEquipment:false/);assert.doesNotMatch(source,/for\(const restoreEquipment of/);
 });

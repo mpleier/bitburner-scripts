@@ -14,9 +14,9 @@ test('native preflight cannot accept nonfinite RAM as a successful check',()=>{
  for(const ram of [NaN,Infinity,-1,0])assert.equal(nativeScriptPreflight({getResetInfo:()=>reset,fileExists:()=>true,getScriptRam:()=>ram},['daemon.js']).ok,false);
 });
 test('native and fresh log commands enforce script allowlists and bounded arguments',()=>{
- assert.equal(commandPolicyVersion,22);assert.doesNotThrow(()=>validateCommand(command('automation.preflight')));assert.doesNotThrow(()=>validateCommand(command('automation.preflight',['daemon.js'])));
+ assert.equal(commandPolicyVersion,25);assert.doesNotThrow(()=>validateCommand(command('automation.preflight')));assert.doesNotThrow(()=>validateCommand(command('automation.preflight',['daemon.js'])));
  assert.doesNotThrow(()=>validateCommand(command('automation.logsFresh',['spend-hacknet-hashes.js'])));
- for(const c of [command('automation.preflight',['secret.txt']),command('automation.preflight',Array(33).fill('daemon.js')),command('automation.logsFresh'),command('automation.logsFresh',['../x']),command('automation.logsFresh',['daemon.js',8])])assert.throws(()=>validateCommand(c));
+ for(const c of [command('automation.preflight',['secret.txt']),command('automation.preflight',Array(49).fill('daemon.js')),command('automation.logsFresh'),command('automation.logsFresh',['../x']),command('automation.logsFresh',['daemon.js',8])])assert.throws(()=>validateCommand(c));
 });
 test('fresh logs query live processes, not a stored dashboard, and report omitted instances',()=>{
  const pids=[];const r=freshManagedLogs({ps:()=>Array.from({length:8},(_,i)=>({pid:i,filename:i===0?'other.js':'daemon.js'})),getScriptLogs:pid=>{pids.push(pid);return Array.from({length:50},(_,i)=>String(i)+'x'.repeat(300));}},'daemon.js',1000);

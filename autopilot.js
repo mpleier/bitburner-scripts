@@ -1,4 +1,10 @@
+import {observeIncomeRecovery} from './income-recovery-policy.js';
+import {observeHackingRecovery} from './hacking-recovery-policy.js';
+import {intelligenceProgress} from './intelligence-policy.js';
+import {captureAugmentationEconomics,augmentationEconomicsChange,invalidateAugmentationFunding} from './augmentation-economics-policy.js';
+import {captureAugmentationOwnership} from './augmentation-ownership-policy.js';
 import {launchCooldown,recordLaunch,launchCooldownKey} from './launch-cooldown-policy.js';
+import {managerCapacityPlan,postCasinoInfrastructure} from './manager-capacity-policy.js';
 import {priorityManagerPlan,automaticManagerScripts,moduleManifest} from './automation-manifest.js';
 import {collectAutomationPreview,printAutomationPreview,previewOptions,previewRequested} from './automation-preview-policy.js';
 import {observeCasinoReset,forecastCasinoReset} from './casino-reset-policy.js';
@@ -8,7 +14,7 @@ import {casinoSeedMoney,earnCasinoSeedSource,chooseCasinoSeedCrime,seedSleevesSo
 import {planRedPill,purchaseRedPillSource} from './red-pill-policy.js';
 import {nodeRouteFile,nodeRouteSnapshotSource,sampleRouteProgress,estimateDaemonRoute,estimateBladeburnerRoute} from './node-route-policy.js';
 import {homeRamReserve,reclaimHomeRam,essentialManagerRamTarget} from './home-ram-policy.js';
-import {observeCombatRecovery,augmentationResetDecision,augmentationFourSigmaWait,progressionSpeed} from './progression-speed-policy.js';
+import {augmentationRouteForecast,observeCombatRecovery,augmentationResetDecision,augmentationFourSigmaWait,progressionSpeed} from './progression-speed-policy.js';
 import {registerAutomation,automationHeartbeat,maintenanceRequested,scriptSignature} from './runtime-policy.js';
 import {campaignReady,challengeProfile,achievementNode,achievementActionAllowed} from './achievement-policy.js';
 import {achievementWorkerSources} from './achievement-worker-sources.js';
@@ -34,6 +40,7 @@ const argsSchema = [ // The set of all command line arguments
     ['intelligence-target', 200],
     ['intelligence-max-resets', 100],
     ['intelligence-max-minutes', 10],
+    ['intelligence-payback-hours',24], // Future time affected by the bonus, not a guaranteed BitNode ETA.
     ['disable-achievements', false], // Supervise native achievement goals and schedule dedicated runs after Source Files.
     ['next-bn', 0], // If we destroy the current BN, the next BN to start
     ['wait-in-bitverse-for-achievement', false], // Optional INDECISIVE attempt opens manual selection and interrupts automatic departure.
@@ -117,10 +124,10 @@ export async function main(ns) {
     let resetInfo = (/**@returns{ResetInfo}*/() => undefined)(); // Information about the current bitnode
     let bitNodeMults = (/**@returns{BitNodeMultipliers}*/() => undefined)(); // bitNode multipliers that can be automatically determined after SF-5
     let playerInstalledAugCount = (/**@returns{null|number}*/() => null)(); // Number of augs installed, or null if we don't have SF4 and can't tell.
-    let installedAugmentations = [];
+    let installedAugmentations = [],augmentationOwnership=null;
     let acceptedStanek = false, stanekLaunched = false;
     let daemonStartTime = 0; // The time we personally launched daemon.
-    let speedObservation, combatRecovery, augmentationWaitWindow, installWindowStarted=0;
+    let speedObservation, combatRecovery, hackingRecovery, incomeRecovery, augmentationWaitWindow, installWindowStarted=0;
     let nextFactionSummaryRefresh=0;
     let installCountdown = 0; // Start of a countdown before we install augmentations.
     let installCountdownResets = 0; // Number of times we've reset the countdown because our affordable augs has increased
@@ -293,6 +300,9 @@ export async function main(ns) {
         if(!options['next-bn']&&!options['disable-achievements']&&Array.isArray(achievementState?.unlocked))
             nextBn=achievementNode(bnPriority.projectedLevels,achievementState.unlocked,bnPriority.nextBn,achievementProfile,achievementState.catalogVerified?achievementState.achievements.map(a=>a.ID):null);
         await updateXpMeasurement(ns,player);
+        let previousIntelligence;try{previousIntelligence=JSON.parse(ns.read('tasks/intelligence-progress.json'));}catch{}
+        const intelligenceStatus=intelligenceProgress(previousIntelligence,{xp:player.exp?.intelligence,intelligence:player.skills?.intelligence,reset:resetInfo,pid:ns.pid,target:Number(options['intelligence-target'])});
+        if(intelligenceStatus)await ns.write('tasks/intelligence-progress.json',JSON.stringify(intelligenceStatus),'w');
         await checkOnDaedalusStatus(ns, player, stocksValue);
         await updateNodeRoutePlan(ns, stocksValue);
         await manageRedPill(ns,player,stocksValue);
@@ -300,7 +310,7 @@ export async function main(ns) {
         if(options['intelligence-farming']) {
             let session;try{session=JSON.parse(ns.read('tasks/intelligence-session.json'));}catch{}
             if(!(session?.nodeReset===resetInfo.lastNodeReset&&['complete','blocked'].includes(session.status))&&4 in unlockedSFs&&(resetInfo.currentNode===5||Number(dictOwnedSourceFiles[5])>0)) {
-                const pid=launchScriptHelper(ns,'farm-intelligence.js',['--target',options['intelligence-target'],'--max-resets',options['intelligence-max-resets'],'--max-minutes',options['intelligence-max-minutes']]);
+                const pid=launchScriptHelper(ns,'farm-intelligence.js',['--target',options['intelligence-target'],'--max-resets',options['intelligence-max-resets'],'--max-minutes',options['intelligence-max-minutes'],'--payback-hours',options['intelligence-payback-hours']]);
                 if(pid)await waitForProcessToComplete(ns,pid);
             }
         }
@@ -320,9 +330,22 @@ export async function main(ns) {
     /** Update some information that can be safely cached for small periods of time
      * @param {NS} ns */
     async function updateCachedData(ns) {
-        const freshReset = await getNsDataThroughFile(ns, 'ns.getResetInfo()');
-        installedAugmentations = installedAugmentationsFromReset(freshReset);
-        playerInstalledAugCount = installedAugmentations.length;
+        let snapshot=null;
+        if(4 in unlockedSFs)try{
+            snapshot=await getNsDataThroughFile(ns,`(${captureAugmentationOwnership.toString()})(ns)`,'/Temp/autopilot-augmentation-ownership.txt',[],false,1,0,true);
+        }catch{} // Expensive SF4 workers must not block low-RAM hacking startup.
+        if(!snapshot?.complete){
+            const freshReset=await getNsDataThroughFile(ns,'ns.getResetInfo()');
+            snapshot={...augmentationOwnership,complete:false,installed:installedAugmentationsFromReset(freshReset),augReset:freshReset.lastAugReset,nodeReset:freshReset.lastNodeReset};
+        }
+        if(augmentationOwnership?.signature&&augmentationOwnership.signature!==snapshot.signature){
+            reservedPurchase=0;installCountdown=0;installWindowStarted=0;installCountdownResets=0;nextFactionSummaryRefresh=0;
+            const cleared=await invalidateAugmentationFunding(ns,ns.pid,{lastAugReset:snapshot.augReset,lastNodeReset:snapshot.nodeReset},factionManagerOutputFile);
+            if(cleared)augmentationWaitWindow=cleared;
+        }
+        augmentationOwnership=snapshot;
+        installedAugmentations=snapshot.installed;
+        playerInstalledAugCount=installedAugmentations.length;
     }
 
     /** Logic run periodically to if there is anything we can do to speed along earning a Daedalus invite
@@ -476,6 +499,13 @@ export async function main(ns) {
             if(!combatRecovery)try{combatRecovery=JSON.parse(ns.read('tasks/combat-recovery.json'));}catch{}
             combatRecovery=observeCombatRecovery(combatRecovery,{reset:resetInfo,route:routePlan,now});
             if(combatRecovery)await ns.write('tasks/combat-recovery.json',JSON.stringify(combatRecovery),'w');
+            if(!hackingRecovery)try{hackingRecovery=JSON.parse(ns.read('tasks/hacking-recovery.json'));}catch{}
+            hackingRecovery=observeHackingRecovery(hackingRecovery,{reset:resetInfo,route:routePlan,snapshot:s,now:Date.now()});
+            if(hackingRecovery)await ns.write('tasks/hacking-recovery.json',JSON.stringify(hackingRecovery),'w');
+            if(!incomeRecovery)try{incomeRecovery=JSON.parse(ns.read('tasks/income-recovery.json'));}catch{}
+            let qualifiedIncome;try{qualifiedIncome=JSON.parse(ns.read('tasks/hacking-income.json'));}catch{}
+            incomeRecovery=observeIncomeRecovery(incomeRecovery,{reset:resetInfo,route:routePlan,snapshot:s,income:qualifiedIncome,now:Date.now()});
+            if(incomeRecovery)await ns.write('tasks/income-recovery.json',JSON.stringify(incomeRecovery),'w');
             routePlan.redPill=planRedPill(s,routeObservation,{route:routePlan.selected});
             if(routePlan.redPill.stage==='installed') {
                 const rate=routeObservation.xpModes?.xp?.rate;
@@ -704,6 +734,8 @@ export async function main(ns) {
             signals.activeCategories={graft:!!unlockedSFs[10]&&!!unlockedSFs[4],soa:!!unlockedSFs[4],sleeves:!!unlockedSFs[10],sleeveExpansion:resetInfo.currentNode===10&&!!unlockedSFs[10],gang:!!unlockedSFs[2],corporation:!options['disable-corporation']&&!!unlockedSFs[3]};
             await ns.write('tasks/spending-plan.json',JSON.stringify(spendingPlan({money:player.money,reserve:Number(ns.read('reserve.txt'))||0,homeRam,node:resetInfo.currentNode,ownerPid:ns.pid,reset:resetInfo.lastAugReset,signals})), 'w');
         }
+        const postCasino=postCasinoInfrastructure(ns,resetInfo,unlockedSFs,(script,args)=>launchScriptHelper(ns,script,args));
+        if(postCasino?.active)return; // Bounded infrastructure pass before restarting competing controllers.
         let runningScripts = await getRunningScripts(ns); // Refresh after requested restarts.
         launchSourceCache.clear();
         for(const [key,record]of launchHistory){
@@ -870,10 +902,18 @@ export async function main(ns) {
             if (state === 'waiting-for-ram' || state === 'waiting-for-activity') pending += ram;
             return { script: manager.name, state, ram, pid: process?.pid || null,cooldownUntil:cooling?.retryAt??null }; 
         });
+        const fullManagers=priorityManagerPlan({homeRam:Math.max(128,homeRam),sourceFiles:unlockedSFs,node:resetInfo.currentNode,options,
+            bladeburnerRank:bitNodeMults.BladeburnerRank,corporationReady,corporationKnown,corporationRunning:!!findScript('corporation-manager.js')})
+            .concat([{name:'daemon.js',enabled:true},{name:'stockmaster.js',enabled:!redPillLiquidating&&!disableStockmasterForDaedalus},
+                {name:'hacknet-upgrade-manager.js',enabled:true},{name:'gangs.js',enabled:!!unlockedSFs[2]}])
+            .map(m=>({...m,name:getFilePath(m.name),paused:isScriptPaused(ns,m.name)}));
+        const capacityPlan=managerCapacityPlan(ns,fullManagers,runningScripts);
+        await ns.write('tasks/manager-capacity.json',JSON.stringify({at:Date.now(),ownerPid:ns.pid,augReset:resetInfo.lastAugReset,nodeReset:resetInfo.lastNodeReset,
+            ...capacityPlan}),'w');
         await ns.write('tasks/essential-home-ram.json',JSON.stringify({at:Date.now(),ownerPid:ns.pid,augReset:resetInfo.lastAugReset,nodeReset:resetInfo.lastNodeReset,...essentialManagerRamTarget(ns,managerStatus,runningScripts)}),'w');
         await ns.write(ramReserveFile, JSON.stringify({ ownerPid: ns.pid, expiresAt: Date.now() + 30000, ram: pending ? pending + 8 : 0 }), 'w');
         await ns.write('tasks/automation-status.json', JSON.stringify({ at: Date.now(), ownerPid: ns.pid,augReset:resetInfo.lastAugReset,nodeReset:resetInfo.lastNodeReset,
-            bitNodePriority: bnPriority, nextAchievementNode:nextBn, achievementProfile, managers: managerStatus, processes: runningScripts.map(p => ({ script: p.filename, pid: p.pid })), priority: 'casino, completed BitNode, active graft, infiltration, faction work' }), 'w');
+            bitNodePriority: bnPriority, nextAchievementNode:nextBn, achievementProfile, capacity:capacityPlan, managers: managerStatus, processes: runningScripts.map(p => ({ script: p.filename, pid: p.pid })), priority: 'casino, completed BitNode, active graft, infiltration, faction work' }), 'w');
 
         // Maintain the Remote API mailbox after normal automation restarts.
         const remoteWorker = findScript('remote-api-agent.js');
@@ -1165,7 +1205,7 @@ export async function main(ns) {
      *             affordable_augs: string[], affordable_count: number, affordable_count_nf: number, affordable_count_ex_nf: number,
      *             total_rep_cost: number, total_aug_cost: number, unowned_count: number }} */
     function getFactionManagerOutput(ns) {
-        return freshFactionManagerOutput(ns.read(factionManagerOutputFile),resetInfo);
+        return freshFactionManagerOutput(ns.read(factionManagerOutputFile),resetInfo,Date.now(),120000,typeof augmentationOwnership==='undefined'?null:augmentationOwnership);
     }
 
     /** Logic to detect if it's a good time to install augmentations, and if so, do so
@@ -1192,8 +1232,24 @@ export async function main(ns) {
             await waitForProcessToComplete(ns, pid, true); // Wait for the script to shut down (and output to be generated)
         }
 
+        // Waiting for a planner can allow manual purchases or a completed graft to change ownership.
+        await updateCachedData(ns);
+        if(!augmentationOwnership?.complete)return setStatus(ns,'Waiting for native augmentation ownership; installs are deferred.');
         // Grab the latest output from faction manager to see if it's a good time to reset
-        const facman = getFactionManagerOutput(ns);
+        let facman = getFactionManagerOutput(ns);
+        if(facman){
+            let current;
+            try{current=await getNsDataThroughFile(ns,`(${captureAugmentationEconomics.toString()})(ns,JSON.parse(ns.args[0]))`,
+                '/Temp/autopilot-augmentation-economics.txt',[JSON.stringify(facman.economics?.watch||null)],false,1,0,true);}catch{}
+            if(facman.economics&&!current?.complete)return setStatus(ns,'Waiting for native augmentation prices and reputation; installs are deferred.');
+            const change=augmentationEconomicsChange(facman.economics,current,{allowRepDrift:Date.now()-facman.at<5000});
+            if(change.changed){
+                reservedPurchase=0;nextFactionSummaryRefresh=0; // Requotes preserve the existing bounded installation window.
+                const cleared=await invalidateAugmentationFunding(ns,ns.pid,resetInfo,factionManagerOutputFile);
+                if(cleared)augmentationWaitWindow=cleared;
+                ns.print('INFO: Replanning augmentations: '+change.reason);facman=null;
+            }
+        }
         if (!facman) {
             if(Date.now()>=nextFactionSummaryRefresh){
                 nextFactionSummaryRefresh=Date.now()+31000;
@@ -1250,7 +1306,8 @@ export async function main(ns) {
             seedFundable:installedAugmentations.concat(facman.affordable_augs||[],facman.awaiting_install_augs||[]).includes('CashRoot Starter Kit')||
                 !!unlockedSFs[4]&&!isScriptPaused(ns,'crime.js')&&achievementActionAllowed(ns,'crime'),
             homeRam,casinoRam:ns.getScriptRam(getFilePath('casino.js'),'home'),status:casinoStatus,incomePerSecond:speedObservation?.cashRate||0});
-        const speed=progressionSpeed({snapshot:facman.speedSnapshot,previous:speedObservation,casinoFunding,augReset:resetInfo.lastAugReset,elapsed:getTimeInAug(),node:resetInfo.currentNode,firstBn9:inFirstBn9Aug,combatRecovery,nodeReset:resetInfo.lastNodeReset,combatTarget:routePlan?.development?.nextBlackOp?.name??null,routeRemainingMs:routePlan?.routes?.[routePlan.selected]?.etaMs,combat:routePlan?.selected?routePlan.selected==='bladeburner':[6,7].includes(resetInfo.currentNode),baseDelay:options['install-countdown'],homeRam,hackingGoal:routeContinuousXp(options,routePlan)||(prioritizeHackForDaedalus&&routePlan?.selected!=='bladeburner')||prioritizeHackForWd});
+        const augmentationRoute=augmentationRouteForecast(routePlan,resetInfo);
+        const speed=progressionSpeed({snapshot:facman.speedSnapshot,previous:speedObservation,casinoFunding,augReset:resetInfo.lastAugReset,elapsed:getTimeInAug(),node:resetInfo.currentNode,incomeRecovery,firstBn9:inFirstBn9Aug,hackingRecovery,combatRecovery,nodeReset:resetInfo.lastNodeReset,combatTarget:routePlan?.development?.nextBlackOp?.name??null,routeRemainingMs:augmentationRoute.remainingMs,routeLowerMs:augmentationRoute.lowerMs,combat:routePlan?.selected?routePlan.selected==='bladeburner':[6,7].includes(resetInfo.currentNode),baseDelay:options['install-countdown'],homeRam,hackingGoal:routeContinuousXp(options,routePlan)||(prioritizeHackForDaedalus&&routePlan?.selected!=='bladeburner')||prioritizeHackForWd});
         speedObservation=speed.observation;
         if(speedObservation&&speedObservation.at!==previousSnapshotAt)await ns.write('tasks/speed-observation.json',JSON.stringify(speedObservation),'w');
         await ns.write('tasks/progression-speed.json',JSON.stringify({at:Date.now(),augReset:resetInfo.lastAugReset,...speed,observation:undefined}),'w');
@@ -1305,7 +1362,7 @@ export async function main(ns) {
             countUnlock:speed.countMilestone===true||!inFirstBn9Aug&&speed.countProgress===true,
             campaign:!options['disable-achievements']&&achievementGoals?.expiresAt>Date.now()&&achievementGoals.minimumQueue>0&&pendingAugInclNfCount>=achievementGoals.minimumQueue,
             bn8Quick:resetInfo.currentNode===8&&getTimeInBitnode()<10*60*1000,
-            remainingMs:routePlan?.routes?.[routePlan.selected]?.etaMs});
+            remainingMs:augmentationRoute.remainingMs,lowerMs:augmentationRoute.lowerMs});
         if(economicsDecision.waitWindow){
             augmentationWaitWindow=economicsDecision.waitWindow;
             await ns.write('tasks/augmentation-wait-plan.json',JSON.stringify({...augmentationWaitWindow,active:true,ownerPid:ns.pid,at:Date.now(),plan:economicsDecision.waitPlan}),'w');
@@ -1335,7 +1392,11 @@ export async function main(ns) {
         // Ensure the money needed for the above augs doesn't get ripped out from under us by reserving it
         if (reservedPurchase < totalCost) {
             // A countdown is displayed to give the user a heads up, and give us time to potentially earn money for more augmentations
-            if (reservedPurchase == 0){installWindowStarted=Date.now();installCountdownResets=0;installCountdown=Date.now()+installDelay;}
+            if (reservedPurchase == 0){
+                if(!installWindowStarted||!Number.isFinite(installCountdown)||installCountdown<=0){
+                    installWindowStarted=Date.now();installCountdownResets=0;installCountdown=Date.now()+installDelay;
+                }
+            }
             else { // If we were already reserving for a purchase and the number went up, log a notice of the timer being reset.
                 let purchaseChangeLog = `INFO: The augmentation purchase we can afford has increased from ${formatMoney(reservedPurchase)} to ${formatMoney(totalCost)}.`
                 // First, check if we're ready to install TRP - if so, don't delay the install for any additional augmentations.

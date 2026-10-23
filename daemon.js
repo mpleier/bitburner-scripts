@@ -1,3 +1,6 @@
+import {estimateHackingDrain,hackingDrainPadding} from './hacking-deadline-policy.js';
+import {quoteHackingTarget,planHackingTargets,sampleHackingRevenue,hackingPlanningHorizon} from './hacking-target-policy.js';
+import {createHgwBatch,withHgwBatch,withHgwPiece} from './hgw-batch-policy.js';
 import {updateHackingProcessBudget,hackingProcessInventory,reserveHackingProcess,releaseHackingProcess} from './hacking-process-policy.js';
 import {runBackgroundCheck,backgroundHealthSnapshot,backgroundJobDue,backgroundJobDispatched} from './background-job-policy.js';
 import {sharedNetworkSnapshot} from './network-snapshot-policy.js';
@@ -139,6 +142,8 @@ export async function main(ns) {
     // the number of milliseconds to delay the grow execution after theft to ensure it doesn't trigger too early and have no effect.
     // For timing reasons the delay between each step should be *close* 1/4th of this number, but there is some imprecision
     let timingControl=null;
+    let targetPaybackPlan=null,lastTargetPlanAt=0,lastHackingInventory=null,revenueObservation=null;
+    let hgwBatchSequence = 0;
     let cycleTimingDelay = 0; // (Set in command line args)
     let queueDelay = 0; // (Set in command line args) The delay that it can take for a script to start, used to pessimistically schedule things in advance
     let maxBatches = 0; // (Set in command line args) The max number of batches this daemon will spool up to avoid running out of IRL ram (TODO: Stop wasting RAM by scheduling batches so far in advance. e.g. Grind XP while waiting for cycle start!)
@@ -639,7 +644,12 @@ export async function main(ns) {
      * @param {NS} ns */
     async function runPeriodicScripts(ns) {
         let launched = 0;
-        for (const script of periodicScripts) {
+        const maximum=ns.getServerMaxRam?.('home')??1024,free=maximum-(ns.getServerUsedRam?.('home')??0);
+        const lag=typeof lastSchedulingLagMs==='number'?lastSchedulingLagMs:0;
+        const launchLimit=lag>=250||free<Math.min(16,maximum*.1)||maximum<64?1:maximum<128?2:maximum<512?3:6;
+        // Oldest attempted jobs go first: deferred jobs keep their deadlines and cannot starve.
+        for (const script of [...periodicScripts].sort((a,b)=>(a.lastRun||0)-(b.lastRun||0))) {
+            if(launched>=launchLimit)break;
             // React to newly eligible faction servers without replacing ordinary retries.
             if(script.backdoorUnlocks&&(4 in dictSourceFiles)){
                 const servers=getAllServers();
@@ -677,7 +687,7 @@ export async function main(ns) {
             const tool=getTool(script);let ran=false;
             try{ran=await tryRunTool(ns, tool);}
             finally{backgroundJobDispatched(script,tool.lastOutcome||(ran?'launched':'failed'),Date.now());}
-            if (ran){ // Failed RAM/pause checks retain the TOR handoff for a bounded retry.
+            if (ran&&tool.lastOutcome!=='running'){ // Only a new dispatch acknowledges handoffs or consumes a launch slot.
                 if(handoff)script.lastTorToken=torReady.token;
                 if(script.factionInvites&&factionCompletionState){
                     factionCompletionState=acknowledgeBackdoorCompletions(factionCompletionState,pendingInvites);
@@ -690,7 +700,7 @@ export async function main(ns) {
 
         // Hack: this doesn't really belong here, but is essentially a "temp script" we periodically run when needed
         // Super-early aug, if we are poor, spend hashes as soon as we get them for a quick cash injection. (Only applies if we have hacknet servers)
-        if (9 in dictSourceFiles && !options['disable-spend-hashes'] && achievementActionAllowed(ns,'hacknetMoney') && achievementActionAllowed(ns,'hashSpending')) { // See if we have a hacknet, and spending hashes for money isn't disabled
+        if (launched<launchLimit && 9 in dictSourceFiles && !options['disable-spend-hashes'] && achievementActionAllowed(ns,'hacknetMoney') && achievementActionAllowed(ns,'hashSpending')) { // See if we have a hacknet, and spending hashes for money isn't disabled
             if (homeServer.getMoney() < options['spend-hashes-for-money-when-under'] // Only if money is below the configured threshold
                 && homeServer.ramAvailable(/*ignoreReservedRam:*/true) >= 5.6) { // Ensure we have spare RAM to run this temp script
                 await runCommand(ns, `const hashSpendingDecision=${hashSpendingDecision.toString()}; if((${spendHashesWithPolicy.toString()})(ns,"Sell for Money",undefined,1,{ownerPid:ns.args[0],script:"daemon.js"},hashSpendingDecision).success) ns.toast('Sold 4 hashes for \$1M', 'success')`, '/Temp/sell-hashes-for-money.js',[ns.pid]);
@@ -874,7 +884,8 @@ export async function main(ns) {
                 await buildServerList(ns, true); // Check if any new servers have been purchased by the external host_manager process
                 if(Date.now()-lastProcessInventoryAt>=5000||!hackingProcessBudget){
                     lastProcessInventoryAt=Date.now();
-                    const inventory=hackingProcessInventory(ns,discoveredHostNames,ns.pid);
+                    const inventory=hackingProcessInventory(ns,discoveredHostNames,ns.pid,lastProcessInventoryAt,resetInfo);
+                    lastHackingInventory=inventory;
                     collectHackingIncome(ns,resetInfo,ns.pid,inventory,lastProcessInventoryAt,lastSchedulingLagMs);
                     hackingProcessBudget=updateHackingProcessBudget(hackingProcessBudget,{now:lastProcessInventoryAt,inventory,lagMs:lastSchedulingLagMs,maxWorkers:options['max-hacking-processes']});
                     ns.write('tasks/hgw-process-budget.json',JSON.stringify({...hackingProcessBudget,ownerPid:ns.pid,nodeReset:resetInfo.lastNodeReset,augReset:resetInfo.lastAugReset}),'w');
@@ -892,7 +903,8 @@ export async function main(ns) {
                 if (stockMode) await updateStockPositions(ns); // In stock market manipulation mode, get our current position in all stocks, as it affects targetting order
                 // For early players, change behaviour slightly
                 const homeRam = homeServer.totalRam(true);
-                let targetingOrder = await getAllServersByTargetOrder(homeRam); // Sort the targets in the order we should prioritize spending RAM on them
+                let targetingOrder = await getAllServersByTargetOrder(homeRam);
+                targetingOrder=refreshHackingTargetPlan(ns,targetingOrder); // Sort the targets in the order we should prioritize spending RAM on them
 
                 if (!(4 in dictSourceFiles) && homeRam < 64) {
                     // Until the user buys the first home RAM upgrade, prioritize just one target, so that we see fast results.
@@ -942,7 +954,7 @@ export async function main(ns) {
                         break;
                     }
                 }
-                if (firstUnpreppedServerIndex !== -1 && !stockMode)
+                if (firstUnpreppedServerIndex !== -1 && !stockMode && !targetPaybackPlan?.enforced)
                     targetingOrder.unshift(targetingOrder.splice(firstUnpreppedServerIndex, 1)[0]);
 
                 // If this gets set to true, the loop will continue (e.g. to gather information), but no more work will be scheduled
@@ -985,6 +997,8 @@ export async function main(ns) {
                         targeting.push(server); // TODO: Switch to continuously queing batches in the seconds leading up instead of far in advance with large delays
                     } else if (await server.isPrepping()) { // Note servers already being prepped from a prior loop
                         prepping.push(server);
+                    } else if (targetPaybackPlan?.enforced && server.name !== targetPaybackPlan.preferred) {
+                        skipped.push(server); // Let current batches finish; only queue new work for the chosen target.
                     } else if (isWorkCapped() || xpOnly) { // Various conditions for which we'll postpone any additional work on servers
                         if (xpOnly && (((nextXpCycleEnd[server.name] || 0) > start - 10000) || (await server.isXpFarming())))
                             targeting.push(server); // A server counts as "targeting" if in XP mode and its due to be farmed or was in the past 10 seconds
@@ -1623,7 +1637,7 @@ export async function main(ns) {
             const capacityJobs=[];
             const result=await launchHackingBatch(schedObj.scheduleItems,async(schedItem,pids)=>{
                 const discriminationArg = `Batch ${schedObj.batchNumber}-${schedItem.description}`;
-                const args=[currentTarget.name,schedItem.start.getTime(),schedItem.end-schedItem.start,discriminationArg,...getFlagsArgs(schedItem.toolShortName,currentTarget.name)];
+                const args=withHgwBatch([currentTarget.name,schedItem.start.getTime(),schedItem.end-schedItem.start,discriminationArg,...getFlagsArgs(schedItem.toolShortName,currentTarget.name)],schedObj.batchIdentity,schedItem.description);
                 const toolName=options.i&&currentTerminalServer?.name===currentTarget.name&&schedItem.toolShortName==='hack'?'manualhack':schedItem.toolShortName;
                 return await arbitraryExecution(ns,getTool(toolName),schedItem.threadsNeeded,args,null,false,null,pids,capacityJobs);
             },pids=>{for(const pid of pids)ns.kill(pid);},()=>commitHackingCapacity(ns,resetInfo,capacityJobs));
@@ -1736,6 +1750,7 @@ export async function main(ns) {
 
         const scheduleObject = {
             batchNumber: batchNumber,
+            batchIdentity: loopingMode ? null : createHgwBatch(ns.pid,resetInfo,++hgwBatchSequence,currentTarget.name,schedItems),
             batchStart: batchTiming.batchStart,
             lastFire: batchTiming.lastFire,
             hackEnd: batchTiming.hackEnd,
@@ -1877,7 +1892,8 @@ export async function main(ns) {
             const limited=['hack','manualhack','grow','weak'].includes(tool.shortName);
             if(limited&&!reserveHackingProcess(hackingProcessBudget))return false;
             let pid;
-            try{pid=await exec(ns, tool.name, targetServer.name, { threads: maxThreadsHere, temporary: (tool.runOptions.temporary ?? true) }, ...(args || []));}
+            if(limited&&lastHackingInventory?.drain)lastHackingInventory.drain.invalidated=true;
+            try{pid=await exec(ns, tool.name, targetServer.name, { threads: maxThreadsHere, temporary: (tool.runOptions.temporary ?? true) }, ...(limited?withHgwPiece(args,maxThreadsHere):(args || [])));}
             catch(error){if(limited)releaseHackingProcess(hackingProcessBudget);throw error;}
             if (pid == 0) {
                 if(limited)releaseHackingProcess(hackingProcessBudget);
@@ -2410,6 +2426,48 @@ export async function main(ns) {
         return (a.name.startsWith(purchasedServersName) && b.name.startsWith(purchasedServersName)) ?
             (Number("1" + a.name.substring(purchasedServersName.length + 1)) - Number("1" + b.name.substring(purchasedServersName.length + 1))) :
             a.name.localeCompare(b.name); // Other servers, basic sort by name
+    }
+
+    /** Bounded quotes every five seconds using the existing owned allocation inventory. */
+    function refreshHackingTargetPlan(ns,order) {
+        const now=Date.now();
+        if(now-lastTargetPlanAt>=5000){
+            lastTargetPlanAt=now;
+            try{
+                const eligible=order.filter(s=>s.shouldHack()&&s.canHack()&&s.hasRoot());
+                const active=eligible.filter(s=>s._isTargeting===true);
+                const current=targetPaybackPlan?.preferred||active[0]?.name||eligible.find(s=>s.isPrepped())?.name||eligible[0]?.name;
+                const ordinaryMoney=!xpOnly&&!hackOnly&&!stockFocus&&!options.i&&!loopingMode;
+                const enabled=hasFormulas&&!xpOnly&&!hackOnly&&!stockFocus&&!options.i&&!loopingMode&&Math.min(maxTargets,timingControl?.targetCap??maxTargets)===1&&active.length<=1&&lastHackingInventory?.complete===true&&hackingProcessBudget?.ready&&now-lastProcessInventoryAt<15000;
+                const network=getNetworkStats(),ownedRam=Object.values(lastHackingInventory?.allocations||{}).reduce((sum,a)=>sum+(a.ram||0),0),ram=network.totalFreeRam+ownedRam;
+                const largestTotal=Math.max(0,...getAllServers().filter(s=>s.hasRoot()).map(s=>s.totalRam()));
+                const largestHostRam=Math.max(0,...network.listOfServersFreeRam,largestTotal-Math.max(0,network.totalUsedRam-ownedRam));
+                const candidates=[...new Set([eligible.find(s=>s.name===current),...eligible.slice(0,8)].filter(Boolean))];
+                const quotes=enabled?candidates.map(s=>quoteHackingTarget({...s.server,hostname:s.name,moneyMax:s.getMaxMoney(),minDifficulty:s.getMinSecurity(),hackDifficulty:s.getSecurity(),moneyAvailable:s.getMoney()},_cachedPlayerInfo,ns.formulas.hacking,{ram,largestHostRam,cycleMs:cycleTimingDelay,queueMs:queueDelay,maxBatches,weakenPower:actualWeakenPotency(),padding:recoveryThreadPadding,costs:{hack:getTool('hack').cost,grow:getTool('grow').cost,weak:getTool('weak').cost},incomeMultiplier:bitNodeMults.ScriptHackMoneyGain,workerLimit:hackingProcessBudget.limit,fraction:s.percentageToSteal})).filter(Boolean):[];
+                let telemetry;try{telemetry=JSON.parse(ns.read('tasks/hgw-misfires.json'));}catch{}
+                const drainPadding=hackingDrainPadding(telemetry,{now,ownerPid:ns.pid,reset:resetInfo,baseMs:Math.max(250,cycleTimingDelay/4)});
+                for(const quote of quotes){quote.drain=estimateHackingDrain(lastHackingInventory?.drain,quote.name,{now,ownerPid:ns.pid,reset:resetInfo,fallbackMs:quote.weakMs,paddingMs:drainPadding.paddingMs});}
+                const readPlan=file=>{try{return JSON.parse(ns.read(file));}catch{return null;}};
+                const horizon=hackingPlanningHorizon({route:readPlan('tasks/node-route-plan.json'),install:readPlan('tasks/augmentation-reset-plan.json'),reset:resetInfo,now,isRunning:pid=>ns.isRunning(pid)});
+                const horizonMs=horizon.horizonMs;
+                const prior=targetPaybackPlan;
+                targetPaybackPlan=planHackingTargets(prior,{now,ownerPid:ns.pid,reset:resetInfo,current,candidates:quotes,horizonMs,enabled});
+                targetPaybackPlan.drainPadding=drainPadding;
+                revenueObservation=sampleHackingRevenue(revenueObservation,telemetry,ns.pid,resetInfo,now);
+                targetPaybackPlan.income=revenueObservation;
+                targetPaybackPlan.horizonReason=horizon.reason;
+                targetPaybackPlan.incomeMode=ordinaryMoney?'ordinary-money':'inactive';
+                targetPaybackPlan.gates={formulas:hasFormulas,ordinaryMoney,targetLimit:Math.min(maxTargets,timingControl?.targetCap??maxTargets),activeTargets:active.length,completeInventory:lastHackingInventory?.complete===true,inventoryFresh:now-lastProcessInventoryAt<15000};
+                if(!enabled)targetPaybackPlan.reason=!ordinaryMoney?'Target planner inactive in this activity mode':!hasFormulas?'Native Formulas access unavailable; retaining normal target selection':Math.min(maxTargets,timingControl?.targetCap??maxTargets)!==1||active.length>1?'Multiple-target mode; retaining normal target selection':'Waiting for complete fresh capacity evidence';
+                targetPaybackPlan.projectedRate=quotes.find(q=>q.name===targetPaybackPlan.preferred)?.projectedRate??null;
+                targetPaybackPlan.capacity={ram,largestHostRam};
+                if(targetPaybackPlan.decision==='switch'&&prior?.preferred!==targetPaybackPlan.preferred)ns.print('INFO: Target payback planner selected '+targetPaybackPlan.preferred+'; existing batches will finish.');
+                ns.write('tasks/hacking-target-plan.json',JSON.stringify(targetPaybackPlan),'w');
+            }catch(error){targetPaybackPlan={at:now,ownerPid:ns.pid,nodeReset:resetInfo.lastNodeReset,augReset:resetInfo.lastAugReset,enforced:false,decision:'observe',reason:'Target quotes unavailable: '+String(error).slice(0,160)};ns.write('tasks/hacking-target-plan.json',JSON.stringify(targetPaybackPlan),'w');}
+        }
+        if(!targetPaybackPlan?.enforced)return order;
+        const selected=order.find(s=>s.name===targetPaybackPlan.preferred);
+        return selected?[selected,...order.filter(s=>s!==selected)]:order;
     }
 
     /** @param {number} homeRam Current ram on the home server (if low, priorities change slightly)

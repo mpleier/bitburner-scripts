@@ -1,6 +1,29 @@
+import {gangAugmentationBundles} from './gang-augmentation-bundle-policy.js';
+import {observeFactionRecovery,factionRecoveryDelays} from './faction-recovery-policy.js';
+import {augmentationReputationForecast} from './augmentation-reputation-policy.js';
+import {incomeRecoveryQuote} from './income-recovery-policy.js';
+import {hackingRecoveryQuote} from './hacking-recovery-policy.js';
 /** Conservative estimates for progression; no native actions or promised finish times. */
 const minute=60000;
-export function progressionSpeed({snapshot,previous,now=Date.now(),augReset,elapsed=0,node=1,firstBn9=false,combat=false,baseDelay=5*minute,homeRam=0,hackingGoal=false,combatRecovery=null,nodeReset=null,combatTarget=null,routeRemainingMs=null,casinoFunding=null}){
+/** Extend only with a conservative route bound; retain a margin before expected completion. */
+export function augmentationPaybackHorizon(remainingMs=null,lowerMs=null) {
+ const known=Number.isFinite(remainingMs)&&remainingMs>=0;
+ const bounded=known&&Number.isFinite(lowerMs)&&lowerMs>=0&&lowerMs<=remainingMs;
+ const limit=bounded?Math.min(12*60*minute,Math.max(4*60*minute,lowerMs*.5)):4*60*minute;
+ return known?Math.min(limit,remainingMs*.75):limit;
+}
+
+/** Stale, incomplete or cross-reset projections cannot extend an install's payback window. */
+export function augmentationRouteForecast(plan,reset,now=Date.now()) {
+ const unknown={remainingMs:null,lowerMs:null};
+ if(!plan||!reset||!Number.isFinite(now)||!Number.isFinite(plan.at)||plan.at>now||now-plan.at>45000||
+  plan.augReset!==reset.lastAugReset||plan.nodeReset!==reset.lastNodeReset)return unknown;
+ const route=plan.routes?.[plan.selected];
+ if(route?.actionable!==true||!Number.isFinite(route.etaMs)||route.etaMs<0)return unknown;
+ return {remainingMs:route.etaMs,lowerMs:Number.isFinite(route.lowerMs)&&route.lowerMs>=0&&route.lowerMs<=route.etaMs?route.lowerMs:null};
+}
+
+export function progressionSpeed({snapshot,previous,now=Date.now(),augReset,elapsed=0,node=1,firstBn9=false,combat=false,baseDelay=5*minute,homeRam=0,hackingGoal=false,combatRecovery=null,hackingRecovery=null,incomeRecovery=null,nodeReset=null,combatTarget=null,routeRemainingMs=null,routeLowerMs=null,casinoFunding=null}){
  const fallback={earlyInstall:false,delayMs:baseDelay,bottleneck:homeRam<64?'ram':hackingGoal?'hacking':'balanced',reason:'Waiting for fresh augmentation evidence'};
  if(!snapshot||snapshot.augReset!==augReset||!Number.isFinite(snapshot.at)||snapshot.at>now||now-snapshot.at>5*minute)return {...fallback,observation:previous};
  if(!Number.isFinite(snapshot.worth)||snapshot.worth<0)return {...fallback,observation:previous};
@@ -10,16 +33,26 @@ export function progressionSpeed({snapshot,previous,now=Date.now(),augReset,elap
  const candidate=same?(previous.rateBaseline||previous):null;
  const baseline=candidate&&Number.isFinite(candidate.at)&&Number.isFinite(candidate.worth)&&candidate.at<=snapshot.at&&snapshot.at-candidate.at<=5*minute?candidate:null;
  const dt=baseline?(snapshot.at-baseline.at)/1000:0,measured=dt>=30;
- const current={at:snapshot.at,worth:snapshot.worth,reputation:snapshot.reputation,income:snapshot.income};
+ const current={at:snapshot.at,worth:snapshot.worth,reputation:snapshot.reputation,income:snapshot.income,workFaction:snapshot.workFaction,workType:snapshot.workType,gangFaction:snapshot.gangFaction};
  const cashEstimate=stabilizeAugmentationIncome({snapshot,baseline,previous:baseline?previous:null,augReset,measured});
  const cashRate=cashEstimate.rate,factionCashRate=cashEstimate.factionRate;
  const repRates=measured?Object.fromEntries(Object.entries(snapshot.reputation||{}).map(([f,r])=>[f,
   Number.isFinite(r)&&Number.isFinite(baseline.reputation?.[f])?Math.max(0,(r-baseline.reputation[f])/dt):0])):baseline?previous.repRates||{}:{};
- const observation={augReset,...current,fingerprint,lastGrowthAt,cashRate,cashRateDuringFactionWork:factionCashRate,repRates,cashObservation:cashEstimate.state,cashRateBasis:cashEstimate.reason,
-  rateBaseline:measured||!baseline?current:{at:baseline.at,worth:baseline.worth,reputation:baseline.reputation,income:baseline.income},
+ // Clamp observed gang reputation to the current native production formula so
+ // rewards and old bonus-time bursts cannot inflate passive forecasts.
+ const gang=snapshot.gangFaction;
+ if(typeof gang==='string')repRates[gang]=gang===baseline?.gangFaction&&Number.isFinite(snapshot.gangRepRate)&&snapshot.gangRepRate>=0?Math.min(repRates[gang]||0,snapshot.gangRepRate):0;
+ const passiveFactions=typeof gang==='string'&&gang===previous?.gangFaction&&repRates[gang]>0&&previous.repRates?.[gang]>0?[gang]:[];
+ const passiveRates=Object.fromEntries(passiveFactions.map(f=>[f,Math.min(repRates[f],previous.repRates[f])]));
+ const f=snapshot.workFaction;
+ const reputationWorkRates=f!==gang&&typeof f==='string'&&f===baseline?.workFaction&&f===previous?.workFaction&&snapshot.workType===baseline?.workType&&snapshot.workType===previous?.workType&&repRates[f]>0&&previous.repRates?.[f]>0?{[f]:Math.min(repRates[f],previous.repRates[f])}:{};
+ const factionRecovery=observeFactionRecovery(previous?.factionRecovery,{snapshot,reset:{lastNodeReset:nodeReset,lastAugReset:augReset},rates:reputationWorkRates,now});
+ const recoveryDelays=factionRecoveryDelays(factionRecovery,{snapshot,rates:reputationWorkRates,now});
+ const observation={factionRecovery,reputationWorkRates,augReset,...current,fingerprint,lastGrowthAt,cashRate,cashRateDuringFactionWork:factionCashRate,repRates,cashObservation:cashEstimate.state,cashRateBasis:cashEstimate.reason,
+  rateBaseline:measured||!baseline?current:{at:baseline.at,worth:baseline.worth,reputation:baseline.reputation,income:baseline.income,workFaction:baseline.workFaction,workType:baseline.workType,gangFaction:baseline.gangFaction},
   rateMeasuredAt:measured?snapshot.at:baseline?previous.rateMeasuredAt??null:null};
  const seconds=(gap,rate)=>gap<=0?0:rate>0?gap/rate:Infinity;
- let next=null;const waitCandidates=[];
+ let next=null;const waitCandidates=[],reputationTargets=[];
  for(const target of snapshot.targets||[]){
   if(!Number.isFinite(target.cost)||!Number.isFinite(target.rep))continue;
   const cashGap=Math.max(0,target.cost-snapshot.worth);
@@ -42,16 +75,23 @@ export function progressionSpeed({snapshot,previous,now=Date.now(),augReset,elap
   const workCash=seconds(cashGap,rep>0?factionCashRate:cashRate),workWait=Math.max(workCash,rep);
   const donation=Number.isFinite(target.donationCost)?seconds(Math.max(0,target.cost+target.donationCost-snapshot.worth),cashRate):Infinity;
   const mixed=estimateMixedAugmentationWait({requirements,cost:target.cost,worth:snapshot.worth,cashRate,factionCashRate,
-   reputation:snapshot.reputation||{},repRates,plannedDonations:target.plannedDonations||{}});
+   reputation:snapshot.reputation||{},repRates,passiveFactions:typeof gang==='string'?[gang]:[],plannedDonations:target.plannedDonations||{}});
   const baselineSeconds=Math.min(workWait,donation),useMixed=!!mixed&&mixed.seconds<=baselineSeconds;
   const eta=Math.min(baselineSeconds,mixed?.seconds??Infinity)*1000;
   const funding=useMixed?mixed:null;
   const cashTarget=target.cost+(useMixed?mixed.donationCost:donation<workWait?target.donationCost:0);
   if(!next||eta<next.eta)next={name:target.name,eta,cashTarget,bottleneck:useMixed?(mixed.cashSeconds>=mixed.reputationSeconds?'cash':'reputation'):donation<workWait?'cash':rep>workCash?'reputation':'cash',funding};
+  if(typeof target.name==='string'&&Number.isFinite(eta)&&eta>0)reputationTargets.push({...target,eta});
   if(typeof target.name==='string'&&Number.isFinite(eta)&&eta>0)waitCandidates.push({name:target.name,eta,stats:target.stats||{},funding,cashTarget});
  }
+ const channels=combat?{strength:.15,defense:.15,dexterity:.15,agility:.15,strength_exp:.08,defense_exp:.08,dexterity_exp:.08,agility_exp:.08,bladeburner_success_chance:.4,bladeburner_max_stamina:.12,bladeburner_stamina_gain:.12,bladeburner_analysis:.04}:{hacking:.35,hacking_exp:.15,hacking_speed:.2,hacking_money:.15};
+ // Only repeatedly observed passive gang reputation may justify a bundle wait.
+ if(typeof gang==='string'&&snapshot.gangBundlePlan?.faction===gang&&passiveRates[gang]>0&&now-snapshot.at<=60000)
+  waitCandidates.push(...gangAugmentationBundles(snapshot.gangBundlePlan,{channels,reputation:snapshot.reputation?.[gang]??0,repRate:passiveRates[gang],cashRate,worth:snapshot.worth}));
  const bottleneck=homeRam<64?'ram':hackingGoal?'hacking':next&&Number.isFinite(next.eta)?next.bottleneck:'balanced';
- const channels=combat?{strength:.15,defense:.15,dexterity:.15,agility:.15,strength_exp:.08,defense_exp:.08,dexterity_exp:.08,agility_exp:.08,bladeburner_success_chance:.4,bladeburner_max_stamina:.12,bladeburner_stamina_gain:.12,bladeburner_analysis:.04}:{hacking:.35,hacking_exp:.15,hacking_speed:.2,hacking_money:.15,faction_rep:.15};
+ const reputationPlanningContext={schemaVersion:1,at:snapshot.at,augReset,nodeReset:snapshot.nodeReset,ownershipSignature:snapshot.ownershipSignature,
+  horizonMs:augmentationPaybackHorizon(routeRemainingMs,routeLowerMs),worth:snapshot.worth,cashRate,factionCashRate,recoveryDelays,passiveFactions,repRates:{...reputationWorkRates,...passiveRates},reputation:snapshot.reputation||{},donationUnitCost:snapshot.donationUnitCost,
+  targets:(now-snapshot.at<=60000?reputationTargets:[]).filter(t=>Object.entries(channels).some(([k,w])=>w>0&&(t.stats?.[k]??1)>1)||t.priority>=0).sort((a,b)=>a.eta-b.eta).slice(0,4).map(t=>({...t,useful:true}))};
  let logGain=0;for(const aug of ready)for(const [key,weight]of Object.entries(channels)){const value=Number(aug.stats?.[key]??1);if(value>0&&Number.isFinite(value))logGain+=weight*Math.log(value);}
  // The wait basket may omit optional NF, but never invent augmentations absent from the install-now basket.
  const waitReady=snapshot.waitReady===undefined?ready:snapshot.waitReady;
@@ -75,15 +115,21 @@ export function progressionSpeed({snapshot,previous,now=Date.now(),augReset,elap
  const recoveryValid=combat&&nodeReset!==null&&combatRecovery?.nodeReset===nodeReset&&combatRecovery.augReset===augReset&&
   Number.isFinite(combatRecovery.at)&&combatRecovery.at<=now&&now-combatRecovery.at<=90000;
  const samples=recoveryValid&&Array.isArray(combatRecovery.samples)?combatRecovery.samples.filter(s=>typeof combatTarget==='string'&&s.target===combatTarget&&s.nodeReset===nodeReset&&Number.isFinite(s.finishedAt)&&s.finishedAt<=now&&Number.isFinite(s.durationMs)&&s.durationMs>=0&&s.durationMs<=24*60*minute):[];
- const recoveryBlocked=!!(recoveryValid&&combatRecovery.recovering);
+ const hackingQuote=hackingRecoveryQuote(hackingRecovery,{nodeReset,augReset,now});
+ const incomeQuote=incomeRecoveryQuote(incomeRecovery,{nodeReset,augReset,now});
+ const recoveryBlocked=incomeQuote.blocked||(combat?!!(recoveryValid&&combatRecovery.recovering):hackingQuote.blocked);
  const casino=casinoFunding?.available===true&&casinoFunding.augReset===augReset&&casinoFunding.nodeReset===nodeReset&&
   Number.isFinite(casinoFunding.at)&&casinoFunding.at<=now&&now-casinoFunding.at<=45000&&
   Number.isFinite(casinoFunding.amount)&&casinoFunding.amount>0&&casinoFunding.amount<=1e10&&
   Number.isFinite(casinoFunding.durationMs)&&casinoFunding.durationMs>=60000&&casinoFunding.durationMs<=5*60*minute?casinoFunding:null;
- const baseWarmup=combat?(samples.length?Math.max(minute,...samples.map(s=>s.durationMs)):20*minute):15*minute;
+ const capabilityWarmup=combat?(samples.length?Math.max(minute,...samples.map(s=>s.durationMs)):20*minute):hackingQuote.durationMs;
+ const baseWarmup=Math.max(capabilityWarmup,incomeQuote.durationMs);
  const warmup=baseWarmup+(casino?.durationMs||0);
- const recoveryBasis=combat?(samples.length?'Measured time to regain the pre-install safe BlackOp':'Conservative combat recovery fallback'):'Conservative hacking recovery fallback';
- const gain=Math.max(countMilestone ? .5 : 0,Math.max(0,Math.min(2,Math.expm1(logGain)*.5)));
+ const capabilityBasis=combat?(samples.length?'Measured time to regain the pre-install safe BlackOp':'Conservative combat recovery fallback'):hackingQuote.basis;
+ const recoveryBasis=incomeQuote.durationMs>capabilityWarmup?incomeQuote.basis:capabilityBasis;
+ reputationPlanningContext.recoveryAllowanceMs=warmup;
+ const reputationForecast=augmentationReputationForecast(ready,reputationPlanningContext,estimateMixedAugmentationWait);
+ const gain=Math.max(reputationForecast.gain,countMilestone ? .5 : 0,Math.max(0,Math.min(2,Math.expm1(logGain)*.5)));
  const economics=snapshot.resetEconomics;
  const economicsKnown=!!economics?.known&&Number.isFinite(economics.replacementCost)&&economics.replacementCost>=0&&
   Number.isFinite(economics.gangLossPerSecond??0)&&(economics.gangLossPerSecond??0)>=0;
@@ -92,25 +138,27 @@ export function progressionSpeed({snapshot,previous,now=Date.now(),augReset,elap
  const remainingRecoveryCost=recoveryCost===null?null:Math.max(0,recoveryCost-casinoCredit);
  const rebuildMs=remainingRecoveryCost===0?0:remainingRecoveryCost!==null&&cashRate>0?remainingRecoveryCost/cashRate*1000:Infinity;
  const paybackMs=gain>0?warmup+warmup/gain+rebuildMs:Infinity,plateau=now-lastGrowthAt>=10*minute;
+ const paybackLimitMs=augmentationPaybackHorizon(routeRemainingMs,routeLowerMs);
  let waitCandidate=null;const waitOptions=[];
  for(const candidate of waitBasketValid?waitCandidates:[]){
   let extra=0;for(const [key,weight]of Object.entries(channels)){const value=Number(candidate.stats[key]??1);if(value>0&&Number.isFinite(value))extra+=weight*Math.log(value);}
-  const combinedGain=Math.max(countMilestone ? .5 : 0,Math.max(0,Math.min(2,Math.expm1(waitLogGain+extra)*.5)));
+  const combinedReputation=augmentationReputationForecast([...waitBasket,...(candidate.augmentations||[{name:candidate.name,stats:candidate.stats}])],reputationPlanningContext,estimateMixedAugmentationWait);
+  const combinedGain=Math.max(combinedReputation.gain,countMilestone ? .5 : 0,Math.max(0,Math.min(2,Math.expm1(waitLogGain+extra)*.5)));
   const comparison=compareAugmentationInstall({gain,combinedGain,waitMs:candidate.eta,recoveryMs:warmup,rebuildMs,
-   horizonMs:Number.isFinite(routeRemainingMs)?Math.min(4*60*minute,routeRemainingMs):4*60*minute});
+   horizonMs:paybackLimitMs});
   if(comparison.worthWaiting&&candidate.eta<=paybackMs*.25)
-   waitOptions.push({...comparison,name:candidate.name,at:snapshot.at,etaMs:candidate.eta,funding:candidate.funding,cashTarget:candidate.cashTarget});
+   waitOptions.push({...comparison,name:candidate.name,at:snapshot.at,etaMs:candidate.eta,funding:candidate.funding,cashTarget:candidate.cashTarget,gangBundle:candidate.gangBundle});
   if(comparison.worthWaiting&&candidate.eta<=paybackMs*.25&&(!waitCandidate||comparison.waitWork>waitCandidate.waitWork||
    comparison.waitWork===waitCandidate.waitWork&&candidate.eta<waitCandidate.etaMs))
-   waitCandidate={...comparison,name:candidate.name,at:snapshot.at,etaMs:candidate.eta,funding:candidate.funding,cashTarget:candidate.cashTarget};
+   waitCandidate={...comparison,name:candidate.name,at:snapshot.at,etaMs:candidate.eta,funding:candidate.funding,cashTarget:candidate.cashTarget,gangBundle:candidate.gangBundle};
  }
 
- const resetPaysBack=economicsKnown&&Number.isFinite(paybackMs)&&paybackMs<=4*60*minute;
+ const resetPaysBack=economicsKnown&&Number.isFinite(paybackMs)&&paybackMs<=paybackLimitMs;
  const protectFirstBn9=firstBn9&&!resetPaysBack;
- const earlyInstall=![8].includes(node)&&!protectFirstBn9&&elapsed>=30*minute&&ready.some(a=>a.name!=='NeuroFlux Governor')&&gain>=.2&&paybackMs<=Math.min(4*60*minute,Math.max(60*minute,elapsed))&&plateau;
+ const earlyInstall=![8].includes(node)&&!protectFirstBn9&&elapsed>=30*minute&&ready.some(a=>a.name!=='NeuroFlux Governor')&&gain>=.2&&paybackMs<=Math.min(paybackLimitMs,Math.max(60*minute,elapsed))&&plateau;
  const imminent=!!waitCandidate;
  const delayMs=protectFirstBn9||node===8||gain===0?baseDelay:Math.min(baseDelay,30000);
- return {earlyInstall,delayMs,bottleneck,gain,resetPaysBack,waitCandidate,waitOptions:waitOptions.sort((a,b)=>b.waitWork-a.waitWork||a.etaMs-b.etaMs).slice(0,16),countMilestone,countProgress,recoveryBlocked,recoveryMs:warmup,recoveryBasis,resetEconomics:{known:economicsKnown,recoveryCost,remainingRecoveryCost,casinoCredit,casinoDelayMs:casino?.durationMs||0,casinoFunding:casinoFunding||null,rebuildMs:Number.isFinite(rebuildMs)?rebuildMs:null},paybackMs:Number.isFinite(paybackMs)?paybackMs:null,next:next&&{...next,eta:Number.isFinite(next.eta)?next.eta:null},reason:earlyInstall?'Useful augmentation gains outweigh estimated restart recovery':protectFirstBn9?(!economicsKnown?'Preserving first BN9 Hacknet infrastructure; rebuild cost is unknown':gain<.2?'Preserving first BN9 Hacknet infrastructure; available augmentations offer little route improvement':'Preserving first BN9 Hacknet infrastructure; estimated reset payback exceeds four hours'):imminent?'Another augmentation is close; allow a bounded wait':'No measured near-term augmentation improvement',observation};
+ return {earlyInstall,delayMs,bottleneck,gain,factionRecovery,reputationForecast,reputationPlanningContext,resetPaysBack,paybackLimitMs,waitCandidate,waitOptions:waitOptions.sort((a,b)=>b.waitWork-a.waitWork||a.etaMs-b.etaMs).slice(0,16),countMilestone,countProgress,recoveryBlocked,recoveryMs:warmup,recoveryBasis,recoveryComponents:{capabilityMs:capabilityWarmup,incomeMs:incomeQuote.durationMs,incomeBasis:incomeQuote.basis},resetEconomics:{known:economicsKnown,recoveryCost,remainingRecoveryCost,casinoCredit,casinoDelayMs:casino?.durationMs||0,casinoFunding:casinoFunding||null,rebuildMs:Number.isFinite(rebuildMs)?rebuildMs:null},paybackMs:Number.isFinite(paybackMs)?paybackMs:null,next:next&&{...next,eta:Number.isFinite(next.eta)?next.eta:null},reason:earlyInstall?'Useful augmentation gains outweigh estimated restart recovery':protectFirstBn9?(!economicsKnown?'Preserving first BN9 Hacknet infrastructure; rebuild cost is unknown':gain<.2?'Preserving first BN9 Hacknet infrastructure; available augmentations offer little route improvement':'Preserving first BN9 Hacknet infrastructure; estimated reset payback exceeds the planning horizon'):imminent?'Another augmentation is close; allow a bounded wait':'No measured near-term augmentation improvement',observation};
 }
 
 /** Observe actual recovery of the same previously safe BlackOp after an install. */
@@ -146,13 +194,14 @@ export function observeCombatRecovery(saved,{reset,route,now=Date.now()}={}) {
 }
 
 /** Count heuristics request installs; require economic payback or a verified milestone. */
-export function augmentationResetDecision({requested=false,adaptive=true,speed,priority=false,favor=false,countUnlock=false,campaign=false,bn8Quick=false,remainingMs=null,waitWindow=null,now=Date.now(),augReset=null,nodeReset=null}={}) {
+export function augmentationResetDecision({requested=false,adaptive=true,speed,priority=false,favor=false,countUnlock=false,campaign=false,bn8Quick=false,remainingMs=null,lowerMs=null,waitWindow=null,now=Date.now(),augReset=null,nodeReset=null}={}) {
  if(!requested)return {allowed:false,reason:'Augmentation threshold not reached'};
  if(!adaptive)return {allowed:true,reason:'Adaptive reset economics explicitly disabled'};
  if(priority||favor||countUnlock||campaign||bn8Quick)return {allowed:true,reason:'Verified augmentation progression milestone'};
- if(speed?.recoveryBlocked)return {allowed:false,reason:'Still rebuilding pre-install Bladeburner safety'};
- if(speed?.resetPaysBack!==true||!Number.isFinite(speed.paybackMs)||speed.paybackMs<0||speed.paybackMs>4*60*minute)
-  return {allowed:false,reason:'Available augmentation gains do not repay the estimated rebuild within four hours'};
+ if(speed?.recoveryBlocked)return {allowed:false,reason:'Still rebuilding pre-install route capability'};
+ const paybackLimitMs=augmentationPaybackHorizon(remainingMs,lowerMs);
+ if(speed?.resetPaysBack!==true||!Number.isFinite(speed.paybackMs)||speed.paybackMs<0||speed.paybackMs>paybackLimitMs)
+  return {allowed:false,paybackLimitMs,reason:'Available augmentation gains do not repay the estimated rebuild within the '+(paybackLimitMs/60/minute).toFixed(1)+'-hour planning horizon'};
  if(Number.isFinite(remainingMs)&&remainingMs>=0&&speed.paybackMs>=remainingMs*.75)
   return {allowed:false,reason:'The selected BitNode route is expected to finish before an install repays its rebuild'};
  const choices=(Array.isArray(speed.waitOptions)?speed.waitOptions:[speed.waitCandidate]).filter(candidate=>
@@ -175,7 +224,7 @@ export function augmentationResetDecision({requested=false,adaptive=true,speed,p
 export function compareAugmentationInstall({gain,combinedGain,waitMs,recoveryMs,rebuildMs=0,horizonMs=4*60*minute}={}) {
  const invalid={worthWaiting:false};
  if(![gain,combinedGain,waitMs,recoveryMs,rebuildMs,horizonMs].every(Number.isFinite)||gain<0||combinedGain<gain||
-  waitMs<=0||waitMs>15*minute||recoveryMs<0||rebuildMs<0||horizonMs<=0||horizonMs>4*60*minute)return invalid;
+  waitMs<=0||waitMs>15*minute||recoveryMs<0||rebuildMs<0||horizonMs<=0||horizonMs>12*60*minute)return invalid;
  const downtime=recoveryMs+rebuildMs;
  if(waitMs+downtime>=horizonMs)return invalid;
  const installWork=Math.max(0,horizonMs-downtime)*(1+gain);
@@ -231,11 +280,12 @@ export function deduplicateAugmentationRequirements(requirements) {
 /** Bounded search across work, donation and work-then-donate choices. Every retained state
  * is a feasible conservative estimate; pruning may miss a faster plan, never invent one.
  * Different factions' measured work times are summed. Cash may accrue during work. */
-export function estimateMixedAugmentationWait({requirements,cost,worth,cashRate,factionCashRate=cashRate,reputation={},repRates={},plannedDonations={}}={}) {
+export function estimateMixedAugmentationWait({requirements,cost,worth,cashRate,factionCashRate=cashRate,reputation={},repRates={},plannedDonations={},passiveFactions=[]}={}) {
  if(!Array.isArray(requirements)||!requirements.length||!requirements.some(r=>Array.isArray(r?.providers)&&r.providers.length)||
   !reputation||!repRates||!plannedDonations||typeof plannedDonations!=='object'||
   ![cost,worth,cashRate,factionCashRate].every(Number.isFinite)||cost<0||worth<0||cashRate<0||factionCashRate<0||
   Object.values(plannedDonations).some(value=>!Number.isFinite(value)||value<0))return null;
+ const passive=new Set(Array.isArray(passiveFactions)?passiveFactions:[]);
  factionCashRate=Math.min(cashRate,factionCashRate);
  const uniqueRequirements=deduplicateAugmentationRequirements(requirements);
  if(!uniqueRequirements)return null;
@@ -273,8 +323,10 @@ export function estimateMixedAugmentationWait({requirements,cost,worth,cashRate,
    donations.set(faction,amount);
   }
   const donationCost=[...donations].reduce((sum,[f,value])=>sum+Math.max(0,value-(plannedDonations[f]??0)),0);
-  const reputationSeconds=[...work.values()].reduce((sum,value)=>sum+value,0);
-  const cashSeconds=seconds(Math.max(0,cost+donationCost-worth),reputationSeconds>0?factionCashRate:cashRate);
+  const activeSeconds=[...work].filter(([f])=>!passive.has(f)).reduce((sum,[,value])=>sum+value,0);
+  const passiveSeconds=Math.max(0,...[...work].filter(([f])=>passive.has(f)).map(([,value])=>value));
+  const reputationSeconds=Math.max(activeSeconds,passiveSeconds);
+  const cashSeconds=seconds(Math.max(0,cost+donationCost-worth),activeSeconds>0?factionCashRate:cashRate);
   return {...state,work,goals,obligations,donations,donationCost,reputationSeconds,cashSeconds,seconds:Math.max(cashSeconds,reputationSeconds)};
  };
  let states=[summarize({work:new Map(),goals:new Map(),obligations:new Map()})],searchLimited=false;
@@ -357,7 +409,7 @@ export function estimateMixedAugmentationWait({requirements,cost,worth,cashRate,
  const best=states.find(state=>Number.isFinite(state.seconds));
  if(!best)return null;
  return {seconds:best.seconds,donationCost:best.donationCost,reputationSeconds:best.reputationSeconds,cashSeconds:best.cashSeconds,
-  workByFaction:Object.fromEntries(best.work),workTargets:Object.fromEntries(best.goals),donationsByFaction:Object.fromEntries(best.donations),cashRateDuringWork:factionCashRate,searchLimited,searchStats};
+  workByFaction:Object.fromEntries([...best.work].filter(([f])=>!passive.has(f))),passiveByFaction:Object.fromEntries([...best.work].filter(([f])=>passive.has(f))),workTargets:Object.fromEntries([...best.goals].filter(([f])=>!passive.has(f))),donationsByFaction:Object.fromEntries(best.donations),cashRateDuringWork:factionCashRate,searchLimited,searchStats};
 }
 
 

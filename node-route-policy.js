@@ -1,3 +1,4 @@
+import {bladeburnerRankSupply,readBladeburnerRankReserves} from './bladeburner-reserve-policy.js';
 import {readXpCapacity,xpCapacityKey} from './xp-capacity-policy.js';
 import {bladeburnerStaminaChance} from './bladeburner-policy.js';
 import {blackOpMetadata,bladeburnerDifficulty} from './bladeburner-action-data.js';
@@ -111,13 +112,15 @@ export function estimateBladeburnerRoute(bb, threshold=.99) {
     };
     if(!finite(rank))return unknown('Missing native rank');
     const pools=(bb.actions||[]).filter(a=>positive(a.time)&&a.chance?.[0]>=threshold&&a.chance[0]<=1&&finite(a.gain)&&finite(a.loss)&&finite(a.count)&&a.count>=1)
-        .map(a=>({...a,nativeTime:a.time,recoveryMs:recoveryFor(a),count:Math.floor(a.count),net:a.chance[0]*a.gain-(1-a.chance[0])*a.loss}))
+        .map(a=>({...a,nativeTime:a.time,recoveryMs:recoveryFor(a),count:a.count,net:a.chance[0]*a.gain-(1-a.chance[0])*a.loss}))
         .filter(a=>a.recoveryMs!==null).map(a=>({...a,time:a.nativeTime+a.recoveryMs}))
         .filter(a=>positive(a.net)).sort((a,b)=>b.net/b.time-a.net/a.time);
     const grind=gap=>{
-        for(const a of pools) {
-            if(gap<=0)break;
-            const count=Math.min(a.count,Math.ceil(gap/a.net));
+        // Re-evaluate after each batch: rank gains can release population reserves.
+        while(gap>0) {
+            const a=pools.find(a=>bladeburnerRankSupply(a.name,a.count,rank,bb.reserves)>0);
+            if(!a)break;
+            const count=Math.min(bladeburnerRankSupply(a.name,a.count,rank,bb.reserves),Math.ceil(gap/a.net));
             a.count-=count;rank+=count*a.net;gap-=count*a.net;work+=count*a.time;recoveryWork+=count*a.recoveryMs;
         }
         return gap<=0;
@@ -128,7 +131,7 @@ export function estimateBladeburnerRoute(bb, threshold=.99) {
         if(!(p>=threshold&&p<=1)) {reason=op.rawChance?.[0]>=threshold?'Recover stamina or increase maximum stamina for '+op.name:'Improve skills, team or population estimates for '+op.name;break;}
         // Replace expected failed-attempt rank losses before each operation, then credit its reward.
         const loss=op.loss*(1-p)/p;
-        if(!grind(Math.max(0,op.required+loss-rank))) {reason='Available safe contracts/operations cannot yet supply the required rank';break;}
+        if(!grind(Math.max(0,op.required+loss-rank))) {reason='Available safe contracts/operations after reserves cannot yet supply the required rank';break;}
         const recoveryMs=recoveryFor(op);
         if(recoveryMs===null){reason='Stamina recovery data unavailable for '+op.name;break;}
         // Failures require another attempt. Recovery after the final success cannot help completion.
@@ -140,7 +143,7 @@ export function estimateBladeburnerRoute(bb, threshold=.99) {
     // Native bonus time is consumed at up to 5x speed. Allow recovery, chaos and recruitment overhead.
     const wall=duration=>Math.max(duration/5,duration-Math.max(0,bb.bonusTime||0));
     return {etaMs:wall(work/.75),lowerMs:wall(work),upperMs:wall(work/.5),actionable:true,
-        reason:'Current safe actions, finite supply and ordered BlackOps; '+(recoveryKnown?'native recovery costs plus chaos/recruitment allowance':'recovery unknown; 50–100% active duty range'),recoveryMs:recoveryKnown?recoveryWork:null,recoveryModel:recoveryKnown?'amortized-native':'duty-range',staminaRecovery:recoveryKnown?{regen:bb.recovery.regen,hrc:bb.recovery.hrc}:null,next:bb.ops[0]?.name};
+        reason:'Current safe actions, finite supply after reserves and ordered BlackOps; '+(recoveryKnown?'native recovery costs plus chaos/recruitment allowance':'recovery unknown; 50â€“100% active duty range'),recoveryMs:recoveryKnown?recoveryWork:null,recoveryModel:recoveryKnown?'amortized-native':'duty-range',staminaRecovery:recoveryKnown?{regen:bb.recovery.regen,hrc:bb.recovery.hrc}:null,next:bb.ops[0]?.name};
 }
 
 /** Require a 25% advantage across estimate ranges for two minutes before a priority switch. */
@@ -204,6 +207,7 @@ ${suppliedHacking?`    s.hackMult*=${JSON.stringify(multipliers.HackingLevelMult
     const daemon=ns.ps('home').find(p=>p.filename.replace(/^\//,'')==='daemon.js');
     s.xpMode=daemon?.args.includes('--xp-only')||daemon?.args.includes('-x')||daemon?.args.includes('--x')?'xp':daemon?'income':'off';
     s.xpCapacity=(${readXpCapacity.toString()})(ns,daemon,r,s.at);
+    s.hackingIncomeFactors=[s.hackMult,p.mults.hacking_money,p.mults.hacking_speed,p.mults.hacking_chance,p.mults.hacking_exp];
 ${canSingularity?`    try {
         s.queuedRedPill=ns.singularity.getOwnedAugmentations(true).includes('The Red Pill');
         s.work=ns.singularity.getCurrentWork();
@@ -224,7 +228,7 @@ ${canBladeburner?`    try {
             const difficulties=${JSON.stringify({...bladeburnerDifficulty,...Object.fromEntries(Object.entries(blackOpMetadata).map(([name,data])=>[name,{base:data.baseDifficulty,factor:1}]))})};
             let recovery=null;
             try{
-                const b=ns.bladeburner,reaper=b.getSkillLevel('Reaper'),evasive=b.getSkillLevel('Evasive Systems'),cyber=b.getSkillLevel("Cyber's Edge");
+                const b=ns.bladeburner,reaper=b.getSkillLevel('Reaper'),evasive=b.getSkillLevel('Evasive System'),cyber=b.getSkillLevel("Cyber's Edge");
                 const effective=p.skills.agility*(1+.02*reaper)*(1+.04*evasive);
                 const regen=(.0085+stamina[1]/70000)*Math.pow(effective,.17)*(1+.02*cyber)*p.mults.bladeburner_stamina_gain;
                 const hrc=stamina[1]*.01/60;
@@ -241,7 +245,7 @@ ${canBladeburner?`    try {
                 return {name,time:ns.bladeburner.getActionTime(type,name),chance,rawChance,capabilityChance,staminaCost:Number.isFinite(difficulty)&&difficulty>0?.285*(Math.pow(difficulty,.28)+difficulty/650):null,
                     gain:ns.bladeburner.getActionRankGain(type,name),loss:ns.bladeburner.getActionRankLoss(type,name),count:ns.bladeburner.getActionCountRemaining(type,name)};
             };
-            s.bb={joined:true,stamina,recovery,chanceModel:"post-cost-v1",city:ns.bladeburner.getCity(),rank:ns.bladeburner.getRank(),action:ns.bladeburner.getCurrentAction(),bonusTime:ns.bladeburner.getBonusTime(),
+            s.bb={joined:true,reserves:(${readBladeburnerRankReserves.toString()})(ns,r,s.at),stamina,recovery,chanceModel:"post-cost-v1",city:ns.bladeburner.getCity(),rank:ns.bladeburner.getRank(),action:ns.bladeburner.getCurrentAction(),bonusTime:ns.bladeburner.getBonusTime(),
                 ops:ns.bladeburner.getBlackOpNames().filter(n=>ns.bladeburner.getActionCountRemaining('Black Operations',n)>0)
                     .map(n=>({...action('Black Operations',n),required:ns.bladeburner.getBlackOpRank(n)})),
                 actions:[...ns.bladeburner.getContractNames().map(n=>action('Contracts',n)),...ns.bladeburner.getOperationNames().map(n=>action('Operations',n))]};

@@ -5,28 +5,28 @@ import {readFile} from 'node:fs/promises';
 import {nextBladeburnerProgressSkill,nextSkill,spendBladeburnerSkills} from '../bladeburner-policy.js';
 import {estimateBladeburnerRoute,nodeRouteSnapshotSource} from '../node-route-policy.js';
 
-const names=["Cyber's Edge",'Reaper','Evasive Systems'];
+const names=["Cyber's Edge",'Reaper','Evasive System'];
 const levels=Object.fromEntries(names.map(n=>[n,0]));
 const context={target:'Operation Typhoon',rank:2500,requiredRank:2500,threshold:.99,chance:[1,1],metadata:{baseDifficulty:2000},stamina:[2,2],skills:{agility:1},maxStaminaMultiplier:1};
 const choose=(costs,patch={},points=100)=>nextBladeburnerProgressSkill(names,levels,costs,points,{}, {...context,...patch},nextSkill);
 test('stamina blockers compare Cyber Edge, Reaper and Evasive by native useful gain per point',()=>{
- assert.equal(choose({"Cyber's Edge":10,Reaper:1,'Evasive Systems':1}),'Evasive Systems');
- assert.equal(choose({"Cyber's Edge":10,Reaper:1,'Evasive Systems':100}),'Reaper');
- assert.equal(choose({"Cyber's Edge":.1,Reaper:10,'Evasive Systems':10}),"Cyber's Edge");
- assert.equal(choose({"Cyber's Edge":100,Reaper:100,'Evasive Systems':100},{},1),null);
+ assert.equal(choose({"Cyber's Edge":10,Reaper:1,'Evasive System':1}),'Evasive System');
+ assert.equal(choose({"Cyber's Edge":10,Reaper:1,'Evasive System':100}),'Reaper');
+ assert.equal(choose({"Cyber's Edge":.1,Reaper:10,'Evasive System':10}),"Cyber's Edge");
+ assert.equal(choose({"Cyber's Edge":100,Reaper:100,'Evasive System':100},{},1),null);
 });
 test('training stamina is retained rather than incorrectly multiplying the entire maximum by agility',()=>{
  // With a large training term, agility adds little absolute stamina despite a large maximum.
  const c={...context,stamina:[2,2],skills:{agility:.01}};
- assert.equal(choose({"Cyber's Edge":1,Reaper:1,'Evasive Systems':1},c),"Cyber's Edge");
+ assert.equal(choose({"Cyber's Edge":1,Reaper:1,'Evasive System':1},c),"Cyber's Edge");
  const cost=.285*(2000**.28+2000/650),max=cost/(1-.99/2)-.001;
- assert.equal(choose({"Cyber's Edge":3,Reaper:1,'Evasive Systems':2},{stamina:[max,max]}),'Reaper');
+ assert.equal(choose({"Cyber's Edge":3,Reaper:1,'Evasive System':2},{stamina:[max,max]}),'Reaper');
 });
 test('missing agility inputs retain the validated Cyber Edge fallback and helpers serialize',()=>{
- const costs={"Cyber's Edge":10,Reaper:.01,'Evasive Systems':.01};
+ const costs={"Cyber's Edge":10,Reaper:.01,'Evasive System':.01};
  assert.equal(choose(costs,{maxStaminaMultiplier:undefined}),"Cyber's Edge");
  const fn=Function('return ('+nextBladeburnerProgressSkill.toString()+')')();
- assert.equal(fn(names,levels,{"Cyber's Edge":10,Reaper:1,'Evasive Systems':1},100,{},context,nextSkill),'Evasive Systems');
+ assert.equal(fn(names,levels,{"Cyber's Edge":10,Reaper:1,'Evasive System':1},100,{},context,nextSkill),'Evasive System');
 });
 test('all upgrades that change maximum stamina yield until the next game tick',()=>{
  for(const name of names){

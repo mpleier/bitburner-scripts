@@ -77,5 +77,5 @@ test('economic telemetry and target metadata are integrated without parsing nati
  assert.match(read('darknet-node.js'),/lastCacheAt/);
  for(const file of ['darknet-loot.js','darknet-cache.js'])assert.match(read(file),/result\?\.success\) await ns.write\('tasks\/dnet-last-cache.json'/);
  assert.match(read('bladeburner.js'),/metadata:blackOpMetadata\[nextBlackOp\]/);
- assert.match(read('sleeve.js'),/metadata:record.metadata,player:playerInfo,levelMultipliers:combatLevelMultipliers/);
+ assert.match(read('sleeve.js'),/metadata:record.metadata,player:playerInfo,speedWeight:\.25,levelMultipliers:combatLevelMultipliers/);
 });

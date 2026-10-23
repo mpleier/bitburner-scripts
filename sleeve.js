@@ -1,3 +1,7 @@
+import {readSupportInvestment} from './bladeburner-support-economics-policy.js';
+import {startSleeveCombatGym,committedSleeveGymSeconds} from './bb-stat-development-policy.js';
+import {sleeveKarmaTrainingPlan} from './sleeve-karma-training-policy.js';
+import {combatXpValue,quoteSleeveCombatGyms,chooseSleeveCombatGym,combatCrimeCompleted} from './combat-growth-policy.js';
 import {blackOpMetadata} from './bladeburner-action-data.js';
 import {observeSleeveXp,incomingSleeveXp} from './sleeve-xp-policy.js';
 import {sampleSleeveReputation,observeSleeveReputation,sleeveWorkOutput,planSleeveWorkAugPurchase} from './sleeve-work-policy.js';
@@ -61,13 +65,15 @@ let task, lastStatusUpdateTime, lastPurchaseTime, lastPurchaseStatusUpdate, avai
     shockChance, lastRerollTime, bladeburnerCooldown, lastSleeveHp, lastSleeveShock; // State by sleeve
 let numSleeves, ownedSourceFiles, playerInGang, playerInBladeburner, bladeburnerCityChaos, bladeburnerContractChances, bladeburnerContractCounts, followPlayerSleeve;
 let options, worldDaemonPriority=false;
+let combatGymCommitments={};
 let combatLevelMultipliers={},crimeExpMultiplier=1,crimeMoneyMultiplier=1,crimeNodeMultiplier=1,repContext={shareBonus:1,sf15Level:0};
 let trainingReserve = 0;
 let reputationTargets = [], reputationAssignments = {}, nextRepRefresh = 0;
 let bladeburnerSupportSleeves = new Set();
-let adaptiveBladeburnerTasks={},bladeburnerDevelopmentPlan=null;
+let adaptiveBladeburnerTasks={},bladeburnerDevelopmentPlan=null,combatGymQuotes=[],combatGymProgress={},combatGymAt=0,combatGymKey=null;
 let startupPlan={stage:'normal',assignments:{},workers:[]};
 let sleeveXpObservation=null,sleeveReputationObservation=null;
+const recoveryForecastCache=new Map(),recoverySearches=new Map(),recoveryPlanningState={cursor:0};
 let recoveryOffers=null,recoveryOffersAt=0,combatCompletionHolds={},sleevePurchasePlans={},sleevePurchaseCheckedAt={};
 
 export function autocomplete(data, _) {
@@ -244,10 +250,6 @@ async function mainLoop(ns) {
     if(startupUrgent){canTrain=false;budget=0;}
     const augmentationReserve = canTrain ? trainingReserve + costByNextLoop : reserve;
     budget = startupUrgent ? 0 : Math.max(0, playerInfo.money - augmentationReserve) * Math.max(0,Math.min(1,Number(options['aug-budget'])||0));
-    // If any sleeve is training at the gym, see if we can purchase a gym upgrade to help them
-    if ((9 in ownedSourceFiles) && canTrain && task.some(t => t?.startsWith("train")) && !options['disable-spending-hashes-for-gym-upgrades'])
-        if (await getNsDataThroughFile(ns, `(${sleeveControlAllowed.toString()})(ns,ns.args[0],"sleeve.js")&&(${achievementActionAllowed.toString()})(ns,"sleeve")&&(${achievementActionAllowed.toString()})(ns,"hashSpending") && (()=>{const hashSpendingDecision=${hashSpendingDecision.toString()};return (${spendHashesWithPolicy.toString()})(ns,"Improve Gym Training",undefined,1,{ownerPid:ns.args[0],script:"sleeve.js",trainingSeconds:900},hashSpendingDecision).success;})()`, '/Temp/spend-hashes-on-gym.txt',[ns.pid]))
-            log(ns, `SUCCESS: Bought "Improve Gym Training" to speed up Sleeve training.`, false, 'success');
     if ((9 in ownedSourceFiles) && canTrain && task.some(t => t?.startsWith("study")) && !options['disable-spending-hashes-for-study-upgrades'])
         if (await getNsDataThroughFile(ns, `(${sleeveControlAllowed.toString()})(ns,ns.args[0],"sleeve.js")&&(${achievementActionAllowed.toString()})(ns,"sleeve")&&(${achievementActionAllowed.toString()})(ns,"hashSpending") && (()=>{const hashSpendingDecision=${hashSpendingDecision.toString()};return (${spendHashesWithPolicy.toString()})(ns,"Improve Studying",undefined,1,{ownerPid:ns.args[0],script:"sleeve.js",trainingSeconds:900},hashSpendingDecision).success;})()`, '/Temp/spend-hashes-on-study.txt',[ns.pid]))
             log(ns, `SUCCESS: Bought "Improve Studying" to speed up Sleeve studying.`, false, 'success');
@@ -296,11 +298,15 @@ async function mainLoop(ns) {
     if(playerInBladeburner&&!worldDaemonPriority&&!options['disable-bladeburner'])try{
         const saved=JSON.parse(ns.read('tasks/bladeburner-sleeve-plan.json'));
         if(saved.nodeReset===reset.lastNodeReset&&saved.augReset===reset.lastAugReset&&saved.at<=Date.now()&&Date.now()-saved.at<30000&&ns.ps('home').some(p=>p.pid===saved.pid&&p.filename.replace(/^\//,'')==='bladeburner.js')){
-            bladeburnerDevelopmentPlan=saved;
-            adaptiveBladeburnerTasks=sleeveBladeburnerTasks(sleeveInfo,actualTasks,saved,[...bladeburnerSupportSleeves],!options['disable-combat-xp-support']&&!reset.bitNodeOptions?.disableSleeveExpAndAugmentation);
+            bladeburnerDevelopmentPlan=readSupportInvestment(ns,saved)||saved;
+            adaptiveBladeburnerTasks=sleeveBladeburnerTasks(sleeveInfo,actualTasks,bladeburnerDevelopmentPlan,[...bladeburnerSupportSleeves],!options['disable-combat-xp-support']&&!reset.bitNodeOptions?.disableSleeveExpAndAugmentation);
         }
     }catch{}
 
+    if(bladeburnerDevelopmentPlan?.target&&!options['disable-training']&&!options['disable-combat-xp-support']&&!reset.bitNodeOptions?.disableSleeveExpAndAugmentation&&achievementActionAllowed(ns,'cashSpending')){
+        const gymKey=JSON.stringify(sleeveInfo.map(s=>[s.city,s.mults]));
+        if(gymKey!==combatGymKey||Date.now()-combatGymAt>=10000)try{combatGymAt=Date.now();combatGymKey=gymKey;combatGymQuotes=await getNsDataThroughFile(ns,`(${quoteSleeveCombatGyms.toString()})(ns,JSON.parse(ns.args[0]),true)`,'/Temp/sleeve-combat-gyms.txt',[JSON.stringify(sleeveInfo)]);}catch{combatGymQuotes=[];}
+    }else combatGymQuotes=[];
     let followTarget = null;
     if ((4 in ownedSourceFiles) && followPlayerSleeve >= 0 && ['FACTION','COMPANY'].includes(playerWorkInfo.type)) {
         if (playerWorkInfo.type === 'COMPANY') followTarget = {type:'COMPANY',name:playerWorkInfo.companyName};
@@ -310,7 +316,7 @@ async function mainLoop(ns) {
         } catch { }
     }
     try{const share=await getNsDataThroughFile(ns,'ns.getSharePower()','/Temp/sleeve-share-power.txt');if(Number.isFinite(share)&&share>=1)repContext.shareBonus=share;}catch{repContext.shareBonus=1;}
-    reputationAssignments = sleeveRepAssignments(sleeveInfo.map((s,i)=>bladeburnerSupportSleeves.has(i)?{...s,shock:100}:s), options['disable-auto-reputation'] ? [] : reputationTargets,
+    reputationAssignments = sleeveRepAssignments(sleeveInfo.map((s,i)=>bladeburnerSupportSleeves.has(i)||bladeburnerDevelopmentPlan?.investmentWorkers?.includes(i)&&!['FACTION','COMPANY'].includes(actualTasks[i]?.type)?{...s,shock:100}:s), options['disable-auto-reputation'] ? [] : reputationTargets,
         playerWorkInfo, followPlayerSleeve, playerInBladeburner&&!worldDaemonPriority, actualTasks, followTarget, worldDaemonPriority,repContext);
     if ((4 in ownedSourceFiles) && !Object.keys(cachedCrimeStats).length) {
         try { cachedCrimeStats = await getNsDataThroughFile(ns, 'Object.fromEntries(Object.values(ns.enums.CrimeType).map(name=>[name,ns.singularity.getCrimeStats(name)]))', '/Temp/sleeve-crime-stats.txt'); } catch { }
@@ -325,6 +331,10 @@ async function mainLoop(ns) {
     startupPlan=sleeveStartupPlan({sleeves:sleeveInfo,tasks:actualTasks,crimes:cachedCrimeStats,money:playerInfo.money,
         casinoPending,gangAvailable:needsKarma,inGang:playerInGang,karma:ns.heart.break(),intelligence:playerInfo.skills.intelligence,
         nodeMultiplier:crimeNodeMultiplier,previousWorkers:startupPlan.stage==='gang-karma'?startupPlan.workers:[],enabled:adaptiveStartup});
+    if(adaptiveStartup&&startupPlan.stage==='gang-karma'){
+        const planningStarted=performance.now();
+        startupPlan.karmaTraining=sleeveKarmaTrainingPlan({sleeves:sleeveInfo,tasks:actualTasks,crimes:cachedCrimeStats,workers:startupPlan.workers,karma:ns.heart.break(),nodeMultiplier:crimeNodeMultiplier,crimeExpMultiplier,levelMultipliers:combatLevelMultipliers,recoveryRates:recoveryObservation.sleeves.map(s=>s.rate),enabled:!options['disable-training']&&!reset.bitNodeOptions?.disableSleeveExpAndAugmentation,canEvaluate:()=>performance.now()-planningStarted<20});
+    }
     if (adaptiveStartup && startupPlan.stage === 'conditioning' && !options['disable-combat-xp-support'] &&
         !options['disable-bladeburner'] && playerInBladeburner && readNodeRoutePlan(ns)?.selected === 'bladeburner' &&
         !reset.bitNodeOptions?.disableSleeveExpAndAugmentation) {
@@ -335,9 +345,9 @@ async function mainLoop(ns) {
                     recoveryOffersAt=Date.now();recoveryOffers=null;
                     try{recoveryOffers=await getNsDataThroughFile(ns,'(()=>{const offers=Array.from({length:ns.args[0]},(_,i)=>ns.sleeve.getSleevePurchasableAugs(i)),stats={};for(const name of new Set(offers.flat().map(a=>a.name)))try{stats[name]=ns.singularity.getAugmentationStats(name);}catch{stats[name]=null;}return offers.map(list=>list.map(a=>({...a,stats:stats[a.name]})));})()','/Temp/sleeve-recovery-offers.txt',[numSleeves]);}catch{}
                 }
-                const context={metadata:record.metadata,player:playerInfo,levelMultipliers:combatLevelMultipliers,crimeExpMultiplier};
+                const context={metadata:record.metadata,player:playerInfo,speedWeight:.25,levelMultipliers:combatLevelMultipliers,crimeExpMultiplier};
                 const recoveryBudget=achievementActionAllowed(ns,'sleeve')&&achievementActionAllowed(ns,'cashSpending')?sleeveAugSpendingBudget(ns,Math.min(budget,Math.max(0,ns.getPlayer().money-Math.max(augmentationReserve,augmentationCashReserve(ns))))):0;
-                const augmentationPlan=sleeveAugRecoveryPlan(sleeveInfo,recoveryOffers,cachedCrimeStats,recoveryObservation,recoveryBudget,crimeNodeMultiplier,context,900,{minBatch:options['min-aug-batch'],cooldowns:sleeveInfo.map((_,i)=>Math.max(0,(lastPurchaseTime[i]||0)+options['buy-cooldown']-Date.now())/1000)});
+                const augmentationPlan=sleeveAugRecoveryPlan(sleeveInfo,recoveryOffers,cachedCrimeStats,recoveryObservation,recoveryBudget,crimeNodeMultiplier,context,900,{maxPlanningMs:40,state:recoveryPlanningState,cache:recoveryForecastCache,searches:recoverySearches,cacheScope:[reset.lastNodeReset,reset.lastAugReset,ns.pid],cacheStats:(startupPlan.recoveryForecastCache={hits:0,misses:0}),minBatch:options['min-aug-batch'],cooldowns:sleeveInfo.map((_,i)=>Math.max(0,(lastPurchaseTime[i]||0)+options['buy-cooldown']-Date.now())/1000)});
                 startupPlan.augmentationRecovery=augmentationPlan;
                 const workers = sleeveCombatWorkers(sleeveInfo, cachedCrimeStats, actualTasks, crimeNodeMultiplier, context,recoveryObservation,900,augmentationPlan,combatCompletionHolds);
                 if (workers.length) {
@@ -387,8 +397,19 @@ async function mainLoop(ns) {
         }
     }
     const currentTasks = await getNsDataThroughFile(ns,'ns.args.map(i=>ns.sleeve.getTask(i))','/Temp/sleeve-tasks-final.txt',[...Array(numSleeves).keys()]);
+    const gymTargets={};
+    if(canTrain)for(let i=0;i<numSleeves;i++)if(task[i]?.startsWith('train')&&currentTasks[i]?.type==='CLASS'){
+        const stat=Object.keys(ns.enums.GymType).find(key=>ns.enums.GymType[key]===currentTasks[i].classType);
+        if(stat)gymTargets[i]={stat,target:options['train-to-'+stat],gym:currentTasks[i].location,gymType:currentTasks[i].classType};
+    }
+    const gymPlan={targets:gymTargets,at:Date.now(),ownerPid:ns.pid,nodeReset:reset.lastNodeReset,augReset:reset.lastAugReset,commitments:combatGymCommitments};
+    await ns.write('tasks/sleeve-gym-plan.json',JSON.stringify(gymPlan),'w');
+    if((9 in ownedSourceFiles)&&!options['disable-spending-hashes-for-gym-upgrades']&&achievementActionAllowed(ns,'hashSpending'))try{
+        const upgraded=await getNsDataThroughFile(ns,`(${sleeveControlAllowed.toString()})(ns,ns.args[0],"sleeve.js")&&(${achievementActionAllowed.toString()})(ns,"sleeve")&&(${achievementActionAllowed.toString()})(ns,"hashSpending")&&(()=>{const plan=JSON.parse(ns.read("tasks/sleeve-gym-plan.json")),seconds=(${committedSleeveGymSeconds.toString()})(ns,plan);if(seconds<60)return false;const hashSpendingDecision=${hashSpendingDecision.toString()};return (${spendHashesWithPolicy.toString()})(ns,"Improve Gym Training",undefined,1,{ownerPid:ns.args[0],script:"sleeve.js",trainingSeconds:seconds},hashSpendingDecision).success;})()`,'/Temp/spend-hashes-on-gym.txt',[ns.pid]);
+        if(upgraded){combatGymAt=0;log(ns,'SUCCESS: Improved gym training for native-confirmed sleeve sessions.');}
+    }catch{}
     await ns.write('tasks/sleeve-recovery-observation.json',JSON.stringify({...recoveryObservation,sleeves:recoveryObservation.sleeves.map((s,i)=>({...s,recovering:currentTasks[i]?.type==='RECOVERY'}))}),'w');
-    await ns.write('tasks/sleeve-status.json', JSON.stringify({at:Date.now(),pid:ns.pid,state:'managing',reputationAccuracy:sleeveReputationObservation,xpObservation:{reason:sleeveXpObservation?.reason,observedAt:sleeveXpObservation?.observedAt,pool:sleeveXpObservation?.pool},startup:{stage:startupPlan.stage,workers:startupPlan.workers,assignments:startupPlan.assignments,combatWorker:startupPlan.combatWorker||null,combatWorkers:startupPlan.combatWorkers||[],augmentationRecovery:startupPlan.augmentationRecovery||{}},route:worldDaemonPriority?'hacking':'normal',bladeburnerSupport:[...bladeburnerSupportSleeves],sleeves:sleeveInfo.map((s,i)=>({index:i,shock:s.shock,sync:s.sync,memory:s.memory,task:task[i]||'waiting',actualTask:currentTasks[i]})),purchasePlans:sleevePurchasePlans,remainingAugBudget:budget,sharedAugBudgetRemaining:sleeveAugSpendingBudget(ns,budget)}), 'w');
+    await ns.write('tasks/sleeve-status.json', JSON.stringify({at:Date.now(),pid:ns.pid,state:'managing',reputationAccuracy:sleeveReputationObservation,xpObservation:{reason:sleeveXpObservation?.reason,observedAt:sleeveXpObservation?.observedAt,pool:sleeveXpObservation?.pool},startup:{karmaTraining:startupPlan.karmaTraining||null,stage:startupPlan.stage,workers:startupPlan.workers,assignments:startupPlan.assignments,combatWorker:startupPlan.combatWorker||null,combatWorkers:startupPlan.combatWorkers||[],augmentationRecovery:startupPlan.augmentationRecovery||{}},route:worldDaemonPriority?'hacking':'normal',bladeburnerSupport:[...bladeburnerSupportSleeves],sleeves:sleeveInfo.map((s,i)=>({index:i,shock:s.shock,sync:s.sync,memory:s.memory,task:task[i]||'waiting',actualTask:currentTasks[i]})),purchasePlans:sleevePurchasePlans,remainingAugBudget:budget,sharedAugBudgetRemaining:sleeveAugSpendingBudget(ns,budget)}), 'w');
 }
 
 /** Picks the best task for a sleeve, and returns the information to assign and give status updates for that task.
@@ -403,8 +424,8 @@ async function pickSleeveTask(ns, playerInfo, playerWorkInfo, i, sleeve, canTrai
     if (lastSleeveShock[i] === undefined) lastSleeveShock[i] = sleeve.shock;
     const openingTask=startupPlan.assignments[i];
     if(openingTask==='money'||openingTask==='karma')
-        return await crimeTask(ns,bestSleeveCrime(sleeve,cachedCrimeStats,openingTask,crimeNodeMultiplier),i,sleeve,
-            openingTask==='money'?'funding the $300,000 casino seed':'unlocking the gang while other sleeves recover');
+        return await crimeTask(ns,(openingTask==='karma'?startupPlan.karmaTraining?.choices?.[i]:null)||bestSleeveCrime(sleeve,cachedCrimeStats,openingTask,crimeNodeMultiplier),i,sleeve,
+            openingTask==='money'?'funding the $300,000 casino seed':startupPlan.karmaTraining?.best?.index===i?'free crime conditioning projects an earlier gang unlock':'unlocking the gang while other sleeves recover');
     if(openingTask==='combat-xp')return await crimeTask(ns,(startupPlan.combatWorkers?.find(w=>w.index===i)||startupPlan.combatWorker).name,i,sleeve,'transferring combat XP while the next Black Op is chance-blocked; recovery compared over a fifteen-minute horizon');
     if(openingTask==='recovery')return shockRecoveryTask(sleeve,i,'other sleeves handle immediate startup milestones');
     if(openingTask==='sync')return ['synchronize','ns.sleeve.setToSynchronize(ns.args[0])',[i],'synchronizing for useful karma, XP and reputation gains'];
@@ -507,10 +528,21 @@ async function pickSleeveTask(ns, playerInfo, playerWorkInfo, i, sleeve, canTrai
         // Hack: Without paying much attention to what's happening in bladeburner, pre-assign a variety of tasks by sleeve index
         const adaptive=adaptiveBladeburnerTasks[i];
         if(adaptive==='combat-xp'){
-            const context={metadata:blackOpMetadata[bladeburnerDevelopmentPlan?.target],player:playerInfo,levelMultipliers:combatLevelMultipliers,crimeExpMultiplier};
+            const context={metadata:blackOpMetadata[bladeburnerDevelopmentPlan?.target],player:playerInfo,speedWeight:.25,levelMultipliers:combatLevelMultipliers,crimeExpMultiplier};
             const actual=await getNsDataThroughFile(ns,'ns.sleeve.getTask(ns.args[0])','/Temp/sleeve-combat-task.txt',[i]);
             const invested=actual?.type==='CRIME'&&actual.cyclesWorked>0&&actual.cyclesNeeded>actual.cyclesWorked&&cachedCrimeStats[actual.crimeType];
             const crime=sleeveCombatCrime(sleeve,invested?{[actual.crimeType]:cachedCrimeStats[actual.crimeType]}:cachedCrimeStats,crimeNodeMultiplier,context);
+            const completed=combatCrimeCompleted(combatGymProgress[i],actual);combatGymProgress[i]=actual;
+            const reserve=Math.max(trainingReserve,augmentationCashReserve(ns))+costByCombatLoop(),old= combatGymCommitments[i];
+            const held=old?.until>Date.now()&&old.target===bladeburnerDevelopmentPlan.target&&actual?.type==='CLASS'&&actual.location===old.gym&&actual.classType===old.gymType&&sleeve.city===old.city&&sleeve.shock===0&&sleeve.sync===100&&ns.getPlayer().money-reserve>=old.cost*Math.max(1,(old.until-Date.now())/1000);
+            const enabled=!options['disable-training']&&achievementActionAllowed(ns,'cashSpending');
+            let gym=enabled&&held?old:chooseSleeveCombatGym(sleeve,enabled?combatGymQuotes[i]:[],crime,context,{money:ns.getPlayer().money,reserve,seconds:30,task:completed?null:actual});
+            if(gym&&(held||claimSpending(ns,'sleeves',gym.budget))){
+                if(completed&&actual?.type==='CRIME'&&Number.isFinite(actual.tasksCompleted)&&actual.tasksCompleted>=1)gym={...gym,completionCredit:{at:Date.now(),crimeType:actual.crimeType,tasksCompleted:actual.tasksCompleted}};
+                if(!held)combatGymCommitments[i]={...gym,until:Date.now()+30000,target:bladeburnerDevelopmentPlan.target};
+                return ['combat gym '+gym.stat+' ('+gym.gym+')',`(${startSleeveCombatGym.toString()})(ns,ns.args[0],JSON.parse(ns.args[3]),ns.args[4])`,[i,gym.gym,gym.gymType,JSON.stringify(gym),reserve],'training '+gym.stat+' for '+bladeburnerDevelopmentPlan.target+'; verified gym payback'];
+            }
+            delete combatGymCommitments[i];
             if(crime)return await crimeTask(ns,crime.name,i,sleeve,'developing stats for '+bladeburnerDevelopmentPlan.target);
         }
         let [action,contractName]=adaptive&&adaptive!=='combat-xp'?[adaptive]:['Infiltrate Synthoids'];
@@ -565,6 +597,8 @@ function shockRecoveryTask(sleeve, i, reason) {
     return [`recover from shock`, `ns.sleeve.setToShockRecovery(ns.args[0])`, [i],
     /*   */ `recovering from shock (${sleeve.shock.toFixed(2)}%) because ${reason}...`];
 }
+
+function costByCombatLoop(){return 12000*numSleeves*Math.max(1,interval/1000);}
 
 /** Helper to prepare the crime task
  * @param {NS} ns

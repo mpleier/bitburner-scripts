@@ -56,3 +56,11 @@ test('overview integrates team size, recruitment reasons, rebuilding and both Bl
  assert.match(source,/teamPlan.reason/);assert.match(source,/6 in dictSourceFiles\|\|7 in dictSourceFiles/);
  assert.match(source,/nextHook0/);assert.doesNotMatch(source,/hook1.innerHTML = hook0.innerHTML/);
 });
+
+
+test('overview separates projected and observed hacking income and rejects stale plans',async()=>{
+ const h=await overview(),record={at:300000,ownerPid:7,enforced:true,preferred:'x',reason:'Confirmed payback',projectedRate:100,income:{state:'measured',observedRate:75,seconds:120,receipts:8}};
+ const state=nsState({'tasks/hacking-target-plan.json':JSON.stringify(record)},[{pid:7,filename:'daemon.js'}]);
+ const rows=h.getAutomationHudData(state);assert.equal(row(rows,'Hack Proj')[2],'$100/sec');assert.equal(row(rows,'Hack Real')[2],'$75/sec');assert.match(row(rows,'Hack Real')[3],/different interval/);
+ const stale=h.getAutomationHudData(nsState({'tasks/hacking-target-plan.json':JSON.stringify({...record,at:280000})},[{pid:7,filename:'daemon.js'}]));assert.equal(row(stale,'Hack Proj')[1],false);
+});

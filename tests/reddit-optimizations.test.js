@@ -52,7 +52,7 @@ test('bounded search respects native root legality and node/time limits',()=>{
 });
 test('search options validate budgets and retain explicit off/shadow/play choices',()=>{
  const base={goal:'auto','cheat-chance-threshold':.9};
- for(const mode of ['off','shadow','play'])assert.equal(goOptionsError({...base,'search-mode':mode,'search-ms':5,'search-nodes':64}),null);
+ for(const mode of ['auto','off','shadow','play'])assert.equal(goOptionsError({...base,'search-mode':mode,'search-ms':5,'search-nodes':64}),null);
  for(const patch of [{'search-mode':'bad'},{'search-ms':NaN},{'search-ms':0},{'search-ms':51},{'search-nodes':15},{'search-nodes':1025}])assert.ok(goOptionsError({...base,...patch}));
 });
 function hashFixture(){
@@ -86,9 +86,9 @@ test('native projection rejects invalid formulas and allows explicit manual deci
  assert.equal(hashSpendingDecision(f.ns,'Reduce Minimum Security',{target:'target'}).allowed,false);
  assert.equal(hashSpendingDecision(f.ns,'Reduce Minimum Security',{target:'target',automatic:false}).allowed,true);
 });
-test('controller isolates search-play histories and defaults to shadow proposals',async()=>{
- const s=await readFile(new URL('../go.js',import.meta.url),'utf8');assert.ok(s.includes("['search-mode','shadow']"));
- assert.match(s,/saved.engine\|\|'tactical'/);assert.match(s,/engine:goEngine/);assert.match(s,/!achievement\?\.goStreak&&!achievement\?\.goFailure/);
+test('controller defaults to bounded measured trials and isolates engine histories',async()=>{
+ const s=await readFile(new URL('../go.js',import.meta.url),'utf8');assert.ok(s.includes("['search-mode','auto']"));
+ assert.match(s,/restoreGoEngines/);assert.match(s,/engineBuckets\[goEngine\]/);assert.match(s,/engine:goEngine/);assert.match(s,/!achievement\?\.goStreak&&!achievement\?\.goFailure/);
 });
 test('bounded search benchmark reports proposal cost without asserting gameplay improvements',()=>{
  const board=['.....','..O..','.....','..X..','.....'],valid=board.map(r=>[...r].map(c=>c==='.'));

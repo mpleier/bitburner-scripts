@@ -474,6 +474,9 @@ export async function main(ns) {
     async function onCompletion(kickedOutAfterPlaying = true) {
         casinoCompleted = true;
         await reportCasino('complete', {earnings:casinoEarnings()});
+        const infrastructureReset=ns.getResetInfo();
+        await ns.write('tasks/post-casino-infrastructure.json',JSON.stringify({version:1,at:Date.now(),pid:ns.pid,
+            augReset:infrastructureReset.lastAugReset,nodeReset:infrastructureReset.lastNodeReset,state:'pending',index:0}),'w');
         if (kickedOutAfterPlaying)
             log(ns, "SUCCESS: We've been kicked out of the casino.", false);
         else

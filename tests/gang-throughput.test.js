@@ -38,7 +38,7 @@ test('progression and recruitment purchases share one exception allowance',()=>{
 });
 test('cash funding ignores old, progression and recruitment utility telemetry',()=>{
  const now=Date.now();let opportunity={paybackSeconds:1,cashPaybackSeconds:null,reason:'progression'},schemaVersion=2;
- const ns={getResetInfo:()=>({lastNodeReset:1,lastAugReset:2}),isRunning:()=>true,write(){},read:f=>f==='tasks/gang-growth.json'?JSON.stringify({schemaVersion,at:now,pid:1,nodeReset:1,augReset:2,equipmentOpportunity:opportunity}):''};
+ const ns={ps:()=>[{pid:1,filename:'gangs.js'}],getResetInfo:()=>({lastNodeReset:1,lastAugReset:2}),isRunning:()=>true,write(){},read:f=>f==='tasks/gang-growth.json'?JSON.stringify({schemaVersion,at:now,pid:1,nodeReset:1,augReset:2,equipmentOpportunity:opportunity}):''};
  assert.equal(adaptiveBudgetSignals(ns).gangEquipmentPayback,null);
  opportunity={reason:'production',cashPaybackSeconds:60};assert.equal(adaptiveBudgetSignals(ns).gangEquipmentPayback,60);
  schemaVersion=undefined;assert.equal(adaptiveBudgetSignals(ns).gangEquipmentPayback,null);
@@ -54,7 +54,7 @@ test('mixed objectives use the purchase goal consistently in planning and recove
  assert.deepEqual(wantedRecoveryOrder(['A','B'],{A:'Work',B:'Work'},rates,'Recover','both money and respect'),['B','A']);
 });
 test('shared wanted tolerance retains sustain and recovery thresholds',()=>{
- assert.equal(gangWantedTolerance({respect:1000,wantedLevel:100,respectGainRate:1}),-1);
+ assert.equal(gangWantedTolerance({respect:1000,wantedLevel:100,respectGainRate:1}),0);
  assert.equal(gangWantedTolerance({respect:10000,wantedLevel:1,respectGainRate:1}),.1);
 });
 const work={name:'Work',difficulty:1,strWeight:100,baseWanted:0};
@@ -98,7 +98,7 @@ test('controller restores before development, shares goal weights and reports ca
  assert.ok(tick.indexOf('restoreGangProductiveTasks.toString()')<tick.indexOf('nextRepRefresh'));
  assert.ok(tick.indexOf('if(restored.deferred)return;')<tick.indexOf('tryAscendMembers'));
  assert.match(source,/rates.forEach\(rate=>rate\[optStat\]=gangObjectiveValue/);
- assert.match(source,/forecastGangAscension\(\{members/);
+ assert.match(source,/forecastGangCrewAscensions\(\{members/);
  assert.match(source,/schemaVersion:2/);assert.match(source,/postTickRestoreMs/);
  assert.match(source,/candidate.wanted\/5>\(forecastWantedLimits/);
  assert.doesNotMatch(source,/v.money \/ 1000 \+ v.respect/);
@@ -114,6 +114,6 @@ test('territory timing cannot repeatedly reuse stale or unknown phases',()=>{
  assert.equal(gangTerritoryTiming({...state,finished:true}).prepare,false);
  const source=readFileSync(new URL('../gangs.js',import.meta.url),'utf8');
  assert.match(source,/territoryTickDetected=false;territoryNextTick=null/);
- assert.match(source,/territoryTickDetected = true;\s+lastTerritoryPower = myGangInfo.power/);
- assert.match(source,/if \(timing.prepare\)/);
+ assert.match(source,/if\(tickObserved\)\{\s+territoryNextTick=gangTerritoryDeadline\(cycle.at,cycle.bonusMs,territoryTickTime\);\s+territoryTickDetected=true/);
+ assert.match(source,/if \(!tickObserved&&timing.prepare\)/);
 });

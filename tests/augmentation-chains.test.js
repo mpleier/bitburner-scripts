@@ -150,11 +150,11 @@ test('executed snapshot publishes per-provider donation options, including locks
  const root=aug('Root',[],{desired:false,joinedFactionsWithAug:()=>[faction('B',0,false)]});
  const target=aug('Target',['Root'],{joinedFactionsWithAug:()=>[faction('A',50)]});
  const [plan]=targets(catalog(root,target),{donations:{A:20}});
- assert.deepEqual(plan.requirements[0].providers,[{faction:'B',requiredDonation:null}]);
- assert.deepEqual(plan.requirements[1].providers,[{faction:'A',requiredDonation:50}]);
+ assert.deepEqual(plan.requirements[0].providers,[{faction:'B',canDonate:false,requiredDonation:null}]);
+ assert.deepEqual(plan.requirements[1].providers,[{faction:'A',canDonate:true,requiredDonation:50}]);
  assert.deepEqual(plan.plannedDonations,{A:20});
  const [disabled]=targets(catalog(root,target),{options:{'disable-donations':true}});
- assert.equal(disabled.requirements[1].providers[0].requiredDonation,null);
+ assert.equal(disabled.requirements[1].providers[0].requiredDonation,null);assert.equal(disabled.requirements[1].providers[0].canDonate,false);
 });
 
 test('progression wait estimate selects a feasible mixed chain when both old strategies are impossible',()=>{
@@ -410,7 +410,7 @@ test('canonical funding states drop fulfilled obligations and report duplicate s
 });
 
 test('pruned and unpruned funding searches agree while pruning evaluates fewer shared-quote alternatives',async()=>{
- const raw=readFileSync(new URL('../progression-speed-policy.js',import.meta.url),'utf8');
+ const raw=readFileSync(new URL('../progression-speed-policy.js',import.meta.url),'utf8').replace(/from\s+(['\"])(\.[^'\"]+)\1/g,(_all,_quote,path)=>'from '+JSON.stringify(new URL(path,new URL('../progression-speed-policy.js',import.meta.url)).href));
  const control=raw.replace('const needs=pruneAugmentationDonationNeeds(original,goals.get(faction)??reputation[faction]);','const needs=original;');
  assert.notEqual(raw,control);
  const {estimateMixedAugmentationWait:unpruned}=await import('data:text/javascript;base64,'+Buffer.from(control).toString('base64'));
@@ -458,7 +458,7 @@ test('duplicate requirements preserve funding targets and shared credits without
 });
 
 test('deduplicated funding search matches an uncollapsed control with fewer evaluations',async()=>{
- const raw=readFileSync(new URL('../progression-speed-policy.js',import.meta.url),'utf8');
+ const raw=readFileSync(new URL('../progression-speed-policy.js',import.meta.url),'utf8').replace(/from\s+(['\"])(\.[^'\"]+)\1/g,(_all,_quote,path)=>'from '+JSON.stringify(new URL(path,new URL('../progression-speed-policy.js',import.meta.url)).href));
  const control=raw.replace('const uniqueRequirements=deduplicateAugmentationRequirements(requirements);','const uniqueRequirements=requirements;');
  assert.notEqual(raw,control);
  const {estimateMixedAugmentationWait:uncollapsed}=await import('data:text/javascript;base64,'+Buffer.from(control).toString('base64'));
@@ -507,7 +507,7 @@ test('mixed fulfilled and pending requirements retain only necessary work and pr
 });
 
 test('fulfilled-requirement preprocessing matches an unfiltered control while avoiding state expansion',async()=>{
- const raw=readFileSync(new URL('../progression-speed-policy.js',import.meta.url),'utf8');
+ const raw=readFileSync(new URL('../progression-speed-policy.js',import.meta.url),'utf8').replace(/from\s+(['\"])(\.[^'\"]+)\1/g,(_all,_quote,path)=>'from '+JSON.stringify(new URL(path,new URL('../progression-speed-policy.js',import.meta.url)).href));
  const control=raw.replace('for(const requirement of pendingRequirements){','for(const requirement of uniqueRequirements){');
  assert.notEqual(raw,control);
  const {estimateMixedAugmentationWait:unfiltered}=await import('data:text/javascript;base64,'+Buffer.from(control).toString('base64'));
@@ -560,7 +560,7 @@ test('donation-covered preprocessing leaves other factions necessary work and cr
 });
 
 test('donation-covered preprocessing matches an unfiltered control and avoids redundant choices',async()=>{
- const raw=readFileSync(new URL('../progression-speed-policy.js',import.meta.url),'utf8');
+ const raw=readFileSync(new URL('../progression-speed-policy.js',import.meta.url),'utf8').replace(/from\s+(['\"])(\.[^'\"]+)\1/g,(_all,_quote,path)=>'from '+JSON.stringify(new URL(path,new URL('../progression-speed-policy.js',import.meta.url)).href));
  const control=raw.replace('for(const requirement of pendingRequirements){','for(const requirement of outstandingRequirements){');
  assert.notEqual(raw,control);
  const {estimateMixedAugmentationWait:unfiltered}=await import('data:text/javascript;base64,'+Buffer.from(control).toString('base64'));

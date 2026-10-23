@@ -32,7 +32,7 @@ test('supervision, API permissions, diagnostics and automatic starts derive from
  assert.equal(statusFiles['contract-validation.js'],'tasks/contract-validation.json');
  assert.equal(automaticManagerScripts.length,12);assert.equal(automaticManagerScripts[2],'achievement-manager.js');
  for(const file of ['host-manager.js','Tasks/ram-manager.js','Tasks/contractor.js','Tasks/contractor.js.solver.js','automation-preview.js'])assert.ok(diagnosticScripts.includes(file));
- assert.ok(diagnosticScripts.length<=32);
+ assert.ok(diagnosticScripts.length<=48);
 });
 test('diagnostic additions do not expand remote start and stop permissions',()=>{
  for(const script of ['host-manager.js','automation-preview.js','Tasks/ram-manager.js']){

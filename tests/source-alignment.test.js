@@ -39,8 +39,8 @@ test('combat skill gains use the operation weighted competence and decay exponen
   if(['dexterity','agility'].includes(k))stat*=1+.04*evasive;
   return sum+w*stat**blackOpMetadata['Operation Typhoon'].decays[k];
  },0);
- const base=competence(0,0),expected=competence(1,0)/base-1>competence(0,1)/base-1?'Reaper':'Evasive Systems';
- assert.equal(choose('Operation Typhoon',['Reaper','Evasive Systems'],{}, {},{skills}),expected);
+ const base=competence(0,0),expected=competence(1,0)/base-1>competence(0,1)/base-1?'Reaper':'Evasive System';
+ assert.equal(choose('Operation Typhoon',['Reaper','Evasive System'],{}, {},{skills}),expected);
  const hackingOnly={isKill:false,isStealth:false,weights:{hacking:1},decays:{hacking:.6}};
  assert.equal(choose('Operation Typhoon',['Reaper','Digital Observer'],{}, {},{skills,metadata:hackingOnly}),'Digital Observer');
 });

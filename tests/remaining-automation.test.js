@@ -1,3 +1,4 @@
+import {gangPowerPurchaseAllowed} from '../gang-power-policy.js';
 import test from 'node:test';import assert from 'node:assert/strict';
 import {spendingPlan,claimSpending} from '../spending-policy.js';
 import {soaCandidates,soaTick} from '../soa-manager.js';
@@ -24,7 +25,7 @@ test('generated spending workers remain expressions inside JSON.stringify',async
  for(const [file,purchase] of [['sleeve.js',purchaseSleeveAugBatch],['gangs.js',purchaseGangEquipment]]){
   const source=await readFile(new URL('../'+file,import.meta.url),'utf8');
   const raw=source.match(/`\(\(\) => \{ const claimSpending=\$\{claimSpending\.toString\(\)\}; return \([\s\S]*?\}\)\(\)`/)[0].slice(1,-1);
-  const rendered=raw.replace('${claimSpending.toString()}',claimSpending.toString()).replace(/\$\{purchase\w+\.toString\(\)\}/,purchase.toString()).replace('${gangMutationAllowed.toString()}',gangMutationAllowed.toString()).replace('${sleeveControlAllowed.toString()}',sleeveControlAllowed.toString()).replace('${achievementActionAllowed.toString()}',achievementActionAllowed.toString());
+  const rendered=raw.replace('${claimSpending.toString()}',claimSpending.toString()).replace(/\$\{purchase\w+\.toString\(\)\}/,purchase.toString()).replace('${gangMutationAllowed.toString()}',gangMutationAllowed.toString()).replace('${gangPowerPurchaseAllowed.toString()}',gangPowerPurchaseAllowed.toString()).replace('${sleeveControlAllowed.toString()}',sleeveControlAllowed.toString()).replace('${achievementActionAllowed.toString()}',achievementActionAllowed.toString());
   assert.doesNotThrow(()=>new Function('ns','return JSON.stringify('+rendered+');'));
  }
 });
@@ -37,7 +38,7 @@ test('sleeve and gang purchases consult the injected shared cash allocator',asyn
  assert.deepEqual(purchaseGangEquipment(ns,[{member:'m',equipmentName:'a'}],0,100,()=>false),[false]);assert.deepEqual(bought,[]);
 });
 
-test('completed BitNode departure takes priority over optional intelligence resets',async()=>{const {readFile}=await import('node:fs/promises');const source=await readFile(new URL('../autopilot.js',import.meta.url),'utf8');assert.ok(source.indexOf('await checkIfBnIsComplete(ns, player);')<source.indexOf("if(options['intelligence-farming'])"));const farmer=await readFile(new URL('../farm-intelligence.js',import.meta.url),'utf8');assert.ok(farmer.lastIndexOf('getCurrentAction()')>farmer.indexOf("prepareResetBackup(ns,'intelligence session')"));assert.ok(farmer.includes('intelligenceUnlocked(reset)'));});
+test('completed BitNode departure takes priority over optional intelligence resets',async()=>{const {readFile}=await import('node:fs/promises');const source=await readFile(new URL('../autopilot.js',import.meta.url),'utf8');assert.ok(source.indexOf('await checkIfBnIsComplete(ns, player);')<source.indexOf("if(options['intelligence-farming'])"));const farmer=await readFile(new URL('../farm-intelligence.js',import.meta.url),'utf8');assert.ok(farmer.lastIndexOf('fresh=protectedProgress()')>farmer.indexOf("prepareResetBackup(ns,'intelligence session')"));assert.ok(farmer.includes('intelligenceUnlocked(reset)'));});
 
 test('intelligence experience requires BN5 or permanent SF5 even with disabled active bonuses',async()=>{const {intelligenceUnlocked}=await import('../intelligence-policy.js');assert.equal(intelligenceUnlocked({currentNode:1,ownedSF:new Map()}),false);assert.equal(intelligenceUnlocked({currentNode:5}),true);assert.equal(intelligenceUnlocked({currentNode:1,ownedSF:new Map([[5,1]]),bitNodeOptions:{sourceFileOverrides:new Map([[5,0]])}}),true);});
 

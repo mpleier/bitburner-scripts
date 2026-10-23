@@ -1,3 +1,4 @@
+import {withHgwPiece,withHgwBatch,createHgwBatch} from '../hgw-batch-policy.js';
 import {reserveHackingProcess,releaseHackingProcess} from '../hacking-process-policy.js';
 import {commitHackingCapacity,hackingWorker,withHackingLoopCapacity} from '../hacking-drain-policy.js';
 import test from 'node:test';
@@ -24,12 +25,12 @@ test('failed or throwing batches roll back only their recorded worker PIDs',asyn
  let calls=0;assert.equal(await launchHackingBatch([{threadsNeeded:0}],()=>{calls++;},()=>{}),true);assert.equal(calls,0);
 });
 
-async function executor({ram=[16,8],names=['alpha','beta'],split=false,copy=true,threads=10,args=[],captureCapacity=false,failLedger=false,ramAfterWrite=null,processLimit=100,failExecution=false}={}) {
+async function executor({ram=[16,8],names=['alpha','beta'],split=false,copy=true,threads=10,args=[],captureCapacity=false,failLedger=false,ramAfterWrite=null,processLimit=100,failExecution=false,deadlineInventory=null}={}) {
  const source=await readFile(new URL('../daemon.js',import.meta.url),'utf8'),start=source.indexOf('    async function arbitraryExecution('),end=source.indexOf('\n    }',start)+6,launched=[],runs=[];
  const servers=ram.map((n,i)=>({name:names[i],_files:{},hasRoot:()=>true,totalRam:()=>n,ramAvailable:()=>writes&&ramAfterWrite!==null?ramAfterWrite[i]:n}));
  const ledger=new Map();let writes=0;
  const ns={write:async(f,text)=>{writes++;if(failLedger)throw Error('write failed');ledger.set(f,text);},pid:7,getScriptName:()=> 'daemon.js',read:f=>ledger.get(f)||(f.includes('paused')||f.includes('maintenance')||f.includes('achievement')?'':'source')};
- const context={reserveHackingProcess,releaseHackingProcess,hackingProcessBudget:{ready:true,inventoryAt:Date.now(),used:0,limit:processLimit},commitHackingCapacity,resetInfo:{lastNodeReset:1,lastAugReset:2},hackingWorker,loopJobSequence:0,withHackingLoopCapacity,hackingDrain:null,reclaimHomeRam:()=>true,homeRamReserve:()=>0,canFitHackingJob,isScriptPaused:()=>false,maintenanceRequested:()=>false,getAllServersByFreeRam:()=>servers,getAllServersByMaxRam:()=>servers.slice(),verbose:false,daemonHost:'home',getFilePath:s=>s,doesFileExist:async()=>true,getNsDataThroughFile:async()=>copy,hashCode:()=>1,exec:async(ns,name,host,options,...args)=>{if(failExecution)return 0;if(options.threads*2>servers.find(s=>s.name===host).ramAvailable())return 0;runs.push({host,threads:options.threads,args,capacityRecorded:ledger.has("tasks/hgw-capacity-7.json")});return runs.length;},log:()=>{},formatRam:String,homeServer:{ramAvailable:()=>100},options:{}};
+ const context={lastHackingInventory:deadlineInventory,withHgwPiece,reserveHackingProcess,releaseHackingProcess,hackingProcessBudget:{ready:true,inventoryAt:Date.now(),used:0,limit:processLimit},commitHackingCapacity,resetInfo:{lastNodeReset:1,lastAugReset:2},hackingWorker,loopJobSequence:0,withHackingLoopCapacity,hackingDrain:null,reclaimHomeRam:()=>true,homeRamReserve:()=>0,canFitHackingJob,isScriptPaused:()=>false,maintenanceRequested:()=>false,getAllServersByFreeRam:()=>servers,getAllServersByMaxRam:()=>servers.slice(),verbose:false,daemonHost:'home',getFilePath:s=>s,doesFileExist:async()=>true,getNsDataThroughFile:async()=>copy,hashCode:()=>1,exec:async(ns,name,host,options,...args)=>{if(failExecution)return 0;if(options.threads*2>servers.find(s=>s.name===host).ramAvailable())return 0;runs.push({host,threads:options.threads,args,capacityRecorded:ledger.has("tasks/hgw-capacity-7.json")});return runs.length;},log:()=>{},formatRam:String,homeServer:{ramAvailable:()=>100},options:{}};
  vm.runInNewContext(source.slice(start,end)+';globalThis.execute=arbitraryExecution;',context);
  const tool={name:'Remote/hack-target.js',shortName:'hack',cost:2,ignoreReservedRam:false,isThreadSpreadingAllowed:split,existsOnHost:async()=>false,deployedHashes:new Map(),runOptions:{}};
  const capacityJobs=captureCapacity?[]:null;const result=await context.execute(ns,tool,threads,args,null,false,null,launched,capacityJobs);return {result,runs,launched,tool,capacityJobs,ledger,writes,budget:context.hackingProcessBudget};
@@ -112,4 +113,17 @@ test('real executor enforces process slots for split jobs and releases failed la
  const capped=await executor({split:true,processLimit:1});assert.equal(capped.result,false);assert.equal(capped.runs.length,1);assert.equal(capped.budget.used,1);
  const full=await executor({threads:2,processLimit:0});assert.equal(full.result,false);assert.equal(full.runs.length,0);
  const failed=await executor({threads:2,failExecution:true});assert.equal(failed.result,false);assert.equal(failed.budget.used,0);
+});
+
+test('real split executor stamps actual piece threads without changing the full batch plan',async()=>{
+ const identity=createHgwBatch(7,{lastNodeReset:1,lastAugReset:2},1,'n',[{description:'weak1',toolShortName:'weak',threadsNeeded:10,end:2000}]);
+ const args=withHgwBatch(['n',1000,100,'Batch 0',false,true,false,7,JSON.stringify({port:20,drainProtocol:1,nodeReset:1,augReset:2})],identity,'weak1');
+ const result=await executor({split:true,threads:10,args});assert.equal(result.result,true);assert.equal(result.runs.length,2);
+ for(const run of result.runs){const meta=JSON.parse(run.args.at(-1));assert.equal(meta.pieceThreads,run.threads);assert.equal(meta.batchPlan[0].threads,10);assert.equal(meta.batchId,identity.batchId);}
+ assert.equal(JSON.parse(args.at(-1)).pieceThreads,undefined);
+});
+
+test('real executor invalidates cached deadlines before any new worker launch attempt',async()=>{
+ for(const failExecution of [false,true]){const inventory={drain:{invalidated:false}};await executor({threads:2,deadlineInventory:inventory,failExecution});assert.equal(inventory.drain.invalidated,true);}
+ const blocked={drain:{invalidated:false}};await executor({threads:2,processLimit:0,deadlineInventory:blocked});assert.equal(blocked.drain.invalidated,false);
 });

@@ -8,6 +8,9 @@ export function collectHackingIncome(ns,reset,ownerPid,inventory,now=Date.now(),
   telemetry.nodeReset===reset.lastNodeReset&&telemetry.augReset===reset.lastAugReset&&telemetry.at<=now&&now-telemetry.at<15000;
  if(!valid){status.reason='Waiting for complete, fresh income and allocation evidence';ns.write(file,JSON.stringify(status),'w');return status;}
  const player=ns.getPlayer(),daemon=ns.ps('home').find(p=>p.pid===ownerPid&&p.filename.replace(/^\//,'')==='daemon.js');
+ // Combat progression does not change HGW throughput. Keep intelligence and every hacking multiplier.
+ const hackingState=[{hacking:player.skills.hacking,intelligence:player.skills.intelligence},
+  Object.fromEntries(Object.entries(player.mults).filter(([key])=>key==='hacking'||key.startsWith('hacking_')).sort(([a],[b])=>a.localeCompare(b)))];
  for(const [target,a]of Object.entries(inventory.allocations||{}).slice(0,64))try{
   if(a.manual||!(a.ram>0)||!daemon||daemon.args.some(v=>['--xp-only','-x','--x','--hack-only','-h'].includes(v)))continue;
   const c=telemetry.income?.[JSON.stringify([ownerPid,target])];
@@ -17,14 +20,15 @@ export function collectHackingIncome(ns,reset,ownerPid,inventory,now=Date.now(),
     const pacing=savedPacing?.pid===ownerPid&&savedPacing.at<=now&&now-savedPacing.at<15000?
      [savedPacing.cycleMs,savedPacing.queueMs,savedPacing.targetCap]:null;
     const signature=JSON.stringify([server.moneyMax,server.minDifficulty,player.skills,player.mults,daemon.args,pacing]);
+    const continuitySignature=JSON.stringify([1,server.moneyMax,server.minDifficulty,...hackingState,daemon.args,pacing]);
   let previous=same?old.targets?.[target]:null;
-  const continuous=previous?.signature===signature&&now-old.at<=15000&&Math.abs(previous.lastRam/a.ram-1)<=.05&&
+  const continuous=previous?.continuitySignature===continuitySignature&&now-old.at<=15000&&Math.abs(previous.lastRam/a.ram-1)<=.05&&
    c.money>=previous.lastMoney&&c.completions>=previous.lastCompletions&&c.risks===previous.lastRisks;
   if(!continuous)previous=null;
   const window=previous?.window?{...previous.window}:{at:now,money:c.money,completions:c.completions,risks:c.risks,ramSeconds:0};
   if(previous)window.ramSeconds+=(now-old.at)/1000*(previous.lastRam+a.ram)/2;
   const durationSeconds=(now-window.at)/1000,completions=c.completions-window.completions,risks=c.risks-window.risks;
-  const row={signature,lastRam:a.ram,lastMoney:c.money,lastCompletions:c.completions,lastRisks:c.risks,window,
+  const row={signature,continuitySignature,lastRam:a.ram,lastMoney:c.money,lastCompletions:c.completions,lastRisks:c.risks,window,
    ...(previous?.measuredAt?{measuredAt:previous.measuredAt,durationSeconds:previous.durationSeconds,completions:previous.completions,risks:previous.risks,incomePerRamSecond:previous.incomePerRamSecond,ram:previous.ram,...(previous.upgradeComparison?{upgradeComparison:previous.upgradeComparison}:{})}:{})};
   // At least two minutes and thirty receipts; no positive-gain extrapolation from noisy samples.
   if(durationSeconds>=120&&completions>=30&&risks===0&&window.ramSeconds>0){

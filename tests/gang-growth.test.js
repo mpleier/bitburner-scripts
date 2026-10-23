@@ -52,7 +52,7 @@ test('equipment ranking prefers marginal production return rather than sticker p
 });
 test('purchase milestones stop unnecessary rep grinding while recruitment and explicit focus win',()=>{
  const base={members:12,factionRep:100,requiredRep:1e9,money:10000,respect:1e6,goal:{rep:100,cost:1e5}};
- assert.equal(gangFocus(base),'money');assert.equal(gangFocus({...base,factionRep:0}),'money');
+ assert.equal(gangFocus(base),'money');assert.equal(gangFocus({...base,factionRep:0}),'both money and respect');
  assert.equal(gangFocus({...base,factionRep:0,money:100000}),'respect');
  assert.equal(gangFocus({...base,members:11}),'respect');assert.equal(gangFocus({...base,reputationFocus:true}),'respect');
  assert.equal(gangFocus({...base,moneyFocus:true}),'money');
@@ -85,7 +85,7 @@ test('short-payback gang equipment receives more shared funding without exceedin
 });
 test('growth budget signals expire with the owner, reset and observation age',()=>{
  const now=Date.now(),files={'tasks/gang-growth.json':JSON.stringify({at:now,pid:1,nodeReset:10,augReset:20,schemaVersion:2,equipmentOpportunity:{reason:'production',cashPaybackSeconds:60}})};
- let alive=true;const ns={read:f=>files[f]||'',write(){},getResetInfo:()=>({lastNodeReset:10,lastAugReset:20}),isRunning:()=>alive};
+ let alive=true;const ns={ps:()=>alive?[{pid:1,filename:'gangs.js'}]:[],read:f=>files[f]||'',write(){},getResetInfo:()=>({lastNodeReset:10,lastAugReset:20}),isRunning:()=>alive};
  assert.equal(adaptiveBudgetSignals(ns).gangEquipmentPayback,60);alive=false;assert.equal(adaptiveBudgetSignals(ns).gangEquipmentPayback,null);
  alive=true;files['tasks/gang-growth.json']=JSON.stringify({at:now,pid:1,nodeReset:10,augReset:19,schemaVersion:2,equipmentOpportunity:{reason:'production',cashPaybackSeconds:60}});
  assert.equal(adaptiveBudgetSignals(ns).gangEquipmentPayback,null);

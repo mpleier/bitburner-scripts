@@ -21,10 +21,11 @@ export async function main(ns) {
   const event={at,tool:'weaken',target,description:String(description).slice(0,100),pid:ns.pid,owner,
    deadline,lateMs,unavoidableMs,startLateMs,toleranceMs,legSpacingMs:Number.isFinite(meta?.legSpacingMs)&&meta.legSpacingMs>0?meta.legSpacingMs:null,outcome,value:Number.isFinite(value)?value:null,
    error:failed?String(error).slice(0,300):null};
+  if(!loop&&meta?.batchVersion===1&&typeof meta.batchId==='string'&&meta.batchId.length<=160&&meta.batchTarget===target&&Array.isArray(meta.batchPlan)&&meta.batchPlan.length<=5)Object.assign(event,{batchVersion:1,batchId:meta.batchId,batchStep:meta.batchStep,batchPlan:meta.batchPlan,pieceThreads:meta.pieceThreads});
   const delivered=report(ns,meta,event,silent);
   // Normal zero-effect outcomes and compensated starts are measurements, never timing alerts.
-  if(!silent&&lateMs>toleranceMs&&!delivered&&at-lastWarningAt>=60000){
-   ns.toast(`Timing risk: weaken on ${target} completed ${Math.round(lateMs)} ms after its deadline.`,'warning');lastWarningAt=at;
+  if(!silent&&(failed||lateMs>Math.max(toleranceMs,Number.isFinite(event.legSpacingMs)&&event.legSpacingMs>0?event.legSpacingMs/2:0))&&!delivered&&at-lastWarningAt>=60000){
+   ns.toast(failed?`Operation error: weaken on ${target}: ${String(error).slice(0,160)}`:`Timing risk: weaken on ${target} completed ${Math.round(lateMs)} ms after its deadline.`,'warning');lastWarningAt=at;
   }
   if(failed)throw error;
   lastCompleted=at;
@@ -64,6 +65,7 @@ function report(ns,meta,event,silent) {
   const key=event.tool+':'+event.target;data.targets[key]={...add(data.targets[key]||{}),at:event.at};
   const keys=Object.keys(data.targets);if(keys.length>64)delete data.targets[keys.sort((a,b)=>data.targets[a].at-data.targets[b].at)[0]];
   data.at=event.at;data.firstAt=Number.isFinite(data.firstAt)?Math.min(data.firstAt,event.at):event.at;
+  data.delaySamples=mergeHgwDelaySamples(data.delaySamples,[event],{now:event.at,nodeReset:meta.nodeReset,augReset:meta.augReset});
   data.recent=[...(data.recent||[]),event].slice(-20);
   data.alerts=[...(data.alerts||[]),...(!silent&&(event.lateMs>event.toleranceMs||event.error)?[event]:[])].slice(-20);
   port.write(JSON.stringify(data));return true;
@@ -78,4 +80,15 @@ function hackingLoopShouldStop(ns,owner,target,tool,lastCompleted,meta) {
  if(tool==='hack')return ['attack','grow','weaken','complete'].includes(entry.stage);
  if(tool==='grow')return ['grow','weaken','complete'].includes(entry.stage)&&lastCompleted>entry.stageAt;
  return tool==='weaken'&&['weaken','complete'].includes(entry.stage)&&lastCompleted>entry.stageAt;
+}
+
+/** Bounded representative receipts; a batch maximum keeps its actual observation time. */
+function mergeHgwDelaySamples(prior,events,{now,nodeReset,augReset,ownerPid=null}){
+ const batches=new Map();
+ for(const e of [...(Array.isArray(prior)?prior.slice(0,64):[]),...(Array.isArray(events)?events.slice(-64):[])]){
+  if(!e||!Number.isSafeInteger(e.owner)||e.owner<=0||ownerPid!==null&&e.owner!==ownerPid||e.error||e.batchVersion!==1||typeof e.batchId!=='string'||e.batchId.length>160||!e.batchId.startsWith([nodeReset,augReset,e.owner].join(':')+':')||!['hack','grow','weaken'].includes(e.tool)||!Number.isSafeInteger(e.pid)||e.pid<=0||!Number.isFinite(e.at)||e.at>now||now-e.at>120000||!Number.isFinite(e.deadline)||!Number.isFinite(e.lateMs)||e.lateMs<0||Math.abs(Math.max(0,e.at-e.deadline)-e.lateMs)>2)continue;
+  const old=batches.get(e.batchId);
+  if(!old||e.lateMs>old.lateMs||e.lateMs===old.lateMs&&e.at>old.at)batches.set(e.batchId,{batchVersion:1,batchId:e.batchId,owner:e.owner,pid:e.pid,tool:e.tool,at:e.at,deadline:e.deadline,lateMs:e.lateMs});
+ }
+ return [...batches.values()].sort((a,b)=>b.at-a.at||a.batchId.localeCompare(b.batchId)).slice(0,64);
 }

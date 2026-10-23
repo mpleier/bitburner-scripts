@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
-import {bladeburnerRankRate,planBladeburnerLevels,bladeburnerPlanCacheValid,bladeburnerActionCompleted,startBladeburnerPlannedAction} from '../bladeburner-policy.js';
+import {readBladeburnerMaintenance,bladeburnerStaminaChance,bladeburnerRankRate,planBladeburnerLevels,bladeburnerPlanCacheValid,bladeburnerActionCompleted,startBladeburnerPlannedAction} from '../bladeburner-policy.js';
 import {sleeveBladeburnerTasks} from '../sleeve-policy.js';
 import {bladeburnerDifficulty} from '../bladeburner-action-data.js';
 
@@ -10,7 +10,7 @@ test('sustained rank includes passive regeneration and recovery duty',()=>{
  assert.equal(bladeburnerRankRate([1,1],m),10/1.5);
  assert.equal(bladeburnerRankRate([1,1],{...m,staminaCost:1}),10);
  assert.equal(bladeburnerRankRate([1,1],{...m,staminaRegen:0,hrcRegen:0}),0);
- assert.equal(bladeburnerRankRate([1,1],{...m,time:2000,nativeTime:1000}),10/2.5);
+ assert.equal(bladeburnerRankRate([1,1],{...m,time:2000,nativeTime:1000}),10/2);
  assert.equal(bladeburnerRankRate([1,1],{time:1000,gain:10,loss:0}),10);
 });
 
@@ -77,10 +77,11 @@ test('runtime uses fresh guarded evidence and invalidates planning on relevant n
 
 test('actual planning context obeys native named skill API',async()=>{
  const source=await readFile(new URL('../bladeburner.js',import.meta.url),'utf8');
- const code=source.match(/const planning=await getNsDataThroughFile\(ns,'([^']+)'/)[1];
+ const literal=source.match(/const planning=await getNsDataThroughFile\(ns,(`[^`]+`)/)[1];
+ const code=Function('readBladeburnerMaintenance','bladeburnerStaminaChance','return '+literal)(readBladeburnerMaintenance,bladeburnerStaminaChance);
  const calls=[];
  const b={getStamina:()=>[5,10],getSkillNames:()=>['Reaper',"Cyber's Edge"],getSkillLevel:name=>{assert.equal(typeof name,'string');calls.push(name);return 2;},getCity:()=> 'A',getCityEstimatedPopulation:()=>1e9,getTeamSize:()=>0,getActionCurrentLevel:()=>1,getActionMaxLevel:()=>2,getActionAutolevel:()=>false};
- const ns={bladeburner:b,getPlayer:()=>({skills:{agility:100},mults:{bladeburner_stamina_gain:1}}),args:[JSON.stringify([['Tracking','Contracts']])]};
+ const ns={bladeburner:b,getPlayer:()=>({skills:{agility:100},mults:{bladeburner_stamina_gain:1}}),args:[JSON.stringify([['Tracking','Contracts']]),50,.99,JSON.stringify(bladeburnerDifficulty)]};
  const context=Function('ns','return '+code)(ns);
  assert.deepEqual(calls,['Reaper',"Cyber's Edge"]);assert.equal(context.skills.Reaper,2);assert.equal(context.population,1e9);assert.equal(context.actions[0][2],1);
 });

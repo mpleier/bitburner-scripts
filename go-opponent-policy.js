@@ -1,4 +1,4 @@
-import {goOpponents,chooseGoBoardSize,rankGoOpponents} from './go-policy.js';
+import {goOpponents,chooseGoBoardSize,rankGoOpponents,goInterruptedMs} from './go-policy.js';
 
 const minute=60000;
 const goalOpponent={hacknet:'Netburners',crime:'Slum Snakes',money:'The Black Hand',combat:'Tetrads',reputation:'Daedalus',speed:'Illuminati',hacking:'????????????'};
@@ -32,7 +32,7 @@ function recentResults(opponent,size,buckets,cheats,now) {
  const samples=rows.flatMap(r=>Array.isArray(r.history)?r.history:[]).filter(g=>
   g&&Number.isFinite(g.at)&&g.at<=now&&now-g.at<=30*minute&&Number.isFinite(g.ms)&&g.ms>=1000&&g.ms<=30*minute&&
   [0,1].includes(g.win)&&Number.isFinite(g.bonus)&&g.bonus>=0&&Number.isFinite(g.logGain)&&g.logGain>=0).sort((a,b)=>a.at-b.at).slice(-20);
- const totalMs=samples.reduce((s,g)=>s+g.ms,0);
+ const totalMs=samples.reduce((s,g)=>s+g.ms,0)+goInterruptedMs(rows,now,30*minute);
  return {samples:samples.length,success:(samples.reduce((s,g)=>s+g.win,0)+2)/(samples.length+4),
   bonusPerMinute:totalMs?samples.reduce((s,g)=>s+g.bonus,0)/totalMs*minute:null,
   logGainPerMinute:totalMs?samples.reduce((s,g)=>s+g.logGain,0)/totalMs*minute:null,
@@ -59,7 +59,7 @@ export function planGoOpponents(stats={},options={},node=1,buckets={},context={}
  const cap=[100000,200000,300000,400000][Math.min(3,Math.max(0,Math.floor(Number(context.sourceFileLevel)||0)))];
  const fixed=options['adaptive-boards']===false||context.boardSizeExplicit||context.protectStreak;
  let ranked=goOpponents.map(name=>{
-  const size=fixed?(options['board-size']??13):chooseGoBoardSize(name,buckets,cheats,false);
+  const size=fixed?(options['board-size']??13):chooseGoBoardSize(name,buckets,cheats,false,now);
   const recent=recentResults(name,size,buckets,cheats,now),s=stats[name]||{};
   const wins=Number.isFinite(Number(s.wins))?Math.max(0,Number(s.wins)):0;
   const losses=Number.isFinite(Number(s.losses))?Math.max(0,Number(s.losses)):0;
@@ -86,7 +86,7 @@ export function planGoOpponents(stats={},options={},node=1,buckets={},context={}
  if(incumbent&&ranked[0]!==incumbent&&incumbent.score>0&&incumbent.samples>=3&&ranked[0].score<incumbent.score*1.15)
   ranked=[incumbent,...ranked.filter(r=>r!==incumbent)];
  const finish=(rows,source)=>({goal,source,trial:!!rows[0]?.trial,ranked:rows.map(r=>{
-  const size=fixed||r.trial?r.size:chooseGoBoardSize(r.name,buckets,cheats,true);
+  const size=fixed||r.trial?r.size:chooseGoBoardSize(r.name,buckets,cheats,true,now);
   return {...r,comparisonSize:r.size,size,boardTrial:size!==r.size};
  })});
  if(options.opponent)return finish(ranked.filter(r=>r.name===options.opponent),'explicit opponent');
@@ -102,7 +102,7 @@ export function planGoOpponents(stats={},options={},node=1,buckets={},context={}
  // Board trials stay with the existing board policy; opponent trials use its established board.
  if(completed%8===3) {
   const candidates=ranked.filter(r=>r.weight>=2&&r.name!==ranked[0]?.name).map(r=>{
-   const size=fixed?r.size:chooseGoBoardSize(r.name,buckets,cheats,false);
+   const size=fixed?r.size:chooseGoBoardSize(r.name,buckets,cheats,false,now);
    return {...r,size,...recentResults(r.name,size,buckets,cheats,now)};
   }).filter(r=>r.samples<3).sort((a,b)=>a.samples-b.samples||b.weight-a.weight||a.measuredAt-b.measuredAt||a.name.localeCompare(b.name));
   const trial=candidates[0];

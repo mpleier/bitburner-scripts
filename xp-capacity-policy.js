@@ -20,9 +20,10 @@ export function createXpCapacityRecord({ownerPid,reset,mode,config=[],targets=[]
  }
  const loops=[...groups].sort((a,b)=>a[0].localeCompare(b[0]));
  const text=JSON.stringify([ownerPid,mode,config,[...new Set(targets)].sort(),hardware,loops]);
- let a=2166136261,b=0x9e3779b9;
- for(let i=0;i<text.length;i++){a=Math.imul(a^text.charCodeAt(i),16777619);b=Math.imul(b^text.charCodeAt(i),2246822519);}
- return {...base,state:'ready',signature:'xp-capacity-v1:'+(a>>>0).toString(16)+':'+(b>>>0).toString(16)+':'+text.length,
+ const hash=text=>{let a=2166136261,b=0x9e3779b9;for(let i=0;i<text.length;i++){a=Math.imul(a^text.charCodeAt(i),16777619);b=Math.imul(b^text.charCodeAt(i),2246822519);}return (a>>>0).toString(16)+':'+(b>>>0).toString(16)+':'+text.length;};
+ // Recovery comparisons survive daemon replacement but retain mode, targets and actual capacity.
+ const recoveryText=JSON.stringify([mode,config,[...new Set(targets)].sort(),hardware,loops]);
+ return {...base,state:'ready',signature:'xp-capacity-v1:'+hash(text),recoverySignature:'xp-recovery-v1:'+hash(recoveryText),
   hosts:hardware.length,loopGroups:loops.length,loopThreads:loops.reduce((sum,row)=>sum+row[1],0),mode};
 }
 

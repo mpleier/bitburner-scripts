@@ -161,11 +161,12 @@ export function executeCorporationGrowth(plans,budget,cash,reserve,allowed=()=>t
  let remaining=Number.isFinite(budget)?Math.max(0,budget):0,spent=0;const decisions=[];
  for(const plan of [...plans].filter(p=>Number.isFinite(p.cost)&&p.cost>0&&Number.isFinite(p.score)).sort((a,b)=>(Number(b.priority)||0)-(Number(a.priority)||0)||b.score-a.score||a.cost-b.cost)){
   if(!allowed())break;
+  const evidence=plan.growthBasis?{basis:plan.growthBasis,profitPerSecond:plan.profitPerSecond,bottleneckFactor:plan.bottleneckFactor,score:plan.score}:{};
   const hold=typeof reserve==='function'?reserve():reserve;
-  if(plan.cost>remaining||!Number.isFinite(cash())||!Number.isFinite(hold)||cash()<=hold+plan.cost){decisions.push({label:plan.label,state:'budget-wait',cost:plan.cost});continue;}
+  if(plan.cost>remaining||!Number.isFinite(cash())||!Number.isFinite(hold)||cash()<=hold+plan.cost){decisions.push({label:plan.label,state:'budget-wait',cost:plan.cost,...evidence});continue;}
   const before=cash();let ok=false;try{ok=plan.run()!==false;}catch{}
   const paid=Math.max(0,before-cash()),committed=ok?Math.max(0,Number(plan.commit)||0):0,charged=Math.max(paid,committed);remaining=Math.max(0,remaining-charged);spent+=charged;
-  decisions.push({label:plan.label,state:ok?(committed?'ordered':'purchased'):'rejected',cost:charged});
+  decisions.push({label:plan.label,state:ok?(committed?'ordered':'purchased'):'rejected',cost:charged,...evidence});
  }
  return {remaining,spent,decisions};
 }
@@ -218,4 +219,71 @@ export function corporationCoreFunding(funds,reserve,cost,bank,setup=5e9){
 export function corporationScienceFactor(industry){
  const factor=Number(industry?.scienceFactor??industry?.researchFactor??0);
  return Number.isFinite(factor)&&factor>=0?factor:0;
+}
+
+/** Allocate observed division profit using each output's observed city sales share.
+ * Prices and local costs are unavailable: this is a contribution estimate, not city profit.
+ * Missing city/output readings retain the equal-share fallback and the division total. */
+export function allocateCorporationCityProfit(rows){
+ const groups=new Map();for(const row of rows){if(!row||typeof row.division!=='string')continue;
+  if(!groups.has(row.division))groups.set(row.division,[]);groups.get(row.division).push(row);}
+ const allocations=new Map();
+ for(const group of groups.values()){
+  const complete=group.every(r=>r.expectedCities===group.length&&Array.isArray(r.outputs)&&r.outputs.length>0&&
+   r.outputs.every(o=>typeof o.name==='string'&&Number.isFinite(o.sold)&&o.sold>=0&&Number.isFinite(o.produced)&&o.produced>=0));
+  if(!complete)continue;
+  const names=[...new Set(group.flatMap(r=>r.outputs.map(o=>o.name)))];
+  if(!group.every(r=>names.every(n=>r.outputs.some(o=>o.name===n))))continue;
+  const shares=group.map(()=>0);let count=0;
+  for(const name of names){
+   const values=group.map(r=>r.outputs.find(o=>o.name===name).sold),sum=values.reduce((a,b)=>a+b,0);
+   if(sum<=0)continue;count++;values.forEach((v,i)=>shares[i]+=v/sum);
+  }
+  if(!count)continue;
+  const total=group.reduce((n,r)=>n+r.profitPerSecond,0);if(!Number.isFinite(total))continue;
+  group.forEach((r,i)=>allocations.set(r,{...r,profitPerSecond:total*shares[i]/count,profitBasis:'Estimated city contribution from observed output sales'}));
+ }
+ return rows.map(r=>allocations.get(r)||r);
+}
+
+/** Completed-cycle evidence. Profit is divided equally across a division's cities by the caller. */
+export function observeCorporationGrowth(previous,{scope,at,rows}={}){
+ const locations={};if(typeof scope!=='string'||!Number.isFinite(at)||!Array.isArray(rows))return {scope,at,locations};
+ const old=previous?.scope===scope&&previous.at<=at&&at-previous.at<=120000?previous.locations||{}:{};
+ for(const row of allocateCorporationCityProfit(rows.slice(0,128))){
+  if(typeof row?.key!=='string'||typeof row.division!=='string'||!Number.isFinite(row.profitPerSecond)||
+   row.sellThrough!==null&&(!Number.isFinite(row.sellThrough)||row.sellThrough<0||row.sellThrough>1)||!Number.isFinite(row.pressure)||row.pressure<0)continue;
+  const samples=(Array.isArray(old[row.key]?.samples)?old[row.key].samples:[]).filter(s=>Number.isFinite(s.at)&&s.at<at&&at-s.at<=120000&&Number.isFinite(s.profitPerSecond)&&(s.sellThrough===null||Number.isFinite(s.sellThrough)&&s.sellThrough>=0&&s.sellThrough<=1)).slice(-2);
+  samples.push({...row,at});
+  const ready=samples.length===3;
+  locations[row.key]={division:row.division,city:row.city,samples,ready,profitBasis:row.profitBasis||'Equal share of observed division profit',
+   profitPerSecond:ready?Math.max(0,Math.min(...samples.map(s=>s.profitPerSecond))):0,
+   sellThrough:ready&&samples.every(s=>s.sellThrough!==null)?Math.min(...samples.map(s=>s.sellThrough)):null,
+   backlog:ready&&samples.slice(-2).every(s=>s.backlog===true),pressure:row.pressure};
+ }
+ return {scope,at,locations};
+}
+
+/** Scale estimated upgrade effects by observed profit; this is not causal measured upgrade payback. */
+export function scoreCorporationGrowth(plans,market){
+ const rows=Object.values(market?.locations||{}).filter(r=>r&&r.ready&&Number.isFinite(r.profitPerSecond)&&r.profitPerSecond>=0);
+ if(!rows.length)return plans;
+ const reference=rows.reduce((sum,r)=>sum+r.profitPerSecond,0);
+ return plans.flatMap(plan=>{
+  const context=plan.market||{},kind=context.kind||'other';
+  const scoped=rows.filter(r=>(!context.division||r.division===context.division)&&(!context.city||r.city===context.city));
+  const measured=scoped.reduce((sum,r)=>sum+r.profitPerSecond,0);
+  const base=measured>0?measured:reference>0?reference/Math.max(1,rows.length):1;
+  let factor=1;
+  if(scoped.length&&['production','storage','sales'].includes(kind)){
+   const weights=scoped.map(r=>Math.max(1,r.profitPerSecond)),total=weights.reduce((a,b)=>a+b,0);
+   factor=scoped.reduce((sum,r,i)=>{
+    const sell=r.sellThrough??1;
+    const value=kind==='production'?(r.backlog?0:sell):kind==='storage'?(r.backlog?0:r.pressure>.8?1+(r.pressure-.8)*5:.1):r.backlog?2:sell<.95?1.5:.5;
+    return sum+weights[i]*value;
+   },0)/total;
+  }
+  if(factor===0&&['production','storage'].includes(kind)&&!(plan.priority>0))return [];
+  return [{...plan,score:plan.score*base*factor,growthBasis:measured>0?(context.city?'Estimated city contribution with estimated marginal benefit':'Observed division profit with estimated marginal benefit'):'Comparable heuristic with observed bottleneck',profitPerSecond:measured,bottleneckFactor:factor}];
+ });
 }

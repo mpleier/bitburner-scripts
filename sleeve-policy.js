@@ -261,11 +261,12 @@ export function sleeveBladeburnerTasks(sleeves,tasks,plan,support=[],combatEnabl
  const chaosWorkers=plan.chaos>50?Math.min(eligible.length,Math.ceil((plan.chaos-50)/25)):0;
  for(let n=0;n<chaosWorkers;n++)take('Diplomacy');
  const chance=plan.chance,known=Array.isArray(chance)&&chance.length===2&&chance.every(Number.isFinite)&&chance[0]>=0&&chance[1]>=chance[0]&&chance[1]<=1;
- const blocked=plan.rankReady&&known&&chance[0]<plan.threshold;
+ const early=plan.preparingStats===true&&Number.isFinite(plan.rankEtaMs)&&plan.rankEtaMs>0&&plan.rankEtaMs<=900000&&known&&chance[1]<plan.threshold&&(plan.statStalled===true||Number.isFinite(plan.statEtaMs)&&plan.statEtaMs>plan.rankEtaMs);
+ const blocked=(plan.rankReady||early)&&known&&chance[0]<plan.threshold;
  const uncertain=blocked&&chance[1]>=plan.threshold&&chance[1]-chance[0]>.01;
  if(uncertain)take('Field Analysis');
  const lowCounts=Object.values(plan.counts||{}).some(n=>Number.isFinite(n)&&n<20);
- if(lowCounts||!blocked||uncertain)take('Infiltrate Synthoids');
+ if(lowCounts||!blocked||uncertain||early)take('Infiltrate Synthoids');
  for(const i of eligible)assignments[i]=blocked&&!uncertain&&combatEnabled?'combat-xp':'Infiltrate Synthoids';
  return assignments;
 }

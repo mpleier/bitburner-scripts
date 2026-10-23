@@ -2,7 +2,8 @@ export function stockReserve(override,text){return Math.max(0,Number(override===
 export function stockOptionsError(o){
  for(const key of ['fracB','fracH','diversification','buy-4s-budget'])if(!Number.isFinite(o[key])||o[key]<0||o[key]>1)return key+' must be between 0 and 1';
  if(o.fracB<o.fracH)return 'fracB must be at least fracH';
- if(o.reserve!==null&&o.reserve!==undefined&&(!Number.isFinite(o.reserve)||o.reserve<0))return 'reserve must be nonnegative and finite';
+ const reserve=typeof o.reserve==='string'&&o.reserve.trim()!==''?Number(o.reserve):o.reserve;
+ if(reserve!==null&&reserve!==undefined&&(!Number.isFinite(reserve)||reserve<0))return 'reserve must be nonnegative and finite';
  for(const key of ['buy-threshold','sell-threshold','pre-4s-buy-threshold-return','pre-4s-sell-threshold-return'])if(!Number.isFinite(o[key])||o[key]<0)return key+' must be nonnegative and finite';
  for(const key of ['pre-4s-min-tick-history','pre-4s-forecast-window','pre-4s-inversion-detection-window'])if(!Number.isInteger(o[key])||o[key]<2)return key+' must be an integer of at least 2';
  if(o['pre-4s-forecast-window']>151||o['pre-4s-inversion-detection-window']>151)return 'history windows cannot exceed 151 stored observations';

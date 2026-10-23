@@ -57,7 +57,7 @@ export function priorityAugmentationReady(priority, summary) {
 
 
 /** Unversioned, stale, malformed or previous-reset summaries cannot trigger installs. */
-export function freshFactionManagerOutput(raw,reset,now=Date.now(),maxAge=120000) {
+export function freshFactionManagerOutput(raw,reset,now=Date.now(),maxAge=120000,ownership=null) {
  try{
   if(!Number.isFinite(now)||!Number.isFinite(maxAge)||maxAge<=0||!Number.isFinite(reset?.lastAugReset)||!Number.isFinite(reset?.lastNodeReset))return null;
   const value=typeof raw==='string'?JSON.parse(raw):raw;
@@ -69,6 +69,12 @@ export function freshFactionManagerOutput(raw,reset,now=Date.now(),maxAge=120000
   for(const prefix of ['affordable','awaiting_install']){
    const names=value[prefix+'_augs'],nf=names.filter(n=>n==='NeuroFlux Governor').length;
    if(value[prefix+'_count_nf']!==nf||value[prefix+'_count_ex_nf']!==names.length-nf)return null;
+  }
+  if(ownership!==null){
+   if(ownership?.complete!==true||ownership.nodeReset!==reset.lastNodeReset||ownership.augReset!==reset.lastAugReset||
+    value.ownershipSignature!==ownership.signature)return null;
+   const same=(a,b)=>JSON.stringify([...a].sort())===JSON.stringify([...b].sort());
+   if(!same(value.installed_augs,ownership.installed)||!same(value.awaiting_install_augs,ownership.queued))return null;
   }
   return value;
  }catch{return null;}

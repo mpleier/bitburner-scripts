@@ -45,3 +45,37 @@ export function hacknetPayoffLimit(requested, plan, reset, now, ownerAlive) {
      !(plan?.expiresAt > now) || plan?.epoch > now || plan?.signals?.bottleneck !== 'cash') return requested;
  return Math.min(requested, 3600);
 }
+
+/** Current native production, rather than a hypothetical idle fleet, funds a bounded cash investment. */
+export function quoteHacknetInvestment(ns,candidate){
+ try{
+  if(!Number.isSafeInteger(ns.pid)||ns.pid<=0||!candidate||!['level','ram','cores'].includes(candidate.kind)||!Number.isSafeInteger(candidate.index)||candidate.index<0)return null;
+  const s=ns.hacknet.getNodeStats(candidate.index),servers=Number(s.hashCapacity)>0;
+  if(![s.production,s.level,s.ram,s.cores].every(v=>Number.isFinite(v)&&v>0)||servers&&candidate.kind==='ram')return null;
+  const cost=candidate.kind==='level'?ns.hacknet.getLevelUpgradeCost(candidate.index,1):candidate.kind==='ram'?ns.hacknet.getRamUpgradeCost(candidate.index,1):ns.hacknet.getCoreUpgradeCost(candidate.index,1);
+  if(!Number.isFinite(cost)||cost<=0||cost!==candidate.cost)return null;
+  const ratio=candidate.kind==='level'?1/s.level:candidate.kind==='cores'?1/(s.cores+(servers?4:5)):Math.pow(1.035,s.ram)-1;
+  const gain=s.production*ratio,reset=ns.getResetInfo(),now=Date.now();
+  if(![reset.lastNodeReset,reset.lastAugReset].every(v=>Number.isFinite(v)&&v>=0))return null;
+  let gainPerSecond=gain,delaySeconds=0,cashBatchSize=0;
+  if(servers){
+   if(!Number.isFinite(s.ramUsed)||s.ramUsed<0||s.ramUsed>=s.ram)return null;
+   let cashWorker=false;
+   for(const p of ns.ps('home')){
+    if(p.filename.replace(/^\//,'')!=='spend-hacknet-hashes.js'||ns.read('remote-control/paused/spend-hacknet-hashes.js.txt').trim()==='true')continue;
+    let receipt,status;try{receipt=JSON.parse(ns.read('tasks/hash-spending-'+p.pid+'.json'));status=JSON.parse(ns.read('tasks/hash-worker-status-'+p.pid+'.json'));}catch{continue;}
+    const fresh=(v,age)=>v?.pid===p.pid&&v.nodeReset===reset.lastNodeReset&&v.augReset===reset.lastAugReset&&Number.isFinite(v.at)&&v.at<=now&&now-v.at<=age;
+    if(fresh(receipt,30000)&&fresh(status,15000)&&receipt.action==='Sell for Money'&&receipt.success===true&&receipt.allowed===true&&Number.isFinite(receipt.spent)&&receipt.spent>0&&
+     receipt.preferred==='Sell for Money'&&status.state==='spending'&&status.decision?.preferred==='Sell for Money'){cashWorker=true;break;}
+   }
+   if(!cashWorker)return null;
+   const hashCost=ns.hacknet.hashCost('Sell for Money'),capacity=ns.hacknet.hashCapacity();
+   if(!Number.isFinite(hashCost)||hashCost<=0||!Number.isFinite(capacity)||capacity<hashCost)return null;
+   let production=0;for(let i=0;i<ns.hacknet.numNodes();i++){const rate=ns.hacknet.getNodeStats(i).production;if(!Number.isFinite(rate)||rate<0)return null;production+=rate;}
+   gainPerSecond=gain*1e6/hashCost;delaySeconds=hashCost/(production+gain);cashBatchSize=1e6;
+  }
+  if(![gainPerSecond,delaySeconds].every(Number.isFinite)||gainPerSecond<=0||delaySeconds<0)return null;
+  return {kind:'hacknet-production',at:now,ownerPid:ns.pid,nodeReset:reset.lastNodeReset,augReset:reset.lastAugReset,
+   cost,gainPerSecond,delaySeconds,cashBatchSize,mode:servers?'hash':'money',upgrade:candidate.kind,index:candidate.index};
+ }catch{return null;}
+}

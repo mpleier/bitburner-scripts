@@ -47,3 +47,12 @@ test('legacy purchased-server query uses the current cloud API', async () => {
  await worker.main({pid:1,args:['[]','result.json',request.id],write:async(file,text)=>writes.push(JSON.parse(text)),cloud:{getServerNames:()=>['custom-server']}});
  assert.equal(writes.at(-1).state,'completed');assert.deepEqual(writes.at(-1).result,['custom-server']);
 });
+
+test('IPvGO timing survives bounded status replies without expanding game histories',async()=>{
+ const request=command('automation.status'),writes=[],worker=await job(request);
+ const go={at:123,pid:9,state:'playing',timing:{ordinaryMoves:10,thinkingMs:20,nativeWaitMs:1000,validationMs:1},performance:{a:{games:20,totalReward:400,totalMs:10000,history:Array.from({length:1000},()=>({ms:500,win:1,reward:20}))}}};
+ await worker.main({pid:1,args:['[]','result.json',request.id],read:p=>p==='tasks/go-status.json'?JSON.stringify(go):'',write:async(f,t)=>writes.push(JSON.parse(t)),getResetInfo:()=>({}),ps:()=>[],ls:()=>[],singularity:{}});
+ const result=writes.at(-1);assert.equal(result.state,'completed');
+ assert.equal(result.result.go.timing.nativeWaitMs,1000);assert.equal(result.result.go.performance.a.totalReward,400);
+ assert.equal(result.result.go.performance.a.history,undefined);
+});

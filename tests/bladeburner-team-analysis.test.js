@@ -60,7 +60,7 @@ test('actual team worker executes native stamina API and serializes the forecast
  const source=await readFile(new URL('../bladeburner.js',import.meta.url),'utf8');
  assert.ok(source.includes('getStamina:()=>ns.bladeburner.getStamina()'));
  assert.ok(source.includes('requiredBladeburnerTeam.toString()}),(${bladeburnerStaminaChance.toString()}),ns.args[4]'));
- assert.ok(source.includes("trainingEnabled:timesTrained<options['training-limit']"));
+ assert.ok(source.includes("trainingEnabled:trainingMilestone.eligible"));
  assert.ok(source.includes("teamPlan.state==='needs-stamina'"));
 });
 

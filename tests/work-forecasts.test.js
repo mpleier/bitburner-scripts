@@ -155,6 +155,6 @@ test('feasible independent maximum needs no wanted repairs and retains mandatory
 test('equipment cash payback cannot borrow future training stats or count crime income while training',()=>{
  const source=readFileSync(new URL('../gangs.js',import.meta.url),'utf8');
  const equipment=source.slice(source.indexOf('        const locked=myGangMembers.filter'),source.indexOf('        const bootstrapBudget=',source.indexOf('        const locked=myGangMembers.filter')));
- assert.ok(equipment.includes('const task=workTask(member.name)'));assert.ok(equipment.includes('const baseline=member,upgraded=projectGangMember(member,null,0,equip.stats)'));
+ assert.ok(equipment.includes('t.name===workTask(m.name)'));assert.ok(equipment.includes('const upgraded=projectGangMember(member,null,0,equip.stats)'));
  assert.equal(equipment.includes('const seconds=training?20:0'),false);
 });

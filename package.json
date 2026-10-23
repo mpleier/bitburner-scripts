@@ -11,7 +11,9 @@
     "check:api": "node scripts/audit-project.js api",
     "check:ram": "node scripts/audit-project.js ram",
     "audit:surface": "node scripts/generate-api-surface.js",
-    "check:bindings": "node scripts/audit-project.js bindings"
+    "check:bindings": "node scripts/audit-project.js bindings",
+    "bench:go": "node scripts/benchmark-go.js",
+    "bench:go:replay": "node scripts/benchmark-go-replay.js"
   },
   "devDependencies": {
     "typescript": "5.7.2"

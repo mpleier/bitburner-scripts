@@ -53,8 +53,10 @@ export async function main(ns) {
             if(!nextHook0||!nextHook1){await ns.sleep(1000);continue;}
             const hudData = await getHudData(ns, bitNode, dictSourceFiles, options, resetInfo);
             if(hook0!==nextHook0||hook1!==nextHook1||!Object.values(nodeMap).length||Object.values(nodeMap).some(nodes=>!nodes[2].isConnected)) {
-                cleanupHudElements();hook0=nextHook0;hook1=nextHook1;prepareHudElements(hudData);
+                cleanupHudElements();hook0=nextHook0;hook1=nextHook1;
             }
+            // Optional rows can appear after startup as fresh manager data arrives.
+            prepareHudElements(hudData);
 
             // update HUD elements with info collected above.
             for (const [header, show, formattedValue, toolTip] of hudData) {
@@ -89,12 +91,19 @@ function prepareHudElements(hudData) {
         return p;
     }
 
+    const currentRows = new Set();
     for (const [header, _, value, toolTip] of hudData) {
-        const id = makeID(header)
-        if(nodeMap[id+'-title'])continue;
-        hook0.appendChild(newline(id + "-title", header.padEnd(9, " "), toolTip))
-        hook1.appendChild(newline(id + "-value", value, toolTip))
+        const id = makeID(header);
+        currentRows.add(id + '-title');
+        currentRows.add(id + '-value');
+        if (!nodeMap[id + '-title'])
+            hook0.appendChild(newline(id + "-title", header.padEnd(9, " "), toolTip));
+        if (!nodeMap[id + '-value'])
+            hook1.appendChild(newline(id + "-value", value, toolTip));
     }
+    // A disappearing optional row must not leave an old value visible.
+    for (const [id, nodes] of Object.entries(nodeMap))
+        if (!currentRows.has(id)) nodes[2].classList.add("hidden");
 }
 
 function makeID(header) {
@@ -524,6 +533,12 @@ function getAutomationHudData(ns,workType=null) {
     const corp=live('tasks/corporation-status.json','corporation-manager.js'),sleeves=live('tasks/sleeve-status.json','sleeve.js'),go=live('tasks/go-status.json','go.js');
     const rows=[['Automation',true,active.length+' active',detail],
         ['Priority',true,maintenanceActive?'Updating':priority||'Normal',maintenanceActive?'Applying pending automation updates':priority?'Current activity owner: '+priority:'No exclusive activity owns the player.']];
+    const targetPlan=live('tasks/hacking-target-plan.json','daemon.js');
+    const planFresh=targetPlan&&now-targetPlan.at<15000&&targetPlan.incomeMode!=='inactive';
+    rows.push(['Hack Plan',!!planFresh,targetPlan?.preferred||'Waiting',targetPlan?.reason||'Waiting for native target quotes']);
+    rows.push(['Hack Proj',!!planFresh&&Number.isFinite(targetPlan?.projectedRate),formatMoney(targetPlan?.projectedRate??0)+'/sec','Model estimate for '+(targetPlan?.preferred||'?')+' under current RAM and pacing. Excludes runtime stalls and fragmentation.']);
+    const measured=targetPlan?.income;
+    rows.push(['Hack Real',!!planFresh,measured?.state==='measured'&&Number.isFinite(measured.observedRate)?formatMoney(measured.observedRate)+'/sec':'Sampling',measured?'Gross hack receipts over '+Math.round(measured.seconds||0)+' seconds, '+(measured.receipts||0)+' hack completions. Includes idle gaps and timing losses; different interval from the current model.':'Waiting for receipts']);
     const corpRunning=active.some(p=>p.filename.replace(/^\//,'')==='corporation-manager.js');
     const profit=corp&&Number.isFinite(corp.revenue)&&Number.isFinite(corp.expenses)?corp.revenue-corp.expenses:null;
     rows.push(['Corp Profit',corpRunning,profit===null?'Waiting':formatMoney(profit)+'/sec',corp?'Funds '+(Number.isFinite(corp.funds)?formatMoney(corp.funds):'?')+' · Reserve '+(Number.isFinite(corp.reserve)?formatMoney(corp.reserve):'?')+'\n'+corp.mode+' · '+(corp.divisions?.length??0)+' divisions':'Waiting for fresh corporation data.']);

@@ -1,3 +1,5 @@
+import {mergeHgwDelaySamples} from './hacking-deadline-policy.js';
+import {classifyHgwEvent} from './hgw-diagnostics-policy.js';
 const channel='hgw-v1';
 const countKeys=['operations','spacingSamples','spacingRisks','deadlineOverruns','unavoidableOverruns','compensatedStarts','zeroHack','noGrowth','noWeaken','errors'];
 function mergeCounts(a={},b={}) {
@@ -11,6 +13,7 @@ export function collectHgwTelemetry(ns,reset,ownerPid,now=Date.now()) {
  try{saved=JSON.parse(ns.read(file));}catch{}
  const same=saved?.augReset===reset.lastAugReset&&saved?.nodeReset===reset.lastNodeReset&&saved?.at<=now;
  let status=same?saved:{version:1,augReset:reset.lastAugReset,nodeReset:reset.lastNodeReset,counts:{},targets:{},recent:[],lastAlerts:{}};
+ status.delaySamples=mergeHgwDelaySamples(status.delaySamples,status.recent,{now,nodeReset:reset.lastNodeReset,augReset:reset.lastAugReset,ownerPid});
  if(typeof ns.getPortHandle!=='function'){ns.write(file,JSON.stringify({...status,at:now,ownerPid,blocked:true,reason:'Port telemetry API unavailable'}),'w');return;}
  const port=ns.getPortHandle(20),head=port.peek();let pending;
  if(head!=='NULL PORT DATA') {
@@ -34,15 +37,19 @@ export function collectHgwTelemetry(ns,reset,ownerPid,now=Date.now()) {
   status.targets||={};for(const [key,value]of Object.entries(pending.targets||{}))
    status.targets[key]={...mergeCounts(status.targets[key],value),at:value.at};
   status.targets=Object.fromEntries(Object.entries(status.targets).sort((a,b)=>(b[1].at||0)-(a[1].at||0)).slice(0,64));
+  const pendingSamples=mergeHgwDelaySamples(pending.delaySamples,pending.recent,{now,nodeReset:reset.lastNodeReset,augReset:reset.lastAugReset,ownerPid});
+  status.delaySamples=mergeHgwDelaySamples(status.delaySamples,pendingSamples,{now,nodeReset:reset.lastNodeReset,augReset:reset.lastAugReset,ownerPid});
   status.recent=[...(status.recent||[]),...(Array.isArray(pending.recent)?pending.recent:[])].slice(-40);
   status.firstAt=Number.isFinite(status.firstAt)?Math.min(status.firstAt,pending.firstAt||now):pending.firstAt||now;
   status.lastAlerts||={};
   for(const event of (Array.isArray(pending.alerts)?pending.alerts:[])) {
-   const key=event.tool+':'+event.target;
+   const severity=classifyHgwEvent(event);if(['on-time','unknown'].includes(severity.kind))continue;
+   const minor=severity.kind==='deadline-miss',key=(minor?'minor:':'')+event.tool+':'+event.target;
    if(now-(status.lastAlerts[key]??-Infinity)<60000)continue;
    const message=event.error?'HGW operation error on '+event.target+': '+event.error:
-    'HGW timing risk: '+event.tool+' on '+event.target+' completed '+Math.round(event.lateMs)+' ms after its deadline; batch ordering may be affected.';
-   ns.print('WARNING: '+message);ns.toast(message,'warning');status.lastAlerts[key]=now;
+    (minor?'HGW deadline miss: ':'HGW timing risk: ')+event.tool+' on '+event.target+' completed '+Math.round(event.lateMs)+' ms after its deadline'+
+    (minor?'; within the '+Math.round(severity.thresholdMs)+' ms spacing-risk threshold.':severity.spacingKnown?'; spacing-risk threshold '+Math.round(severity.thresholdMs)+' ms exceeded; ordering is not verified.':'; spacing unavailable; ordering risk is unknown.');
+   ns.print((minor?'INFO: ':'WARNING: ')+message);if(!minor)ns.toast(message,'warning');status.lastAlerts[key]=now;
   }
   status.lastAlerts=Object.fromEntries(Object.entries(status.lastAlerts).filter(([,at])=>now-at<60000).slice(-64));
  }

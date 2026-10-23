@@ -485,9 +485,12 @@ export const blackOpMetadata = {
   }
 };
 
-/** Native v3.0.1 difficulty scaling used solely for amortized stamina recovery estimates. */
+/** Official action flags and native v3.0.1 difficulty scaling for progression forecasts. */
 export const bladeburnerDifficulty = {
- 'Tracking':{base:125,factor:1.02},'Bounty Hunter':{base:250,factor:1.04},'Retirement':{base:200,factor:1.03},
- 'Investigation':{base:400,factor:1.03},'Undercover Operation':{base:500,factor:1.04},'Sting Operation':{base:650,factor:1.04},
- 'Raid':{base:800,factor:1.045},'Stealth Retirement Operation':{base:1000,factor:1.05},'Assassination':{base:1500,factor:1.06}
+ 'Tracking':{chaos:{success:0,always:0,positivePercent:0},isStealth:true,isKill:false,base:125,factor:1.02},'Bounty Hunter':{chaos:{success:0.02,always:0,positivePercent:0},isStealth:false,isKill:true,base:250,factor:1.04},'Retirement':{chaos:{success:0.04,always:0,positivePercent:0},isStealth:false,isKill:true,base:200,factor:1.03},
+ 'Investigation':{chaos:{success:0,always:0,positivePercent:0},isStealth:true,isKill:false,base:400,factor:1.03},'Undercover Operation':{chaos:{success:0,always:0,positivePercent:0},isStealth:true,isKill:false,base:500,factor:1.04},'Sting Operation':{chaos:{success:0,always:0.1,positivePercent:0},isStealth:true,isKill:false,base:650,factor:1.04},
+ 'Raid':{chaos:{success:0,always:0,positivePercent:0.03},isStealth:false,isKill:true,base:800,factor:1.045},'Stealth Retirement Operation':{chaos:{success:0,always:0,positivePercent:0},isStealth:true,isKill:true,base:1000,factor:1.05},'Assassination':{chaos:{success:0,always:0,positivePercent:0.013636363636363636},isStealth:true,isKill:true,base:1500,factor:1.06}
 };
+
+/** Native XP allocation weights (Bladeburner getActionStats). */
+export const bladeburnerXpWeights = {"Tracking":{"hacking":0,"strength":0.05,"defense":0.05,"dexterity":0.35,"agility":0.35,"charisma":0.1,"intelligence":0.05},"Bounty Hunter":{"hacking":0,"strength":0.15,"defense":0.15,"dexterity":0.25,"agility":0.25,"charisma":0.1,"intelligence":0.1},"Retirement":{"hacking":0,"strength":0.2,"defense":0.2,"dexterity":0.2,"agility":0.2,"charisma":0.1,"intelligence":0.1},"Investigation":{"hacking":0.25,"strength":0.05,"defense":0.05,"dexterity":0.2,"agility":0.1,"charisma":0.25,"intelligence":0.1},"Undercover Operation":{"hacking":0.2,"strength":0.05,"defense":0.05,"dexterity":0.2,"agility":0.2,"charisma":0.2,"intelligence":0.1},"Sting Operation":{"hacking":0.25,"strength":0.05,"defense":0.05,"dexterity":0.25,"agility":0.1,"charisma":0.2,"intelligence":0.1},"Raid":{"hacking":0.1,"strength":0.2,"defense":0.2,"dexterity":0.2,"agility":0.2,"charisma":0,"intelligence":0.1},"Stealth Retirement Operation":{"hacking":0.1,"strength":0.1,"defense":0.1,"dexterity":0.3,"agility":0.3,"charisma":0,"intelligence":0.1},"Assassination":{"hacking":0.1,"strength":0.1,"defense":0.1,"dexterity":0.3,"agility":0.3,"charisma":0,"intelligence":0.1}};

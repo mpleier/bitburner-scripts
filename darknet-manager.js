@@ -1,3 +1,5 @@
+import {beginDarknetRefresh,observeDarknetRefresh,darknetRefreshEvidence} from './darknet-refresh-policy.js';
+import {darknetContractDisposition} from './darknet-contract-policy.js';
 import { darknetEconomics } from './darknet-economics-policy.js';
 import { surveyPrefix, stormRequestFile, stormStateFile, stormResultFile, applyStormReceipt, planStorm } from './darknet-storm-policy.js';
 import {registerAutomation,automationHeartbeat,maintenanceRequested} from './runtime-policy.js';
@@ -18,7 +20,7 @@ export async function main(ns) {
   const lootFile = "darknet-loot.js";
   const stasisFile = "darknet-stasis.js";
   const cacheFile = "darknet-cache.js";
-  const codeFiles = [nodeFile, lootFile, stasisFile, cacheFile, "darknet-solvers.js", "darknet-feedback.js", "darknet-advanced.js", "darknet-dictionaries.js", "darknet-promote.js", "darknet-stock-policy.js", "darknet-migrate.js", "darknet-migration-policy.js", "darknet-storm-policy.js", "darknet-storm.js"];
+  const codeFiles = [nodeFile, lootFile, stasisFile, cacheFile, "darknet-solvers.js", "darknet-feedback.js", "darknet-advanced.js", "darknet-dictionaries.js", "darknet-promote.js", "darknet-stock-policy.js", "darknet-migrate.js", "darknet-migration-policy.js", "darknet-storm-policy.js", "darknet-storm.js", "darknet-contract-policy.js"];
   // Every ns call is logged by default (scp, probe, getServerMaxRam...), which
   // buried the useful lines. Keep only what this script prints itself.
   ns.disableLog("ALL");
@@ -208,26 +210,45 @@ export async function main(ns) {
     }
     let state = {};
     try { state = JSON.parse(ns.read(stormStateFile) || '{}'); } catch { }
-    const roots = ns.dnet.probe(), now = Date.now(), reset = ns.getResetInfo().lastNodeReset;
+    const roots = ns.dnet.probe(), now = Date.now(), currentReset=ns.getResetInfo(), reset=currentReset.lastNodeReset;
+    const player=ns.getPlayer(),capabilities=[player.skills.charisma,player.mults?.dnet_money,player.mults?.crime_money,player.mults?.crime_success];
+    const context=capabilities.every(Number.isFinite)?JSON.stringify([reset,currentReset.lastAugReset,Math.floor(capabilities[0]/250),...capabilities.slice(1)]):null;
     try { state = applyStormReceipt(state, JSON.parse(ns.read(stormResultFile) || '{}'), reset, now); } catch { }
-    const decision = planStorm(reports, roots, state, now, reset);
+    // A failed scout is not a locked frontier. Only native session state can distinguish them.
+    const reachable=new Set(roots);for(const r of reports.filter(r=>r.live&&r.at<=now&&now-r.at<=90000))for(const h of r.neighbours||[])reachable.add(h);
+    const frontier=[];
+    for(const host of reachable)try{
+      if(!reports.some(r=>r.host===host&&r.live)&&!ns.ps(host).some(p=>p.filename===nodeFile)&&ns.dnet.getServerDetails(host).hasSession===false)frontier.push(host);
+    }catch{ /* Unknown hosts never authorize an early refresh. */ }
+    const currentReports=reports.filter(r=>!frontier.includes(r.host));
+    const decision = planStorm(currentReports, roots, state, now, reset,{stalled:true,frontier});
+    if(ns.ps('home').some(p=>/contractor|contract-solver/i.test(p.filename))){decision.launch=false;decision.reason='Contract solver active';} 
     let totalIncome=null;try{totalIncome=ns.getMoneySources().sinceInstall.darknet;}catch{}
     const lastCacheAt=Math.max(0,...reports.filter(report=>report.live&&report.at<=now&&now-report.at<90000).map(report=>Number(report.lastCacheAt)||0));
-    decision.state.economics=darknetEconomics(state.economics,totalIncome,lastCacheAt,reset,now);
+    decision.state.refresh=observeDarknetRefresh(state.refresh,{at:now,reset,augReset:currentReset.lastAugReset,context,income:totalIncome,lastCacheAt,reports,receipt:state.lastResult});
+    const evidence=darknetRefreshEvidence(decision.state.refresh,{reset,augReset:currentReset.lastAugReset,context},now);
+    decision.state.economics=darknetEconomics(state.economics,totalIncome,lastCacheAt,reset,now,evidence);
+    if(decision.ready){
+      const hosts=new Set(JSON.parse(decision.signature).map(row=>row[0]));let contracts,validation;
+      try{contracts=JSON.parse(ns.read('tasks/contracts-status.json'));validation=JSON.parse(ns.read('tasks/contract-validation.json'));}catch{}
+      decision.state.contracts=darknetContractDisposition(currentReports.filter(r=>hosts.has(r.host)),contracts,validation,currentReset,now);
+      if(!decision.state.contracts.allow){decision.launch=false;decision.reason=decision.state.contracts.reason;}
+    }
     if(decision.launch&&!decision.state.economics.allow){decision.launch=false;decision.reason=decision.state.economics.reason;}
     note('storm-status', `StormSeed: ${decision.reason}.`);
     if (decision.launch && !maintenanceRequested(ns) && !isScriptPaused(ns, ns.getScriptName())) {
       const host = decision.seedHost, helper = 'darknet-storm.js';
       if (ns.ps(host).some(p => p.filename === helper)) return;
-      if (await ns.scp([helper, 'darknet-storm-policy.js'], host, 'home')) {
+      if (await ns.scp([helper, 'darknet-storm-policy.js', 'darknet-contract-policy.js'], host, 'home')) {
         const ram = ns.getScriptRam(helper, host);
         if (ram > 0) {
           if (ns.getServerMaxRam(host) - ns.getServerUsedRam(host) < ram)
             for (const p of ns.ps(host)) if (p.filename === lootFile) ns.kill(p.pid);
           if (ns.getServerMaxRam(host) - ns.getServerUsedRam(host) >= ram) {
-            const request = { id: `${ns.pid}:${now}`, host, at: now, reset, reports, roots, signature: decision.signature };
+            const request = { id: `${ns.pid}:${now}`, host, at: now, reset, reports:currentReports, roots, signature: decision.signature, progressSignature:decision.progressSignature, mode:decision.mode, frontier:decision.frontier, income:totalIncome, incomeTolerance:decision.state.economics.allowLowIncome?decision.state.economics.moneyPerSecond*60:0, lastCacheAt };
             await ns.write(stormRequestFile, JSON.stringify(request), 'w');
             decision.state.pending = { id: request.id, host, at: now };
+            decision.state.refresh=beginDarknetRefresh(decision.state.refresh,{id:request.id,at:now,reset,augReset:currentReset.lastAugReset,context,hosts:currentReports.filter(r=>r.live&&now-r.at<=90000)});
             // Save before launching: manager restarts must not dispatch duplicate storms.
             decision.state.lastAttempt = now;
             await ns.write(stormStateFile, JSON.stringify(decision.state), 'w');

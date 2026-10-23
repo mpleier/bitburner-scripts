@@ -1,4 +1,4 @@
-import { surveyFile } from './darknet-storm-policy.js';
+import { surveyFile, stormRequestFile } from './darknet-storm-policy.js';
 /** Runs on authenticated darknet servers, scouts outward, and tries exact-match candidates. */
 import { isBlankPassword, parsePasswordEntries, solveFeedbackPassword, supportsFeedbackModel, modelCandidates, isStalledScout, dictionaryWords } from './darknet-solvers.js';
 import { stockSignalFile, chooseStockPromotion } from './darknet-stock-policy.js';
@@ -14,7 +14,7 @@ export async function main(ns) {
   const cacheFile = "darknet-cache.js";
   const promoteFile = 'darknet-promote.js';
   const migrateFile = 'darknet-migrate.js';
-  const codeFiles = [nodeFile, lootFile, stasisFile, cacheFile, "darknet-solvers.js", "darknet-feedback.js", "darknet-advanced.js", "darknet-dictionaries.js", promoteFile, "darknet-stock-policy.js", migrateFile, "darknet-migration-policy.js", "darknet-storm-policy.js", "darknet-storm.js"];
+  const codeFiles = [nodeFile, lootFile, stasisFile, cacheFile, "darknet-solvers.js", "darknet-feedback.js", "darknet-advanced.js", "darknet-dictionaries.js", promoteFile, "darknet-stock-policy.js", migrateFile, "darknet-migration-policy.js", "darknet-storm-policy.js", "darknet-storm.js", "darknet-contract-policy.js"];
   let lastMigration = 0;
   const reportedHints = new Map();
   // Retry when the shared credential or candidate files change, not on every mutation.
@@ -51,11 +51,12 @@ export async function main(ns) {
     lastHeartbeat = Date.now();
   };
 
-  const survey = async (busy) => {
+  const survey = async (busy, stormHoldId = null) => {
     const host = ns.getHostname(), files = ns.ls(host), info = ns.dnet.getServerDetails(host);
     let lastCacheAt = 0;try{lastCacheAt=JSON.parse(ns.read('tasks/dnet-last-cache.json')||'{}').at||0;}catch{}
-    const report = { lastCacheAt, version: 1, host, pid: ns.pid, at: Date.now(), busy,
+    const report = { lastCacheAt, stormHoldId, solverProgress:hashText(JSON.stringify([...nilProgress],(_key,value)=>value instanceof Set?[...value]:value)), version: 1, host, pid: ns.pid, at: Date.now(), busy,
       blockedRam: info.blockedRam, caches: files.filter(file => file.endsWith('.cache')).length,
+      contractFiles: files.filter(file => file.endsWith('.cct')).sort(),
       contracts: files.filter(file => file.endsWith('.cct')).length, seed: files.includes('STORM_SEED.exe'),
       neighbours: ns.dnet.probe().filter(name => name !== host) };
     const file = surveyFile(host);
@@ -199,6 +200,16 @@ export async function main(ns) {
     try {
       // Run the helpers on this server with whatever RAM the scout leaves free.
       const self = ns.getHostname();
+      // Acknowledge only between exploration passes. Keep authentication/migration idle until expiry.
+      if(ns.fileExists(stormRequestFile,'home'))try{
+        if(await ns.scp(stormRequestFile,self,'home')){
+          const request=JSON.parse(ns.read(stormRequestFile));
+          if(typeof request.id==='string'&&request.id&&Number.isFinite(request.at)&&request.at<=Date.now()&&Date.now()-request.at<30000){
+            await survey(ns.ps(self).some(p=>[cacheFile,stasisFile,migrateFile].includes(p.filename)),request.id);
+            await heartbeat();await ns.sleep(1000);continue;
+          }
+        }
+      }catch{ /* No verified hold request: continue normal exploration. */ }
       await survey(true);
       await heartbeat();
       // Retry credential delivery after temporary disconnections. Mark reports

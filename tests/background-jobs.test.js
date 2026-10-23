@@ -68,7 +68,7 @@ test('shared discovery rejects stale, future, foreign, dead and malformed snapsh
 });
 test('contract collector uses shared discovery while listing current contract files live',async()=>{
  const s=await readFile(new URL('../Tasks/contractor.js',import.meta.url),'utf8');let scans=0,lists=[];
- const ns={pid:9,getHostname:()=> 'home',print(){},ls:h=>{lists.push(h);if(h==='deleted')throw Error('host gone');return [];},write:async()=>{}};
+ const ns={pid:9,getHostname:()=> 'home',getResetInfo:()=>({lastNodeReset:42,lastAugReset:7}),print(){},ls:(h,prefix)=>{if(prefix==='tasks/dnet-survey-')return [];lists.push(h);if(h==='deleted')throw Error('host gone');return [];},write:async()=>{}};
  const context={ns,instanceCount:async()=>1,log(){},reconcileContractDelivery:async()=>({busy:false}),disableLogs(){},readSharedNetwork:()=>({servers:['home','deleted']}),getNsDataThroughFile:async()=>{scans++;return ['home'];}};
  vm.runInNewContext(s.slice(s.indexOf('export async function main')).replace('export async function main','async function main')+';globalThis.collect=main;',context);
  await context.collect(ns);assert.equal(scans,0);assert.deepEqual(lists,['home','deleted']);

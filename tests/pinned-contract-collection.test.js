@@ -45,12 +45,13 @@ test('only passed contract types qualify; malformed validation fails closed',()=
  assert.deepEqual(contractCollectionPlan(contracts,passed).eligible,[contracts[0]]);
  for(const validation of [null,{}, {version:'',types:{}},{version:'v',types:[]}])assert.equal(contractCollectionPlan(contracts,validation).reason,'waiting-for-validation');
 });
-function collector(validation=passed,missingType=null,missingData=null){
+function collector(validation=passed,missingType=null,missingData=null,dark=false){
  const collection=readFileSync(new URL('../Tasks/contractor.js',import.meta.url),'utf8');
  const files=['good.cct','bad.cct','waiting.cct','unknown.cct','other.cct'],dataReads=[],dispatched=[],messages=[],store=new Map();
  store.set('tasks/contract-validation.json',JSON.stringify(validation));
+ if(dark)store.set('tasks/dnet-survey-dark.json',JSON.stringify({host:'dark',at:Date.now()}));
  const types={'good.cct':'good','other.cct':'good','bad.cct':'bad','waiting.cct':'waiting','unknown.cct':'unknown'};
- const ns={pid:9,args:[],getHostname:()=> 'home',print:m=>messages.push(m),ls:()=>files,read:f=>store.get(f)||'',write:(f,s)=>store.set(f,s),
+ const ns={pid:9,args:[],getHostname:()=> 'home',getResetInfo:()=>({lastNodeReset:42,lastAugReset:7}),print:m=>messages.push(m),ls:(host,prefix)=>prefix==='tasks/dnet-survey-'?(dark?['tasks/dnet-survey-dark.json']:[]):host==='dark'?['good.cct']:files,read:f=>store.get(f)||'',write:(f,s)=>store.set(f,s),
  codingcontract:{getContractType:file=>{if(file===missingType)throw Error('gone');return types[file];},getData:file=>{dataReads.push(file);if(file===missingData)throw Error('gone');return 9;}}};
  const context={readSharedNetwork,contractCollectionPlan,scriptSolver:'Tasks/contractor.js.solver.js',instanceCount:async()=>1,reconcileContractDelivery:async()=>({busy:false}),disableLogs(){},log(){},
  dispatchContractDelivery:async(_ns,_script,batch)=>{dispatched.push(batch);return {pid:42,host:'remote',count:batch.length};},
@@ -75,4 +76,10 @@ test('one vanished type or input cannot block unrelated contracts',async()=>{
 });
 test('no passed types avoids the input worker entirely',async()=>{
  const f=collector({version:'v',types:{}});await f.run();assert.equal(f.dataReads.length,0);assert.equal(f.dispatched.length,0);assert.equal(f.status().reason,'no-validated-contracts');
+});
+
+test('collector adds fresh Dark Net reward hosts and publishes typed reset-scoped inventory',async()=>{
+ const f=collector(passed,null,null,true);await f.run();
+ assert.equal(f.dispatched[0].length,3);assert.ok(f.dispatched[0].some(c=>c.hostname==='dark'));
+ const status=f.status();assert.equal(status.nodeReset,42);assert.equal(status.augReset,7);assert.equal(status.validationVersion,'v1');assert.ok(status.contracts.some(c=>c.host==='dark'&&c.file==='good.cct'&&c.type==='good'));
 });

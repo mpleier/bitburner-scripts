@@ -16,7 +16,13 @@ export async function main(ns) {
     disableLogs(ns, ["scan"]);
     ns.print("Getting server list...");
     const cached=readSharedNetwork(ns);
-    const servers = cached?.servers ?? await getNsDataThroughFile(ns, 'scanAllServers(ns)');
+    const reset=ns.getResetInfo();
+    const servers = [...(cached?.servers ?? await getNsDataThroughFile(ns, 'scanAllServers(ns)'))];
+    // Shared hacking inventory may omit Dark Net: include fresh surveyed reward hosts.
+    for(const file of ns.ls('home','tasks/dnet-survey-'))try{
+        const report=JSON.parse(ns.read(file));
+        if(typeof report.host==='string'&&Number.isFinite(report.at)&&report.at>=reset.lastAugReset&&report.at<=Date.now()&&Date.now()-report.at<=90000&&!servers.includes(report.host))servers.push(report.host);
+    }catch{}
     ns.print(`Got ${servers.length} servers. Searching for contracts on each...`);
     // Retrieve all contracts and convert them to objects with the required information to solve
     const contractsDb = servers.map(hostname => {try{return {hostname,contracts:ns.ls(hostname,'.cct')};}catch{return {hostname,contracts:[]};}})
@@ -27,6 +33,7 @@ export async function main(ns) {
     let validation;try{validation=JSON.parse(ns.read('tasks/contract-validation.json'));}catch{}
     const status=(ready,reason,job={},dataErrors=0)=>ns.write('tasks/contracts-status.json',JSON.stringify({
         at:Date.now(),discovered:contractsDb.length,queued:ready.length,deferred:contractsDb.length-ready.length,
+        nodeReset:reset.lastNodeReset,augReset:reset.lastAugReset,validationVersion:validation?.version,contracts:contractsDb.slice(0,256).map(c=>({host:c.hostname,file:c.contract,type:c.type??null})),
         dataErrors,types:[...new Set(contractsDb.map(c=>c.type).filter(Boolean))],
         solverPid:job.pid||0,solverHost:job.host??null,jobId:job.jobId??null,reason}),'w');
     if(!contractCollectionPlan([],validation).validationReady){

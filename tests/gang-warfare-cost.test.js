@@ -89,9 +89,9 @@ test('active duty requires known warfare XP task and valid fractions',()=>{
  const input=fixture();delete input.tasks['Territory Warfare'];assert.equal(forecastGangCrewTraining(input).diagnostics.baselineReady,false);
  const invalid=fixture();invalid.warfare.duty.normalFraction=NaN;assert.equal(forecastGangCrewTraining(invalid).diagnostics.baselineReady,false);
 });
-test('both controller planners receive confirmed phase, padding and measured restore time',()=>{
+test('controller planners and attrition receive confirmed phase, padding and measured restore time',()=>{
  const source=readFileSync(new URL('../gangs.js',import.meta.url),'utf8');
- assert.equal((source.match(/detected:territoryTickDetected,paddingMs:territoryTickWaitPadding,intervalMs:updateInterval,restoreMs:postTickRestoreMs,periodMs:territoryTickTime/g)||[]).length,6);
+ assert.equal((source.match(/detected:territoryTickDetected,paddingMs:territoryTickWaitPadding,intervalMs:updateInterval,restoreMs:postTickRestoreMs,periodMs:territoryTickTime/g)||[]).length,7);
 });
 
 function developmentFixture(){

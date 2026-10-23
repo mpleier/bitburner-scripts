@@ -41,15 +41,16 @@ export function gangTerritoryProjection(w,cumulative,bonusSeconds=0){
   const seconds=game(point.at)-game(at),baseGain=Math.max(0,point.power-fixedPower),steps=Math.max(1,Math.ceil(seconds/20));
   if(ticks+steps>1800)return {model:'Expected territory; observed rival power',limited:true,power,territory};
   for(let i=0;i<steps;i++){
-   const dt=seconds/steps,t=game(at)+dt*(i+1),opponents=rivals.filter(r=>r.territory>0);
+   const dt=seconds/steps;for(const r of rivals)r.power+=r.rate*dt;
+   const opponents=rivals.filter(r=>r.territory>0);
    power+=baseGain/steps*Math.max(.002,territory)/Math.max(.002,w.territory);
-   if(opponents.length&&opponents.every(r=>power/(power+r.power+r.rate*t)>=w.threshold)){
+   if(opponents.length&&opponents.every(r=>power/(power+r.power)>=w.threshold)){
     let change=0,losses=0;
     for(const rival of opponents){
-     const other=rival.power+rival.rate*t,chance=power/(power+other),encounters=2/opponents.length*dt/20;
+     const other=rival.power,chance=power/(power+other),encounters=2/opponents.length*dt/20;
      const win=Math.min(rival.territory,.0001*Math.max(1,1+Math.log(power/other)/Math.log(50)))*chance*encounters;
      const lose=Math.min(territory,.0001*Math.max(1,1+Math.log(other/power)/Math.log(50)))*(1-chance)*encounters;
-     change+=win-lose;rival.territory=Math.max(0,rival.territory-win+lose);losses+=(1-chance)*encounters;
+     change+=win-lose;rival.territory=Math.max(0,rival.territory-win+lose);rival.power*=Math.pow(1/1.01,chance*encounters);losses+=(1-chance)*encounters;
     }
     territory=Math.max(0,Math.min(1,territory+change));power*=Math.pow(1/1.008,losses);
    }
@@ -57,7 +58,7 @@ export function gangTerritoryProjection(w,cumulative,bonusSeconds=0){
   }
   fixedPower=point.power;at=point.at;
  }
- return {model:'Expected territory; observed rival power',power,territory,ticks,limited:false};
+ return {model:'Expected territory; observed rival growth and clash attrition',power,territory,ticks,limited:false,rivals:rivals.map(r=>({name:r.name,power:r.power,territory:r.territory}))};
 }
 
 /** One trainee pulse is useful only if its immediate power exceeds a conservative XP loss budget. */

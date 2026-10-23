@@ -718,15 +718,16 @@ export function projectFutureGangAscension(member,retained){
  * Authorization uses fixed territory, purchases and crew size. A bounded expected-territory scenario ranks already-qualified power plans. Resource ETAs are estimates. */
 export function forecastGangCrewTraining({members,gang,training,tasks,assignments={},fixedTasks={},evaluate,names=null,
  recoveryUntil={},recoveryTasks={},committedTraining=[],mixedTraining=false,repeatAscensions=false,trainingOptions=null,allowJointTraining=false,activeTraining=[],growthFirst=false,prioritizeWeakTraining=false,compareTrainingOnly=false,referenceTraining=[],developmentCycles=false,wantedPreparation=false,recruitmentSprint=false,equipmentDevelopment=null,horizonSeconds=900,windows=null,bonusSeconds=0,goals=[],otherCashRate=0,ascensions=null,waitWindows=[],ascensionEligible=null,warfare=null,
- maxPlanningMs=Infinity,maxSimulations=60,valuationOffset=0,now=Date.now}={}){
+ maxPlanningMs=Infinity,maxSimulations=60,valuationOffset=0,now=Date.now,retainBaseline=false}={}){
  const started=now(),crewNames=Object.keys(members||{}),forecasts={},waitingForecasts={},waitChecks={};
  const diagnostics={model:'whole-crew',simulations:0,evaluations:0,timeLimited:false,simulationLimited:false,baselineReady:false};
  const candidates=(names||crewNames).filter(name=>crewNames.includes(name)&&!fixedTasks?.[name]);
  for(const name of candidates)forecasts[name]={train:false,window:0,reason:'No completed crew forecast'};
+ let baselineTrajectory=null;
  let jointPlan=null,equipmentForecast=null,wantedPrepMember=null;const trainingAlternatives={},alternativeTrajectories=new Map(),selectedTrajectories=new Map(),preparationOnly=new Map();
  let cursor=Number.isFinite(valuationOffset)?Math.floor(valuationOffset):0;
  const compact=f=>{if(!f)return f;const {cumulative,total,power,powerReady,...rest}=f;return rest;};
- const result=()=>({forecasts:Object.fromEntries(Object.entries(forecasts).map(([n,f])=>[n,compact(f)])),waitingForecasts:Object.fromEntries(Object.entries(waitingForecasts).map(([n,f])=>[n,compact(f)])),waitChecks,...(allowJointTraining?{jointPlan:compact(jointPlan)}:{}),...(compareTrainingOnly?{trainingAlternatives}:{}),...(equipmentDevelopment?{equipmentForecast}:{}),diagnostics:{...diagnostics,elapsedMs:Math.max(0,now()-started)},nextOffset:cursor});
+ const result=()=>({... (retainBaseline?{baselineTrajectory}:{}),forecasts:Object.fromEntries(Object.entries(forecasts).map(([n,f])=>[n,compact(f)])),waitingForecasts:Object.fromEntries(Object.entries(waitingForecasts).map(([n,f])=>[n,compact(f)])),waitChecks,...(allowJointTraining?{jointPlan:compact(jointPlan)}:{}),...(compareTrainingOnly?{trainingAlternatives}:{}),...(equipmentDevelopment?{equipmentForecast}:{}),diagnostics:{...diagnostics,elapsedMs:Math.max(0,now()-started)},nextOffset:cursor});
  if(!fixedTasks||typeof fixedTasks!=='object'||Array.isArray(fixedTasks)||Object.entries(fixedTasks).some(([name,task])=>crewNames.includes(name)&&!tasks?.[task]))return result();
  if(!crewNames.length||crewNames.length>12||!training||!tasks?.[training.name]||typeof evaluate!=='function'||
   !Number.isFinite(horizonSeconds)||horizonSeconds<=(bonusSeconds>0?2:20)||
@@ -906,7 +907,7 @@ export function forecastGangCrewTraining({members,gang,training,tasks,assignment
  // Require a material crew-wide gain, scaled to the candidate's baseline production.
  const validBatch=batch=>Array.isArray(batch)&&new Set(batch.map(p=>p?.name)).size===batch.length&&batch.every(p=>p&&crewNames.includes(p.name)&&Number.isFinite(p.window)&&p.window>0&&p.window<=900&&choices.includes(p.trainingTask)&&(!p.trainingSchedule||gangTrainingScheduleTask({mixedTraining:true,startedAt:0,until:p.window*1000,trainingSchedule:p.trainingSchedule},0)!==null));
  if(!validBatch(committedTraining)||!validBatch(referenceTraining)||equipmentDevelopment&&(!crewNames.includes(equipmentDevelopment.name)||!validBatch(equipmentDevelopment.training)||!equipmentDevelopment.stats||Object.entries(equipmentDevelopment.stats).some(([k,m])=>!statKeys.includes(k)||!Number.isFinite(m)||m<1)))return result();
- const baseline=simulate(null,0,0,training.name,equipmentDevelopment?.training||[]);if(!baseline)return result();diagnostics.baselineReady=true;diagnostics.baselineWarfareMemberGameSeconds=baseline.warfareMemberGameSeconds;diagnostics.baselineExperience=baseline.experience;
+ const baseline=simulate(null,0,0,training.name,equipmentDevelopment?.training||[]);if(!baseline)return result();if(retainBaseline)baselineTrajectory=baseline;diagnostics.baselineReady=true;diagnostics.baselineWarfareMemberGameSeconds=baseline.warfareMemberGameSeconds;diagnostics.baselineExperience=baseline.experience;
  for(const name of candidates)forecasts[name]={train:false,window:0,baseline:baseline.total,production:baseline.total,gain:0,
   power:baseline.power,powerReady:baseline.powerReady,total:baseline.total,cumulative:baseline.cumulative,baselineMilestones:baseline.eta,baselineWanted:baseline.wantedLevel,baselinePower:powerEnabled?baseline.power:null,baselineWarfareReadySeconds:powerEnabled?baseline.powerReady:null,reason:'Continue productive work',model:'whole-crew'};
  const powerBenefit=(after,reference=baseline)=>gangPowerBenefit(after,reference,warfare,horizonSeconds);

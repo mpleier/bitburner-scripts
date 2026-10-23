@@ -1,3 +1,4 @@
+import {planGangAttrition,observeGangAttrition,gangAttritionSignature,startGangAttrition,stopGangAttrition} from './gang-attrition-policy.js';
 import {readSelectedGangBundleGoal} from './gang-augmentation-bundle-policy.js';
 import {gangComparisonBudget,recordGangComparisonTiming} from './gang-policy.js';
 import {gangCommittedTraining,gangTrainingScheduleTask} from './gang-stat-policy.js';
@@ -69,6 +70,7 @@ let equipmentValuationCursor=0,equipmentValuationItems={};
 let gangFactionFavor=null,purchaseFocusQuote=null,purchaseFocusContext=null,purchaseTimingContext=null;
 let ascensionRecoveries={};
 let wantedPreparation=null,expectedAscensions={},trainingReference=[],trainingEpisodes={},trainingValuationCursor=0,trainingDiagnostics=null,ascensionDiagnostics=null,ascensionValuationCursor=0;
+let nextAttritionQuote=0;
 let equipmentPurchaseCursor=null,comparisonTiming=[];
 let ascensionComparisonQuotes={};
 const developmentSignature=m=>JSON.stringify([m.earnedRespect,...['hack','str','def','dex','agi','cha'].flatMap(k=>[m[k+'_exp'],m[k+'_mult'],m[k+'_asc_mult']]),m.upgrades,m.augmentations]);
@@ -94,6 +96,7 @@ const argsSchema = [
     ['augmentations-budget', null], // Percentage of non-reserved cash to spend per tick on permanent member upgrades (If not specified, uses defaultMaxSpendPerTickPermanentEquipment)
     ['equipment-budget', null], // Percentage of non-reserved cash to spend per tick on permanent member upgrades (If not specified, uses defaultMaxSpendPerTickTransientEquipment)
     ['money-focus', false], // Always optimize gang crimes for maximum monetary gain. Is otherwise balanced.
+    ['disable-attrition', false], // Disable conservative early-warfare attrition forecasts.
     ['warfare-win-chance', 0.75], // Minimum chance against every active rival.
     ['reputation-focus', false], // Always optimize gang crimes for maximum reputation gain. Is otherwise balanced.
 ];
@@ -285,6 +288,15 @@ async function mainLoop(ns) {
     const territorySample=gangTerritorySample(lastOtherGangInfo,cycle.others,myGangFaction,cycle.at,cycle.bonusMs);
     const tickObserved=territorySample.changed;
     lastOtherGangInfo=territorySample;
+    if(tickObserved){
+        try{
+            const lease=JSON.parse(ns.read('tasks/gang-attrition.json'));
+            let history=[];try{history=JSON.parse(ns.read('tasks/gang-attrition-observations.json'));}catch{}
+            const observed=observeGangAttrition(lease,cycle,{ownerPid:ns.pid,nodeReset:resetInfo.lastNodeReset,augReset:resetInfo.lastAugReset},history);
+            if(observed)await ns.write('tasks/gang-attrition-observations.json',JSON.stringify(observed),'w');
+        }catch{}
+    }
+    try{const lease=JSON.parse(ns.read('tasks/gang-attrition.json'));if(lease.state==='active'&&(tickObserved||Date.now()>=lease.deadline||options['disable-attrition']||!ns.isRunning(lease.ownerPid)))await getNsDataThroughFile(ns,`(${stopGangAttrition.toString()})(ns,ns.args[0],ns.args[1])`,'/Temp/gang-attrition-stop.txt',[tickObserved,options['disable-attrition']]);}catch{}
     // Recruitment is independent of the slower territory clock. Fill every available slot.
     if (!isReadyForNextTerritoryTick && myGangMembers.length < 12 && thisLoopStart >= nextRecruitCheck &&
         (!Number.isFinite(territoryNextTick) || thisLoopStart + 2000 < territoryNextTick)) {
@@ -944,7 +956,28 @@ async function enableOrDisableWarfare(ns, myGangInfo) {
     }
     // Turn on territory warfare only if we have a better than <territoryEngageThreshold>% chance of beating our random opponent
     const averageWinChance = totalActiveGangs ? totalWinChance / totalActiveGangs : 0;
+    let lease;try{lease=JSON.parse(ns.read('tasks/gang-attrition.json'));}catch{}
+    const activeLease=lease?.state==='active'&&lease.nodeReset===resetInfo.lastNodeReset&&lease.augReset===resetInfo.lastAugReset&&lease.ownerPid===ns.pid&&lease.deadline>Date.now()&&!options['disable-attrition'];
+    if(activeLease)return;
     const shouldEngage = warfareDecision(myGangInfo,otherGangs,options['warfare-win-chance']).engage;
+    if(!shouldEngage&&!options['disable-attrition']&&options['power-focus']&&!options['disable-adaptive-growth']&&myGangInfo.territoryClashChance===0&&!myGangInfo.territoryWarfareEngaged&&myGangMembers.length===12&&Date.now()>=nextAttritionQuote&&!(lease?.nodeReset===resetInfo.lastNodeReset&&lease.augReset===resetInfo.lastAugReset&&lease.cooldownUntil>Date.now())){
+        nextAttritionQuote=Date.now()+60000;
+        const context=gangWarfareContext(myGangInfo,lastOtherGangInfo,options['warfare-win-chance'],Date.now(),{detected:territoryTickDetected,paddingMs:territoryTickWaitPadding,intervalMs:updateInterval,restoreMs:postTickRestoreMs,periodMs:territoryTickTime,powerPriority:true});
+        if(context.active&&context.duty&&territoryTickDetected&&Number.isFinite(territoryNextTick)&&context.rivals.every(r=>r.samples>=3&&myGangInfo.power/(myGangInfo.power+r.power)>=.65)&&growthHorizon.seconds>=2060){
+            const members=await getGangInfoDict(ns,myGangMembers,'getMemberInformation'),at=Date.now(),locked=myGangMembers.filter(n=>memberProtectedTask(n));
+            const planned=gangCommittedTraining({...trainingEpisodes,...ascensionRecoveries},members,lastMemberReset,at);
+            const forecast=forecastGangCrewTraining({members,gang:myGangInfo,training:allTaskStats['Train '+(isHackGang?'Hacking':'Combat')],tasks:allTaskStats,assignments:assignedTasks,fixedTasks:options.manualTasks||{},
+                evaluate:(m,g,task)=>memberBestValue(m,g,null,task),committedTraining:planned,warfare:context,horizonSeconds:Math.min(3600,growthHorizon.seconds),bonusSeconds:growthHorizon.bonusSeconds,maxPlanningMs:50,maxSimulations:0,retainBaseline:true});
+            const before=gangWarfarePowerPerTick(members,myGangInfo.territory,0,locked),after=gangWarfarePowerPerTick(members,myGangInfo.territory,1,locked);
+            const quote=planGangAttrition({w:context,cumulative:forecast.baselineTrajectory?.cumulative,members:Object.values(members),powerFraction:before>0?Math.min(1,after/before):0,bonusSeconds:growthHorizon.bonusSeconds});
+            await ns.write('tasks/gang-attrition-plan.json',JSON.stringify({at:Date.now(),ownerPid:ns.pid,nodeReset:resetInfo.lastNodeReset,augReset:resetInfo.lastAugReset,...quote}),'w');
+            if(quote.engage){
+                const ticket={engage:true,observationForecast:quote.observationForecast,ownerPid:ns.pid,nodeReset:resetInfo.lastNodeReset,augReset:resetInfo.lastAugReset,at:Date.now(),deadline:Math.min(Date.now()+22000,Math.max(Date.now()+500,(territoryNextTick||Date.now()+1000)+500)),faction:myGangFaction,power:myGangInfo.power,territory:myGangInfo.territory,signature:gangAttritionSignature(members),rivals:context.rivals};
+                const engaged=await getNsDataThroughFile(ns,`(${startGangAttrition.toString()})(ns,JSON.parse(ns.args[1]),()=>(${gangMutationAllowed.toString()})(ns,ns.args[0]))`,'/Temp/gang-attrition-start.txt',[ns.pid,JSON.stringify(ticket)]);
+                if(engaged)return;
+            }
+        }
+    }
     if (shouldEngage != myGangInfo.territoryWarfareEngaged) {
         log(ns, (warfareFinished ? 'SUCCESS' : 'INFO') + `: Toggling participation in territory warfare to ${shouldEngage}. Our power: ${formatNumberShort(myGangInfo.power)}. ` +
             (!warfareFinished ? `Lowest win chance is ${(100 * lowestWinChance).toFixed(2)}% with ${lowestWinChanceGang} (power ${formatNumberShort(otherGangs[lowestWinChanceGang]?.power)}). ` +

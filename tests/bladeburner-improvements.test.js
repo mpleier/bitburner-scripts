@@ -50,7 +50,7 @@ test('healthy spare sleeves target Black Op stats while respecting support and r
  assert.deepEqual(sleeveBladeburnerTasks([{shock:1,sync:100},{shock:0,sync:99}],[],plan),{});
 });
 test('sleeves allocate bounded chaos and analysis workers and avoid unnecessary analysis',()=>{
- const r=sleeveBladeburnerTasks(sleeves,[],{...plan,chaos:80,chance:[.9,1]});
+ const r=sleeveBladeburnerTasks(sleeves,[],{...plan,chaos:80,chance:[.9,1],farmingUncertain:true});
  assert.equal(Object.values(r).filter(x=>x==='Diplomacy').length,2);
  assert.equal(Object.values(r).filter(x=>x==='Field Analysis').length,1);
  assert.equal(Object.values(r).filter(x=>x==='Infiltrate Synthoids').length,1);

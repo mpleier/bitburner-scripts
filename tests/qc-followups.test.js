@@ -38,7 +38,7 @@ test('diagnostics bound circular input, deep values and excessive keys',()=>{
  const keys=Object.fromEntries(Array.from({length:2000},(_,i)=>['a'+i,i]));assert.ok(Object.keys(boundedDiagnostics(keys)).length<=33);
 });
 test('detailed logs and files use narrow validated arguments',()=>{
- assert.equal(commandPolicyVersion,25);
+ assert.equal(commandPolicyVersion,26);
  for(const c of [command('automation.logs'),command('automation.logs',['daemon.js']),command('automation.files',[0,100])])assert.doesNotThrow(()=>validateCommand(c));
  for(const c of [command('automation.logs',['secret.txt']),command('automation.files',[-1]),command('automation.files',[0,101]),command('automation.files',[0,1.1]),command('automation.status',['full']),command('getFile',['x'])])assert.throws(()=>validateCommand(c));
 });

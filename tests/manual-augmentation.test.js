@@ -1,3 +1,4 @@
+import {augmentationBatchFunded} from '../augmentation-economics-policy.js';
 import {captureAugmentationEconomics,augmentationEconomicsChange,invalidateAugmentationFunding} from '../augmentation-economics-policy.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -48,7 +49,7 @@ test('a fresh summary becomes unusable immediately after manual ownership change
 function purchaseHarness(f){
  const source=readFileSync(new URL('../faction-manager.js',import.meta.url),'utf8');
  const stripped=source.replace(/^import[\s\S]*?from\s+['"][^'"]+['"];?\r?$/gm,'').replaceAll('export async function','async function').replaceAll('export function','function');
- const context={ns:f.ns,captureAugmentationOwnership,captureAugmentationEconomics,augmentationEconomicsChange,factionControlAllowed,factionPurchaseBatch,achievementActionAllowed:()=>true,
+ const context={augmentationBatchFunded,ns:f.ns,captureAugmentationOwnership,captureAugmentationEconomics,augmentationEconomicsChange,factionControlAllowed,factionPurchaseBatch,achievementActionAllowed:()=>true,
  getNsDataThroughFile:async(ns,expression,file,args)=>{ns.args=args;return vm.runInNewContext(expression,{ns});}};
  vm.runInNewContext(stripped+';ownershipSnapshot=captureAugmentationOwnership(ns);economicsSnapshot=captureAugmentationEconomics(ns,{augmentations:[],factions:[]});options={};bitNodeMults={FactionWorkRepGain:1};globalThis.buy=executeFactionPurchases;',context);return context;
 }
@@ -63,7 +64,7 @@ function workHarness(){
  const f=fixture();let now=100000,signature='initial',broken=false;const logs=[],calls=[];
  const ns={print:s=>logs.push(s)};
  const source=readFileSync(new URL('../work-for-factions.js',import.meta.url),'utf8'),start=source.indexOf('async function checkAugmentationOwnership('),end=source.indexOf('// Reputation loops otherwise',start),probe=source.slice(start,end);
- const context={captureAugmentationOwnership,Date:{now:()=>now},getNsDataThroughFile:async()=>{calls.push(now);if(broken)throw Error('RAM');return {complete:true,signature};}};
+ const context={augmentationBatchFunded,captureAugmentationOwnership,Date:{now:()=>now},getNsDataThroughFile:async()=>{calls.push(now);if(broken)throw Error('RAM');return {complete:true,signature};}};
  vm.runInNewContext('let augmentationOwnershipSignature="initial",augmentationOwnershipChanged=false,lastOwnershipProbeAt=100000,ownershipProbeWarned=false;const loopSleepInterval=5000;'+probe+';globalThis.probe=checkAugmentationOwnership;',context);
  return {ns,calls,logs,probe:()=>context.probe(ns),set:v=>{now=v.now??now;signature=v.signature??signature;broken=v.broken??broken;}};
 }
@@ -84,9 +85,28 @@ test('executed autopilot ownership refresh clears stale plans and cash goals aft
  files['tasks/augmentation-wait-plan.json']=JSON.stringify({ownerPid:3,augReset:10,nodeReset:5,active:true,startedAt:100,expiresAt:999999});
  files['tasks/spending-plan.json']=JSON.stringify({ownerPid:3,reset:10,allowances:{home:100},signals:{augmentationCashTarget:{name:'New manual',cost:100},route:'bladeburner'}});
  const ns={pid:3,read:p=>files[p]||'',write:(p,s)=>files[p]=s};
- let fail=false;const context={captureAugmentationOwnership,invalidateAugmentationFunding,installedAugmentationsFromReset:r=>Object.keys(r.ownedAugs),getNsDataThroughFile:async(ns,expr)=>{if(expr==='ns.getResetInfo()')return f.reset;if(fail)throw Error('RAM');return changed;},ns,original};
+ let fail=false;const context={augmentationBatchFunded,captureAugmentationOwnership,invalidateAugmentationFunding,installedAugmentationsFromReset:r=>Object.keys(r.ownedAugs),getNsDataThroughFile:async(ns,expr)=>{if(expr==='ns.getResetInfo()')return f.reset;if(fail)throw Error('RAM');return changed;},ns,original};
  vm.runInNewContext('let augmentationOwnership=original,installedAugmentations=[],playerInstalledAugCount=0,reservedPurchase=1000,installCountdown=1000,installWindowStarted=1000,installCountdownResets=1,nextFactionSummaryRefresh=999999,augmentationWaitWindow=null; const unlockedSFs={4:1},factionManagerOutputFile="summary";'+body+';globalThis.refresh=updateCachedData;globalThis.state=()=>({augmentationOwnership,reservedPurchase,installCountdown,nextFactionSummaryRefresh,installedAugmentations});',context);
  await context.refresh(ns);assert.equal(context.state().reservedPurchase,0);assert.equal(context.state().installCountdown,0);assert.equal(files.summary,'');
  assert.equal(JSON.parse(files['tasks/augmentation-wait-plan.json']).active,false);const plan=JSON.parse(files['tasks/spending-plan.json']);assert.equal(plan.signals.augmentationCashTarget,null);assert.equal(plan.allowances.home,100);assert.equal(plan.signals.route,'bladeburner');
  fail=true;await assert.doesNotReject(()=>context.refresh(ns));assert.equal(context.state().augmentationOwnership.complete,false);assert.ok(context.state().installedAugmentations.includes('Base'));
+});
+
+
+test('actual serialized worker stops before cheaper purchases after an unaffordable or rejected target',async()=>{
+ for(const fail of ['cash','reject']){
+  const f=fixture(),h=purchaseHarness(f),quotes=[];
+  f.ns.singularity.getAugmentationPrice=a=>{quotes.push(a);return a==='Priority'&&fail==='cash'?2e9:100;};
+  f.ns.singularity.purchaseAugmentation=(_f,a)=>{f.purchases.push(a);return false;};
+  assert.equal(await h.buy(f.ns,[{faction:'A',augmentation:'Priority'},{faction:'A',augmentation:'Cheap'}]),0);
+  assert.deepEqual(quotes,['Priority']);assert.deepEqual(f.purchases,fail==='cash'?[]:['Priority']);
+ }
+});
+
+
+test('a purchase worker cannot keep spending after its requesting ascend process exits',async()=>{
+ const f=fixture(),h=purchaseHarness(f);
+ vm.runInNewContext('options["purchase-request"]="42:1000:primary";',h);
+ f.ns.isRunning=p=>p!==42;
+ assert.equal(await h.buy(f.ns,[{faction:'A',augmentation:'Next'}]),0);assert.deepEqual(f.purchases,[]);
 });

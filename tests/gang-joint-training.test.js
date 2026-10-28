@@ -69,8 +69,8 @@ test('horizon calculation observes restored production before deriving recruitme
  const waitAt=source.indexOf(waitLine),start=source.indexOf('    const recruitSeconds=',waitAt),end=source.indexOf('    growthHorizon.bonusSeconds=',start);
  assert.ok(waitAt>source.indexOf('const restoreStarted=Date.now()'));assert.ok(start>waitAt);
  let observed=0;
- const build=Function('waitForGameUpdate','gangWallSeconds','gangPlanningHorizon',`return async(restored,myGangInfo)=>{const now=100000,resetInfo={lastNodeReset:0};const ns={},myGangMembers=Array(10),bonusSeconds=0,options={'growth-horizon-minutes':15},remaining=null,install=null,resetPending=false;let growthHorizon;${waitLine}${source.slice(start,end)}return growthHorizon;}`);
- const run=build(async()=>{observed++;return {respect:100000,respectForNextRecruit:390625,respectGainRate:.7};},gangWallSeconds,gangPlanningHorizon);
+ const build=Function('waitForGameUpdate','gangWallSeconds','gangPlanningHorizon','gangTrainingFirst','preparationFor',`return async(restored,myGangInfo)=>{const now=100000,resetInfo={lastNodeReset:0};const ns={},myGangMembers=Array(10),bonusSeconds=0,options={'growth-horizon-minutes':15},remaining=null,install=null,resetPending=false;let growthHorizon;${waitLine}${source.slice(start,end)}return growthHorizon;}`);
+ const run=build(async()=>{observed++;return {respect:100000,respectForNextRecruit:390625,respectGainRate:.7};},gangWallSeconds,gangPlanningHorizon,()=>false,()=>({active:false}));
  const h=await run({restored:2},{respect:100000,respectForNextRecruit:390625,respectGainRate:0});assert.equal(observed,1);assert.equal(h.seconds,10800);
 });
 test('nearby recruitment uses the forecast ETA safeguard rather than an 80-percent training veto',()=>{

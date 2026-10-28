@@ -729,6 +729,7 @@ export async function main(ns) {
         if(!spending||spending.expiresAt<=Date.now()||spending.ownerPid!==ns.pid||spending.reset!==resetInfo.lastAugReset){
             let corporationStartup=false;if(!options['disable-corporation']&&unlockedSFs[3]&&achievementActionAllowed(ns,'corporation'))try{corporationStartup=!await getNsDataThroughFile(ns,'ns.corporation.hasCorporation()','/Temp/budget-corporation.txt');}catch{}
             const signals=adaptiveBudgetSignals(ns,corporationStartup);
+            signals.corporationGrowthPriority=corporationStartup&&resetInfo.currentNode!==3&&!routePlan?.redPill?.active;
             let speed;try{speed=JSON.parse(ns.read('tasks/progression-speed.json'));}catch{}
             if(!options['disable-adaptive-spending'])signals.bottleneck=homeRam<64?'ram':routePlan?.redPill?.active?(routePlan.redPill.canDonate?'cash':'reputation'):routePlan?.selected==='bladeburner'&&!options['force-xp']?'combat':routeContinuousXp(options,routePlan)?'hacking':prioritizeHackForDaedalus||prioritizeHackForWd?'hacking':speed?.augReset===resetInfo.lastAugReset&&speed.at>Date.now()-120000?speed.bottleneck:'balanced';
             signals.activeCategories={graft:!!unlockedSFs[10]&&!!unlockedSFs[4],soa:!!unlockedSFs[4],sleeves:!!unlockedSFs[10],sleeveExpansion:resetInfo.currentNode===10&&!!unlockedSFs[10],gang:!!unlockedSFs[2],corporation:!options['disable-corporation']&&!!unlockedSFs[3]};
@@ -1242,7 +1243,7 @@ export async function main(ns) {
             try{current=await getNsDataThroughFile(ns,`(${captureAugmentationEconomics.toString()})(ns,JSON.parse(ns.args[0]))`,
                 '/Temp/autopilot-augmentation-economics.txt',[JSON.stringify(facman.economics?.watch||null)],false,1,0,true);}catch{}
             if(facman.economics&&!current?.complete)return setStatus(ns,'Waiting for native augmentation prices and reputation; installs are deferred.');
-            const change=augmentationEconomicsChange(facman.economics,current,{allowRepDrift:Date.now()-facman.at<5000});
+            const change=augmentationEconomicsChange(facman.economics,current,{allowRepDrift:Date.now()-facman.at<5000,repRefreshMs:30000});
             if(change.changed){
                 reservedPurchase=0;nextFactionSummaryRefresh=0; // Requotes preserve the existing bounded installation window.
                 const cleared=await invalidateAugmentationFunding(ns,ns.pid,resetInfo,factionManagerOutputFile);
@@ -1569,6 +1570,9 @@ export async function main(ns) {
         const currentReserve = Number(ns.read("reserve.txt") || 0);
         if (reservingMoneyForDaedalus) // Reserve 100b to get the daedalus invite
             return currentReserve == 100E9 ? true : ns.write("reserve.txt", 100E9, "w");
+        // Startup savings are held by the shared budget and stock purchase guards.
+        // Drop the optional stock-capital hold so it cannot block corporation creation.
+        try{const p=JSON.parse(ns.read('tasks/spending-plan.json'));if(p.ownerPid===ns.pid&&p.reset===resetInfo.lastAugReset&&p.epoch<=Date.now()&&p.expiresAt>Date.now()&&p.signals?.corporationGrowthPriority===true&&p.signals?.corporationStartup===true){if(currentReserve!==0)await ns.write('reserve.txt','0','w');return;}}catch{}
         // Keep essential spending possible before the stock API is unlocked.
         let stockApiAvailable = false;
         try { stockApiAvailable = await getNsDataThroughFile(ns, 'ns.stock.hasTixApiAccess()', '/Temp/autopilot-stock-access.txt'); } catch { }

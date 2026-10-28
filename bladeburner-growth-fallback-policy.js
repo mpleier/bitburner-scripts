@@ -34,7 +34,8 @@ export function planBladeburnerGrowthFallbacks(entries,training,stamina,seconds,
    const score=payoff?.projectedGain/seconds;
    const incumbent=result.byName[first.raw.name]?.score??first.valued.score;
    if(!Number.isFinite(score)||score<=incumbent)continue;
-   result.byName[first.raw.name]={...first.valued,score,singleScore:first.valued.score,stamina:{...payoff.stamina,horizonSeconds:seconds,selectedCapacity:payoff.stamina.externalCapacity},fallback:{basis:'two-independent-missions',horizonSeconds:seconds,switchSeconds,first:{name:first.raw.name,level:first.raw.level,seconds:prefixSeconds,count:prefix.completion.count},second:{name:second.raw.name,level:second.raw.level,seconds:remainingSeconds,count:tail.completion.count},bonusRemainingMs:afterSwitch.remainingMs,xpScore,rates}};
+   const rankRate=[prefix.rankRate,tail.rankRate].every(Number.isFinite)?(prefix.rankRate*prefixSeconds+tail.rankRate*remainingSeconds)/seconds:null;
+   result.byName[first.raw.name]={...first.valued,score,rankRate,singleScore:first.valued.score,stamina:{...payoff.stamina,horizonSeconds:seconds,selectedCapacity:payoff.stamina.externalCapacity},fallback:{basis:'two-independent-missions',horizonSeconds:seconds,switchSeconds,first:{name:first.raw.name,level:first.raw.level,seconds:prefixSeconds,count:prefix.completion.count},second:{name:second.raw.name,level:second.raw.level,seconds:remainingSeconds,count:tail.completion.count},bonusRemainingMs:afterSwitch.remainingMs,xpScore,rates}};
   }
  }
  return result;

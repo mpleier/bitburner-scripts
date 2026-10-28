@@ -22,7 +22,7 @@ export function captureAugmentationEconomics(ns,watch) {
 }
 
 /** Prices and unlocks invalidate immediately. Small natural rep drift does not starve planning. */
-export function augmentationEconomicsChange(before,after,{allowRepDrift=false}={}) {
+export function augmentationEconomicsChange(before,after,{allowRepDrift=false,repRefreshMs=0}={}) {
  const changed=reason=>({changed:true,reason});
  try{
   if(before?.version!==1||after?.version!==1||!before.complete||!after.complete)return changed('Native augmentation quotes unavailable');
@@ -46,6 +46,10 @@ export function augmentationEconomicsChange(before,after,{allowRepDrift=false}={
    const gaps=f.thresholds.filter(t=>t>Math.min(f.rep,current.rep)).map(t=>t-Math.min(f.rep,current.rep));
    // Once every watched offer is unlocked, extra reputation changes no donation bill.
    if(!gaps.length)continue;
+   // Rising reputation only reduces the existing donation bill. Coalesce routine
+   // funding refreshes, while unlocks and every adverse/structural change above
+   // still invalidate immediately. Never extend this window by updating baseline.at.
+   if(current.rep>=f.rep&&Number.isFinite(repRefreshMs)&&repRefreshMs>0&&after.at-before.at<Math.min(30000,repRefreshMs))continue;
    const tolerance=Math.max(1000,Math.min(...gaps)*(allowRepDrift && current.rep>=f.rep ? .1 : .01));
    if(Math.abs(current.rep-f.rep)>=tolerance)return changed('Donation funding changed materially: '+name);
   }
@@ -69,4 +73,31 @@ export async function invalidateAugmentationFunding(ns,ownerPid,reset,summaryFil
  }catch{}
  await ns.write('tasks/augmentation-reset-plan.json',JSON.stringify({pending:false,ownerPid,augReset:reset.lastAugReset,expiresAt:now+30000}),'w');
  return inactiveWait;
+}
+
+/** Synchronous native-worker preflight: fund the full basket before committing reputation cash.
+ * Quotes already include queued inflation; only future purchases and NF levels are added here. */
+export function augmentationBatchFunded(market,basket,donations,multiplier,repMultiplier,cash,reserve) {
+ try {
+  const keep=Number(reserve);
+  if(!market?.complete||!Array.isArray(basket)||!basket.length||!Array.isArray(donations)||
+   ![cash,keep,multiplier,repMultiplier,market.repMultiplier].every(Number.isFinite)||cash<0||keep<0||multiplier<1||repMultiplier<=0||market.repMultiplier<=0)return false;
+  let total=0,nf=0;const names=new Set(),factions=new Set();
+  for(let i=0;i<basket.length;i++){
+   const name=basket[i].augmentation,price=market.quotes[name]?.price;
+   if(typeof name!=='string'||!Number.isFinite(price)||price<0)return false;
+   if(name!=='NeuroFlux Governor'&&names.has(name))return false;
+   names.add(name);
+   total+=price*multiplier**i*(name==='NeuroFlux Governor'?1.14**nf++:1);
+  }
+  for(const order of donations){
+   const rep=market.factions[order.faction]?.rep;
+   if(factions.has(order.faction)||!Number.isFinite(rep)||rep<0||!Number.isFinite(order.targetRep)||order.targetRep<0||!Number.isFinite(order.repDonation)||order.repDonation<0)return false;
+   factions.add(order.faction);
+   const amount=Math.ceil(1e6*Math.max(0,order.targetRep-rep)/(market.repMultiplier*repMultiplier));
+   if(!Number.isFinite(amount)||amount>order.repDonation)return false;
+   total+=amount;
+  }
+  return Number.isFinite(total)&&total<=cash-keep;
+ }catch{return false;}
 }

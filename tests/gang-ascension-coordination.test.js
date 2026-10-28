@@ -1,3 +1,5 @@
+import {gangMoneyAllowed,gangTerritoryDevelopmentFocus} from '../gang-stat-policy.js';
+import {observeGangIncome,gangPlannedEquipmentCash,gangDevelopmentCashTarget,gangIncomeFunding} from '../gang-power-policy.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
@@ -112,9 +114,9 @@ test('executed fast loop ends ascension recovery without waiting for territory',
   const gangTrainingScheduleTask=()=>null;const wantedPreparation=null,options={},trainingEpisodes={},trainingPlans={A:true},ascensionRecoveries={A:{until:cycle.at-1}};
   const maintenanceRequested=()=>false,myGangFaction='Own',myGangMembers=Array(12),updateInterval=200,territoryTickTime=20000;
   const getNsDataThroughFile=async()=>cycle,log=()=>{};
-  let lastOtherGangInfo=gangTerritorySample(null,cycle.others,'Own',cycle.at),lastLoopTime=cycle.at,
+  let preparationPhase=null,pendingPowerPulse=null,powerCalibration=[];let lastOtherGangInfo=gangTerritorySample(null,cycle.others,'Own',cycle.at),lastLoopTime=cycle.at,
    territoryNextTick=cycle.at+20000,territoryTickDetected=true,isReadyForNextTerritoryTick=false,
-   warfareFinished=false,territoryTickWaitPadding=200,lastTerritoryPower=10;
+   nextWarfareCheck=Infinity,warfareFinished=false,territoryTickWaitPadding=200,lastTerritoryPower=10;
   const onTerritoryTick=async()=>{throw Error('Unexpected territory event');};
   const optimizeGangCrime=async()=>{events.push('replan');trainingPlans.A=false;};
   const updateMemberActivities=async()=>events.push('assign');
@@ -127,14 +129,14 @@ test('executed fast loop ends ascension recovery without waiting for territory',
 test('purchase timing remains available before full recruitment and with an explicit focus',async()=>{
  const source=readFileSync(new URL('../gangs.js',import.meta.url),'utf8');
  const start=source.indexOf('async function updateGrowthFocus('),end=source.indexOf('function refreshForecastWantedLimits(',start);
- const make=Function(`let purchaseFocusQuote=null,purchaseFocusContext=null,purchaseTimingContext=null,gangFactionFavor=null,growthFocus;
+ const make=Function('gangDevelopmentCashTarget','gangIncomeFunding','observeGangIncome','gangPlannedEquipmentCash','gangMoneyAllowed','gangTerritoryDevelopmentFocus',`let incomeFunding=null,incomeObservation=null,equipmentFundingQuote=null;const equipments=[],growthHorizon={seconds:900};let purchaseFocusQuote=null,purchaseFocusContext=null,purchaseTimingContext=null,gangFactionFavor=null,growthFocus;
   const ownedSourceFiles={4:1},myGangFaction='Faction',myGangMembers=Array(8),purchaseGoal={cost:1000,rep:100},requiredRep=100;
   const options={'money-focus':true},resetInfo={lastNodeReset:1,lastAugReset:2};
-  const getNsDataThroughFile=async(ns,code)=>code==='ns.getPlayer()'?{money:500,mults:{faction_rep:2}}:{rep:50,favor:0};
+  const getNsDataThroughFile=async(ns,code)=>code.startsWith('({player:')?{player:{money:500,mults:{faction_rep:2}},prices:{}}:{rep:50,favor:0};
   const gangFocus=()=> 'money';
   ${source.slice(start,end)}
-  return async()=>{await updateGrowthFocus({read:()=>''},{moneyGainRate:0},{});return {purchaseTimingContext,purchaseFocusContext};};`);
- const result=await make()();
+  return async()=>{await updateGrowthFocus({read:()=>''},{territory:1,moneyGainRate:0},{});return {purchaseTimingContext,purchaseFocusContext};};`);
+ const result=await make(gangDevelopmentCashTarget,gangIncomeFunding,observeGangIncome,gangPlannedEquipmentCash,gangMoneyAllowed,gangTerritoryDevelopmentFocus)();
  assert.equal(result.purchaseTimingContext.factionRep,50);assert.equal(result.purchaseTimingContext.goal.rep,100);
  assert.equal(result.purchaseFocusContext,null);
 });

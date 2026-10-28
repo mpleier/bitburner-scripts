@@ -11,10 +11,11 @@ export async function main(ns) {
  try{savedHeartbeat=JSON.parse(ns.read(heartbeatFile));}catch{}
  const candidate=legacyIndex>=0?ns.args[legacyIndex+1]:savedHeartbeat?.policy;
  const legacyPolicy=Number.isSafeInteger(candidate)&&candidate>0&&candidate<=commandPolicyVersion?candidate:commandPolicyVersion;
+ const liveJobs=()=>ns.ps('home').filter(p=>p.filename.replace(/^\//,'')==='remote-control/job.js').slice(0,8).map(p=>({pid:p.pid,commandId:p.args?.[2]}));
  let lastHeartbeat = 0;
  while (true) {
   if (Date.now() - lastHeartbeat >= 2000) {
-   lastHeartbeat = Date.now(); await ns.write(heartbeatFile, JSON.stringify({pid:ns.pid,at:lastHeartbeat,version:2,policy:legacyPolicy,activePolicy:commandPolicyVersion,signature}), 'w');
+   lastHeartbeat = Date.now(); await ns.write(heartbeatFile, JSON.stringify({pid:ns.pid,at:lastHeartbeat,version:2,policy:legacyPolicy,activePolicy:commandPolicyVersion,signature,jobs:liveJobs()}), 'w');
   }
   let command;
   try { command = JSON.parse(ns.read(commandFile) || 'null'); } catch { }
@@ -23,7 +24,7 @@ export async function main(ns) {
    let previous;
    try { previous = JSON.parse(ns.read(output) || 'null'); } catch { }
    if (previous?.state === 'running') {
-    if (!ns.isRunning(previous.pid)) await ns.write(output, JSON.stringify({id:command.id,state:'uncertain',at:Date.now(),error:'Job stopped before reporting; command will not be replayed.'}), 'w');
+    if (!ns.isRunning(previous.pid)&&!liveJobs().some(p=>p.commandId===command.id)) await ns.write(output, JSON.stringify({id:command.id,state:'uncertain',at:Date.now(),error:'Job stopped before reporting; command will not be replayed.'}), 'w');
    } else if (!previous) {
     try {
      validateCommand(command);
@@ -37,7 +38,7 @@ export async function main(ns) {
       if (!pid) await ns.write(output, JSON.stringify({id:command.id,state:'failed',at:Date.now(),error:'Unable to launch command job'}), 'w');
       else {
        while (ns.isRunning(pid)) {
-        await ns.write(heartbeatFile, JSON.stringify({pid:ns.pid,at:Date.now(),version:2,policy:legacyPolicy,activePolicy:commandPolicyVersion,signature,commandId:command.id}), 'w');
+        await ns.write(heartbeatFile, JSON.stringify({pid:ns.pid,at:Date.now(),version:2,policy:legacyPolicy,activePolicy:commandPolicyVersion,signature,commandId:command.id,jobs:liveJobs()}), 'w');
         await ns.sleep(500);
        }
       }

@@ -61,8 +61,8 @@ test('native gang update coordination accepts unchanged snapshots and has no pol
  const info={power:1,moneyGainRate:0,respectGainRate:0,wantedLevelGainRate:0};
  const wait=build(['A'],{A:'Work'},async()=>{reads++;return info;});
  const waiting=wait({gang:{nextUpdate:()=>{updates++;return new Promise(resolve=>resolveUpdate=resolve);}}},info);
- assert.equal(updates,1);assert.equal(reads,0);resolveUpdate();
- assert.deepEqual(await waiting,{...info,updateObserved:true});assert.equal(reads,1);
+ assert.equal(updates,1);assert.equal(reads,0);resolveUpdate(2000);
+ assert.deepEqual(await waiting,{...info,updateObserved:true,updateCycles:10});assert.equal(reads,1);
 });
 test('unavailable gang update access defers observed-rate validation safely',async()=>{
  const source=readFileSync(new URL('../gangs.js',import.meta.url),'utf8').replace(/\r/g,''),start=source.indexOf('async function waitForGameUpdate('),end=source.indexOf('\n/**',start);
@@ -74,7 +74,7 @@ test('unavailable gang update access defers observed-rate validation safely',asy
  const failed=build(['A'],{A:'Work'},async()=>{throw Error('API unavailable');});
  assert.deepEqual(await failed({gang:{}},info),{...info,updateObserved:false});
  const training=build(['A'],{A:'Train Combat'},async()=>{throw Error('No read expected');});
- assert.equal(await training({},info),info);
+ assert.deepEqual(await training({},info),{...info,updateObserved:false});
  assert.match(source,/myGangInfo.updateObserved!==false&&myGangInfo.wantedLevelGainRate/);
  assert.match(source,/if\(myGangInfo.updateObserved===false\)return/);
 });

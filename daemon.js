@@ -1,6 +1,7 @@
 import {estimateHackingDrain,hackingDrainPadding} from './hacking-deadline-policy.js';
-import {quoteHackingTarget,planHackingTargets,sampleHackingRevenue,hackingPlanningHorizon} from './hacking-target-policy.js';
+import {selectHackingTargetCandidates,quoteHackingTarget,planHackingTargets,sampleHackingRevenue,hackingPlanningHorizon} from './hacking-target-policy.js';
 import {createHgwBatch,withHgwBatch,withHgwPiece} from './hgw-batch-policy.js';
+import {coreAdjustedThreads,forecastCoreBatches} from './hacking-core-policy.js';
 import {updateHackingProcessBudget,hackingProcessInventory,reserveHackingProcess,releaseHackingProcess} from './hacking-process-policy.js';
 import {runBackgroundCheck,backgroundHealthSnapshot,backgroundJobDue,backgroundJobDispatched} from './background-job-policy.js';
 import {sharedNetworkSnapshot} from './network-snapshot-policy.js';
@@ -174,6 +175,7 @@ export async function main(ns) {
     let loopingMode = false;
     let hackingDrain=null,lastLoopInventoryAt=0,loopJobSequence=0;
     let hackingProcessBudget=null,lastProcessInventoryAt=0,lastSchedulingLagMs=0;
+    let lastLoopWorkMs=null,lastControlMs=null,lastInventoryMs=null;
     let recoveryThreadPadding = 1; // How many multiples to increase the weaken/grow threads to recovery from misfires automatically (useful when RAM is abundant and timings are tight)
 
     let daemonHost = null; // the name of the host of this daemon, so we don't have to call the function more than once.
@@ -310,6 +312,7 @@ export async function main(ns) {
         lastUpdateTime = Date.now();
         lastXpCapacityAt=0;lastBackgroundHealthAt=0;lastNetworkSnapshotAt=0;
         hackingProcessBudget=null;lastProcessInventoryAt=0;lastSchedulingLagMs=0;
+        lastLoopWorkMs=null;lastControlMs=null;lastInventoryMs=null;
         maxTargets = 2;
         lowUtilizationIterations = highUtilizationIterations = 0;
         discoveredHostNames=[];
@@ -851,6 +854,7 @@ export async function main(ns) {
         let lastHelperCheck = 0;
         //let isHelperListLaunched = false; // Uncomment this and related code to keep trying to start helpers
         do {
+            const controlStartedAt=Date.now();
             automationHeartbeat(ns);
             if(Date.now()-lastBackgroundHealthAt>=5000){
                 lastBackgroundHealthAt=Date.now();
@@ -874,6 +878,7 @@ export async function main(ns) {
                 if(before&&before!==cycleTimingDelay)ns.print('INFO: Hacking pacing: '+cycleTimingDelay+' ms cycles, target cap '+timingControl.targetCap+'; '+timingControl.reason);
                 if(!timingControl.savedAt||Date.now()-timingControl.savedAt>=5000){timingControl.savedAt=Date.now();ns.write('tasks/hgw-pacing.json',JSON.stringify({...timingControl,pid:ns.pid}),'w');}
             }catch(error){ns.print('INFO: HGW timing measurements unavailable: '+String(error));}
+            lastControlMs=Math.max(0,Date.now()-controlStartedAt);
             loops++;
             if (loops > 0) {const sleepAt=Date.now();await ns.sleep(loopInterval);lastSchedulingLagMs=Math.max(0,Date.now()-sleepAt-loopInterval);}
             if(isScriptPaused(ns,ns.getScriptName()))return;
@@ -884,11 +889,15 @@ export async function main(ns) {
                 await buildServerList(ns, true); // Check if any new servers have been purchased by the external host_manager process
                 if(Date.now()-lastProcessInventoryAt>=5000||!hackingProcessBudget){
                     lastProcessInventoryAt=Date.now();
+                    const inventoryStartedAt=Date.now();
                     const inventory=hackingProcessInventory(ns,discoveredHostNames,ns.pid,lastProcessInventoryAt,resetInfo);
+                    lastInventoryMs=Math.max(0,Date.now()-inventoryStartedAt);
                     lastHackingInventory=inventory;
                     collectHackingIncome(ns,resetInfo,ns.pid,inventory,lastProcessInventoryAt,lastSchedulingLagMs);
                     hackingProcessBudget=updateHackingProcessBudget(hackingProcessBudget,{now:lastProcessInventoryAt,inventory,lagMs:lastSchedulingLagMs,maxWorkers:options['max-hacking-processes']});
-                    ns.write('tasks/hgw-process-budget.json',JSON.stringify({...hackingProcessBudget,ownerPid:ns.pid,nodeReset:resetInfo.lastNodeReset,augReset:resetInfo.lastAugReset}),'w');
+                    ns.write('tasks/hgw-process-budget.json',JSON.stringify({...hackingProcessBudget,ownerPid:ns.pid,nodeReset:resetInfo.lastNodeReset,augReset:resetInfo.lastAugReset,
+                        timing:{sleepLagMs:lastSchedulingLagMs,previousTargetingWorkMs:lastLoopWorkMs,controlMs:lastControlMs,inventoryMs:lastInventoryMs,basis:'Observed wall time including awaited work; not CPU time or proof of causation'}}),'w');
+                    ns.write('tasks/hgw-timeline.json',JSON.stringify({schemaVersion:1,at:lastProcessInventoryAt,ownerPid:ns.pid,nodeReset:resetInfo.lastNodeReset,augReset:resetInfo.lastAugReset,...inventory.timeline,capacityBlocked:hackingProcessBudget.used>=hackingProcessBudget.limit}),'w');
                 }
                 await updateCachedServerData(ns); // Update server data that only needs to be refreshed once per loop
                 await updatePortCrackers(ns); // Check if any new port crackers have been purchased
@@ -1188,6 +1197,7 @@ export async function main(ns) {
                         `for ${lowUtilizationIterations || highUtilizationIterations} its, Max Targets: ${maxTargets}, Loop Took: ${Date.now() - start}ms`);
                     lastUpdateTime = Date.now();
                 }
+                lastLoopWorkMs=Math.max(0,Date.now()-start);
                 //log(ns, 'Prepping: ' + prepping.map(s => s.name).join(', '))
                 //log(ns, 'targeting: ' + targeting.map(s => s.name).join(', '))
             } catch (err) {
@@ -1462,6 +1472,7 @@ export async function main(ns) {
         const totalMaxRam = rootedServers.map(s => s.totalRam()).reduce((a, b) => a + b, 0);
         const totalFreeRam = Math.max(0, listOfServersFreeRam.reduce((a, b) => a + b, 0)); // Hack, free ram can be negative due to "pretending" reserved home ram doesn't exist. Clip to 0
         return {
+            hosts:rootedServers.map(s=>({host:s.name,ram:Math.max(0,s.ramAvailable()),maxRam:Math.max(0,s.totalRam()),cores:s.server.cpuCores??1})),
             listOfServersFreeRam: listOfServersFreeRam,
             totalMaxRam: totalMaxRam,
             totalFreeRam: totalFreeRam,
@@ -1481,6 +1492,14 @@ export async function main(ns) {
      * @param {} currentTarget
      * @param {{ listOfServersFreeRam: number[]; totalMaxRam: number; totalFreeRam: number; totalUsedRam: number; }} networkStats */
     function getPerformanceSnapshot(currentTarget, networkStats) {
+        const coreMs=networkStats.corePlanningUntil===undefined?3:Math.min(3,Math.max(0,networkStats.corePlanningUntil-Date.now()));
+        if(coreMs>0&&networkStats.hosts?.some(h=>h.cores>1)&&!xpOnly&&!loopingMode&&!hackOnly&&!options.i&&currentTarget.actualPercentageToSteal()<1){
+            const optimal=Math.min(maxBatches,Math.max(1,Math.floor(currentTarget.timeToWeaken()/cycleTimingDelay)-1));
+            const jobs=[{tool:'hack',threads:currentTarget.getHackThreadsNeeded(),cost:getTool('hack').cost},{tool:'grow',threads:currentTarget.getGrowThreadsNeededAfterTheft(),cost:getTool('grow').cost},
+                {tool:'weak',threads:currentTarget.getWeakenThreadsNeededAfterTheft(),cost:getTool('weak').cost},{tool:'weak',threads:currentTarget.getWeakenThreadsNeededAfterGrowth(),cost:getTool('weak').cost}];
+            const placement=forecastCoreBatches(networkStats.hosts,jobs,{maxPlanningMs:coreMs,maxBatches:Math.min(maxBatches,optimal+2),workerLimit:Math.max(0,(hackingProcessBudget?.limit??2048)-(hackingProcessBudget?.used??0)),logGrowth:Math.log(1+(unadjustedGrowthRate-1)/100)*currentTarget.serverGrowthPercentage()});
+            if(placement&&!placement.limited)return {percentageToSteal:currentTarget.actualPercentageToSteal(),canBeScheduled:placement.cycles>0,optimalPacedCycles:optimal,maxCompleteCycles:Math.max(placement.cycles>0?1:0,placement.cycles-1),placement};
+        }
         // The total RAM cost of running one weaken/hack/grow cycle to steal `currentTarget.percentageToSteal` of `currentTarget.money`
         const weaken1Cost = currentTarget.getWeakenThreadsNeededAfterTheft() * getTool("weak").cost;
         const weaken2Cost = currentTarget.getWeakenThreadsNeededAfterGrowth() * getTool("weak").cost;
@@ -1528,9 +1547,18 @@ export async function main(ns) {
 
     // Adjusts the "percentage to steal" for a target based on its respective cost and the current network RAM available
     function optimizePerformanceMetrics(ns, currentTarget) {
+        // Seed only a fresh, owned selection. Normal placement/tuning below still
+        // verifies capacity and the configured maximum before scheduling work.
+        const selected=targetPaybackPlan;
+        const quote=selected?.quotes?.find(q=>q.name===currentTarget.name);
+        if(selected?.enforced&&selected.preferred===currentTarget.name&&selected.ownerPid===ns.pid&&
+            selected.nodeReset===resetInfo.lastNodeReset&&selected.augReset===resetInfo.lastAugReset&&
+            selected.at<=Date.now()&&Date.now()-selected.at<15000&&Number.isFinite(quote?.fraction)&&quote.fraction>0&&quote.fraction<=options['max-steal-percentage'])
+            currentTarget.percentageToSteal=quote.fraction;
         const maxAdjustments = 1000;
         const start = Date.now();
         const networkStats = getNetworkStats();
+        networkStats.corePlanningUntil=Date.now()+20;
         const percentPerHackThread = currentTarget.percentageStolenPerHackThread();
         const oldHackThreads = currentTarget.getHackThreadsNeeded();
         const oldActualPercentageToSteal = currentTarget.percentageToSteal = currentTarget.actualPercentageToSteal();
@@ -1791,9 +1819,8 @@ export async function main(ns) {
         if (useSmallestServerPossible) // If so-configured, fill up small servers before utilizing larger ones (can be laggy)
             preferredServerOrder.reverse();
 
-        // IDEA: "home" is more effective at grow() and weaken() than other nodes (has multiple cores) (TODO: By how much?)
-        //       so if this is one of those tools, put it at the front of the list of preferred candidates, otherwise keep home ram free if possible
-        //       TODO: This effort is wasted unless we also scale down the number of threads "needed" when running on home. We will overshoot grow/weaken
+        // Prefer home cores for grow/weaken; allocation below converts one-core
+        // work into conservative physical counts while preserving home reserves.
         const homeIndex = preferredServerOrder.findIndex(i => i.name == "home");
         if (homeIndex > -1) { // Home server might not be in the server list at all if it has insufficient RAM
             const home = preferredServerOrder.splice(homeIndex, 1)[0];
@@ -1821,12 +1848,23 @@ export async function main(ns) {
             ` resulted in preferred order:${preferredServerOrder.map(s => ` ${s.name} (${formatRam(s.ramAvailable(igRes))})`)}`);
 
         // Helper function to compute the most threads a server can run
+        // Capacity is counted in one-core work units; launches use physical threads.
+        // XP loops retain their exact thread manifest. Grow uses the security-100
+        // lower growth bound, so core savings cannot discard its additive money term.
+        const coreTarget=getServerByName(args?.[0]);
+        const coreTool=['grow','weak'].includes(tool.shortName)&&!args?.[tool.shortName==='weak'?5:6]&&threads<Number.MAX_SAFE_INTEGER?tool.shortName:null;
+        const coreGrowth=coreTarget?Math.log(1+(unadjustedGrowthRate-1)/100)*coreTarget.serverGrowthPercentage():0;
+        const physicalThreads=(count,server)=>coreAdjustedThreads(count,coreTool,server.server?.cpuCores??1,coreGrowth);
         let computeMaxThreads = /** @param {Server} server */ function (server) {
             if (tool.cost == 0) return 1;
             let ramAvailable = server.ramAvailable(igRes);
             // Note: To be conservative, we allow double imprecision to cause this floor() to return one less than should be possible,
             //       because the game likely doesn't account for this imprecision (e.g. let 1.9999999999999998 return 1 rather than 2)
-            return Math.floor((ramAvailable / tool.cost)/*.toPrecision(14)*/);
+            const capacity=Math.max(0,Math.floor(ramAvailable/tool.cost));
+            if(!coreTool||(server.server?.cpuCores??1)<=1||capacity>=threads)return capacity;
+            let lo=Math.min(capacity,threads),hi=threads;
+            while(lo<hi){const mid=lo+Math.ceil((hi-lo)/2);if(physicalThreads(mid,server)<=capacity)lo=mid;else hi=mid-1;}
+            return lo;
         };
 
         if(!splitting&&!canFitHackingJob(rootedServersByFreeRam.map(computeMaxThreads),threads,false))return false;
@@ -1837,6 +1875,7 @@ export async function main(ns) {
         for (let i = 0; i < rootedServersByFreeRam.length && remainingThreads > 0; i++) {
             targetServer = rootedServersByFreeRam[i];
             let maxThreadsHere = Math.min(remainingThreads, computeMaxThreads(targetServer));
+            if(!splitting&&maxThreadsHere<remainingThreads)continue;
             if (maxThreadsHere <= 0)
                 continue; //break; HACK: We don't break here because there are cases when sort order can change (e.g. we've reserved home RAM)
 
@@ -1893,7 +1932,8 @@ export async function main(ns) {
             if(limited&&!reserveHackingProcess(hackingProcessBudget))return false;
             let pid;
             if(limited&&lastHackingInventory?.drain)lastHackingInventory.drain.invalidated=true;
-            try{pid=await exec(ns, tool.name, targetServer.name, { threads: maxThreadsHere, temporary: (tool.runOptions.temporary ?? true) }, ...(limited?withHgwPiece(args,maxThreadsHere):(args || [])));}
+            const physical=physicalThreads(maxThreadsHere,targetServer);
+            try{pid=await exec(ns, tool.name, targetServer.name, { threads: physical, temporary: (tool.runOptions.temporary ?? true) }, ...(limited?withHgwPiece(args,physical,maxThreadsHere):(args || [])));}
             catch(error){if(limited)releaseHackingProcess(hackingProcessBudget);throw error;}
             if (pid == 0) {
                 if(limited)releaseHackingProcess(hackingProcessBudget);
@@ -2442,8 +2482,10 @@ export async function main(ns) {
                 const network=getNetworkStats(),ownedRam=Object.values(lastHackingInventory?.allocations||{}).reduce((sum,a)=>sum+(a.ram||0),0),ram=network.totalFreeRam+ownedRam;
                 const largestTotal=Math.max(0,...getAllServers().filter(s=>s.hasRoot()).map(s=>s.totalRam()));
                 const largestHostRam=Math.max(0,...network.listOfServersFreeRam,largestTotal-Math.max(0,network.totalUsedRam-ownedRam));
-                const candidates=[...new Set([eligible.find(s=>s.name===current),...eligible.slice(0,8)].filter(Boolean))];
-                const quotes=enabled?candidates.map(s=>quoteHackingTarget({...s.server,hostname:s.name,moneyMax:s.getMaxMoney(),minDifficulty:s.getMinSecurity(),hackDifficulty:s.getSecurity(),moneyAvailable:s.getMoney()},_cachedPlayerInfo,ns.formulas.hacking,{ram,largestHostRam,cycleMs:cycleTimingDelay,queueMs:queueDelay,maxBatches,weakenPower:actualWeakenPotency(),padding:recoveryThreadPadding,costs:{hack:getTool('hack').cost,grow:getTool('grow').cost,weak:getTool('weak').cost},incomeMultiplier:bitNodeMults.ScriptHackMoneyGain,workerLimit:hackingProcessBudget.limit,fraction:s.percentageToSteal})).filter(Boolean):[];
+                const quoteHosts=network.hosts?.map(h=>{const b=lastHackingInventory?.hostBudgets?.[h.host];return {...h,ram:b?Math.max(0,Math.min(h.maxRam,h.maxRam-b.usedRam+b.ownedRam)):h.ram};});
+                const candidates=enabled?selectHackingTargetCandidates(eligible,current,s=>ns.formulas.hacking.weakenTime(s.server,_cachedPlayerInfo),targetPaybackPlan?.candidate):[];
+                const planningUntil=Date.now()+20;
+                const quotes=enabled?candidates.map(s=>quoteHackingTarget({...s.server,hostname:s.name,moneyMax:s.getMaxMoney(),minDifficulty:s.getMinSecurity(),hackDifficulty:s.getSecurity(),moneyAvailable:s.getMoney()},_cachedPlayerInfo,ns.formulas.hacking,{now:Date.now,planningUntil,ram,largestHostRam,cycleMs:cycleTimingDelay,queueMs:queueDelay,maxBatches,weakenPower:actualWeakenPotency(),padding:recoveryThreadPadding,costs:{hack:getTool('hack').cost,grow:getTool('grow').cost,weak:getTool('weak').cost},incomeMultiplier:bitNodeMults.ScriptHackMoneyGain,workerLimit:hackingProcessBudget.limit,fraction:s.percentageToSteal,optimizeFractions:true,maxFraction:options['max-steal-percentage'],hosts:quoteHosts,logGrowth:quoteHosts?Math.log(1+(unadjustedGrowthRate-1)/100)*s.serverGrowthPercentage():0})).filter(Boolean):[];
                 let telemetry;try{telemetry=JSON.parse(ns.read('tasks/hgw-misfires.json'));}catch{}
                 const drainPadding=hackingDrainPadding(telemetry,{now,ownerPid:ns.pid,reset:resetInfo,baseMs:Math.max(250,cycleTimingDelay/4)});
                 for(const quote of quotes){quote.drain=estimateHackingDrain(lastHackingInventory?.drain,quote.name,{now,ownerPid:ns.pid,reset:resetInfo,fallbackMs:quote.weakMs,paddingMs:drainPadding.paddingMs});}

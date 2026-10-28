@@ -1,3 +1,5 @@
+import {gangPreparationPhase} from '../gang-power-policy.js';
+import {gangPulseObservation,gangPulseCalibration} from '../gang-policy.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {sleeveRecoveryForecast,sleeveAugRecoveryPlan} from '../sleeve-development-policy.js';
@@ -78,21 +80,22 @@ test('executed gang polling confirms a rival tick once and forwards its native t
  const start=source.indexOf('async function mainLoop(ns)'),end=source.indexOf('\n/** @param {NS} ns\n * Do some things',start);
  assert.ok(start>0&&end>start);
  const at=Date.now(),gangs={Own:{power:10,territory:.5},Rival:{power:20,territory:.5}};
- const previous=gangTerritorySample(null,gangs,'Own',at-200),cycle={info:{power:10,territoryWarfareEngaged:false},others:{...gangs,Rival:{power:21,territory:.5}},bonusMs:0,at};
+ const previous=gangTerritorySample(null,gangs,'Own',at-200),cycle={info:{faction:'Own',territory:.5,power:10,territoryWarfareEngaged:false},others:{...gangs,Rival:{power:21,territory:.5}},bonusMs:0,at};
  const events=[];
- const build=Function('getNsDataThroughFile','gangTerritorySample','gangTerritoryDeadline','gangTerritoryTiming','previous','cycle','events',`
+ const build=Function('getNsDataThroughFile','gangTerritorySample','gangTerritoryDeadline','gangTerritoryTiming','previous','cycle','events','gangPulseCalibration','gangPreparationPhase','gangPulseObservation',`
+ const gangWarfareThreshold=()=>.75,gangTrainingFirst=()=>true,resetInfo={lastNodeReset:1,lastAugReset:2};let nextWarfareCheck=Infinity;
   const wantedPreparation=null,options={},trainingEpisodes={},trainingPlans={},ascensionRecoveries={};
   const maintenanceRequested=()=>false,myGangFaction='Own',myGangMembers=Array(12),updateInterval=200,territoryTickTime=20000;
-  let lastOtherGangInfo=previous,lastLoopTime=cycle.at-200,territoryNextTick=cycle.at,territoryTickDetected=true,
+  let preparationPhase=null,pendingPowerPulse=null,powerCalibration=[];let lastOtherGangInfo=previous,lastLoopTime=cycle.at-200,territoryNextTick=cycle.at,territoryTickDetected=true,
    isReadyForNextTerritoryTick=true,warfareFinished=false,territoryTickWaitPadding=200,lastTerritoryPower=10;
   const onTerritoryTick=async(ns,info,tick)=>events.push(tick);
   const updateMemberActivities=async()=>{throw Error('Unexpected warfare preparation on an observed tick');};
   const log=()=>{};
   ${source.slice(start,end)}
-  return async()=>{await mainLoop({});await mainLoop({});};`);
+  return async()=>{const ns={pid:7,read:()=>'',write:async()=>{}};await mainLoop(ns);await mainLoop(ns);};`);
  const {gangTerritoryTiming}=await import('../gang-policy.js');
- await build(async()=>cycle,gangTerritorySample,gangTerritoryDeadline,gangTerritoryTiming,previous,cycle,events)();
- assert.deepEqual(events,[{observed:true,at,bonusMs:0}]);
+ await build(async()=>cycle,gangTerritorySample,gangTerritoryDeadline,gangTerritoryTiming,previous,cycle,events,gangPulseCalibration,gangPreparationPhase,gangPulseObservation)();
+ assert.deepEqual(events,[{observed:true,at,bonusMs:0,powerPulseState:'no-pulse'}]);
  const init=source.slice(0,start);
  assert.doesNotMatch(init,/observed:tickObserved/);
 });

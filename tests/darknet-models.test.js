@@ -84,3 +84,14 @@ test('scout recovery requires a stale heartbeat from the same PID', () => {
   assert.equal(isStalledScout({ pid: 42 }, { pid: 42, at: now }, now), false);
   assert.equal(isStalledScout({ pid: 42 }, {}, now), false);
 });
+
+test('numeric range solver resumes across short turns without repeating guesses',async()=>{
+ const f=simulation('AccountsManager_4.2','48753',(guess,password)=>({data:Number(guess)>Number(password)?'Lower':'Higher'}));
+ f.details.probeBudget=2;const state={};let result;
+ for(let turn=0;turn<20;turn++){
+  const before=f.guesses.length;result=await solveFeedbackPassword(f.details,f.attempt,f.readLogs,state);
+  assert.ok(f.guesses.length-before<=2);if(result.success)break;
+  assert.match(result.reason,/progress retained/);
+ }
+ assert.equal(result.password,'48753');assert.equal(new Set(f.guesses).size,f.guesses.length);
+});

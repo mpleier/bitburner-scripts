@@ -109,6 +109,13 @@ export function hashSpendingDecision(ns,action,options={}) {
  const cashTarget=cashAllowed?(playerMoney<300000?300000:Number.isFinite(saving?.cost)&&saving.cost>playerMoney?saving.cost:null):null;
  const cashPurchasesNeeded=cashTarget===null?0:Math.ceil((cashTarget-playerMoney)/1000000);
  if(cashPurchasesNeeded>0){preferred='Sell for Money';priorityCost=costOf(preferred)*cashPurchasesNeeded;priorityReason=playerMoney<300000?'Casino bootstrap cash':'Reachable augmentation cash target';}
+ const corporate=read('tasks/corporation-hash-goal.json'),milestone=corporate?.milestone;
+ const corporateFresh=corporate?.schemaVersion===1&&corporate.priority===true&&ns.read('remote-control/paused/corporation-manager.js.txt').trim()!=='true'&&corporate.nodeReset===reset.lastNodeReset&&corporate.augReset===reset.lastAugReset&&Number.isFinite(corporate.at)&&corporate.at<=now&&now-corporate.at<45000&&
+  processes.some(p=>p.pid===corporate.ownerPid&&p.filename.replace(/^\//,'')==='corporation-manager.js');
+ const corporateAction=milestone?.action,corporateReward=corporateAction==='Sell for Corporation Funds'?1e9:corporateAction==='Exchange for Corporation Research'?1000:0;
+ const corporateCost=corporateReward?costOf(corporateAction):Infinity,unreserved=Math.max(0,playerMoney-Math.max(0,Number(ns.read('reserve.txt'))||0));
+ const corporatePriority=corporateFresh&&corporateReward>0&&milestone.reward===corporateReward&&Number.isFinite(milestone.gap)&&milestone.gap>0&&milestone.gap<=corporateReward&&Number.isFinite(corporateCost)&&corporateCost>0&&corporateCost<=5000&&corporateCost*cashPerHash<=unreserved*.05;
+ if(corporatePriority&&!cashPurchasesNeeded&&!rankGateReady&&route?.routes?.[route.selected]?.etaMs!==0){preferred=corporateAction;priorityCost=corporateCost;priorityReason='Complete corporation growth milestone: '+milestone.label;}
  const cost=action==='__capacity__'?0:costOf(action);
  const common={preferred,cashTarget,cashPurchasesNeeded,rankHashCost,spHashCost,knownMaximumRank:history?.knownMax?Math.max(rankNow||0,history.maxRank):null,priorityCost:Number.isFinite(priorityCost)?priorityCost:null,priorityReason,rankSpGain,probe,rankNow,rankGap,rankSecondsSaved,rankSpSecondsSaved,spSecondsSaved,rankValuePerHash,spValuePerHash,rankGateReady,
   skillGoal:skillGoal?{name:skillGoal.name||null,state:skillGoal.state,cost:skillGoal.cost??null,shortfall:skillShortfall,naturalFundingSeconds:skillGoalEtaSeconds,fundingPlan:skillFundingPlan}:null,
@@ -201,7 +208,7 @@ export function hashSpendingDecision(ns,action,options={}) {
    while(queue.length&&visited.size<1024){const host=queue.shift();if(visited.has(host))continue;visited.add(host);try{backlog+=ns.ls(host,'.cct').length;queue.push(...ns.scan(host).filter(h=>!visited.has(h)));}catch{}}
    if(backlog>0||cashCost>free*.001)return result(false,'Solve existing contracts or retain cash first',{...common,contractBacklog:backlog});
   }else if(action==='Sell for Corporation Funds'||action==='Exchange for Corporation Research'){
-   if(options.corporationUseful!==true||cashCost>free*.01)return result(false,'No near-term corporate milestone worth the cash opportunity cost',common);
+   if(options.corporationUseful!==true||cashCost>free*(corporatePriority&&corporateAction===action ? .05 : .01))return result(false,'No near-term corporate milestone worth the cash opportunity cost',common);
   }
  }
  return result(cost<=budget,cost<=budget?'Purchase fits the shared hash budget':'Saving for '+preferred,{...common,budget});

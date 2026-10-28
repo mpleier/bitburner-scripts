@@ -14,7 +14,7 @@ test('warfare requires safe odds against every active rival',()=>{
  const rivals={Weak:{power:1,territory:.3},Strong:{power:200,territory:.5}};
  const decision=warfareDecision(gang,rivals);assert.ok(decision.average>.6);assert.equal(decision.engage,false);
  assert.equal(warfareDecision({...gang,power:1000},rivals).engage,true);
- assert.equal(warfareDecision({...gang,power:1000,territory:1},rivals).engage,false);
+ assert.equal(warfareDecision({...gang,power:1000,territory:1},rivals).engage,true);
  assert.equal(warfareDecision(gang,{Gone:{power:1e9,territory:0}}).engage,false);
 });
 test('ascensions retain recruitment respect and stagger member resets',()=>{
@@ -86,7 +86,7 @@ test('gang plans prefer feasibility before profit and reduce infeasible wanted g
 test('recruitment, tasks, ascensions and clashes recheck pause state in generated workers',async()=>{
  const s=await readFile(new URL('../gangs.js',import.meta.url),'utf8');
  assert.ok(s.includes('while (!isScriptPaused(ns,ns.getScriptName()))'));assert.ok(s.includes('if(!await doRecruitMember(ns))await ns.sleep(1000)'));
- assert.ok(s.includes('steps<myGangMembers.length*allTaskNames.length'));assert.ok(s.includes('const engage=allowed&&ns.args[0]&&'));
+ assert.ok(s.includes('steps<myGangMembers.length*allTaskNames.length'));assert.ok(s.includes('const engage=!!(allowed&&ns.args[0]&&'));
  assert.ok(s.includes('autopilotSourceFiles(resetInfo)'));assert.ok(s.includes('suspendGangWarfare(ns,assignedTasks)'));
 });
 

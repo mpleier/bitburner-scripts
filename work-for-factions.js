@@ -795,16 +795,35 @@ async function monitorStudies(ns, stat, requirement) {
 }
 
 /** @param {NS} ns */
+export async function factionInviteBackdoorReady(ns,factionName) {
+    const server=requiredBackdoorByFaction[factionName];
+    if(!server)return true;
+    try {
+        const installed=await getNsDataThroughFile(ns,'ns.getServer(ns.args[0]).backdoorInstalled',
+            '/Temp/faction-invite-backdoor.txt',[server]);
+        if(installed===true)return true;
+        ns.print(`INFO: Deferring ${factionName} invitation wait until ${server} is backdoored.`);
+    } catch(error) {ns.print(`INFO: Deferring ${factionName} invitation wait: backdoor status unavailable (${String(error)}).`);}
+    return false;
+}
+
 export async function waitForFactionInvite(ns, factionName, maxWaitTime = waitForFactionInviteTime) {
     ns.print(`Waiting for invite from faction "${factionName}" (game may delay this up to ${formatDuration(maxWaitTime)})...`);
+    if(!Number.isFinite(maxWaitTime)||maxWaitTime<=0)return false;
+    const startedAt=Date.now(),deadline=startedAt+maxWaitTime*2;
     let waitTime = maxWaitTime;
     let lastFactionCount = null;
+    let backdoorChecked=false;
     do {
         var invitations = await checkFactionInvites(ns);
         var joinedFactions = (await getPlayerInfo(ns)).factions;
         const factionCount = invitations.length + joinedFactions.length;
         if (invitations.includes(factionName) || joinedFactions.includes(factionName))
             break;
+        if(!backdoorChecked){
+            if(!(await factionInviteBackdoorReady(ns,factionName)))return false;
+            backdoorChecked=true;
+        }
         // If we recieved an invite, just not for the faction we wanted, reset the timer
         if (lastFactionCount === null) lastFactionCount = factionCount;
         if (factionCount > lastFactionCount) {
@@ -813,12 +832,14 @@ export async function waitForFactionInvite(ns, factionName, maxWaitTime = waitFo
             waitTime = maxWaitTime;
             lastFactionCount = factionCount;
         }
-        await ns.sleep(loopSleepInterval);
-    } while (!invitations.includes(factionName) && !joinedFactions.includes(factionName) && (waitTime -= loopSleepInterval) > 0);
+        const remaining=deadline-Date.now();
+        if(remaining<=0)break;
+        await ns.sleep(Math.min(loopSleepInterval,remaining));
+    } while (Date.now()<deadline && !invitations.includes(factionName) && !joinedFactions.includes(factionName) && (waitTime -= loopSleepInterval) > 0);
     if (joinedFactions.includes(factionName)) // Another script may have auto-joined this faction before we could
         ns.print(`An external script has joined faction "${factionName}" for us.`);
     else if (!invitations.includes(factionName)) {
-        log(ns, `ERROR: Waited ${formatDuration(maxWaitTime)}, but still have not recieved an invite for faction: "${factionName}" (Requirements not met?)`, false, 'error');
+        log(ns, `ERROR: Waited ${formatDuration(Date.now()-startedAt)}, but still have not recieved an invite for faction: "${factionName}" (Requirements not met?)`, false, 'error');
         return;
     } else if (!(await tryJoinFaction(ns, factionName))) {
         log(ns, `ERROR: Something went wrong. Earned "${factionName}" faction invite, but failed to join it.`, false, 'error');

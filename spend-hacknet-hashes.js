@@ -1,3 +1,4 @@
+import {rankHashMaintenanceRequired} from './bladeburner-rank-support-policy.js';
 import {hashSpendingDecision,spendHashesWithPolicy,fundHashCashGoal} from './hash-spending-policy.js';
 import {readNodeRoutePlan} from './node-route-policy.js';
 import { claimSpending } from './spending-policy.js';
@@ -112,7 +113,7 @@ export async function main(ns) {
         if (lowPriority && ns.hacknet.numHashes() > 0) // Low priority mode means any competing scripts should get to spend hashes first.
             await ns.sleep(interval); // Yeild for an additional interval to give competing scripts a chance to spend first. 
         if(isScriptPaused(ns,ns.getScriptName()))break;
-        if(maintenanceRequested(ns)){await report("waiting",{reason:"Automation maintenance"});await ns.sleep(Math.max(50,interval));continue;}
+        if(rankHashMaintenanceRequired(ns,toBuy)){await report("waiting",{reason:"Automation maintenance"});await ns.sleep(Math.max(50,interval));continue;}
         try {
             let capacity = ns.hacknet.hashCapacity() || 0;
             let currentHashes = ns.hacknet.numHashes();
@@ -135,7 +136,7 @@ export async function main(ns) {
             // Define the spend hash loop as a local function, since we may need to call it twice.
             lastProduction = globalProduction;
             const fnSpendHashes = async (purchases, spendAllHashes) => {
-                if(isScriptPaused(ns,ns.getScriptName())||maintenanceRequested(ns)||!achievementActionAllowed(ns,'hashSpending'))return;
+                if(isScriptPaused(ns,ns.getScriptName())||rankHashMaintenanceRequired(ns,toBuy)||!achievementActionAllowed(ns,'hashSpending'))return;
                 purchases=purchases.filter(action=>action!==sellForMoney||achievementActionAllowed(ns,'hacknetMoney'));
                 const startingHashes = ns.hacknet.numHashes() || 0;
                 capacity = ns.hacknet.hashCapacity() || 0;
@@ -147,7 +148,7 @@ export async function main(ns) {
                     lastPurchaseSucceeded = false; // Safety mechanism to avoid looping if we don't enter the for-loop below for some reason
                     // Loop over all requested purchases and try to buy each one once (TODO: Figure out in advance how many we can buy of each and buy in bulk)
                     for (const spendAction of purchases) {
-                        if(purchasesThisLoop>=maxPurchasesPerLoop||isScriptPaused(ns,ns.getScriptName())||maintenanceRequested(ns)||!achievementActionAllowed(ns,'hashSpending'))return;
+                        if(purchasesThisLoop>=maxPurchasesPerLoop||isScriptPaused(ns,ns.getScriptName())||rankHashMaintenanceRequired(ns,toBuy)||!achievementActionAllowed(ns,'hashSpending'))return;
                         if(spendAction===sellForMoney&&!achievementActionAllowed(ns,'hacknetMoney'))continue;
                         const cost = ns.hacknet.hashCost(spendAction); // What's the cost of making this purchase
                         const budget = Math.min(maxHashSpend(),routeBudget(spendAction,hashesEarnedNextTick));

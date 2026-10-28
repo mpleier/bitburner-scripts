@@ -112,7 +112,7 @@ export function bladeburnerGrowthChoice(actions,context,{hyperdrive=0,trainingTi
   const gain=(Math.pow(a.difficulty,.28)+a.difficulty/650)*(.5+.5*a.chance)*(1+.1*hyperdrive)*a.duty;
   const rates=Object.fromEntries(Object.entries(a.weights).map(([stat,weight])=>[stat,weight*gain*(stat==='intelligence'?.003:1)]));
   const score=combatXpValue(rates,context);
-  if(score>(best?.score||0))best={name:a.name,level:a.level,score,rates,time:a.time,duty:a.duty,recovery:a.recovery??null,progressMs:a.progressMs??0,supply:a.supply===undefined&&context?.growthSupply?(context.growthSupply[a.name]??null):a.supply,kind:'mission'};
+  if(score>(best?.score||0))best={name:a.name,level:a.level,score,rates,time:a.time,duty:a.duty,recovery:a.recovery??null,rankPerCycle:a.rankPerCycle,progressMs:a.progressMs??0,supply:a.supply===undefined&&context?.growthSupply?(context.growthSupply[a.name]??null):a.supply,kind:'mission'};
  }
  if(trainingAllowed&&Number.isFinite(trainingTime)&&trainingTime>0) {
   const rates=Object.fromEntries(['strength','defense','dexterity','agility'].map(stat=>[stat,30*(context?.player?.mults?.[stat+'_exp']??1)/(trainingTime/1000)]));

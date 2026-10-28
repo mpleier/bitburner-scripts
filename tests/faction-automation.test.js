@@ -1,3 +1,4 @@
+import {augmentationBatchFunded} from '../augmentation-economics-policy.js';
 import {captureAugmentationEconomics,augmentationEconomicsChange,invalidateAugmentationFunding} from '../augmentation-economics-policy.js';
 import {captureAugmentationOwnership} from '../augmentation-ownership-policy.js';
 import test from 'node:test';
@@ -66,7 +67,7 @@ function load(source,context,append){vm.runInNewContext(source.replace(/^import[
 test('serialized faction spending workers recheck reserve and parent ownership',async()=>{
  const source=await readFile(new URL('../faction-manager.js',import.meta.url),'utf8'),m=market();
  const ns={pid:1,getResetInfo:()=>({lastAugReset:1,lastNodeReset:1,ownedAugs:{}}),getFavorToDonate:()=>150,isRunning:()=>true,read:f=>f==='reserve.txt'?'700':'',getPlayer:m.api.player,singularity:{getOwnedAugmentations:()=>[],getAugmentationPrice:m.api.price,purchaseAugmentation:m.api.buy}};
- const context={captureAugmentationOwnership,captureAugmentationEconomics,augmentationEconomicsChange,factionControlAllowed,factionPurchaseBatch,achievementActionAllowed:()=>true,getNsDataThroughFile:async(ns,expression,file,args)=>{assert.ok(args.every(a=>['number','boolean','string'].includes(typeof a)));ns.args=args;return vm.runInNewContext(expression,{ns});}};
+ const context={augmentationBatchFunded,captureAugmentationOwnership,captureAugmentationEconomics,augmentationEconomicsChange,factionControlAllowed,factionPurchaseBatch,achievementActionAllowed:()=>true,getNsDataThroughFile:async(ns,expression,file,args)=>{assert.ok(args.every(a=>['number','boolean','string'].includes(typeof a)));ns.args=args;return vm.runInNewContext(expression,{ns});}};
  context.ns=ns;load(source,context,';ownershipSnapshot=captureAugmentationOwnership(ns);economicsSnapshot=captureAugmentationEconomics(ns,{augmentations:[],factions:[]});options={};bitNodeMults={FactionWorkRepGain:1};globalThis.execute=executeFactionPurchases;');
  assert.equal(await context.execute(ns,[{faction:'a',augmentation:'a'}]),0);assert.deepEqual(m.bought,[]);
 });
@@ -74,7 +75,35 @@ test('serialized faction spending workers recheck reserve and parent ownership',
 test('serialized faction work cannot replace a graft that starts before execution',async()=>{
  const source=await readFile(new URL('../work-for-factions.js',import.meta.url),'utf8');let calls=0;
  const ns={pid:1,getScriptName:()=> 'work-for-factions.js',read:()=>'',isRunning:()=>true,singularity:{getCurrentWork:()=>({type:'GRAFTING'}),workForFaction:()=>{calls++;return true;}}};
- const context={factionControlAllowed,getNsDataThroughFile:async(ns,expression,file,args)=>{ns.args=args;return vm.runInNewContext(expression,{ns});}};
+ const context={augmentationBatchFunded,factionControlAllowed,getNsDataThroughFile:async(ns,expression,file,args)=>{ns.args=args;return vm.runInNewContext(expression,{ns});}};
  load(source,context,';globalThis.command=factionWorkCommand;');
  assert.equal(await context.command(ns,'ns.singularity.workForFaction(ns.args[0],ns.args[1],ns.args[2])',['a','hacking',false]),false);assert.equal(calls,0);
+});
+
+
+test('blocked augmentation never gives cheaper later purchases a chance to inflate it',()=>{
+ for(const first of [1001,NaN,Infinity,-1]){
+  const calls=[],quotes=[],api={player:()=>({money:1000}),price:a=>{quotes.push(a);return a==='Priority'?first:1;},buy:(_f,a)=>{calls.push(a);return true;}};
+  assert.equal(factionPurchaseBatch(api,[{augmentation:'Priority'},{augmentation:'Cheap'}],()=>true,()=>0),0);
+  assert.deepEqual(calls,[]);assert.deepEqual(quotes,['Priority']);
+ }
+});
+
+test('failed native purchase stops immediately and preserves an already purchased prefix',()=>{
+ const calls=[],api={player:()=>({money:1000}),price:()=>1,buy:(_f,a)=>{calls.push(a);return a!=='Blocked';}};
+ const orders=['Good','Blocked','Cheap','NeuroFlux Governor'].map(augmentation=>({augmentation}));
+ assert.equal(factionPurchaseBatch(api,orders,()=>true,()=>0),1);assert.deepEqual(calls,['Good','Blocked']);
+});
+
+test('a blocked donation does not spend reputation cash at later factions',()=>{
+ for(const fail of ['reject','reserve','invalid']){
+  const calls=[],api={player:()=>({money:1000,mults:{faction_rep:1}}),rep:()=>0,
+   donate:(f)=>{calls.push(f);return false;}};
+  const orders=[{faction:'First',targetRep:1,repDonation:1e6},{faction:'Later',targetRep:0.0001,repDonation:100}];
+  if(fail==='invalid')api.player=()=>({money:1000,mults:{faction_rep:0}});
+  const reserve=fail==='reserve'?1000:0;
+  if(fail==='reject')orders[0]={faction:'First',targetRep:0.0001,repDonation:100};
+  assert.equal(factionPurchaseBatch(api,orders,()=>true,()=>reserve,true),0);
+  assert.deepEqual(calls,fail==='reject'?['First']:[]);
+ }
 });

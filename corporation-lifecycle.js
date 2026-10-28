@@ -22,17 +22,17 @@ export function investmentDecision(info,offer,previous,minOwnership=.5,{now=Date
  if(!info.public&&(!offer||!Number.isInteger(offer.round)))return {accept:false,holdIPO:true,reason:'Investment offer unavailable',history:previous};
  const remaining=!info.public&&offer?.round>=1&&offer.round<=4&&offer.shares>0&&offer.funds>0;
  const floorBlocked=remaining&&(info.numShares-offer.shares)/info.totalShares<minOwnership;
- const same=previous?.round===offer?.round&&Number.isFinite(previous.since)&&previous.since<=now;
+ const same=!!previous&&previous.round===offer?.round&&Number.isFinite(previous.since)&&previous.since<=now;
  const anchor=same?(Number(previous.growthAnchor)||Number(previous.peak)||offer.funds):offer?.funds;
  const grew=same&&offer.funds>anchor*1.02;
  const history={round:offer?.round,since:same?previous.since:now,peak:Math.max(same?previous.peak||0:0,offer?.funds||0),growthAnchor:!same||grew?offer?.funds:anchor,lastGrowthAt:!same||grew?now:previous.lastGrowthAt??previous.since};
  if(!remaining)return {accept:false,holdIPO:false,reason:'No private investment rounds remain',history};
  if(floorBlocked)return {accept:false,holdIPO:false,reason:'Next round violates the configured ownership floor',history};
  if(!acceptVentureOffer(info,offer,minOwnership))return {accept:false,holdIPO:true,reason:'Offer is too small relative to operating profit',history};
- const emergency=info.funds<reserve*1.5;
+ const emergency=Number.isFinite(info.funds)&&info.funds<=1e6||Number.isFinite(info.expenses)&&info.expenses>info.revenue&&info.funds<info.expenses*cycleSeconds*2;
  const settled=now-history.lastGrowthAt>=cycleSeconds*1000*10;
  const timeout=now-history.since>=30*60000;
- const accept=emergency||timeout||stageReady&&settled;
+ const accept=emergency||stageReady&&(timeout||settled);
  return {accept,holdIPO:true,reason:accept?emergency?'Operating capital needed':timeout?'Bounded funding wait elapsed':'Offer growth has settled':!stageReady?'Waiting for supply chain or completed products':'Waiting for improving valuation',history};
 }
 /** Source share sales reprice by at most -0.5% per million shares. Lower-bound proceeds. */

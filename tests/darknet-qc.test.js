@@ -4,6 +4,7 @@ import {readFileSync} from 'node:fs';
 import {isBlankPassword,parsePasswordEntries,modelCandidates,solveFeedbackPassword,solveNilPassword,solveMastermindPassword} from '../darknet-solvers.js';
 import {main as manager} from '../darknet-manager.js';
 import {main as scout} from '../darknet-node.js';
+import {decodeCredentials,credentialBundle} from '../darknet-credentials.js';
 
 function feedback(guess,password) {
   let exact=0,misplaced=0;const counts={};
@@ -108,10 +109,27 @@ async function runBlankWorker(kind,saved,details) {
 test('home manager and remote scout discover, save and reuse blank passwords',async()=>{
   for(const kind of ['manager','scout']){
     const files=await runBlankWorker(kind,undefined,{modelId:'ZeroLogon',passwordLength:0,passwordFormat:'numeric'});
-    assert.equal(files.get('darknet-passwords-target.txt'),'target=\n');
+    const store=kind==='manager'?credentialBundle:'tasks/credentials-report-origin.json';
+    assert.equal(decodeCredentials(files.get(store)).get('target').password,'');
+    assert.equal(files.has('darknet-passwords-target.txt'),false);
     await runBlankWorker(kind,'',{modelId:'unknown',passwordLength:4,passwordFormat:'numeric'});
   }
 });
 test('both deployment lists include the feedback dependency',()=>{
   for(const file of ['darknet-manager.js','darknet-node.js'])assert.match(readFileSync(new URL('../'+file,import.meta.url),'utf8'),/const codeFiles = \[[^\]]*"darknet-feedback\.js"/);
+});
+
+test('short feedback turns retain progress and solve without duplicate guesses',async()=>{
+ for(const model of ['NIL','DeepGreen']) {
+  const p=puzzle(model,'98765');p.details.probeBudget=3;
+  const state={};let solved=false;
+  for(let i=0;i<100;i++) {
+   const before=p.guesses.length;
+   const result=await solveFeedbackPassword(p.details,p.auth,p.readLogs,state);
+   assert.ok(p.guesses.length-before<=3);
+   if(result.success){assert.equal(result.password,'98765');solved=true;break;}
+   assert.match(result.reason,/progress retained/);
+  }
+  assert.equal(solved,true);assert.equal(new Set(p.guesses).size,p.guesses.length);
+ }
 });

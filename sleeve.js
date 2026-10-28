@@ -1,3 +1,4 @@
+import {sleeveRepHandoffFile,planSleeveRepHandoff,executeSleeveRepHandoff} from './sleeve-rep-handoff-policy.js';
 import {readSupportInvestment} from './bladeburner-support-economics-policy.js';
 import {startSleeveCombatGym,committedSleeveGymSeconds} from './bb-stat-development-policy.js';
 import {sleeveKarmaTrainingPlan} from './sleeve-karma-training-policy.js';
@@ -6,14 +7,14 @@ import {blackOpMetadata} from './bladeburner-action-data.js';
 import {observeSleeveXp,incomingSleeveXp} from './sleeve-xp-policy.js';
 import {sampleSleeveReputation,observeSleeveReputation,sleeveWorkOutput,planSleeveWorkAugPurchase} from './sleeve-work-policy.js';
 import {hashSpendingDecision,spendHashesWithPolicy} from './hash-spending-policy.js';
-import { sleeveCombatCrime,planSleeveAugPurchase,sleeveAugRecoveryPlan,sleeveCombatWorkers, sleeveRecoveryObservation, sleeveDevelopmentActive } from './sleeve-development-policy.js';
+import { allocateSleeveAugBudget,sleeveCombatCrime,planSleeveAugPurchase,sleeveAugRecoveryPlan,sleeveCombatWorkers, sleeveRecoveryObservation, sleeveDevelopmentActive } from './sleeve-development-policy.js';
 import {readNodeRoutePlan} from './node-route-policy.js';
 import {registerAutomation,automationHeartbeat,maintenanceRequested} from './runtime-policy.js';
 import {achievementActionAllowed} from './achievement-policy.js';
 import { augmentationCashReserve,claimSpending } from './spending-policy.js';
 import { chooseSleeveCrime } from './automation-policy.js';
 import { isScriptPaused } from './automation-control.js';
-import { sleeveStartupPlan, bestSleeveCrime, sleeveCrimeChance, sleeveRepAssignments, purchaseSleeveAugBatch, sleeveTaskMatches, sleeveReserves, sleeveControlAllowed, sleeveOptionsError, sleeveAugSpendingBudget, sleeveBladeburnerTasks, sleeveBladeburnerSupport } from './sleeve-policy.js';
+import { factionWorkScores,bestFactionWork,sleeveFactionRepScore, sleeveReputationReservations,sleeveReputationTask, sleeveStartupPlan, bestSleeveCrime, sleeveCrimeChance, sleeveRepAssignments, purchaseSleeveAugBatch, sleeveTaskMatches, sleeveReserves, sleeveControlAllowed, sleeveOptionsError, sleeveAugSpendingBudget, sleeveBladeburnerTasks, sleeveBladeburnerSupport } from './sleeve-policy.js';
 import { log, getConfiguration, instanceCount, disableLogs, getActiveSourceFiles, getNsDataThroughFile, formatMoney, formatDuration, tryGetBitNodeMultipliers } from './helpers.js'
 
 const argsSchema = [
@@ -125,7 +126,9 @@ export async function main(ns) {
 
 /** @param {NS} ns
  * Purchases augmentations for sleeves */
-async function manageSleeveAugs(ns, i, budget, reserve, sleeve, actualTask) {
+async function quoteSleeveAugs(ns, i, budget, reserve, sleeve, actualTask) {
+    const critical=worldDaemonPriority&&reputationAssignments[i]?.priority===0?reputationAssignments[i]:null;
+    if(!options['disable-adaptive-augmentations']&&critical&&(actualTask?.type!==critical.type||(actualTask.factionName||actualTask.companyName)!==critical.name))return null;
     budget=sleeveAugSpendingBudget(ns,Math.min(budget,Math.max(0,ns.getPlayer().money-Math.max(reserve,augmentationCashReserve(ns)))));
     // Retrieve and cache the set of available sleeve augs (cached temporarily, but not forever, in case rules around this change)
     if (availableAugs[i] == null || Date.now() > cacheExpiry[i]) {
@@ -159,18 +162,26 @@ async function manageSleeveAugs(ns, i, budget, reserve, sleeve, actualTask) {
         const externalXpPerSecond=incomingSleeveXp(sleeveXpObservation,sleeve,ownXp,ns.getResetInfo(),ns.pid);
         const externalXpSeconds=Math.max(0,Math.min(90,((sleeveXpObservation?.observedAt??0)+90000-Date.now())/1000));
         let plan=planSleeveAugPurchase({sleeve,offers,budget,crimes:crimeChoices,objective,nodeMultiplier:crimeNodeMultiplier,
-            context:{crimeExpMultiplier,crimeMoneyMultiplier,levelMultipliers:combatLevelMultipliers,externalXpPerSecond,externalXpSeconds},minBatch:options['min-aug-batch'],manual:options['disable-adaptive-augmentations']});
+            context:{crimeExpMultiplier,crimeMoneyMultiplier,levelMultipliers:combatLevelMultipliers,externalXpPerSecond,externalXpSeconds},minBatch:options['min-aug-batch'],manual:options['disable-adaptive-augmentations'],includeAlternatives:true});
         if(objective==='unpriced'&&!options['disable-adaptive-augmentations']){
             try{plan=await getNsDataThroughFile(ns,`(() => { const sleeveWorkOutput=${sleeveWorkOutput.toString()}; const incomingSleeveXp=${incomingSleeveXp.toString()}; const planSleeveAugPurchase=${planSleeveAugPurchase.toString()}; return (${planSleeveWorkAugPurchase.toString()})(ns,ns.args[0],JSON.parse(ns.args[1]),ns.args[2],JSON.parse(ns.args[3]),planSleeveAugPurchase,sleeveWorkOutput,incomingSleeveXp); })()`,
-                '/Temp/sleeve-work-purchase-plan.txt',[i,JSON.stringify(offers),budget,JSON.stringify({task:actualTask,ownerPid:ns.pid,xpObservation:sleeveXpObservation,levelMultipliers:combatLevelMultipliers,minBatch:options['min-aug-batch']})]);}
+                '/Temp/sleeve-work-purchase-plan.txt',[i,JSON.stringify(offers),budget,JSON.stringify({task:actualTask,ownerPid:ns.pid,xpObservation:sleeveXpObservation,levelMultipliers:combatLevelMultipliers,minBatch:options['min-aug-batch'],includeAlternatives:true})]);}
             catch(error){plan={names:[],cost:0,reason:'Work forecast unavailable; preserving sleeve skills: '+String(error)};}
         }
         sleevePurchasePlans[i]=plan;sleevePurchaseCheckedAt[i]=Date.now();
         if(!plan.names.length){ns.print('Sleeve '+i+' augmentation purchase deferred: '+plan.reason);return 0;}
-        const toPurchase=plan.names.map(name=>offers.find(a=>a.name===name));
+        return plan;
+    }
+    return null;
+}
+
+/** Commit only a selected quote; native guards recheck prices, shock, cash and controls. */
+async function purchaseSleeveAugs(ns,i,budget,reserve,plan) {
+    if(!plan?.names?.length)return 0;
+    budget=sleeveAugSpendingBudget(ns,Math.min(budget,Math.max(0,ns.getPlayer().money-Math.max(reserve,augmentationCashReserve(ns)))));
         const receipt = await getNsDataThroughFile(ns,
             `(() => { const claimSpending=${claimSpending.toString()}; return (${purchaseSleeveAugBatch.toString()})(ns,ns.args[0],JSON.parse(ns.args[1]),ns.args[2],ns.args[3],claimSpending,()=>(${sleeveControlAllowed.toString()})(ns,ns.args[4],"sleeve.js")&&(${achievementActionAllowed.toString()})(ns,"sleeve"),true,ns.args[5]); })()`,
-            '/Temp/sleeve-purchase.txt', [i, JSON.stringify(toPurchase.map(a => a.name)), Math.min(budget,plan.cost), reserve,ns.pid,!options['disable-adaptive-augmentations']]);
+            '/Temp/sleeve-purchase.txt', [i, JSON.stringify(plan.names), Math.min(budget,plan.cost), reserve,ns.pid,!options['disable-adaptive-augmentations']]);
         availableAugs[i] = null;recoveryOffers=null;
         if (receipt.purchased.length) {
             log(ns, `SUCCESS: Sleeve ${i} purchased ${receipt.purchased.length} augmentations for ${formatMoney(receipt.spent)}.`, false, 'success');
@@ -183,8 +194,6 @@ async function manageSleeveAugs(ns, i, budget, reserve, sleeve, actualTask) {
         if(receipt.purchased.length)lastPurchaseTime[i] = Date.now();
         sleevePurchasePlans[i]={...plan,at:Date.now(),state:receipt.purchased.length?'purchased':'deferred',receipt};
         return receipt.spent;
-    }
-    return 0;
 }
 
 /** @param {NS} ns
@@ -272,15 +281,15 @@ async function mainLoop(ns) {
     // If not disabled, set the "follow player" sleeve to be the first sleeve with 0 shock
     followPlayerSleeve = options['disable-follow-player'] ? -1 : undefined;
     for (let i = 0; i < numSleeves; i++) // Hack below: Prioritize sleeves doing bladeburner contracts, don't have them follow player
-        if (sleeveInfo[i].shock == 0 && sleeveInfo[i].sync >= 100 && (i === 0 || i > 3 || !playerInBladeburner || worldDaemonPriority))
+        if (sleeveInfo[i].shock == 0 && sleeveInfo[i].sync >= 100 )
             followPlayerSleeve ??= i; // Skips assignment if previously assigned
     followPlayerSleeve ??= 0; // If all have shock, use the first sleeve
     if ((4 in ownedSourceFiles) && !options['disable-auto-reputation'] && Date.now() >= nextRepRefresh) {
         try { reputationTargets = await getNsDataThroughFile(ns,
-            '(() => { const p=ns.getPlayer(), owned=new Set(ns.singularity.getOwnedAugmentations(true)), targets=[]; let gang=null; try{gang=ns.gang.inGang()?ns.gang.getGangInformation().faction:null;}catch{} for(const name of p.factions){if(name===gang)continue; const types=ns.singularity.getFactionWorkTypes(name); if(!types.length)continue; const augs=ns.singularity.getAugmentationsFromFaction(name).filter(a=>a!=="NeuroFlux Governor"&&!owned.has(a)); const rep=ns.singularity.getFactionRep(name), needed=Math.max(0,...augs.map(a=>ns.singularity.getAugmentationRepReq(a))); if(needed>rep)targets.push({type:"FACTION",name,workTypes:types,deficit:needed-rep,priority:augs.includes("The Red Pill")?0:1});} for(const name of Object.keys(p.jobs)){const rep=ns.singularity.getCompanyRep(name);if(rep<400000)targets.push({type:"COMPANY",name,deficit:400000-rep,priority:2});} return targets.sort((a,b)=>a.priority-b.priority||a.deficit-b.deficit); })()', '/Temp/sleeve-reputation-targets.txt'); } catch { reputationTargets = []; }
+            '(() => { const p=ns.getPlayer(), owned=new Set(ns.singularity.getOwnedAugmentations(true)), targets=[]; let gang=null; try{gang=ns.gang.inGang()?ns.gang.getGangInformation().faction:null;}catch{} for(const name of p.factions){if(name===gang)continue; const types=ns.singularity.getFactionWorkTypes(name); if(!types.length)continue; const augs=ns.singularity.getAugmentationsFromFaction(name).filter(a=>a!=="NeuroFlux Governor"&&!owned.has(a)); const rep=ns.singularity.getFactionRep(name), needed=Math.max(0,...augs.map(a=>ns.singularity.getAugmentationRepReq(a))); if(needed>rep)targets.push({type:"FACTION",name,workTypes:types,deficit:needed-rep,requiredRep:needed,priority:augs.includes("The Red Pill")?0:1});} for(const name of Object.keys(p.jobs)){const rep=ns.singularity.getCompanyRep(name);if(rep<400000)targets.push({type:"COMPANY",name,deficit:400000-rep,priority:2});} return targets.sort((a,b)=>a.priority-b.priority||a.deficit-b.deficit); })()', '/Temp/sleeve-reputation-targets.txt'); } catch { reputationTargets = []; }
         nextRepRefresh = Date.now() + 60000;
     }
-    const actualTasks = await getNsDataThroughFile(ns, 'ns.args.map(i=>ns.sleeve.getTask(i))', '/Temp/sleeve-tasks.txt', [...Array(numSleeves).keys()]);
+    let actualTasks = await getNsDataThroughFile(ns, 'ns.args.map(i=>ns.sleeve.getTask(i))', '/Temp/sleeve-tasks.txt', [...Array(numSleeves).keys()]);
     sleeveXpObservation=observeSleeveXp(sleeveXpObservation,sleeveInfo,actualTasks,Date.now(),reset,ns.pid);
     await ns.write('tasks/sleeve-xp-observation.json',JSON.stringify(sleeveXpObservation),'w');
     if(!sleeveReputationObservation||Date.now()-sleeveReputationObservation.at>=10000){
@@ -307,6 +316,14 @@ async function mainLoop(ns) {
         const gymKey=JSON.stringify(sleeveInfo.map(s=>[s.city,s.mults]));
         if(gymKey!==combatGymKey||Date.now()-combatGymAt>=10000)try{combatGymAt=Date.now();combatGymKey=gymKey;combatGymQuotes=await getNsDataThroughFile(ns,`(${quoteSleeveCombatGyms.toString()})(ns,JSON.parse(ns.args[0]),true)`,'/Temp/sleeve-combat-gyms.txt',[JSON.stringify(sleeveInfo)]);}catch{combatGymQuotes=[];}
     }else combatGymQuotes=[];
+    const explicitReservations=[];
+    if(playerInBladeburner&&!worldDaemonPriority&&!options['disable-bladeburner'])for(let i=0;i<numSleeves;i++)if(!adaptiveBladeburnerTasks[i]){
+        if(options['enable-bladeburner-team-building']&&(i===0||i===7))explicitReservations.push(i);
+        if(options['enable-bladeburner-contracts']&&i>=1&&i<=3&&Date.now()>(bladeburnerCooldown[i]||0)&&
+          (bladeburnerContractChances[i]?.[sleeveBbContractNames[i-1]]??0)>=minBbProbability&&(bladeburnerContractCounts[sleeveBbContractNames[i-1]]??0)>=minBbContracts)explicitReservations.push(i);
+    }
+    repContext={...repContext,reservedSleeves:sleeveReputationReservations(adaptiveBladeburnerTasks,[...bladeburnerSupportSleeves],explicitReservations)};
+    followPlayerSleeve=options['disable-follow-player']?-1:sleeveInfo.findIndex((s,i)=>s.shock===0&&s.sync>=100&&!repContext.reservedSleeves.includes(i));
     let followTarget = null;
     if ((4 in ownedSourceFiles) && followPlayerSleeve >= 0 && ['FACTION','COMPANY'].includes(playerWorkInfo.type)) {
         if (playerWorkInfo.type === 'COMPANY') followTarget = {type:'COMPANY',name:playerWorkInfo.companyName};
@@ -316,8 +333,25 @@ async function mainLoop(ns) {
         } catch { }
     }
     try{const share=await getNsDataThroughFile(ns,'ns.getSharePower()','/Temp/sleeve-share-power.txt');if(Number.isFinite(share)&&share>=1)repContext.shareBonus=share;}catch{repContext.shareBonus=1;}
-    reputationAssignments = sleeveRepAssignments(sleeveInfo.map((s,i)=>bladeburnerSupportSleeves.has(i)||bladeburnerDevelopmentPlan?.investmentWorkers?.includes(i)&&!['FACTION','COMPANY'].includes(actualTasks[i]?.type)?{...s,shock:100}:s), options['disable-auto-reputation'] ? [] : reputationTargets,
+    const assignReputation=()=>sleeveRepAssignments(sleeveInfo.map((s,i)=>bladeburnerSupportSleeves.has(i)||bladeburnerDevelopmentPlan?.investmentWorkers?.includes(i)&&!['FACTION','COMPANY'].includes(actualTasks[i]?.type)?{...s,shock:100}:s), options['disable-auto-reputation'] ? [] : reputationTargets,
         playerWorkInfo, followPlayerSleeve, playerInBladeburner&&!worldDaemonPriority, actualTasks, followTarget, worldDaemonPriority,repContext);
+    reputationAssignments=assignReputation();
+    if(worldDaemonPriority&&!options.crime&&!options['disable-auto-reputation']&&!startupUrgent&&achievementActionAllowed(ns,'sleeve')){
+        let history=null,valid=true;try{history=JSON.parse(ns.read(sleeveRepHandoffFile)||'null');}catch{valid=false;}
+        const reserved=[...repContext.reservedSleeves,...(bladeburnerDevelopmentPlan?.investmentWorkers||[])];
+        const proposal=valid?planSleeveRepHandoff(sleeveInfo,actualTasks,reputationAssignments,history,{...repContext,reservedSleeves:reserved,nodeReset:reset.lastNodeReset,augReset:reset.lastAugReset,ownerPid:ns.pid}):null;
+        if(proposal){
+            try{
+                const receipt=await getNsDataThroughFile(ns,`(() => {const factionWorkScores=${factionWorkScores.toString()};const bestFactionWork=${bestFactionWork.toString()};const score=${sleeveFactionRepScore.toString()};return (${executeSleeveRepHandoff.toString()})(ns,JSON.parse(ns.args[0]),score,()=>(${sleeveControlAllowed.toString()})(ns,ns.args[1],"sleeve.js")&&(${achievementActionAllowed.toString()})(ns,"sleeve")&&(${readNodeRoutePlan.toString()})(ns)?.selected==="hacking");})()`,
+                    '/Temp/sleeve-rep-handoff.txt',[JSON.stringify(proposal),ns.pid]);
+                ns.print('Sleeve reputation handoff: '+receipt.reason+(receipt.blocked?' (rollback unresolved; further handoffs blocked)':''));
+            }catch(error){ns.print('Sleeve reputation handoff deferred: '+String(error));}
+            // The native transaction owns the ledger; refresh reality even if its reply was lost.
+            sleeveInfo=await getAllSleeves(ns,numSleeves);
+            actualTasks=await getNsDataThroughFile(ns,'ns.args.map(i=>ns.sleeve.getTask(i))','/Temp/sleeve-tasks-after-handoff.txt',[...Array(numSleeves).keys()]);
+            reputationAssignments=assignReputation();
+        }
+    }
     if ((4 in ownedSourceFiles) && !Object.keys(cachedCrimeStats).length) {
         try { cachedCrimeStats = await getNsDataThroughFile(ns, 'Object.fromEntries(Object.values(ns.enums.CrimeType).map(name=>[name,ns.singularity.getCrimeStats(name)]))', '/Temp/sleeve-crime-stats.txt'); } catch { }
     }
@@ -333,7 +367,7 @@ async function mainLoop(ns) {
         nodeMultiplier:crimeNodeMultiplier,previousWorkers:startupPlan.stage==='gang-karma'?startupPlan.workers:[],enabled:adaptiveStartup});
     if(adaptiveStartup&&startupPlan.stage==='gang-karma'){
         const planningStarted=performance.now();
-        startupPlan.karmaTraining=sleeveKarmaTrainingPlan({sleeves:sleeveInfo,tasks:actualTasks,crimes:cachedCrimeStats,workers:startupPlan.workers,karma:ns.heart.break(),nodeMultiplier:crimeNodeMultiplier,crimeExpMultiplier,levelMultipliers:combatLevelMultipliers,recoveryRates:recoveryObservation.sleeves.map(s=>s.rate),enabled:!options['disable-training']&&!reset.bitNodeOptions?.disableSleeveExpAndAugmentation,canEvaluate:()=>performance.now()-planningStarted<20});
+        startupPlan.karmaTraining=sleeveKarmaTrainingPlan({sleeves:sleeveInfo,tasks:actualTasks,crimes:cachedCrimeStats,workers:startupPlan.workers,assignments:startupPlan.assignments,karma:ns.heart.break(),nodeMultiplier:crimeNodeMultiplier,crimeExpMultiplier,levelMultipliers:combatLevelMultipliers,recoveryRates:recoveryObservation.sleeves.map(s=>s.rate),enabled:!options['disable-training']&&!reset.bitNodeOptions?.disableSleeveExpAndAugmentation,canEvaluate:()=>performance.now()-planningStarted<20});
     }
     if (adaptiveStartup && startupPlan.stage === 'conditioning' && !options['disable-combat-xp-support'] &&
         !options['disable-bladeburner'] && playerInBladeburner && readNodeRoutePlan(ns)?.selected === 'bladeburner' &&
@@ -362,13 +396,25 @@ async function mainLoop(ns) {
     }
 
 
+    // Quote every healthy sleeve before committing any shared augmentation cash.
+    const augmentationQuotes=[];
+    if(!options['disable-adaptive-augmentations']&&!reset.bitNodeOptions?.disableSleeveExpAndAugmentation&&budget>0){
+        for(let i=0;i<numSleeves;i++){
+            if(isScriptPaused(ns,ns.getScriptName())||maintenanceRequested(ns))return;
+            if(sleeveInfo[i].shock!==0)continue;
+            const plan=await quoteSleeveAugs(ns,i,budget,augmentationReserve,sleeveInfo[i],actualTasks[i]);
+            if(plan?.names?.length)augmentationQuotes.push({index:i,plan});
+        }
+    }
+    const augmentationAllocation=allocateSleeveAugBudget(augmentationQuotes,sleeveAugSpendingBudget(ns,budget));
     for (let i = 0; i < numSleeves; i++) {
         if(isScriptPaused(ns,ns.getScriptName())||maintenanceRequested(ns))return;
         let sleeve = sleeveInfo[i]; // For convenience, merge all sleeve stats/info into one object
         // Manage sleeve augmentations (if available)
         if (sleeve.shock == 0 && !reset.bitNodeOptions?.disableSleeveExpAndAugmentation) // No augs are available augs until shock is 0
         {
-            const spent = await manageSleeveAugs(ns, i, budget, augmentationReserve,sleeve,actualTasks[i]);
+            const selected=options['disable-adaptive-augmentations']?await quoteSleeveAugs(ns,i,budget,augmentationReserve,sleeve,actualTasks[i]):augmentationAllocation.plan[i];
+            const spent = await purchaseSleeveAugs(ns,i,budget,augmentationReserve,selected);
             budget = Math.max(0, budget - spent);
             if (spent > 0) sleeveInfo[i] = sleeve = await getNsDataThroughFile(ns, 'ns.sleeve.getSleeve(ns.args[0])', null, [i]);
         }
@@ -409,7 +455,7 @@ async function mainLoop(ns) {
         if(upgraded){combatGymAt=0;log(ns,'SUCCESS: Improved gym training for native-confirmed sleeve sessions.');}
     }catch{}
     await ns.write('tasks/sleeve-recovery-observation.json',JSON.stringify({...recoveryObservation,sleeves:recoveryObservation.sleeves.map((s,i)=>({...s,recovering:currentTasks[i]?.type==='RECOVERY'}))}),'w');
-    await ns.write('tasks/sleeve-status.json', JSON.stringify({at:Date.now(),pid:ns.pid,state:'managing',reputationAccuracy:sleeveReputationObservation,xpObservation:{reason:sleeveXpObservation?.reason,observedAt:sleeveXpObservation?.observedAt,pool:sleeveXpObservation?.pool},startup:{karmaTraining:startupPlan.karmaTraining||null,stage:startupPlan.stage,workers:startupPlan.workers,assignments:startupPlan.assignments,combatWorker:startupPlan.combatWorker||null,combatWorkers:startupPlan.combatWorkers||[],augmentationRecovery:startupPlan.augmentationRecovery||{}},route:worldDaemonPriority?'hacking':'normal',bladeburnerSupport:[...bladeburnerSupportSleeves],sleeves:sleeveInfo.map((s,i)=>({index:i,shock:s.shock,sync:s.sync,memory:s.memory,task:task[i]||'waiting',actualTask:currentTasks[i]})),purchasePlans:sleevePurchasePlans,remainingAugBudget:budget,sharedAugBudgetRemaining:sleeveAugSpendingBudget(ns,budget)}), 'w');
+    await ns.write('tasks/sleeve-status.json', JSON.stringify({at:Date.now(),pid:ns.pid,state:'managing',reputationAccuracy:sleeveReputationObservation,reputationAssignments,xpObservation:{reason:sleeveXpObservation?.reason,observedAt:sleeveXpObservation?.observedAt,pool:sleeveXpObservation?.pool},startup:{karmaTraining:startupPlan.karmaTraining||null,stage:startupPlan.stage,workers:startupPlan.workers,assignments:startupPlan.assignments,combatWorker:startupPlan.combatWorker||null,combatWorkers:startupPlan.combatWorkers||[],augmentationRecovery:startupPlan.augmentationRecovery||{}},route:worldDaemonPriority?'hacking':'normal',bladeburnerSupport:[...bladeburnerSupportSleeves],sleeves:sleeveInfo.map((s,i)=>({index:i,shock:s.shock,sync:s.sync,memory:s.memory,task:task[i]||'waiting',actualTask:currentTasks[i]})),purchaseAllocation:{cost:augmentationAllocation.cost,gain:augmentationAllocation.gain,metric:augmentationAllocation.metric,states:augmentationAllocation.states,selected:Object.keys(augmentationAllocation.plan)},purchasePlans:sleevePurchasePlans,remainingAugBudget:budget,sharedAugBudgetRemaining:sleeveAugSpendingBudget(ns,budget)}), 'w');
 }
 
 /** Picks the best task for a sleeve, and returns the information to assign and give status updates for that task.
@@ -448,6 +494,8 @@ async function pickSleeveTask(ns, playerInfo, playerWorkInfo, i, sleeve, canTrai
     if (options.crime) return await crimeTask(ns, options.crime, i, sleeve, 'explicit crime override');
     if(bladeburnerSupportSleeves.has(i))return ['Bladeburner Support main sleeve','ns.sleeve.setToBladeburnerAction(ns.args[0],ns.args[1],ns.args[2])',[i,'Support main sleeve',''],'supporting the pending Black Op team requirement'];
 
+    // A planned WD milestone must outrank optional generic conditioning.
+    if(worldDaemonPriority&&reputationAssignments[i]?.priority===0)return sleeveReputationTask(reputationAssignments[i],i);
     // Train if our sleeve's physical stats aren't where we want them
     if (canTrain) {
         const univClasses = {

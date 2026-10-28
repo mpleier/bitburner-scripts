@@ -1,3 +1,4 @@
+import {readHgwTimeline} from '../hgw-timeline-policy.js';
 import {readHackingProcessBudget} from '../hacking-process-policy.js';
 import {readBackgroundHealth} from '../background-job-policy.js';
 import {currentCloudPurchase} from '../cloud-status-policy.js';
@@ -71,7 +72,7 @@ async function supervise({script='gangs.js',protectedWork=true,activity=false,fa
  files.set('tasks/runtime/8.json',JSON.stringify({pid:8,signature:'old',startedAt:1,at:now}));
  const stop=Error('test complete');
  const ns={pid:7,args:[],disableLog(){},getScriptName:()=> 'reliability-manager.js',getResetInfo:()=>reset,atExit(){},read:f=>files.get(f)||'',write:(f,s)=>{writes.push({file:f,at:now});files.set(f,s);},rm:f=>files.delete(f),ps:()=>processes,getScriptRam:()=>10,getRunningScript:()=>({ramUsage:10,threads:2}),getServerMaxRam:()=>512,getServerUsedRam:()=>512-free,getScriptLogs:()=>[],ls:()=>[],isRunning:p=>processes.some(x=>x.pid===p),print(){},kill:p=>{calls.push(['kill',p]);processes=processes.filter(x=>x.pid!==p);return true;},run:(name,threads,...args)=>{calls.push(['run',name,threads,...args]);if(failRuns-->0)return 0;pid++;processes.push({pid,filename:name,threads,args});files.set('tasks/runtime/'+pid+'.json',JSON.stringify({pid,signature:runtime.scriptSignature(ns,name),startedAt:now,at:now}));return pid;},sleep:async()=>{pass++;onSleep({setFree:n=>free=n});now+=10000;if(pass>=loops)throw stop;}};
- const context={readHackingProcessBudget,readBackgroundHealth,currentCloudPurchase,collectControllerDiagnostics,...runtime,Date:{now:()=>now},upgradeRemoteWorker:()=>({state:'test'}),commandPolicyVersion:20,boundedDiagnostics:diagnosticBound,hackingDrainActive:()=>false,collectHashSpendingStatus:()=>[],homeRamReserve:()=>8,reclaimHomeRam:()=>true,isScriptPaused:()=>false,activityRecord:()=>activity?{ownerPid:99}:null,getNsDataThroughFile:async()=>protectedWork,autopilotSourceFiles:()=>({4:3}),ns};
+ const context={readHgwTimeline,readHackingProcessBudget,readBackgroundHealth,currentCloudPurchase,collectControllerDiagnostics,...runtime,Date:{now:()=>now},upgradeRemoteWorker:()=>({state:'test'}),commandPolicyVersion:20,boundedDiagnostics:diagnosticBound,hackingDrainActive:()=>false,collectHashSpendingStatus:()=>[],homeRamReserve:()=>8,reclaimHomeRam:()=>true,isScriptPaused:()=>false,activityRecord:()=>activity?{ownerPid:99}:null,getNsDataThroughFile:async()=>protectedWork,autopilotSourceFiles:()=>({4:3}),ns};
  vm.runInNewContext(text.replace('export async function','async function')+';globalThis.run=main;',context);await assert.rejects(context.run(ns),e=>e===stop);return {files,calls,writes};
 }
 test('executed supervisor reloads gangs during graft protection without global maintenance',async()=>{
@@ -112,4 +113,16 @@ test('legacy policy survives current and settling records when heartbeats become
 test('executed supervisor publishes seven fresh summaries but only two full snapshots over a minute',async()=>{
  const r=await supervise({loops:7});assert.equal(r.writes.filter(w=>w.file==='tasks/dashboard-summary.json').length,7);assert.equal(r.writes.filter(w=>w.file==='tasks/dashboard.json').length,2);
  const full=JSON.parse(r.files.get('tasks/dashboard.json')),summary=JSON.parse(r.files.get('tasks/dashboard-summary.json'));assert.equal(summary.at,full.at);assert.equal(summary.diagnostics.detailAt,summary.at);
+});
+
+test('queued requests do not block restoring a missing or stale worker',()=>{
+ for(const mode of ['missing','stale','missing-with-job']){
+  const f=workerFixture(),o=settle(f);o.now=31000;
+  f.files.set('remote-control/request.json',JSON.stringify({id:'x',expiresAt:90000}));
+  if(mode==='missing')f.setProcesses([]);
+  if(mode==='missing-with-job')f.setProcesses([{pid:10,filename:'remote-control/job.js',args:['[]','out','x']}]);
+  assert.equal(upgradeRemoteWorker(f.ns,o).state,'started');
+ }
+ const f=workerFixture(),o=settle(f);o.now=31000;f.setProcesses([{pid:8,filename:'remote-api-agent.js',args:[]},{pid:10,filename:'remote-control/job.js'}]);
+ assert.equal(upgradeRemoteWorker(f.ns,o).state,'waiting-command');
 });

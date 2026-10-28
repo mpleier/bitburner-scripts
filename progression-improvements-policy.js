@@ -10,15 +10,23 @@ export function adaptiveHgwTiming(previous,telemetry,{now=Date.now(),baseCycleMs
  let state=same?{...previous}:{augReset:telemetry?.augReset,nodeReset:telemetry?.nodeReset,baseCycleMs:base,multiplier:1,cleanWindows:0,windowAt:now,operations:operations||0,late:late||0,changedAt:0};
  if (!Number.isSafeInteger(state.spacingSamples)) state.spacingSamples = spacingCounts ? counts.spacingSamples : 0;
  if (!Number.isSafeInteger(state.spacingRisks)) state.spacingRisks = spacingCounts ? counts.spacingRisks : 0;
+ // Keep safety backoff across hot reloads, but never combine clean windows from different owners.
+ if(valid&&Number.isSafeInteger(telemetry.ownerPid)&&telemetry.ownerPid>0){
+  if(Number.isSafeInteger(state.ownerPid)&&state.ownerPid!==telemetry.ownerPid){state.windowAt=now;state.operations=operations;state.late=late;state.spacingSamples=counts.spacingSamples||0;state.spacingRisks=counts.spacingRisks||0;state.cleanWindows=0;state.recoveryEvidence=null;}
+  state.ownerPid=telemetry.ownerPid;
+ }
  if(valid&&now-state.windowAt>=30000){
   const n=operations-state.operations,rawBad=late-state.late;
   const samples=spacingCounts?counts.spacingSamples-state.spacingSamples:0;
   const risks=spacingCounts?counts.spacingRisks-state.spacingRisks:0;
   const spacingComplete=n>0&&samples===n&&risks>=0&&risks<=n;
   const bad=spacingComplete?risks:rawBad;
+  const owner=telemetry.ownerPid,prefix=[telemetry.nodeReset,telemetry.augReset,owner].join(':')+':';
+  const ordered=Number.isSafeInteger(owner)&&owner>0?summarizeHgwBatches(telemetry.recent,owner,now).filter(b=>b.state==='ordered'&&b.steps.every(s=>s.firstAt>state.windowAt)&&b.batchId.startsWith(prefix)&&['hack','grow','weaken'].every(tool=>b.steps.some(s=>s.tool===tool))):[];
+  const provenClean=spacingComplete&&bad===0&&ordered.length>=3;
   if(n<0||rawBad<0||bad<0){state.windowAt=now;state.operations=operations;state.late=late;state.spacingSamples=counts?.spacingSamples||0;state.spacingRisks=counts?.spacingRisks||0;}
   // Three confirmed spacing risks are actionable even when slow operations keep traffic sparse.
-  else if(n>=20||n>=8&&now-state.windowAt>=120000||spacingComplete&&n>=3&&risks===n){
+  else if(n>=20||n>=8&&now-state.windowAt>=120000||spacingComplete&&n>=3&&risks===n||n>=12&&provenClean){
    const lowTraffic=n<20;
    state.completionsPerSecond=n/Math.max(1,(now-state.windowAt)/1000);
    state.lateFraction=rawBad/n;state.riskFraction=bad/n;state.evidenceMode=spacingComplete?'half-leg-spacing':'deadline-fallback';state.windowOperations=n;
@@ -27,7 +35,7 @@ export function adaptiveHgwTiming(previous,telemetry,{now=Date.now(),baseCycleMs
     // Recent measured delays can exceed the fixed multiplier's safety margin.
     // Require three independent risky completions in this window; lifetime maxima are not evidence.
     const risky=(Array.isArray(telemetry.recent)?telemetry.recent:[]).filter(e=>
-     Number.isFinite(e.at)&&e.at>state.windowAt&&e.at<=now&&now-e.at<=120000&&
+     (owner===undefined||e.owner===owner)&&Number.isFinite(e.at)&&e.at>state.windowAt&&e.at<=now&&now-e.at<=120000&&
      Number.isFinite(e.lateMs)&&e.lateMs>0&&Number.isFinite(e.legSpacingMs)&&e.legSpacingMs>0&&
      Number.isFinite(e.toleranceMs)&&e.toleranceMs>=0&&!e.error&&e.lateMs>Math.max(e.toleranceMs,e.legSpacingMs/2));
     const distinct=new Map(risky.map(e=>[JSON.stringify([e.pid,e.tool,e.target,e.at,e.deadline]),e]));
@@ -36,9 +44,7 @@ export function adaptiveHgwTiming(previous,telemetry,{now=Date.now(),baseCycleMs
     state.changedAt=now;
    }}
    else if(bad/n<=.01){
-    const owner=telemetry.ownerPid,prefix=[telemetry.nodeReset,telemetry.augReset,owner].join(':')+':';
-    const ordered=Number.isSafeInteger(owner)&&owner>0?summarizeHgwBatches(telemetry.recent,owner,now).filter(b=>b.state==='ordered'&&b.lastAt>state.windowAt&&b.batchId.startsWith(prefix)&&['hack','grow','weaken'].every(tool=>b.steps.some(s=>s.tool===tool))):[];
-    const fastRecovery=spacingComplete&&bad===0&&ordered.length>=3;
+    const fastRecovery=provenClean;
     const decay=fastRecovery?1.5:1.25;
     state.recoveryEvidence={batches:ordered.length,decay};
     state.cleanWindows++;if(state.cleanWindows>=(lowTraffic?2:3)&&now-state.changedAt>=120000){state.multiplier=Math.max(1,state.multiplier/decay);state.latencyFloorMs=(state.latencyFloorMs||0)/decay;if(fastRecovery){const recent=telemetry.recent.filter(e=>e.owner===owner&&e.at>state.windowAt&&e.at<=now&&Number.isFinite(e.lateMs)&&e.lateMs>=0);state.latencyFloorMs=Math.max(state.latencyFloorMs,Math.min(base*16,Math.ceil(Math.max(0,...recent.map(e=>e.lateMs))*8)));}if(state.latencyFloorMs<=base)state.latencyFloorMs=0;state.changedAt=now;state.cleanWindows=0;}}

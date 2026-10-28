@@ -12,7 +12,7 @@ export function bestSleeveCrime(sleeve, crimes, objective = 'money',nodeMultipli
     .sort((a,b)=>sleeveCrimeChance(sleeve,b[1],nodeMultiplier)*reward(b[1])/b[1].time-sleeveCrimeChance(sleeve,a[1],nodeMultiplier)*reward(a[1])/a[1].time)[0]?.[0] || (objective === 'karma' ? 'Homicide' : 'Mug');
 }
 /** Native reputation expressions; common favor, faction and intelligence multipliers cancel for one faction. */
-export function bestFactionWork(sleeve, types,context={}) {
+export function factionWorkScores(sleeve,context={}) {
   const s=sleeve.skills||{},stat=k=>Math.max(0,Number(s[k])||0);
   const combat=['strength','defense','dexterity','agility'].reduce((sum,k)=>sum+stat(k),0);
   const hacking=stat('hacking'),intelligence=stat('intelligence'),charisma=stat('charisma');
@@ -21,27 +21,53 @@ export function bestFactionWork(sleeve, types,context={}) {
   const scores={hacking:(hacking+intelligence/3+(darknet?charisma*.1:0))/975*share,
     field:.9*(combat+charisma+(hacking+intelligence+(darknet?charisma*.3:0))*share)/975/5.5,
     security:.9*(combat+(darknet?charisma*.3:0)+(hacking+intelligence)*share)/975/4.5};
+  return scores;
+}
+export function bestFactionWork(sleeve,types,context={}) {
+  const scores=factionWorkScores(sleeve,context);
   return types.filter(t=>Object.hasOwn(scores,t)).sort((a,b)=>scores[b]-scores[a])[0];
+}
+/** Relative native reputation within one faction: common favor and node factors cancel.
+ * Unknown or malformed snapshots never outrank a valid candidate. */
+export function sleeveFactionRepScore(sleeve,types,context={}) {
+  const skills=sleeve?.skills;
+  if(!skills||!['hacking','strength','defense','dexterity','agility','charisma'].every(k=>Number.isFinite(skills[k])&&skills[k]>=0))return null;
+  const intelligence=skills.intelligence??0,mult=sleeve.mults?.faction_rep??1;
+  if(!Number.isFinite(intelligence)||intelligence<0||!Number.isFinite(mult)||mult<0)return null;
+  const workType=bestFactionWork(sleeve,types,context);if(!workType)return null;
+  const score=factionWorkScores(sleeve,context)[workType]*mult*(1+Math.pow(intelligence,.8)/600);
+  return Number.isFinite(score)&&score>=0?{workType,score}:null;
 }
 
 export function sleeveRepAssignments(sleeves, targets, work, followIndex, bladeburner, actualTasks = [], followTarget = null, prioritizeCritical = false,repContext={}) {
   const assignments={},used=new Set();
   const ready=i=>sleeves[i]?.shock===0 && sleeves[i]?.sync>=100;
-  const assign=(i,target)=>{
+  const assign=(i,target,selection=null)=>{
     if(!target || used.has(target.type+':'+target.name))return;
     const workType=target.type==='FACTION'?bestFactionWork(sleeves[i],target.workTypes||[],repContext):null;
     if(target.type==='FACTION'&&!workType)return;
-    assignments[i]={...target,workType};used.add(target.type+':'+target.name);
+    assignments[i]={...target,workType,...(selection?{selection,relativeRepScore:target.type==='FACTION'?sleeveFactionRepScore(sleeves[i],target.workTypes||[],repContext)?.score??null:null}:{})};used.add(target.type+':'+target.name);
   };
-  const eligible=i=>ready(i)&&!(bladeburner&&i>=1&&i<=3);
+  const reserved=new Set(Array.isArray(repContext.reservedSleeves)?repContext.reservedSleeves:[]);
+  const eligible=i=>ready(i)&&!reserved.has(i);
   const allTargets=followTarget ? [followTarget,...targets.filter(t=>t.type!==followTarget.type||t.name!==followTarget.name)] : targets;
   const desiredFollow=allTargets.find(t=>t.type===work?.type&&t.name===(work.factionName||work.companyName));
   const followOccupied=desiredFollow && actualTasks.some((t,i)=>i!==followIndex&&eligible(i)&&t?.type===desiredFollow.type&&(t.factionName||t.companyName)===desiredFollow.name);
   // A WD milestone (notably Red Pill reputation) must get a sleeve even when other jobs occupy all sleeves.
-  if(prioritizeCritical)for(const target of targets.filter(t=>t.priority===0)) {
-    let index=sleeves.findIndex((s,i)=>eligible(i)&&!assignments[i]&&actualTasks[i]?.type===target.type&&(actualTasks[i]?.factionName||actualTasks[i]?.companyName)===target.name);
-    if(index<0)index=sleeves.findIndex((s,i)=>eligible(i)&&!assignments[i]);
-    if(index>=0)assign(index,target);
+  if(prioritizeCritical){
+    const critical=targets.filter(t=>t.priority===0);
+    // Preserve every critical owner before a new target can select that sleeve.
+    for(const target of critical){
+      const index=sleeves.findIndex((s,i)=>eligible(i)&&!assignments[i]&&actualTasks[i]?.type===target.type&&(actualTasks[i]?.factionName||actualTasks[i]?.companyName)===target.name);
+      if(index>=0)assign(index,target,'retained-owner');
+    }
+    for(const target of critical){
+      if(used.has(target.type+':'+target.name))continue;
+      const candidates=sleeves.map((s,i)=>({index:i,quote:target.type==='FACTION'?sleeveFactionRepScore(s,target.workTypes||[],repContext):null})).filter(c=>eligible(c.index)&&!assignments[c.index]);
+      const ranked=candidates.filter(c=>c.quote).sort((a,b)=>b.quote.score-a.quote.score||a.index-b.index);
+      const index=ranked[0]?.index??candidates[0]?.index??-1;
+      if(index>=0)assign(index,target,ranked.length?'highest-relative-reputation':'fallback-no-score');
+    }
   }
   // Retain existing owners so two sleeves cannot deadlock while swapping employers.
   for(let i=0;i<sleeves.length;i++)if(eligible(i)) {
@@ -52,7 +78,7 @@ export function sleeveRepAssignments(sleeves, targets, work, followIndex, bladeb
   }
   if(eligible(followIndex)&&!assignments[followIndex]&&['FACTION','COMPANY'].includes(work?.type))
     assign(followIndex,allTargets.find(t=>t.type===work.type&&t.name===(work.factionName||work.companyName)));
-  for(let i=0;i<sleeves.length;i++)if(ready(i)&&!assignments[i]&&!(bladeburner&&i>=1&&i<=3))
+  for(let i=0;i<sleeves.length;i++)if(eligible(i)&&!assignments[i])
     for(const target of targets)if(!used.has(target.type+':'+target.name)){assign(i,target);if(assignments[i])break;}
   return assignments;
 }
@@ -264,9 +290,25 @@ export function sleeveBladeburnerTasks(sleeves,tasks,plan,support=[],combatEnabl
  const early=plan.preparingStats===true&&Number.isFinite(plan.rankEtaMs)&&plan.rankEtaMs>0&&plan.rankEtaMs<=900000&&known&&chance[1]<plan.threshold&&(plan.statStalled===true||Number.isFinite(plan.statEtaMs)&&plan.statEtaMs>plan.rankEtaMs);
  const blocked=(plan.rankReady||early)&&known&&chance[0]<plan.threshold;
  const uncertain=blocked&&chance[1]>=plan.threshold&&chance[1]-chance[0]>.01;
- if(uncertain)take('Field Analysis');
- const lowCounts=Object.values(plan.counts||{}).some(n=>Number.isFinite(n)&&n<20);
- if(lowCounts||!blocked||uncertain||early)take('Infiltrate Synthoids');
- for(const i of eligible)assignments[i]=blocked&&!uncertain&&combatEnabled?'combat-xp':'Infiltrate Synthoids';
+ // Population analysis helps farming missions, not Black Op capability.
+ if(plan.farmingUncertain===true)take('Field Analysis');
+ const supply=plan.rankSupply,runwayKnown=supply?.version===1&&[supply.supply,supply.cycleMs,supply.runwayMs,supply.speed].every(Number.isFinite)&&supply.supply>=1&&supply.cycleMs>0&&[1,5].includes(supply.speed)&&supply.runwayMs>=0&&Math.abs(supply.runwayMs-supply.supply*supply.cycleMs/supply.speed)<1;
+ const lowCounts=runwayKnown?supply.runwayMs<120000:Object.values(plan.counts||{}).some(n=>Number.isFinite(n)&&n<20);
+ if(runwayKnown&&!blocked&&!uncertain){
+  const horizon=Number.isFinite(plan.rankEtaMs)&&plan.rankEtaMs>0?Math.min(600000,Math.max(120000,plan.rankEtaMs)):600000;
+  const desired=Math.max(1,Math.ceil(eligible.length*Math.max(0,1-supply.runwayMs/horizon)));
+  for(let n=0;n<desired;n++)take('Infiltrate Synthoids');
+ }else if(lowCounts||!blocked||uncertain||early)take('Infiltrate Synthoids');
+ for(const i of eligible)assignments[i]=(blocked&&!uncertain||runwayKnown&&!blocked&&!uncertain)&&combatEnabled?'combat-xp':'Infiltrate Synthoids';
  return assignments;
+}
+
+/** Explicit active jobs, rather than sleeve numbers, reserve reputation capacity. */
+export function sleeveReputationReservations(adaptive={},support=[],explicit=[]) {
+ return [...new Set([...support,...explicit,...Object.entries(adaptive).filter(([,action])=>['combat-xp','Diplomacy','Field Analysis'].includes(action)).map(([i])=>Number(i))])].filter(i=>Number.isSafeInteger(i)&&i>=0);
+}
+export function sleeveReputationTask(rep,index) {
+ return rep.type==='FACTION' ?
+  ["work for faction '"+rep.name+"' ("+rep.workType+")",'ns.sleeve.setToFactionWork(ns.args[0],ns.args[1],ns.args[2])',[index,rep.name,rep.workType],'earning useful reputation with '+rep.name] :
+  ["work for company '"+rep.name+"'",'ns.sleeve.setToCompanyWork(ns.args[0],ns.args[1])',[index,rep.name],'earning company reputation with '+rep.name];
 }

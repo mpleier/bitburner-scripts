@@ -23,6 +23,32 @@ function fixture(extra={}){
  const observeRank=()=>({rank:state.rank,points:state.points});
  return {ns,state,files,calls,writes,route,processes,observeRank};
 }
+
+function corporateFixture(extra={}){
+ const f=fixture(extra),now=Date.now();f.processes.push({pid:3,filename:'corporation-manager.js',args:[]});
+ f.files['tasks/corporation-hash-goal.json']=JSON.stringify({schemaVersion:1,at:now,ownerPid:3,nodeReset:1,augReset:1,priority:true,milestone:{action:'Sell for Corporation Funds',label:'HQ office',gap:1e9,reward:1e9}});
+ return f;
+}
+test('corporation milestone reserves hashes across consumers but requires a fresh native usefulness check',()=>{
+ const f=corporateFixture({money:1e9,hashes:100});
+ const d=hashSpendingDecision(f.ns,cash);assert.equal(d.preferred,'Sell for Corporation Funds');assert.equal(d.budget,0);assert.equal(d.allowed,false);
+ assert.equal(hashSpendingDecision(f.ns,'Sell for Corporation Funds').allowed,false);
+ assert.equal(hashSpendingDecision(f.ns,'Sell for Corporation Funds',{corporationUseful:true}).allowed,true);
+ f.state.money=400e6;assert.equal(hashSpendingDecision(f.ns,'Sell for Corporation Funds',{corporationUseful:true}).allowed,false);
+});
+test('stale cross-reset malformed paused and wrong-owner corporation goals cannot redirect hashes',()=>{
+ for(const mutate of [g=>g.at-=45001,g=>g.at+=60000,g=>g.augReset=2,g=>g.nodeReset=2,g=>g.ownerPid=1,g=>g.priority=false,g=>g.milestone.gap=1e9+1,g=>g.milestone.reward=1,g=>g.milestone.action='Invalid']){
+  const f=corporateFixture(),g=JSON.parse(f.files['tasks/corporation-hash-goal.json']);mutate(g);f.files['tasks/corporation-hash-goal.json']=JSON.stringify(g);
+  assert.notEqual(hashSpendingDecision(f.ns,cash).preferred,'Sell for Corporation Funds');
+ }
+ const f=corporateFixture();f.files['remote-control/paused/corporation-manager.js.txt']='true';assert.notEqual(hashSpendingDecision(f.ns,cash).preferred,'Sell for Corporation Funds');
+});
+test('casino cash, affordable augmentation goals and safe BlackOp unlocks retain priority over corporation hashes',()=>{
+ const f=corporateFixture({money:0});assert.equal(hashSpendingDecision(f.ns,cash).preferred,cash);
+ f.state.money=1e9;f.files['tasks/spending-plan.json']=JSON.stringify({reset:1,epoch:Date.now(),expiresAt:Date.now()+60000,ownerPid:1,signals:{augmentationCashTarget:{cost:2e9}}});assert.equal(hashSpendingDecision(f.ns,cash).preferred,cash);
+ delete f.files['tasks/spending-plan.json'];f.route.development.nextBlackOp={rankGap:100,safe:true};f.files['tasks/node-route-plan.json']=JSON.stringify(f.route);assert.equal(hashSpendingDecision(f.ns,cash).preferred,rank);
+ f.route.routes.bladeburner.etaMs=0;f.files['tasks/node-route-plan.json']=JSON.stringify(f.route);assert.notEqual(hashSpendingDecision(f.ns,cash).preferred,'Sell for Corporation Funds');
+});
 test('rank-yield observation is bounded, measured and preferred on actual cheaper SP returns',()=>{
  const f=fixture();let d=hashSpendingDecision(f.ns,rank,{ownerPid:2});assert.equal(d.preferred,rank);assert.equal(d.probe,true);
  const receipt=spendHashesWithPolicy(f.ns,rank,undefined,1,{ownerPid:2,observeRank:f.observeRank},hashSpendingDecision);assert.equal(receipt.success,true);assert.equal(receipt.spent,250);

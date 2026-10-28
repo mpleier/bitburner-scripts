@@ -1,10 +1,15 @@
-import {planGangAttrition,observeGangAttrition,gangAttritionSignature,startGangAttrition,stopGangAttrition} from './gang-attrition-policy.js';
+import {planGangAggression,gangAggressionGuardSource} from './gang-aggression-policy.js';
+import {homeRamHeadroom} from './home-ram-policy.js';
+import {planGangEquipmentCollection} from './gang-equipment-collection-policy.js';
+import {gangAttritionCooldown,gangMonitorBackoff,publishGangAttemptCoverage,gangAttritionCalibration,planGangAttrition,observeGangAttrition,gangAttritionSignature,startGangAttrition,stopGangAttrition} from './gang-attrition-policy.js';
 import {readSelectedGangBundleGoal} from './gang-augmentation-bundle-policy.js';
 import {gangComparisonBudget,recordGangComparisonTiming} from './gang-policy.js';
-import {gangCommittedTraining,gangTrainingScheduleTask} from './gang-stat-policy.js';
-import {gangPowerSpendingFraction,gangTraineePulse,gangPowerPurchaseAllowed,gangPowerAscensionWeights} from './gang-power-policy.js';
+import {gangStatSupportCrew,gangStatReputationAnchor,gangMoneyAllowed,gangTerritoryDevelopmentFocus,gangStatFundingAnchor,gangStatPriorityAllowed,gangStatTaskRate,gangCommittedTraining,gangTrainingScheduleTask} from './gang-stat-policy.js';
+import {publishGangMeasurements} from './gang-measurement-policy.js';
+import {assessGangTraineePulse,selectGangTraineePulses,releaseGangPreparationTraining,persistGangIncome,restoreGangIncome,observeGangIncome,gangPlannedEquipmentCash,releaseGangIncomeTraining,gangDevelopmentCashTarget,gangIncomeFunding,gangPreparationPhase,gangPreparationStatus,gangPowerSpendingFraction,gangTraineePulse,gangPowerPurchaseAllowed,gangPowerAscensionWeights} from './gang-power-policy.js';
+import {validateGangTraineePulse} from './gang-pulse-policy.js';
 import {gangManualTasks,gangTerritoryRecovery} from './gang-safety-policy.js';
-import {gangWarfarePowerPerTick,gangWarfareReadyDelay} from './gang-policy.js';
+import {gangPulseObservation,gangPulseCalibration,gangObservedReadiness,gangWarfarePowerPerTick,gangWarfareReadyDelay} from './gang-policy.js';
 import {planGangHost,gangHostPreferences} from './faction-policy.js';
 import {registerAutomation,automationHeartbeat,maintenanceRequested} from './runtime-policy.js';
 import {autopilotSourceFiles} from './autopilot-policy.js';
@@ -69,8 +74,12 @@ let postTickRestoreMs=0,forecastWantedLimits={};
 let equipmentValuationCursor=0,equipmentValuationItems={};
 let gangFactionFavor=null,purchaseFocusQuote=null,purchaseFocusContext=null,purchaseTimingContext=null;
 let ascensionRecoveries={};
+let lastPreparationReason='';
+let incomeFunding=null,incomeObservation=null,equipmentFundingQuote=null;
+let preparationPhase=null,pendingPowerPulse=null,powerCalibration=[];
 let wantedPreparation=null,expectedAscensions={},trainingReference=[],trainingEpisodes={},trainingValuationCursor=0,trainingDiagnostics=null,ascensionDiagnostics=null,ascensionValuationCursor=0;
 let nextAttritionQuote=0;
+let aggressionQuote=null,nextAggressionQuote=0;
 let equipmentPurchaseCursor=null,comparisonTiming=[];
 let ascensionComparisonQuotes={};
 const developmentSignature=m=>JSON.stringify([m.earnedRespect,...['hack','str','def','dex','agi','cha'].flatMap(k=>[m[k+'_exp'],m[k+'_mult'],m[k+'_asc_mult']]),m.upgrades,m.augmentations]);
@@ -81,23 +90,27 @@ const argsSchema = [
     ['gang-faction', null], // Optional exact host; implies its gang type and waits for this faction.
     ['gang-skip', []], // Factions that must not be used as a gang host.
 
-    ['power-focus', true], // Lead development with power until territory is complete; false restores balanced planning.
+    ['training-first', true], // Prioritize safe-warfare readiness, then return to balanced development.
+    ['power-focus', true], // Enable power development; training-first limits priority to safe readiness.
     ['disable-adaptive-growth', false], // Use legacy training, ascension thresholds and price-ordered equipment.
     ['growth-horizon-minutes', 15], // Baseline modeled payback window; fresh route/recruitment evidence can extend it to an hour.
     ['disable-adaptive-horizon',false], // Keep the configured baseline; verified reset/route deadlines still cap it.
     ['training-percentage', 0.05], // Spend this percent of time randomly training gang members versus doing crime
     ['no-training', false], // Don't train unless all other tasks generate no gains or the member ascended recently (--min-training-ticks)
     ['no-auto-ascending', false], // Don't ascend members
-    ['ascend-multi-threshold', 1.05], // Ascend member #12 if a primary stat multi would increase by more than this amount
-    ['ascend-multi-threshold-spacing', 0.05], // Members will space their acention multis by this amount to ensure they are ascending at different rates
-    // Note: given the above two defaults, members would ascend at multis [1.6, 1.55, 1.50, ..., 1.1, 1.05] once you have 12 members.
+    ['ignore-ascension-respect-loss', true], // Prioritize ascension growth without respect-loss caps or recruitment-respect holds.
+    ['ascend-multi-threshold', 1.02], // Minimum weighted multiplier gain; adaptive mode also requires a completed economic forecast.
+    ['ascend-multi-threshold-spacing', 0.01], // Additional member-index spacing in legacy mode (--disable-adaptive-growth).
+    // Legacy defaults yield [1.13, 1.12, ..., 1.02]; adaptive mode uses the base threshold for every member.
     ['min-training-ticks', 10], // Require this many ticks of training after ascending or recruiting to rebuild stats
     ['reserve', null], // Reserve this much cash before determining spending budgets (defaults to contents of reserve.txt if not specified)
     ['augmentations-budget', null], // Percentage of non-reserved cash to spend per tick on permanent member upgrades (If not specified, uses defaultMaxSpendPerTickPermanentEquipment)
+    ['prioritize-all-equipment', true], // Collect every missing equipment item and augmentation before ordinary discretionary spending.
     ['equipment-budget', null], // Percentage of non-reserved cash to spend per tick on permanent member upgrades (If not specified, uses defaultMaxSpendPerTickTransientEquipment)
-    ['money-focus', false], // Always optimize gang crimes for maximum monetary gain. Is otherwise balanced.
+    ['money-focus', false], // Optimize for money only after territory exceeds 90%. Is otherwise balanced.
     ['disable-attrition', false], // Disable conservative early-warfare attrition forecasts.
-    ['warfare-win-chance', 0.75], // Minimum chance against every active rival.
+    ['aggressive-warfare', true], // Forecast-gated 68% entry; ordinary threshold remains the fallback.
+    ['warfare-win-chance', 0.70], // Minimum chance against every active rival.
     ['reputation-focus', false], // Always optimize gang crimes for maximum reputation gain. Is otherwise balanced.
 ];
 
@@ -114,6 +127,9 @@ export async function main(ns) {
     if (!runOptions || await instanceCount(ns) > 1) return; // Prevent multiple instances of this script from being started, even with different args.
     assignedTasks = {}, lastMemberReset = {}, nextRepRefresh = 0, nextRecruitCheck = 0;
     gangRivalsSnapshot=null;ascensionRecoveries={};wantedPreparation=null;expectedAscensions={};trainingReference=[];trainingEpisodes={};trainingValuationCursor=0;trainingDiagnostics=null;ascensionDiagnostics=null;ascensionValuationCursor=0;equipmentValuationItems={};equipmentValuationCursor=0;trainingPlans={};trainingForecasts={};purchaseGoal=null;purchaseFocusQuote=null;purchaseFocusContext=null;purchaseTimingContext=null;growthFocus='respect';plannedAscensions=new Set();equipmentOpportunity=null;equipmentDiagnostics=null;
+    if(runOptions['training-first']==='false')runOptions['training-first']=false;else if(runOptions['training-first']==='true')runOptions['training-first']=true;
+    updateGrowthFocus.incomeSaveState=undefined;updateGrowthFocus.incomeReason=undefined;
+    lastPreparationReason='';incomeFunding=null;incomeObservation=null;equipmentFundingQuote=null;preparationPhase=null;pendingPowerPulse=null;powerCalibration=[];
     options = runOptions; // We don't set the global "options" until we're sure this is the only running instance
     const invalid=gangOptionsError(options)||planGangHost([],options).error||(!Number.isFinite(options['growth-horizon-minutes'])||options['growth-horizon-minutes']<=0?'growth-horizon-minutes must be positive.':null);if(invalid)return ns.tprint(invalid);
     try{resetInfo=await getNsDataThroughFile(ns,'ns.getResetInfo()');ownedSourceFiles=resetInfo.ownedSF?autopilotSourceFiles(resetInfo):await getActiveSourceFiles(ns);}catch(err){return log(ns,'WARNING: Cannot read gang API access: '+String(err),false,'warning');}
@@ -262,6 +278,10 @@ async function initialize(ns) {
         if(saved.nodeReset===resetInfo.lastNodeReset&&saved.augReset===resetInfo.lastAugReset&&typeof saved.equipmentDiagnostics?.nextPurchaseCursor==='string'&&saved.equipmentDiagnostics.nextPurchaseCursor.length<=1024)equipmentPurchaseCursor=saved.equipmentDiagnostics.nextPurchaseCursor;
         if(saved.nodeReset===resetInfo.lastNodeReset&&saved.augReset===resetInfo.lastAugReset)comparisonTiming=gangComparisonBudget(saved.equipmentDiagnostics?.comparisonTiming).history;
     }catch{}
+    try{const raw=ns.read('tasks/gang-income-observation.json');
+        if(raw&&raw.length<=20000)incomeObservation=restoreGangIncome(JSON.parse(raw),{nodeReset:resetInfo.lastNodeReset,augReset:resetInfo.lastAugReset,now:Date.now()});
+        if(incomeObservation)updateGrowthFocus.incomeSaveState={at:incomeObservation.baseline.at};
+    }catch{incomeObservation=null;}
     for (const member of Object.values(dictMembers)) // Initialize the current activity of each member
         assignedTasks[member.name] = (member.task && member.task !== "Unassigned") ? member.task : ("Train " + (isHackGang ? "Hacking" : "Combat"));
     while (myGangMembers.length < 3) {if(isScriptPaused(ns,ns.getScriptName()))return false;if(!await doRecruitMember(ns))await ns.sleep(1000);} // We should be able to recruit our first three members immediately (for free)
@@ -277,33 +297,61 @@ async function initialize(ns) {
  * Executed every `interval` **/
 async function mainLoop(ns) {
     if(maintenanceRequested(ns)){
-        suspendGangWarfare(ns,assignedTasks);isReadyForNextTerritoryTick=false;territoryTickDetected=false;territoryNextTick=null;lastOtherGangInfo=null;
+        suspendGangWarfare(ns,assignedTasks);isReadyForNextTerritoryTick=false;territoryTickDetected=false;territoryNextTick=null;lastOtherGangInfo=null;preparationPhase=null;pendingPowerPulse=null;powerCalibration=[];
         let saved;try{saved=JSON.parse(ns.read('tasks/gang-status.json'));}catch{}
         await ns.write('tasks/gang-status.json',JSON.stringify(gangMaintenanceStatus(saved,ns.pid,resetInfo)),'w');return;
     }
     // Update gang information (specifically monitoring gang power to see when territory ticks)
-    const cycle = await getNsDataThroughFile(ns, '({info:ns.gang.getGangInformation(),others:ns.gang.getAllGangInformation(),bonusMs:ns.gang.getBonusTime(),at:Date.now()})');
+    const sampleNames=Date.now()-(mainLoop.lastRecoverySampleAt??0)>=1000?Object.entries(ascensionRecoveries).filter(([,r])=>r.until+5000>=Date.now()).map(([name])=>name):[];
+    const cycle = await getNsDataThroughFile(ns, '({info:ns.gang.getGangInformation(),others:ns.gang.getAllGangInformation(),bonusMs:ns.gang.getBonusTime(),at:Date.now(),recoveryMembers:Object.fromEntries(JSON.parse(ns.args[0]).filter(name=>ns.gang.getMemberNames().includes(name)).map(name=>[name,ns.gang.getMemberInformation(name)]))})','/Temp/gang-loop.txt',[JSON.stringify(sampleNames)]);
+    if(sampleNames.length&&cycle.recoveryMembers){mainLoop.lastRecoverySampleAt=Date.now();await publishGangMeasurements(ns,{partial:true,reset:resetInfo,ownerPid:ns.pid,at:cycle.at,faction:myGangFaction,members:cycle.recoveryMembers,lastReset:lastMemberReset});}
     const myGangInfo=cycle.info;
     const thisLoopStart = Date.now();
     const territorySample=gangTerritorySample(lastOtherGangInfo,cycle.others,myGangFaction,cycle.at,cycle.bonusMs);
     const tickObserved=territorySample.changed;
+    let pulseObservation=null;
+    if(tickObserved){
+        const observation=pulseObservation=gangPulseObservation(pendingPowerPulse,myGangInfo,territorySample,cycle.at);
+        let previous;try{previous=JSON.parse(ns.read('tasks/gang-power-pulses.json'));}catch{}
+        const retained=previous?.ownerPid===ns.pid&&previous.nodeReset===resetInfo.lastNodeReset&&previous.augReset===resetInfo.lastAugReset&&Array.isArray(previous.samples)?previous.samples.filter(r=>Number.isFinite(r?.at)&&r.at<cycle.at&&cycle.at-r.at<=300000).slice(-11):[];
+        const samples=[...retained,observation];
+        await ns.write('tasks/gang-power-pulses.json',JSON.stringify({ownerPid:ns.pid,nodeReset:resetInfo.lastNodeReset,augReset:resetInfo.lastAugReset,at:cycle.at,samples}),'w');
+        if(['power-unchanged','assignment-mismatch'].includes(observation.state)){
+            territoryTickWaitPadding=Math.min(2000,territoryTickWaitPadding+updateInterval);
+            if(samples.slice(-3).length===3&&samples.slice(-3).every(r=>['power-unchanged','assignment-mismatch'].includes(r.state))&&cycle.at-(mainLoop.lastPulseWarningAt||0)>=60000){
+                mainLoop.lastPulseWarningAt=cycle.at;ns.print('WARNING: Three gang power pulses failed verification; last reason: '+observation.state+'. See tasks/gang-power-pulses.json.');
+            }
+        }
+        powerCalibration=gangPulseCalibration(powerCalibration,pendingPowerPulse,myGangInfo,territorySample,cycle.at);pendingPowerPulse=null;
+        const wasBuffered=preparationPhase?.buffered===true;
+        preparationPhase=gangPreparationPhase(preparationPhase,myGangInfo,territorySample,gangWarfareThreshold(),cycle.at,gangTrainingFirst());
+        if(wasBuffered!==preparationPhase.buffered)log(ns,'INFO: Preparation switching buffer '+(preparationPhase.buffered?'enabled at '+(preparationPhase.effectiveTarget*100).toFixed(1)+'% after repeated phase changes.':'released.'),false);
+    }
+    if(preparationPhase?.buffered&&preparationPhase.bufferUntil>cycle.at)territorySample.preparationTarget=preparationPhase.effectiveTarget;
     lastOtherGangInfo=territorySample;
     if(tickObserved){
         try{
             const lease=JSON.parse(ns.read('tasks/gang-attrition.json'));
             let history=[];try{history=JSON.parse(ns.read('tasks/gang-attrition-observations.json'));}catch{}
-            const observed=observeGangAttrition(lease,cycle,{ownerPid:ns.pid,nodeReset:resetInfo.lastNodeReset,augReset:resetInfo.lastAugReset},history);
+            let receipt=null;try{receipt=JSON.parse(ns.read('tasks/gang-attrition-event.json'));}catch{}
+            const observed=observeGangAttrition(lease,cycle,{ownerPid:ns.pid,nodeReset:resetInfo.lastNodeReset,augReset:resetInfo.lastAugReset},history,receipt);
             if(observed)await ns.write('tasks/gang-attrition-observations.json',JSON.stringify(observed),'w');
+
         }catch{}
     }
-    try{const lease=JSON.parse(ns.read('tasks/gang-attrition.json'));if(lease.state==='active'&&(tickObserved||Date.now()>=lease.deadline||options['disable-attrition']||!ns.isRunning(lease.ownerPid)))await getNsDataThroughFile(ns,`(${stopGangAttrition.toString()})(ns,ns.args[0],ns.args[1])`,'/Temp/gang-attrition-stop.txt',[tickObserved,options['disable-attrition']]);}catch{}
+    try{const lease=JSON.parse(ns.read('tasks/gang-attrition.json'));if(lease.state==='active')await getNsDataThroughFile(ns,`(${stopGangAttrition.toString()})(ns,ns.args[0],ns.args[1])`,'/Temp/gang-attrition-stop.txt',[tickObserved,options['disable-attrition']]);}catch{}
+    if((tickObserved||thisLoopStart>=(mainLoop.nextAttritionCoverageAt||0))&&thisLoopStart>=(mainLoop.attritionCoverageRetryAt||0)){
+        mainLoop.nextAttritionCoverageAt=thisLoopStart+2000;
+        try{await publishGangAttemptCoverage(ns,{ownerPid:ns.pid,nodeReset:resetInfo.lastNodeReset,augReset:resetInfo.lastAugReset,faction:myGangFaction});}
+        catch(error){mainLoop.attritionCoverageRetryAt=thisLoopStart+60000;if(typeof ns.print==='function')ns.print('WARNING: Gang attempt coverage unavailable: '+String(error).slice(0,160));}
+    }
     // Recruitment is independent of the slower territory clock. Fill every available slot.
     if (!isReadyForNextTerritoryTick && myGangMembers.length < 12 && thisLoopStart >= nextRecruitCheck &&
         (!Number.isFinite(territoryNextTick) || thisLoopStart + 2000 < territoryNextTick)) {
         await recruitAvailableMembers(ns);
         nextRecruitCheck = Date.now() + 2000;
     }
-    if(myGangInfo.territoryWarfareEngaged&&thisLoopStart>=nextWarfareCheck){await enableOrDisableWarfare(ns,myGangInfo);nextWarfareCheck=thisLoopStart+2000;}
+    if(thisLoopStart>=nextWarfareCheck){await enableOrDisableWarfare(ns,myGangInfo);nextWarfareCheck=thisLoopStart+2000;}
     if(tickObserved){
         territoryNextTick=gangTerritoryDeadline(cycle.at,cycle.bonusMs,territoryTickTime);
         territoryTickDetected=true;
@@ -334,7 +382,7 @@ async function mainLoop(ns) {
     }
     // Detect if territory power has been updated in the last tick (or if we have no power, assume it has ticked and we just haven't generated power yet)
     if (tickObserved || (isReadyForNextTerritoryTick && myGangInfo.power != lastTerritoryPower) || timing.overdue || timing.management) {
-        await onTerritoryTick(ns, myGangInfo, {observed:tickObserved,at:cycle.at,bonusMs:cycle.bonusMs},cycle.others); //Do most things only once per territory tick
+        await onTerritoryTick(ns, myGangInfo, {observed:tickObserved,at:cycle.at,bonusMs:cycle.bonusMs,powerPulseState:pulseObservation?.state},cycle.others); //Do most things only once per territory tick
         isReadyForNextTerritoryTick = false;
         lastTerritoryPower = myGangInfo.power;
     } else if (isReadyForNextTerritoryTick)
@@ -357,7 +405,7 @@ async function onTerritoryTick(ns, myGangInfo, tick={observed:false,at:Date.now(
     if (tick.observed || lastTerritoryPower != myGangInfo.power || lastTerritoryPower == null) {
         log(ns, lastTerritoryPower===myGangInfo.power?`Territory tick confirmed; power unchanged at ${formatNumberShort(myGangInfo.power)}.`:`Territory power updated from ${formatNumberShort(lastTerritoryPower)} to ${formatNumberShort(myGangInfo.power)}.`)
         consecutiveTerritoryDetections++;missedTerritoryTicks=0;
-        if (consecutiveTerritoryDetections > 5 && territoryTickWaitPadding > updateInterval)
+        if (tick.powerPulseState==='power-increased' && consecutiveTerritoryDetections > 5 && territoryTickWaitPadding > updateInterval)
             territoryTickWaitPadding = Math.max(updateInterval, territoryTickWaitPadding - updateInterval);
     } else if (!warfareFinished) {
         missedTerritoryTicks++;
@@ -400,7 +448,7 @@ async function onTerritoryTick(ns, myGangInfo, tick={observed:false,at:Date.now(
     let bonusSeconds=0;try{const bonus=ns.gang.getBonusTime();if(Number.isFinite(bonus))bonusSeconds=Math.max(0,bonus/1000-2);}catch{}
     const recruitSeconds=myGangMembers.length<12&&myGangInfo.respectGainRate>0?Math.max(0,myGangInfo.respectForNextRecruit-myGangInfo.respect)/(myGangInfo.respectGainRate*5):null;
     const recruitWallSeconds=recruitSeconds===null?null:gangWallSeconds(recruitSeconds,bonusSeconds);
-    growthHorizon=gangPlanningHorizon({baseSeconds:options['growth-horizon-minutes']*60,adaptive:!options['disable-adaptive-horizon']&&!options['disable-adaptive-growth'],remainingMs:remaining,recruitSeconds:recruitWallSeconds,installSeconds:install,resetPending,development:true,powerPriority:options['power-focus']===true,memberCount:myGangMembers.length,developmentAgeSeconds:Math.max(0,(now-resetInfo.lastNodeReset)/1000)});
+    growthHorizon=gangPlanningHorizon({baseSeconds:options['growth-horizon-minutes']*60,adaptive:!options['disable-adaptive-horizon']&&!options['disable-adaptive-growth'],remainingMs:remaining,recruitSeconds:recruitWallSeconds,installSeconds:install,resetPending,development:true,powerPriority:gangTrainingFirst()?preparationFor(myGangInfo).active:options['power-focus']===true,memberCount:myGangMembers.length,developmentAgeSeconds:Math.max(0,(now-resetInfo.lastNodeReset)/1000)});
     growthHorizon.bonusSeconds=bonusSeconds;growthHorizon.recruitmentRate=myGangInfo.respectGainRate*5;growthHorizon.productiveUpdateObserved=myGangInfo.updateObserved===true;
     await ns.write('tasks/gang-horizon.json',JSON.stringify({at:now,pid:ns.pid,nodeReset:resetInfo.lastNodeReset,augReset:resetInfo.lastAugReset,...growthHorizon,recruitSeconds}),'w');
     refreshForecastWantedLimits(dictMembers,myGangInfo);
@@ -426,11 +474,16 @@ async function onTerritoryTick(ns, myGangInfo, tick={observed:false,at:Date.now(
     const status = await getNsDataThroughFile(ns, 'ns.gang.getGangInformation()');
     const actualMembers=await getGangInfoDict(ns,myGangMembers,'getMemberInformation');
     const completedAt=Date.now();
+    const measurements=await publishGangMeasurements(ns,{reset:resetInfo,ownerPid:ns.pid,at:completedAt,faction:myGangFaction,members:actualMembers,lastReset:lastMemberReset,diagnostics:ascensionDiagnostics,
+        metrics:{power:status.power,respect:status.respect,money:incomeObservation?.baseline?.sources?.gang,moneyAt:incomeObservation?.baseline?.at,factionRep:purchaseTimingContext?.factionRep,repAt:purchaseTimingContext?.at},
+        cohort:JSON.stringify([myGangMembers.slice().sort(),growthFocus,gangMoneyAllowed(status),options['power-focus'],options['money-focus'],options['reputation-focus'],options['disable-adaptive-growth'],status.territoryWarfareEngaged,status.territoryClashChance>0,tick.bonusMs>0,purchaseGoal?.name??null,purchaseGoal?.rep??null,purchaseGoal?.cost??null])});
     await ns.write('tasks/gang-status.json', JSON.stringify({at:completedAt,dataAt:completedAt,status:'managing',pid:ns.pid,memberCount:myGangMembers.length,requiredRep,
-        nodeReset:resetInfo.lastNodeReset,augReset:resetInfo.lastAugReset,growthFocus,purchaseGoal,purchaseFocus:purchaseFocusQuote?{...purchaseFocusQuote,assignments:undefined}:null,trainingPlans,trainingForecasts,trainingEpisodes,trainingDiagnostics,ascensionDiagnostics,ascensionRecoveries,equipmentOpportunity,equipmentDiagnostics,
+        ascensionMeasurements:measurements?{at:measurements.at,attempts:measurements.attempts,rejected:measurements.rejected,unknownOutcomes:measurements.unknownOutcomes,reasons:measurements.reasons,budget:measurements.budget,activeRecoveries:measurements.recoveries.length,latestRecovery:measurements.completed.at(-1)??null,latestRecruitment:measurements.recruitments.at(-1)??null,progress:measurements.progress?{windows:measurements.progress.windows,comparison:measurements.progress.comparison}:null}:null,
+        nodeReset:resetInfo.lastNodeReset,augReset:resetInfo.lastAugReset,growthFocus,moneyPolicy:{allowed:gangMoneyAllowed(status),territory:status.territory,threshold:.9},purchaseGoal,purchaseFocus:purchaseFocusQuote?{...purchaseFocusQuote,assignments:undefined}:null,trainingPlans,trainingForecasts,trainingEpisodes,trainingDiagnostics,ascensionDiagnostics,ascensionRecoveries,equipmentOpportunity,equipmentDiagnostics,
         equipmentOwnership:Object.fromEntries(Object.values(actualMembers).map(m=>[m.name,{upgrades:m.upgrades,augmentations:m.augmentations}])),
         manualTasks:options.manualTasks,territoryRecovery:gangRecoveryStatus(status,actualMembers),
-        postTickRestoreMs,warfareThreshold:options['warfare-win-chance'],info:status,tasks:assignedTasks,actualTasks:Object.fromEntries(Object.values(actualMembers).map(m=>[m.name,m.task]))}), 'w');
+        postTickRestoreMs,incomeFunding,incomeObservation:incomeObservation?{...incomeObservation,baseline:undefined}:null,preparationPhase,powerCalibration,readiness:gangObservedReadiness(status,lastOtherGangInfo,gangWarfareThreshold(),Math.max(0,tick.bonusMs-24*Math.max(0,completedAt-tick.at)),completedAt,
+            gangWarfarePowerPerTick(actualMembers,status.territory,status.territoryWarfareEngaged?1:status.territoryClashChance,Object.keys(options.manualTasks||{}))),preparation:preparationFor(status),warfareThreshold:gangWarfareThreshold(),info:status,tasks:assignedTasks,actualTasks:Object.fromEntries(Object.values(actualMembers).map(m=>[m.name,m.task]))}), 'w');
 }
 
 /** @param {NS} ns
@@ -440,24 +493,41 @@ async function onTerritoryTick(ns, myGangInfo, tick={observed:false,at:Date.now(
  * Consolidated logic for telling members what to do **/
 async function updateMemberActivities(ns, dictMemberInfo = null, forceTask = null, myGangInfo = null) {
     const dictMembers = dictMemberInfo || (await getGangInfoDict(ns, myGangMembers, 'getMemberInformation'));
-    const workOrders = [];
+    const workOrders = [],expectedMembers=[];
     const maxMemberDefense = Math.max(...Object.values(dictMembers).map(m => m.def));
+    let attritionParticipants=null;
+    if(forceTask==='Territory Warfare'&&!myGangInfo?.territoryWarfareEngaged&&myGangInfo?.territoryClashChance>0)try{
+        const lease=JSON.parse(ns.read('tasks/gang-attrition.json'));
+        if(lease.state==='cooldown'&&lease.nodeReset===resetInfo.lastNodeReset&&lease.augReset===resetInfo.lastAugReset&&lease.faction===myGangInfo.faction&&Array.isArray(lease.participants))attritionParticipants=new Set(lease.participants);
+    }catch{}
+
     for (const member of Object.values(dictMembers)) { // Set the desired activity of each member
         let task = forceTask ? forceTask : assignedTasks[member.name];
         if (forceTask == "Territory Warfare" && !gangWarfareMemberEligible(member,maxMemberDefense,myGangInfo.territoryWarfareEngaged?1:myGangInfo.territoryClashChance))
             task = assignedTasks[member.name]; // Hack: Spare low-defense members from engaging in in warfare since they have a higher chance of dying
+        if(forceTask==='Territory Warfare'&&attritionParticipants&&!attritionParticipants.has(member.name))task=assignedTasks[member.name];
         const protectedTask=memberProtectedTask(member.name);if(protectedTask&&!(forceTask==='Territory Warfare'&&myGangInfo?.pulseTraining?.[member.name]===true))task=protectedTask;
         task ||= 'Train '+(isHackGang?'Hacking':'Combat');
-        if (member.task != task) workOrders.push({ name: member.name, task,...(protectedTask&&forceTask==='Territory Warfare'&&myGangInfo?.pulseTraining?.[member.name]===true?{trainingPulse:true}:{}) }); // Only bother with the API call if this isn't their current task
+        if(task==='Territory Warfare')expectedMembers.push(member.name);
+        if (member.task != task) workOrders.push({ name: member.name, task,...(protectedTask&&forceTask==='Territory Warfare'&&myGangInfo?.pulseTraining?.[member.name]===true?{trainingPulse:true,...(myGangInfo.traineePulseQuote?.name===member.name?{pulseQuote:myGangInfo.traineePulseQuote}:{})}:{}) }); // Only bother with the API call if this isn't their current task
     }
-    if (workOrders.length == 0) return false;
+    if (workOrders.length == 0 && forceTask!=='Territory Warfare')return false;
     // Set the activities in bulk using a ram-dodging script
-    const result=await getNsDataThroughFile(ns, `(${applyGangWorkOrders.toString()})(ns,JSON.parse(ns.args[0]),(${gangMutationAllowed.toString()}),ns.args[1])`,
-        '/Temp/gang-set-member-tasks.txt', [JSON.stringify(workOrders),ns.pid]);
-    if(result.deferred){ns.print('INFO: Gang task assignment deferred by pause, maintenance, or protected activity.');return false;}
-    if(!result.failed.length)
+    const result=await getNsDataThroughFile(ns, `(() => {const r=(${applyGangWorkOrders.toString()})(ns,JSON.parse(ns.args[0]),(${gangMutationAllowed.toString()}),ns.args[1],(${myGangInfo?.traineePulseQuote?validateGangTraineePulse.toString():'null'}));
+        if(!ns.args[2]||r.deferred)return r;
+        const g=ns.gang.getGangInformation(),members=JSON.parse(ns.args[3]).map(n=>ns.gang.getMemberInformation(n)).filter(m=>m.task==='Territory Warfare');
+        const gain=.015*Math.max(.002,g.territory)*members.reduce((sum,m)=>sum+['hack','str','def','dex','agi','cha'].reduce((s,k)=>s+m[k],0)/95,0);
+        return {...r,pulse:{at:Date.now(),faction:g.faction,power:g.power,territory:g.territory,predicted:gain,expectedMembers:JSON.parse(ns.args[4]),members:members.map(m=>m.name),skippedPulses:r.skippedPulses}};})()`,
+        '/Temp/gang-set-member-tasks.txt', [JSON.stringify(workOrders),ns.pid,forceTask==='Territory Warfare',JSON.stringify(Object.keys(dictMembers)),JSON.stringify(expectedMembers)]);
+    if(forceTask==='Territory Warfare')pendingPowerPulse=result.pulse??null;
+    if(result.skippedPulses?.length&&(updateMemberActivities.pulseReason!==result.skippedPulses[0].reason||Date.now()-(updateMemberActivities.pulseLogAt||0)>=60000)){
+        updateMemberActivities.pulseReason=result.skippedPulses[0].reason;updateMemberActivities.pulseLogAt=Date.now();
+        ns.print('INFO: Optional trainee kept training: '+result.skippedPulses[0].reason+'.');
+    }
+    if(result.deferred){ns.print('INFO: Gang task assignment deferred: '+(result.reason||'pause, maintenance, or protected activity')+'.');return false;}
+    if(!result.failed.length&&workOrders.length)
         log(ns, `INFO: Assigned ${workOrders.length}/${Object.keys(dictMembers).length} gang member tasks (${workOrders.map(o => o.task).filter((v, i, self) => self.indexOf(v) === i).join(", ")})`)
-    else
+    else if(result.failed.length)
         log(ns, `ERROR: Failed to set member task of one or more members: ` + JSON.stringify(result.failed), false, 'error');
     return result.assigned>0;
 }
@@ -466,6 +536,9 @@ async function updateMemberActivities(ns, dictMemberInfo = null, forceTask = nul
  * @param {GangGenInfo} myGangInfo
  * Logic to assign tasks that maximize rep gain rate without wanted gain getting out of control **/
 async function optimizeGangCrime(ns, myGangInfo) {
+    let statAnchor=null;
+    const supportTasks={};
+    const protectedTaskFor=name=>memberProtectedTask(name)||supportTasks[name]||(statAnchor?.name===name?statAnchor.task:null);
     const dictMembers = await getGangInfoDict(ns, myGangMembers, 'getMemberInformation');
     // Tolerate our wanted level increasing, as long as reputation increases several orders of magnitude faster and we do not currently have a penalty more than -0.01%
     const wantedGainTolerance=gangWantedTolerance(myGangInfo,wantedPenaltyThreshold);
@@ -484,20 +557,38 @@ async function optimizeGangCrime(ns, myGangInfo) {
             '(() => { const [g,members,tasks]=ns.args.map(JSON.parse); return Object.fromEntries(Object.values(members).map(m=>[m.name,Object.values(tasks).map(t=>({name:t.name,respect:ns.formulas.gang.respectGain(g,m,t),money:ns.formulas.gang.moneyGain(g,m,t),wanted:ns.formulas.gang.wantedLevelGain(g,m,t)})).filter(t=>t.wanted<=0||t.money>0||t.respect>0)])); })()',
             '/Temp/gang-formula-rates.txt', [JSON.stringify(myGangInfo),JSON.stringify(dictMembers),JSON.stringify(allTaskStats)]);
     } catch { /* Built-in source-based formulas remain available without Formulas.exe. */ }
+    if(optStat==='stats'){
+        for(const [name,rates]of Object.entries(memberTaskRates))for(const rate of rates)rate.stats=gangStatTaskRate(dictMembers[name],allTaskStats[rate.name],projectGangMember);
+        statAnchor=gangMoneyAllowed(myGangInfo)?gangStatFundingAnchor(memberTaskRates,myGangMembers.filter(n=>protectedTaskFor(n)),wantedGainTolerance):gangStatReputationAnchor(memberTaskRates,myGangMembers.filter(n=>protectedTaskFor(n)),wantedGainTolerance);
+        if(!gangMoneyAllowed(myGangInfo)){
+            const support=gangStatSupportCrew(memberTaskRates,myGangInfo,myGangMembers.filter(memberRecoveryProtected),wantedGainTolerance,wantedPenaltyThreshold);
+            if(support){
+                statAnchor=null;Object.assign(supportTasks,support.assignments);
+                for(const name of Object.keys(supportTasks)){
+                    trainingPlans[name]=false;delete trainingEpisodes[name];
+                    trainingReference=trainingReference.filter(p=>p.name!==name);
+                }
+                await saveGangTraining(ns);
+                const signature=JSON.stringify(supportTasks);
+                if(optimizeGangCrime.supportSignature!==signature)ns.print('INFO: Training support crew: '+Object.entries(supportTasks).map(([n,t])=>n+' → '+t).join(', ')+'.');
+                optimizeGangCrime.supportSignature=signature;
+            }
+        }
+    }
     // Reprice the focus choice using native Formulas rates when available.
     if(purchaseFocusContext){
-        purchaseFocusContext.locked=myGangMembers.filter(n=>memberProtectedTask(n));
+        purchaseFocusContext.locked=myGangMembers.filter(n=>protectedTaskFor(n));
         if(purchaseFocusContext.workFractions){
             purchaseFocusContext.workFractions=gangWarfareWorkFractions(dictMembers,purchaseFocusContext.warfare,purchaseFocusContext.locked);
             try{purchaseFocusContext.bonusSeconds=Math.max(0,ns.gang.getBonusTime()/1000-2);}catch{purchaseFocusContext.bonusSeconds=0;}
         }
-        purchaseFocusContext.assignments=Object.fromEntries(myGangMembers.map(n=>[n,memberProtectedTask(n)||assignedTasks[n]]));
+        purchaseFocusContext.assignments=Object.fromEntries(myGangMembers.map(n=>[n,protectedTaskFor(n)||assignedTasks[n]]));
         purchaseFocusQuote=gangPurchaseFocus({...purchaseFocusContext,rates:memberTaskRates,previous:purchaseFocusQuote});
-        if(purchaseFocusQuote)growthFocus=optStat=purchaseFocusQuote.focus;
+        if(purchaseFocusQuote&&optStat!=='stats')growthFocus=optStat=purchaseFocusQuote.focus;
     }
     // Forecasts and the actual wanted-constrained planner share one objective.
     const objectiveWeight=(purchaseFocusQuote?.weight??gangObjectiveWeight(purchaseGoal));
-    for(const rates of Object.values(memberTaskRates)){
+    for(const [name,rates] of Object.entries(memberTaskRates)){
         rates.forEach(rate=>rate[optStat]=gangObjectiveValue(rate,optStat,objectiveWeight));
         rates.sort((a,b)=>b[optStat]-a[optStat]);
     }
@@ -509,7 +600,7 @@ async function optimizeGangCrime(ns, myGangInfo) {
     let bestTotalGain = myGangInfo.wantedLevelGainRate > wantedGainTolerance ? 0 : // Forget our past achievements, we're gaining wanted levels too fast right now
         optStat == "respect" ? myGangInfo.respectGainRate : optStat == 'money' ? myGangInfo.moneyGainRate :
             gangObjectiveValue({money:myGangInfo.moneyGainRate,respect:myGangInfo.respectGainRate},optStat,objectiveWeight); // Compare the same objective used for proposed tasks.
-    if(purchaseFocusQuote){
+    if(purchaseFocusQuote&&optStat!=='stats'){
         const candidate=Object.fromEntries(myGangMembers.map(name=>[name,memberTaskRates[name]?.find(t=>t.name===purchaseFocusQuote.assignments[name]?.name)]));
         if(Object.values(candidate).every(Boolean)){
             const totals=gangTaskTotals(candidate),value=Object.values(candidate).reduce((sum,t)=>sum+t[optStat],0);
@@ -517,7 +608,7 @@ async function optimizeGangCrime(ns, myGangInfo) {
                 [bestTaskAssignments,bestTotalGain,bestWanted]=[candidate,value,totals.wanted];
         }
     }
-    const crewPlan=planGangWantedCrew(memberTaskRates,Object.fromEntries(myGangMembers.map(m=>[m,memberProtectedTask(m)||assignedTasks[m]])),wantedGainTolerance,optStat,myGangMembers.filter(m=>memberProtectedTask(m)));
+    const crewPlan=planGangWantedCrew(memberTaskRates,Object.fromEntries(myGangMembers.map(m=>[m,protectedTaskFor(m)||assignedTasks[m]])),wantedGainTolerance,optStat,myGangMembers.filter(m=>protectedTaskFor(m)));
     if(crewPlan&&betterGangPlan(crewPlan.wanted,crewPlan.value,bestWanted,bestTotalGain,wantedGainTolerance))
         [bestTaskAssignments,bestTotalGain,bestWanted]=[crewPlan.assignments,crewPlan.value,crewPlan.wanted];
     for (let shuffle = 0; shuffle < 100; shuffle++) { // We can discover more optimal results by greedy-optimizing gang members in a different order. Try a few.
@@ -527,14 +618,14 @@ async function optimizeGangCrime(ns, myGangInfo) {
             // "Greedy" optimize one member at a time, but as we near the end of the list, we can no longer expect future members to make for wanted increases
             const sustainableTasks = (index < myGangMembers.length - 2) ? taskRates : taskRates.filter(c => (totalWanted + c.wanted) <= wantedGainTolerance);
             // Find the crime with the best gain (If we can't generate value for any tasks, then we should only be training)
-            const protectedTask=memberProtectedTask(member);
+            const protectedTask=protectedTaskFor(member);
             const bestTask = protectedTask ? taskRates.find(t=>t.name===protectedTask) : taskRates[0][optStat] == 0 ?
                 taskRates.find(t => t.name === gangTrainingTaskName(assignedTasks[member],isHackGang)) :
                 (totalWanted > wantedGainTolerance || sustainableTasks.length == 0) ? taskRates.find(t => t.name === strWantedReduction) : sustainableTasks[0];
             [proposedTasks[member], totalWanted, totalGain] = [bestTask, totalWanted + bestTask.wanted, totalGain + bestTask[optStat]];
         });
         // Compare both recovery paths. A ratio-only greedy repair can overshoot and sacrifice too much production.
-        const trainingMembers=myGangMembers.filter(m=>memberProtectedTask(m));
+        const trainingMembers=myGangMembers.filter(m=>protectedTaskFor(m));
         for(const selectDowngrade of [nextWantedDowngrade,largestWantedDowngrade]) {
             const candidateTasks={...proposedTasks};
             let candidateWanted=totalWanted,candidateGain=totalGain;
@@ -549,12 +640,12 @@ async function optimizeGangCrime(ns, myGangInfo) {
         }
     }
     if(bestTaskAssignments) {
-        const trainingMembers=myGangMembers.filter(m=>memberProtectedTask(m));
+        const trainingMembers=myGangMembers.filter(m=>protectedTaskFor(m));
         bestTaskAssignments=improveGangPlan(bestTaskAssignments,memberTaskRates,optStat,wantedGainTolerance,trainingMembers);
     }
     // Linear-objective improvements can trade away the limiting resource. Keep
     // the selected feasible plan if the final allocation delays joint readiness.
-    if(purchaseFocusQuote&&purchaseFocusContext){
+    if(purchaseFocusQuote&&purchaseFocusContext&&optStat!=='stats'){
         const current=Object.fromEntries(myGangMembers.map(n=>[n,memberTaskRates[n]?.find(t=>t.name===assignedTasks[n])||memberTaskRates[n]?.find(t=>t.name===dictMembers[n]?.task)]));
         const basis=bestTaskAssignments||(Object.values(current).every(Boolean)?current:null);
         const totals=basis?gangTaskTotals(basis):{money:0,respect:0,wanted:Infinity},c=purchaseFocusContext;
@@ -568,17 +659,18 @@ async function optimizeGangCrime(ns, myGangInfo) {
     if (bestTaskAssignments != null && myGangMembers.some(m => assignedTasks[m] !== bestTaskAssignments[m].name)) {
         myGangMembers.forEach(m => assignedTasks[m] = bestTaskAssignments[m].name); // Update work orders for all members
         const oldGangInfo = myGangInfo;
+        myGangInfo={...oldGangInfo,updateObserved:false,assignmentsVerified:false};
         await updateMemberActivities(ns, dictMembers);
         const {wanted:optWanted,respect:optRespect,money:optMoney} = gangTaskTotals(bestTaskAssignments);
         if (optWanted != oldGangInfo.wantedLevelGainRate || optRespect != oldGangInfo.respectGainRate || optMoney != oldGangInfo.moneyGainRate)
-            myGangInfo = await waitForGameUpdate(ns, oldGangInfo);
-        log(ns, `SUCCESS: Optimized gang member crimes for ${optStat} with wanted gain tolerance ${wantedGainTolerance.toPrecision(2)} (${elapsed} ms). ` +
+            myGangInfo = await waitForGameUpdate(ns, oldGangInfo,Object.fromEntries(Object.entries(bestTaskAssignments).map(([name,t])=>[name,t.name])));
+        log(ns, `${myGangInfo.updateObserved===true?'SUCCESS: Optimized':'INFO: Planned'} gang member crimes for ${optStat} with wanted gain tolerance ${wantedGainTolerance.toPrecision(2)} (${elapsed} ms). ` +
             `Wanted: ${oldGangInfo.wantedLevelGainRate.toPrecision(3)} -> ${myGangInfo.wantedLevelGainRate.toPrecision(3)}, ` +
             `Rep: ${formatNumberShort(oldGangInfo.respectGainRate)} -> ${formatNumberShort(myGangInfo.respectGainRate)}, Money: ${formatMoney(oldGangInfo.moneyGainRate)} -> ${formatMoney(myGangInfo.moneyGainRate)}`);
         // Compare native adjusted wanted with adjusted wanted, rather than raw task totals.
-        const expectedWanted=myGangInfo.updateObserved!==false?gangReportedWantedRate(optWanted,
+        const expectedWanted=myGangInfo.updateObserved===true?gangReportedWantedRate(optWanted,
             Object.values(bestTaskAssignments).filter(t=>allTaskStats[t.name]?.baseWanted<0).length,myGangInfo.wantedLevel,myGangInfo.updateCycles):null;
-        if (myGangInfo.updateObserved!==false&&((expectedWanted!==null&&Math.abs(myGangInfo.wantedLevelGainRate - expectedWanted) / Math.max(1e-9,Math.abs(expectedWanted)) > 0.01) || (Math.abs(myGangInfo.respectGainRate - optRespect) / Math.max(1e-9,Math.abs(optRespect)) > 0.01) || (Math.abs(myGangInfo.moneyGainRate - optMoney) / Math.max(1e-9,Math.abs(optMoney)) > 0.01)))
+        if (myGangInfo.updateObserved===true&&((expectedWanted!==null&&Math.abs(myGangInfo.wantedLevelGainRate - expectedWanted) / Math.max(1e-9,Math.abs(expectedWanted)) > 0.01) || (Math.abs(myGangInfo.respectGainRate - optRespect) / Math.max(1e-9,Math.abs(optRespect)) > 0.01) || (Math.abs(myGangInfo.moneyGainRate - optMoney) / Math.max(1e-9,Math.abs(optMoney)) > 0.01)))
             log(ns, `WARNING: Calculated new rates would be Rep:${formatNumberShort(optRespect)} Wanted: ${expectedWanted===null?'unverified (floor or batch unavailable)':expectedWanted.toPrecision(3)} Money: ${formatMoney(optMoney)}` +
                 `but they are Rep:${formatNumberShort(myGangInfo.respectGainRate)} Wanted: ${myGangInfo.wantedLevelGainRate.toPrecision(3)} Money: ${formatMoney(myGangInfo.moneyGainRate)}`, false, 'warning');
     } else
@@ -637,15 +729,15 @@ async function doRecruitMember(ns) {
 /** @param {NS} ns
  * Check if any members are deemed worth ascending to increase a stat multiplier **/
 async function tryAscendMembers(ns, gangInfo,trainingLocks=trainingEpisodes) {
-    ascensionDiagnostics={reason:'No eligible candidates'};expectedAscensions={};
+    ascensionDiagnostics={passAt:Date.now(),reason:'No eligible candidates'};expectedAscensions={};
     if(activeWantedPreparation()){ascensionDiagnostics={reason:'Wanted preparation in progress'};return;}
     const dictAscensionResults=await getGangInfoDict(ns,myGangMembers,'getAscensionResult');
     const eligibilityMembers=options['disable-adaptive-growth']?null:await getGangInfoDict(ns,myGangMembers,'getMemberInformation');
-    const powerContext=gangWarfareContext(gangInfo,lastOtherGangInfo?.gangs?lastOtherGangInfo:gangRivalsSnapshot,options['warfare-win-chance'],Date.now(),{detected:territoryTickDetected,paddingMs:territoryTickWaitPadding,intervalMs:updateInterval,restoreMs:postTickRestoreMs,periodMs:territoryTickTime,powerFocusEnabled:!options['disable-adaptive-growth']&&(options['power-focus']||!options['money-focus']),powerPriority:options['power-focus']===true});
+    const powerContext=gangWarfareContext(gangInfo,lastOtherGangInfo?.gangs?lastOtherGangInfo:gangRivalsSnapshot,gangWarfareThreshold(),Date.now(),{detected:territoryTickDetected,paddingMs:territoryTickWaitPadding,intervalMs:updateInterval,restoreMs:postTickRestoreMs,periodMs:territoryTickTime,powerFocusEnabled:!options['disable-adaptive-growth']&&(options['power-focus']||!options['money-focus']),powerPriority:options['power-focus']===true,trainingFirst:gangTrainingFirst(),incomeFunding});
     const crimeStats=eligibilityMembers?gangAscensionTaskWeights(eligibilityMembers,dictAscensionResults,allTaskStats,(m,task)=>memberBestValue(m,gangInfo,null,task),importantStats):importantStats;
     const ascensionStats=gangPowerAscensionWeights(eligibilityMembers||{},crimeStats,!options['disable-adaptive-growth']&&powerContext.powerFocus);
     const candidates=chooseGangAscensions(dictAscensionResults,gangInfo,myGangMembers,ascensionStats,
-        options['ascend-multi-threshold'],options['ascend-multi-threshold-spacing'],options['disable-adaptive-growth']?1:12,!options['disable-adaptive-growth']).filter(c=>!options.manualTasks?.[c.name]);
+        options['ascend-multi-threshold'],options['ascend-multi-threshold-spacing'],options['disable-adaptive-growth']?1:12,!options['disable-adaptive-growth'],!options['disable-adaptive-growth'],options['ignore-ascension-respect-loss']===true).filter(c=>!options.manualTasks?.[c.name]);
     const plans=[];
     if(options['disable-adaptive-growth'])plans.push(...candidates.map(c=>({name:c.name,economics:null})));
     else if(candidates.length){
@@ -654,9 +746,9 @@ async function tryAscendMembers(ns, gangInfo,trainingLocks=trainingEpisodes) {
         const ascensions={},availability={},training=allTaskStats['Train '+(isHackGang?'Hacking':'Combat')];
         for(const candidate of candidates){
             const member=candidate.name,ascResult=dictAscensionResults[member],original=members[member];
-            if(Date.now()-(lastMemberReset[member]||0)<(options['power-focus']&&!options['disable-adaptive-growth']?2000:60000))continue;
+            if(Date.now()-(lastMemberReset[member]||0)<2000)continue;
             const ready=gangAscensionAvailability({name:member,members,values,lastReset:lastMemberReset,episodes:trainingLocks,recoveries:ascensionRecoveries,
-                now:sampledAt,maximumMs:options['min-training-ticks']*territoryTickTime,allowConcurrent:options['power-focus']===true});
+                now:sampledAt,maximumMs:options['min-training-ticks']*territoryTickTime,allowConcurrent:true});
             availability[member]=ready;if(!ready.allowed)continue;
             const retained={...original};
             const keep=Object.fromEntries(['hack','str','def','dex','agi','cha'].map(k=>[k,original.augmentations.reduce((m,a)=>m*(equipments.find(e=>e.name===a)?.stats[k]||1),1)]));
@@ -669,22 +761,22 @@ async function tryAscendMembers(ns, gangInfo,trainingLocks=trainingEpisodes) {
             goals.push({name:'recruit',resource:'respect',gangRespect:true,amount:gangInfo.respectForNextRecruit-gangInfo.respect});
         if(context){
             const cash=Math.max(0,context.goal.cost-context.money),rep=Math.max(0,context.goal.rep-context.factionRep);
-            if(cash>0)goals.push({name:'augmentationCash',group:'augmentation',resource:'money',amount:cash});
+            if(gangMoneyAllowed(gangInfo)&&cash>0)goals.push({name:'augmentationCash',group:'augmentation',resource:'money',amount:cash});
             if(rep>0&&context.respectToRep>0)goals.push({name:'augmentationReputation',group:'augmentation',resource:'respect',amount:rep/context.respectToRep});
         }
-        const cashAtQuote=context?ns.getServerMoneyAvailable('home'):null;
-        const warfare=gangWarfareContext(gangInfo,lastOtherGangInfo?.gangs?lastOtherGangInfo:gangRivalsSnapshot,options['warfare-win-chance'],Date.now(),{detected:territoryTickDetected,paddingMs:territoryTickWaitPadding,intervalMs:updateInterval,restoreMs:postTickRestoreMs,periodMs:territoryTickTime,powerFocusEnabled:!options['disable-adaptive-growth']&&(options['power-focus']||!options['money-focus']),powerPriority:options['power-focus']===true});
+        const cashAtQuote=context||incomeFunding?.deprioritize?ns.getServerMoneyAvailable('home'):null;
+        const warfare=gangWarfareContext(gangInfo,lastOtherGangInfo?.gangs?lastOtherGangInfo:gangRivalsSnapshot,gangWarfareThreshold(),Date.now(),{detected:territoryTickDetected,paddingMs:territoryTickWaitPadding,intervalMs:updateInterval,restoreMs:postTickRestoreMs,periodMs:territoryTickTime,powerFocusEnabled:!options['disable-adaptive-growth']&&(options['power-focus']||!options['money-focus']),powerPriority:options['power-focus']===true,trainingFirst:gangTrainingFirst(),incomeFunding});
         const committedTraining=gangCommittedTraining({...trainingLocks,...ascensionRecoveries},members,lastMemberReset,sampledAt);
         const recoveryUntil=Object.fromEntries(Object.entries(ascensionRecoveries).filter(([,r])=>r.until>sampledAt).map(([n,r])=>[n,(r.until-sampledAt)/1000]));
         const recoveryTasks=Object.fromEntries(Object.entries(ascensionRecoveries).map(([n,r])=>[n,r.task]));
         const crew=Object.keys(ascensions).length?forecastGangCrewAscensions({members,gang:gangInfo,training,tasks:allTaskStats,assignments:assignedTasks,fixedTasks:options.manualTasks||{},
             evaluate:(m,g,task)=>memberBestValue(m,g,null,task),names:Object.keys(ascensions),ascensions,goals,warfare,committedTraining,recoveryUntil,recoveryTasks,mixedTraining:options['power-focus']===true,repeatAscensions:options['power-focus']===true,referenceTraining:trainingReference,developmentCycles:!options['no-training'],wantedPreparation:true,trainingOptions:['Train Combat','Train Hacking','Train Charisma'],
-            otherCashRate:context?.otherCashRate||0,horizonSeconds:growthHorizon.seconds,bonusSeconds:growthHorizon.bonusSeconds,
-            windows:options['no-training']?[2,20,60,120,200,300].filter(seconds=>seconds<=options['min-training-ticks']*territoryTickTime/1000):null,
+            economicReview:true,ignoreRespectLoss:options['ignore-ascension-respect-loss']===true,otherCashRate:context?.otherCashRate||0,horizonSeconds:growthHorizon.seconds,bonusSeconds:growthHorizon.bonusSeconds,
+            windows:options['no-training']?[2,20,60,120,200,300].filter(seconds=>seconds<=options['min-training-ticks']*territoryTickTime/1000):[2,5,10,20,60,120,200,300],
             ascensionEligible:(m,state,reset)=>chooseGangAscensions({[m.name]:reset.result},state,myGangMembers,ascensionStats,
-                options['ascend-multi-threshold'],options['ascend-multi-threshold-spacing'],12,true).some(candidate=>candidate.name===m.name),
+                options['ascend-multi-threshold'],options['ascend-multi-threshold-spacing'],12,true,true,options['ignore-ascension-respect-loss']===true).some(candidate=>candidate.name===m.name),
             waitWindows:[20,60,120],maxPlanningMs:150,maxSimulations:60,valuationOffset:ascensionValuationCursor}):{plans:[],diagnostics:{simulations:0},nextOffset:ascensionValuationCursor};
-        ascensionValuationCursor=crew.nextOffset;ascensionDiagnostics={...crew.diagnostics,availability,forecasts:crew.forecasts,waitingForecasts:crew.waitingForecasts,trainingAlternatives:crew.trainingAlternatives,deferred:crew.deferred};
+        ascensionValuationCursor=crew.nextOffset;ascensionDiagnostics={passAt:sampledAt,...crew.diagnostics,policy:{economicReview:true,minimumIntervalMs:2000,concurrentRecovery:true,minimumMultiplier:options['ascend-multi-threshold'],respectLoss:options['ignore-ascension-respect-loss']?'ignored-by-request':'crew-forecast-with-wanted-and-recruitment-guards'},availability,forecasts:crew.forecasts,waitingForecasts:crew.waitingForecasts,trainingAlternatives:crew.trainingAlternatives,deferred:crew.deferred};
         const quotedAt=Date.now();
         for(const plan of crew.deferred||[])if(Number.isFinite(plan.waitSeconds)&&plan.waitSeconds>0&&plan.waitSeconds<=120&&Number.isFinite(plan.production))expectedAscensions[plan.name]={at:quotedAt,until:quotedAt+plan.waitSeconds*1000};
         for(const plan of crew.plans){
@@ -716,12 +808,16 @@ async function tryAscendMembers(ns, gangInfo,trainingLocks=trainingEpisodes) {
     }
     for(const {name:member,economics} of plans){
         const ascResult=dictAscensionResults[member];
-        if(await getNsDataThroughFile(ns,`(${ascendGangMemberSafely.toString()})(ns,ns.args[0],JSON.parse(ns.args[2]),ns.args[3],ns.args[4],(${chooseGangAscensions.toString()}),ns=>(${gangMutationAllowed.toString()})(ns,ns.args[1]),JSON.parse(ns.args[5]))`,
-            '/Temp/gang-ascend-member.txt',[member,ns.pid,JSON.stringify(ascensionStats),options['ascend-multi-threshold'],options['ascend-multi-threshold-spacing'],JSON.stringify(economics)])){
+        let receipt;try{receipt=await getNsDataThroughFile(ns,`(${ascendGangMemberSafely.toString()})(ns,ns.args[0],JSON.parse(ns.args[2]),ns.args[3],ns.args[4],(${chooseGangAscensions.toString()}),ns=>(${gangMutationAllowed.toString()})(ns,ns.args[1]),JSON.parse(ns.args[5]),true,ns.args[6])`,
+            '/Temp/gang-ascend-member.txt',[member,ns.pid,JSON.stringify(ascensionStats),options['ascend-multi-threshold'],options['ascend-multi-threshold-spacing'],JSON.stringify(economics),options['ignore-ascension-respect-loss']===true]);}catch{receipt={success:false,reason:'worker-outcome-unknown',at:Date.now()};}
+        const attempt={name:member,at:Date.now(),success:receipt?.success===true,warfarePreserved:receipt?.warfarePreserved===true,reason:typeof receipt?.reason==='string'?receipt.reason:'invalid-worker-reply'};
+        (ascensionDiagnostics.nativeAttempts??=[]).push(attempt);
+        if(receipt?.success===true){
             log(ns,`SUCCESS: Ascended member ${member}: ${importantStats.map(k=>k+' -> '+ascResult[k].toFixed(2)+'x').join(', ')}.`);
             delete trainingEpisodes[member];trainingReference=trainingReference.filter(p=>p.name!==member);trainingPlans[member]=true;wantedPreparation=null;delete expectedAscensions[member];
             lastMemberReset[member]=Date.now();assignedTasks[member]=gangTrainingTaskName(economics?.trainingTask,isHackGang);
             if(economics){const resetAt=lastMemberReset[member],until=resetAt+economics.trainingSeconds*1000;
+                attempt.recovery={resetAt,until,expected:economics.recoveryStats,original:Object.fromEntries(['hack','str','def','dex','agi','cha'].map(k=>[k,economics.member[k]])),ascMults:Object.fromEntries(['hack','str','def','dex','agi','cha'].map(k=>[k,(economics.member[k+'_asc_mult']??1)*(ascResult[k]??1)])),augmentations:economics.member.augmentations};
                 ascensionRecoveries[member]={resetAt,startedAt:resetAt,until,workUntil:until,task:assignedTasks[member],...(economics.mixedTraining?{mixedTraining:true,trainingSchedule:economics.trainingSchedule}:{})};}
             plannedAscensions.delete(member); // Buying equipment after the reset cannot discard it in that reset.
             await saveGangTraining(ns);break;
@@ -733,7 +829,7 @@ async function tryAscendMembers(ns, gangInfo,trainingLocks=trainingEpisodes) {
  * @param {{[gangMember: string]: GangMemberInfo;}} dictMembers
  * Upgrade any missing equipment / augmentations of members if we have the budget for it **/
 async function tryUpgradeMembers(ns, dictMembers) {
-    if(growthHorizon.seconds<=20&&!options['disable-adaptive-growth'])return;
+    if(growthHorizon.seconds<=20&&!options['disable-adaptive-growth']&&!options['prioritize-all-equipment'])return;
     // Update equipment costs to take into account discounts
     const dictEquipmentCosts = await getGangInfoDict(ns, equipments.map(e => e.name), 'getEquipmentCost');
     equipments.forEach(e => e.cost = dictEquipmentCosts[e.name])
@@ -742,6 +838,19 @@ async function tryUpgradeMembers(ns, dictMembers) {
     const playerData = await getNsDataThroughFile(ns, 'ns.getPlayer()');
     const reserve = Math.max(0, Number(options["reserve"])||0, Number(ns.read("reserve.txt"))||0);
     const homeMoney = Math.max(0, playerData.money - reserve);
+    if(options['prioritize-all-equipment']){
+        const collection=planGangEquipmentCollection(dictMembers,equipments,{cash:homeMoney,equipmentFraction:options['equipment-budget']??.99,augmentationFraction:options['augmentations-budget']??.99,
+            skipTransient:myGangMembers.filter(name=>plannedAscensions.has(name)||expectedAscensionAt(name)!==null&&expectedAscensionAt(name)-Date.now()<=30000)});
+        const report={schemaVersion:1,enabled:true,at:Date.now(),ownerPid:ns.pid,nodeReset:resetInfo.lastNodeReset,augReset:resetInfo.lastAugReset,...collection};
+        await ns.write('tasks/gang-equipment-priority.json',JSON.stringify(report),'w');
+        const receipts=await doUpgradePurchases(ns,collection.orders,reserve);
+        for(const receipt of receipts)if(receipt.success){const order=collection.orders.find(o=>o.member===receipt.member&&o.equipmentName===receipt.equipmentName);if(order){report.remainingCount--;report.remainingCost=Math.max(0,report.remainingCost-order.cost);}}
+        report.orders=collection.orders.filter(o=>!receipts.some(r=>r.success&&r.member===o.member&&r.equipmentName===o.equipmentName));report.at=Date.now();
+        await ns.write('tasks/gang-equipment-priority.json',JSON.stringify(report),'w');
+        equipmentDiagnostics={mode:'collect-all',remainingCount:report.remainingCount,remainingCost:report.remainingCost,receipts};
+        return;
+    }
+    await ns.write('tasks/gang-equipment-priority.json',JSON.stringify({schemaVersion:1,enabled:false,at:Date.now(),ownerPid:ns.pid,nodeReset:resetInfo.lastNodeReset,augReset:resetInfo.lastAugReset}),'w');
     let sharedBudget = homeMoney * 0.99;
     const maxBudget = 0.99; // Note: To avoid rounding issues and micro-spend race-conditions, only allow budgeting up to 99% of money per tick
     let budget = Math.min(maxBudget, Math.max(0,options['equipment-budget'] ?? defaultMaxSpendPerTickTransientEquipment)) * homeMoney;
@@ -775,7 +884,7 @@ async function tryUpgradeMembers(ns, dictMembers) {
         const gang=await getNsDataThroughFile(ns,'ns.gang.getGangInformation()');
         const locked=myGangMembers.filter(name=>memberProtectedTask(name));
         const workTask=name=>memberProtectedTask(name)||assignedTasks[name]||dictMembers[name].task;
-        const warfare=gangWarfareContext(gang,lastOtherGangInfo?.gangs?lastOtherGangInfo:gangRivalsSnapshot,options['warfare-win-chance'],Date.now(),{detected:territoryTickDetected,paddingMs:territoryTickWaitPadding,intervalMs:updateInterval,restoreMs:postTickRestoreMs,periodMs:territoryTickTime,powerFocusEnabled:!options['disable-adaptive-growth']&&(options['power-focus']||!options['money-focus']),powerPriority:options['power-focus']===true});
+        const warfare=gangWarfareContext(gang,lastOtherGangInfo?.gangs?lastOtherGangInfo:gangRivalsSnapshot,gangWarfareThreshold(),Date.now(),{detected:territoryTickDetected,paddingMs:territoryTickWaitPadding,intervalMs:updateInterval,restoreMs:postTickRestoreMs,periodMs:territoryTickTime,powerFocusEnabled:!options['disable-adaptive-growth']&&(options['power-focus']||!options['money-focus']),powerPriority:options['power-focus']===true,trainingFirst:gangTrainingFirst(),incomeFunding});
         let equipmentBonus=0;try{equipmentBonus=Math.max(0,ns.gang.getBonusTime()/1000-2);}catch{}
         const cache=new WeakMap();
         const rawRatesFor=member=>{
@@ -830,7 +939,7 @@ async function tryUpgradeMembers(ns, dictMembers) {
                         if(development.powerObjective&&equip.name&&equip.cost<=homeMoney*.01){
                             const game=development.horizonSeconds+Math.min(equipmentBonus,development.horizonSeconds*24);
                             quote.powerObjective=true;quote.powerGainPerTick=development.powerGain/Math.max(1,game/20);quote.powerPaybackSeconds=development.powerPaybackSeconds;
-                            quote.powerQuote={at:Date.now(),horizon:lifetimeSeconds,reserve,faction:gang.faction,power:gang.power,territory:gang.territory,rivalPower:warfare.rivalPower,threshold:warfare.threshold,powerPriority:warfare.powerPriority===true,nodeReset:resetInfo.lastNodeReset,augReset:resetInfo.lastAugReset,trainingTask:workTask(member.name)};
+                            quote.powerQuote={at:Date.now(),horizon:lifetimeSeconds,reserve,faction:gang.faction,power:gang.power,territory:gang.territory,rivalPower:warfare.rivalPower,threshold:warfare.threshold,powerPriority:warfare.powerPriority===true,powerPreparation:warfare.preparation?.active===true,nodeReset:resetInfo.lastNodeReset,augReset:resetInfo.lastAugReset,trainingTask:workTask(member.name)};
                         }
                     }
                 }
@@ -843,7 +952,7 @@ async function tryUpgradeMembers(ns, dictMembers) {
                 if(equip.cost<=homeMoney*fraction&&Number.isFinite(before)&&Number.isFinite(after)&&after>before&&payback<=useful&&
                   ((afterETA<=useful&&beforeETA-afterETA>=Math.max(2,Number.isFinite(beforeETA)?beforeETA*.02:2))||after-before>=Math.max(.001,before*.05))){
                     quote.powerObjective=true;quote.powerGainPerTick=after-before;quote.powerPaybackSeconds=payback;
-                    quote.powerQuote={at:Date.now(),horizon:useful,reserve,faction:gang.faction,power:gang.power,territory:gang.territory,rivalPower:warfare.rivalPower,threshold:warfare.threshold,powerPriority:warfare.powerPriority===true,nodeReset:resetInfo.lastNodeReset,augReset:resetInfo.lastAugReset};
+                    quote.powerQuote={at:Date.now(),horizon:useful,reserve,faction:gang.faction,power:gang.power,territory:gang.territory,rivalPower:warfare.rivalPower,threshold:warfare.threshold,powerPriority:warfare.powerPriority===true,powerPreparation:warfare.preparation?.active===true,nodeReset:resetInfo.lastNodeReset,augReset:resetInfo.lastAugReset};
                     if(fraction>.01)quote.powerQuote.largerPurchase={beforeSeconds:beforeETA,afterSeconds:afterETA,powerGainPerTick:after-before};
                 }
             }
@@ -903,7 +1012,11 @@ async function tryUpgradeMembers(ns, dictMembers) {
         equipmentOpportunity=opportunity?{powerObjective:opportunity.powerObjective,powerGainPerTick:opportunity.powerGainPerTick,powerPaybackSeconds:opportunity.powerPaybackSeconds,paybackSeconds:opportunity.paybackSeconds,cashPaybackSeconds:opportunity.cashPaybackSeconds,valuePaybackSeconds:opportunity.valuePaybackSeconds,cost:opportunity.cost,reason:opportunity.reason,recruitSecondsSaved:opportunity.recruitSecondsSaved}:null;
         equipmentDiagnostics={...plan.diagnostics,developmentChecks,developmentComparisons,comparisonTiming,comparisonBudget:{candidateLimit:comparisonBudget.candidateLimit,perComparisonMs:comparisonBudget.perComparisonMs,reason:comparisonBudget.reason},ownership:Object.fromEntries(Object.values(dictMembers).map(m=>[m.name,{upgrades:m.upgrades,augmentations:m.augmentations}]))};
         orders=plan.orders;
-        await ns.write('tasks/gang-growth.json',JSON.stringify({schemaVersion:2,at:Date.now(),pid:ns.pid,nodeReset:resetInfo.lastNodeReset,augReset:resetInfo.lastAugReset,powerPriority:options['power-focus']===true,powerFocus:warfare.powerFocus===true,equipmentOpportunity,equipmentDiagnostics,horizon:growthHorizon,expectedAscensions,wantedPreparation,recruitmentSprint:trainingDiagnostics?.recruitmentSprint===true}),'w');
+        const fundingOpportunity=plan.fundingOpportunity;
+        const fundingItems=fundingOpportunity?(fundingOpportunity.items?.map(e=>({member:fundingOpportunity.member,equipmentName:e.name}))||[{member:fundingOpportunity.member,equipmentName:fundingOpportunity.equipmentName}]):[];
+        equipmentFundingQuote={at:Date.now(),nodeReset:resetInfo.lastNodeReset,augReset:resetInfo.lastAugReset,faction:gang.faction,members:Object.keys(dictMembers),
+            complete:!plan.diagnostics.timeLimited&&!plan.diagnostics.skippedEvaluations&&!plan.diagnostics.deferredForecasts&&!plan.diagnostics.bundleSearchLimited,orders:fundingItems};
+        await ns.write('tasks/gang-growth.json',JSON.stringify({schemaVersion:2,at:Date.now(),pid:ns.pid,nodeReset:resetInfo.lastNodeReset,augReset:resetInfo.lastAugReset,powerPriority:options['power-focus']===true,powerFocus:warfare.powerFocus===true,incomePersistence:updateGrowthFocus.incomeSaveState??null,incomeContribution:incomeObservation?{known:incomeObservation.known,at:incomeObservation.rateAt,gangRate:incomeObservation.gangRate,externalRate:incomeObservation.externalRate,gangShare:incomeObservation.gangShare,observedGangShare:incomeObservation.observedGangShare,observedGangRate:incomeObservation.observedGangRate,observedExternalRate:incomeObservation.observedExternalRate}:null,incomeFunding,equipmentFundingQuote,equipmentOpportunity,equipmentDiagnostics,horizon:growthHorizon,expectedAscensions,wantedPreparation,recruitmentSprint:trainingDiagnostics?.recruitmentSprint===true}),'w');
     }
     const receipts=await doUpgradePurchases(ns, orders, reserve);
     if(equipmentDiagnostics)equipmentDiagnostics.receipts=receipts;
@@ -930,12 +1043,31 @@ async function doUpgradePurchases(ns, purchaseOrder, reserve) {
 
 /** Wait for native processing, including the legitimate case of unchanged rates.
  * No snapshot polling or assumption that a game update changes serialized values.
- * Unavailable access returns an explicitly unverified snapshot for safe deferral. */
-async function waitForGameUpdate(ns, oldGangInfo) {
-    if (!myGangMembers.some(member => !(assignedTasks[member]||'').includes('Train')))return oldGangInfo;
-    let observed=false,updateCycles=null;
-    try{if(typeof ns.gang.nextUpdate==='function'){const elapsed=await ns.gang.nextUpdate();observed=true;if(Number.isFinite(elapsed)&&elapsed>0)updateCycles=elapsed/200;}}catch{}
-    try{return {...await getNsDataThroughFile(ns,'ns.gang.getGangInformation()'),updateObserved:observed,...(updateCycles===null?{}:{updateCycles})};}
+ * Unavailable access or a five-second deadline returns an unverified snapshot. */
+async function waitForGameUpdate(ns, oldGangInfo,expectedAssignments=null) {
+    let observed=false,updateCycles=null,timer;
+    try{
+        if(typeof ns.gang.nextUpdate==='function'){
+            const timeout={},deadline=Date.now()+5000;
+            const elapsed=await Promise.race([ns.gang.nextUpdate(),new Promise(resolve=>{timer=setTimeout(()=>resolve(timeout),5000);})]);
+            if(elapsed===timeout||Date.now()>=deadline){
+                const stale={...oldGangInfo};delete stale.updateCycles;
+                return {...stale,updateObserved:false,assignmentsVerified:false,updateWaitReason:'timeout'};
+            }
+            observed=Number.isFinite(elapsed)&&elapsed>0;if(observed)updateCycles=elapsed/200;
+        }
+    }catch{}
+    finally{if(timer!==undefined)clearTimeout(timer);}
+    try{
+        if(expectedAssignments){
+            const names=Object.keys(expectedAssignments);
+            const verification=await getNsDataThroughFile(ns,'({info:ns.gang.getGangInformation(),names:ns.gang.getMemberNames(),tasks:Object.fromEntries(ns.args.map(name=>[name,ns.gang.getMemberInformation(name).task]))})','/Temp/gang-verified-rates.txt',names);
+            if(!verification?.info||!['moneyGainRate','respectGainRate','wantedLevelGainRate','wantedLevel'].every(k=>Number.isFinite(verification.info[k])))return {...oldGangInfo,updateObserved:false,assignmentsVerified:false};
+            const assignmentsVerified=names.length>0&&Array.isArray(verification?.names)&&verification.names.length===names.length&&new Set(verification.names).size===names.length&&names.every(name=>verification.names.includes(name)&&typeof expectedAssignments[name]==='string'&&verification.tasks?.[name]===expectedAssignments[name]);
+            return {...verification.info,updateObserved:observed&&assignmentsVerified,assignmentsVerified,...(updateCycles===null?{}:{updateCycles})};
+        }
+        return {...await getNsDataThroughFile(ns,'ns.gang.getGangInformation()'),updateObserved:observed,...(updateCycles===null?{}:{updateCycles})};
+    }
     catch{return {...oldGangInfo,updateObserved:false};}
 }
 
@@ -943,9 +1075,9 @@ async function waitForGameUpdate(ns, oldGangInfo) {
  * @param {NS} ns
  * @param {GangGenInfo} myGangInfo **/
 async function enableOrDisableWarfare(ns, myGangInfo) {
-    warfareFinished = Math.round(myGangInfo.territory * 2 ** 20) / 2 ** 20 /* Handle API imprecision */ >= 1;
-    if (warfareFinished && !myGangInfo.territoryWarfareEngaged) return; // No need to engage once we hit 100%
     const otherGangs = await getNsDataThroughFile(ns, 'ns.gang.getAllGangInformation()'); // Returns dict of { [gangName]: { "power": Number, "territory": Number } }
+    warfareFinished = warfareDecision(myGangInfo,otherGangs,gangWarfareThreshold()).finished;
+    if (warfareFinished && !myGangInfo.territoryWarfareEngaged) return;
     let lowestWinChance = 1, totalWinChance = 0, totalActiveGangs = 0;
     let lowestWinChanceGang = "";
     for (const otherGang in otherGangs) {
@@ -958,32 +1090,62 @@ async function enableOrDisableWarfare(ns, myGangInfo) {
     const averageWinChance = totalActiveGangs ? totalWinChance / totalActiveGangs : 0;
     let lease;try{lease=JSON.parse(ns.read('tasks/gang-attrition.json'));}catch{}
     const activeLease=lease?.state==='active'&&lease.nodeReset===resetInfo.lastNodeReset&&lease.augReset===resetInfo.lastAugReset&&lease.ownerPid===ns.pid&&lease.deadline>Date.now()&&!options['disable-attrition'];
-    if(activeLease)return;
-    const shouldEngage = warfareDecision(myGangInfo,otherGangs,options['warfare-win-chance']).engage;
-    if(!shouldEngage&&!options['disable-attrition']&&options['power-focus']&&!options['disable-adaptive-growth']&&myGangInfo.territoryClashChance===0&&!myGangInfo.territoryWarfareEngaged&&myGangMembers.length===12&&Date.now()>=nextAttritionQuote&&!(lease?.nodeReset===resetInfo.lastNodeReset&&lease.augReset===resetInfo.lastAugReset&&lease.cooldownUntil>Date.now())){
+    if(activeLease&&!options['disable-attrition'])return;
+
+    let shouldEngage = warfareDecision(myGangInfo,otherGangs,gangWarfareThreshold()).engage;
+    let history=null;try{history=JSON.parse(ns.read('tasks/gang-attrition-observations.json')||'[]');}catch{}
+    const calibration=gangAttritionCalibration(history,{nodeReset:resetInfo.lastNodeReset,augReset:resetInfo.lastAugReset,faction:myGangFaction},Date.now());
+    let attempts=null;try{attempts=JSON.parse(ns.read('tasks/gang-attrition-attempts.json')||'[]');}catch{}
+    const monitorHealth=gangMonitorBackoff(attempts,{nodeReset:resetInfo.lastNodeReset,augReset:resetInfo.lastAugReset,faction:myGangFaction},Date.now());
+    await ns.write('tasks/gang-monitor-health.json',JSON.stringify({schemaVersion:1,at:Date.now(),ownerPid:ns.pid,nodeReset:resetInfo.lastNodeReset,augReset:resetInfo.lastAugReset,faction:myGangFaction,...monitorHealth}),'w');
+    await ns.write('tasks/gang-attrition-calibration.json',JSON.stringify({schemaVersion:1,at:Date.now(),ownerPid:ns.pid,nodeReset:resetInfo.lastNodeReset,augReset:resetInfo.lastAugReset,faction:myGangFaction,...calibration}),'w');
+    const conditionalEnabled=options['aggressive-warfare']===true&&gangWarfareThreshold()===.7&&!options['disable-attrition']&&options['power-focus']===true&&!options['disable-adaptive-growth'];
+    let conditional=false;
+    if(conditionalEnabled&&!shouldEngage&&lowestWinChance>=.68&&monitorHealth.known&&!monitorHealth.suspended&&calibration.known&&!calibration.suspended){
+        if(Date.now()>=nextAggressionQuote){
+            nextAggressionQuote=Date.now()+2000;
+            const context=gangWarfareContext(myGangInfo,lastOtherGangInfo,gangWarfareThreshold(),Date.now(),{detected:territoryTickDetected,paddingMs:territoryTickWaitPadding,intervalMs:updateInterval,restoreMs:postTickRestoreMs,periodMs:territoryTickTime,powerPriority:true,trainingFirst:gangTrainingFirst(),incomeFunding});
+            const members=await getGangInfoDict(ns,myGangMembers,'getMemberInformation'),locked=myGangMembers.filter(n=>memberProtectedTask(n));
+            const before=gangWarfarePowerPerTick(members,myGangInfo.territory,0,locked),after=gangWarfarePowerPerTick(members,myGangInfo.territory,1,locked);
+            const maxDefense=Math.max(...Object.values(members).map(m=>m.def)),excluded=Object.keys(options.manualTasks||{});
+            const participants=Object.values(members).filter(m=>!excluded.includes(m.name)&&gangWarfareMemberEligible(m,maxDefense,1)).map(m=>m.name);
+            const planned=planGangAggression({w:context,members:Object.values(members),participants,excluded,powerPerTick:before,powerFraction:before>0?Math.min(1,after/before):0,bonusSeconds:growthHorizon.bonusSeconds??0,calibration,monitorHealth});
+            const at=Date.now();aggressionQuote={schemaVersion:1,at,expiresAt:at+5000,ownerPid:ns.pid,nodeReset:resetInfo.lastNodeReset,augReset:resetInfo.lastAugReset,faction:myGangFaction,...planned};
+            await ns.write('tasks/gang-aggression.json',JSON.stringify(aggressionQuote),'w');
+        }
+        conditional=aggressionQuote?.engage===true&&aggressionQuote.expiresAt>Date.now();
+        if(conditional)shouldEngage=true;
+    }
+    if(monitorHealth.known&&!monitorHealth.suspended&&calibration.known&&!calibration.suspended&&!shouldEngage&&lowestWinChance<.7&&!options['disable-attrition']&&options['power-focus']&&!options['disable-adaptive-growth']&&myGangInfo.territoryClashChance===0&&!myGangInfo.territoryWarfareEngaged&&myGangMembers.length===12&&Date.now()>=nextAttritionQuote&&!(lease?.nodeReset===resetInfo.lastNodeReset&&lease.augReset===resetInfo.lastAugReset&&lease.cooldownUntil>Date.now())){
         nextAttritionQuote=Date.now()+60000;
-        const context=gangWarfareContext(myGangInfo,lastOtherGangInfo,options['warfare-win-chance'],Date.now(),{detected:territoryTickDetected,paddingMs:territoryTickWaitPadding,intervalMs:updateInterval,restoreMs:postTickRestoreMs,periodMs:territoryTickTime,powerPriority:true});
+        const context=gangWarfareContext(myGangInfo,lastOtherGangInfo,gangWarfareThreshold(),Date.now(),{detected:territoryTickDetected,paddingMs:territoryTickWaitPadding,intervalMs:updateInterval,restoreMs:postTickRestoreMs,periodMs:territoryTickTime,powerPriority:true,trainingFirst:gangTrainingFirst(),incomeFunding});
         if(context.active&&context.duty&&territoryTickDetected&&Number.isFinite(territoryNextTick)&&context.rivals.every(r=>r.samples>=3&&myGangInfo.power/(myGangInfo.power+r.power)>=.65)&&growthHorizon.seconds>=2060){
             const members=await getGangInfoDict(ns,myGangMembers,'getMemberInformation'),at=Date.now(),locked=myGangMembers.filter(n=>memberProtectedTask(n));
             const planned=gangCommittedTraining({...trainingEpisodes,...ascensionRecoveries},members,lastMemberReset,at);
             const forecast=forecastGangCrewTraining({members,gang:myGangInfo,training:allTaskStats['Train '+(isHackGang?'Hacking':'Combat')],tasks:allTaskStats,assignments:assignedTasks,fixedTasks:options.manualTasks||{},
                 evaluate:(m,g,task)=>memberBestValue(m,g,null,task),committedTraining:planned,warfare:context,horizonSeconds:Math.min(3600,growthHorizon.seconds),bonusSeconds:growthHorizon.bonusSeconds,maxPlanningMs:50,maxSimulations:0,retainBaseline:true});
             const before=gangWarfarePowerPerTick(members,myGangInfo.territory,0,locked),after=gangWarfarePowerPerTick(members,myGangInfo.territory,1,locked);
-            const quote=planGangAttrition({w:context,cumulative:forecast.baselineTrajectory?.cumulative,members:Object.values(members),powerFraction:before>0?Math.min(1,after/before):0,bonusSeconds:growthHorizon.bonusSeconds});
+            const maxDefense=Math.max(...Object.values(members).map(m=>m.def));
+            const excluded=Object.keys(options.manualTasks||{});
+            // Include eligible recovering trainers too: they may return during the tail.
+            const participants=Object.values(members).filter(m=>!excluded.includes(m.name)&&gangWarfareMemberEligible(m,maxDefense,1)).map(m=>m.name);
+            const quote=planGangAttrition({w:context,allowTrainingFirst:true,participants,calibration,monitorHealth,cumulative:forecast.baselineTrajectory?.cumulative,members:Object.values(members),powerFraction:before>0?Math.min(1,after/before):0,bonusSeconds:growthHorizon.bonusSeconds});
             await ns.write('tasks/gang-attrition-plan.json',JSON.stringify({at:Date.now(),ownerPid:ns.pid,nodeReset:resetInfo.lastNodeReset,augReset:resetInfo.lastAugReset,...quote}),'w');
             if(quote.engage){
-                const ticket={engage:true,observationForecast:quote.observationForecast,ownerPid:ns.pid,nodeReset:resetInfo.lastNodeReset,augReset:resetInfo.lastAugReset,at:Date.now(),deadline:Math.min(Date.now()+22000,Math.max(Date.now()+500,(territoryNextTick||Date.now()+1000)+500)),faction:myGangFaction,power:myGangInfo.power,territory:myGangInfo.territory,signature:gangAttritionSignature(members),rivals:context.rivals};
-                const engaged=await getNsDataThroughFile(ns,`(${startGangAttrition.toString()})(ns,JSON.parse(ns.args[1]),()=>(${gangMutationAllowed.toString()})(ns,ns.args[0]))`,'/Temp/gang-attrition-start.txt',[ns.pid,JSON.stringify(ticket)]);
+                const ticket={engage:true,adaptiveCooldownRequired:true,calibrationRequired:true,monitorHealthRequired:true,monitorRequired:true,eventTimingRequired:true,expectedTickAt:territoryNextTick,observationForecast:quote.observationForecast,ownerPid:ns.pid,nodeReset:resetInfo.lastNodeReset,augReset:resetInfo.lastAugReset,at:Date.now(),deadline:Date.now()+22000,faction:myGangFaction,power:myGangInfo.power,territory:myGangInfo.territory,participants,excluded,signature:gangAttritionSignature(members),rivals:context.rivals};
+                const engaged=await getNsDataThroughFile(ns,`(${startGangAttrition.toString()})(ns,JSON.parse(ns.args[1]),()=>(${gangMutationAllowed.toString()})(ns,ns.args[0]),(${gangAttritionCalibration.toString()}),(${homeRamHeadroom.toString()}),(${gangMonitorBackoff.toString()}),(${gangAttritionCooldown.toString()}))`,'/Temp/gang-attrition-start.txt',[ns.pid,JSON.stringify(ticket)]);
                 if(engaged)return;
             }
         }
     }
-    if (shouldEngage != myGangInfo.territoryWarfareEngaged) {
-        log(ns, (warfareFinished ? 'SUCCESS' : 'INFO') + `: Toggling participation in territory warfare to ${shouldEngage}. Our power: ${formatNumberShort(myGangInfo.power)}. ` +
-            (!warfareFinished ? `Lowest win chance is ${(100 * lowestWinChance).toFixed(2)}% with ${lowestWinChanceGang} (power ${formatNumberShort(otherGangs[lowestWinChanceGang]?.power)}). ` +
-                `Average win chance ${(100 * averageWinChance).toFixed(2)}% across ${totalActiveGangs} active gangs.` :
-                'We have destroyed all other gangs and earned 100% territory'), false, warfareFinished ? 'info' : 'success');
-        await getNsDataThroughFile(ns, `(() => {const allowed=(${gangMutationAllowed.toString()})(ns,ns.args[1]);const g=ns.gang.getGangInformation();const engage=allowed&&ns.args[0]&&(${warfareDecision.toString()})(g,ns.gang.getAllGangInformation(),ns.args[2]).engage;ns.gang.setTerritoryWarfare(engage);return engage;})()`, '/Temp/gang-warfare-decision.txt',[shouldEngage,ns.pid,options['warfare-win-chance']]);
+    if (shouldEngage != myGangInfo.territoryWarfareEngaged || conditional) {
+        const transition=await getNsDataThroughFile(ns, `(() => {const allowed=(${gangMutationAllowed.toString()})(ns,ns.args[1]);const g=ns.gang.getGangInformation();const decision=(${warfareDecision.toString()})(g,ns.gang.getAllGangInformation(),ns.args[2]);const routine=decision.engage;const proof=ns.args[3]?(${conditional?gangAggressionGuardSource():'()=>({valid:false})'})(ns,ns.args[1],Date.now()):null;const aggressive=proof?.valid===true;const engage=!!(allowed&&ns.args[0]&&(routine||aggressive));if(g.territoryWarfareEngaged!==engage)ns.gang.setTerritoryWarfare(engage);const reset=ns.getResetInfo(),result={at:Date.now(),ownerPid:ns.args[1],nodeReset:reset.lastNodeReset,augReset:reset.lastAugReset,faction:g.faction,requested:ns.args[0],before:g.territoryWarfareEngaged,engaged:ns.gang.getGangInformation().territoryWarfareEngaged,minimum:decision.minimum,expectedTerritoryPerUpdate:decision.expectedTerritoryPerUpdate,cohortProfitable:decision.cohortProfitable,blockedByWorstOpponent:decision.blockedByWorstOpponent,reason:!allowed?'control-blocked':!ns.args[0]?decision.reason:routine?'routine-threshold-met':aggressive?'conditional-approved':proof?.reason||decision.reason};ns.write('tasks/gang-warfare-decision.json',JSON.stringify(result),'w');return result;})()`, '/Temp/gang-warfare-decision.txt',[shouldEngage,ns.pid,gangWarfareThreshold(),conditional]);
+        const key=JSON.stringify([transition?.engaged,transition?.reason]);
+        if(enableOrDisableWarfare.lastDecision!==key||transition?.before!==transition?.engaged){
+            enableOrDisableWarfare.lastDecision=key;
+            log(ns,'INFO: Territory warfare '+(transition?.engaged?'enabled':'disabled')+' ('+(transition?.reason||'unverified-reply')+'); lowest win chance '+(100*(transition?.minimum??0)).toFixed(2)+'%.');
+        }
+        if(conditional&&transition?.engaged!==true){nextAggressionQuote=0;aggressionQuote=null;}
     }
 }
 
@@ -1058,7 +1220,7 @@ function shuffleArray(array) {
 }
 
 async function saveGangTraining(ns){
- await ns.write('tasks/gang-training.json',JSON.stringify({nodeReset:resetInfo.lastNodeReset,augReset:resetInfo.lastAugReset,members:lastMemberReset,episodes:trainingEpisodes,ascensionRecoveries,wantedPreparation}),'w');
+ await ns.write('tasks/gang-training.json',JSON.stringify({ownerPid:ns.pid,at:Date.now(),nodeReset:resetInfo.lastNodeReset,augReset:resetInfo.lastAugReset,members:lastMemberReset,episodes:trainingEpisodes,ascensionRecoveries,wantedPreparation}),'w');
 }
 
 
@@ -1069,31 +1231,47 @@ function sharedGangAllowance(ns,fallback){
  }}catch{}return fallback;
 }
 async function updateGrowthFocus(ns,gang,members){
- const player=await getNsDataThroughFile(ns,'ns.getPlayer()');
- let factionRep=null;
- if(ownedSourceFiles[4]>0)try{const rep=await getNsDataThroughFile(ns,'({rep:ns.singularity.getFactionRep(ns.args[0]),favor:ns.singularity.getFactionFavor(ns.args[0])})','/Temp/gang-focus-reputation.txt',[myGangFaction]);factionRep=rep.rep;gangFactionFavor=rep.favor;}catch{}
+ const snapshot=await getNsDataThroughFile(ns,'({player:ns.getPlayer(),income:{at:Date.now(),sources:ns.getMoneySources().sinceInstall},prices:Object.fromEntries(JSON.parse(ns.args[0]).map(n=>[n,ns.gang.getEquipmentCost(n)]))})',
+  '/Temp/gang-income-funding.txt',[JSON.stringify(equipments.map(e=>e.name))]);
+ const player=snapshot.player;
+ incomeObservation=observeGangIncome(incomeObservation,snapshot.income,{nodeReset:resetInfo.lastNodeReset,augReset:resetInfo.lastAugReset,now:Date.now()});
+ if(incomeObservation.baseline)updateGrowthFocus.incomeSaveState=await persistGangIncome(ns,incomeObservation,updateGrowthFocus.incomeSaveState);
+ let factionRep=null,factionRepAt=null;
+ if(ownedSourceFiles[4]>0)try{const rep=await getNsDataThroughFile(ns,'({rep:ns.singularity.getFactionRep(ns.args[0]),favor:ns.singularity.getFactionFavor(ns.args[0]),at:Date.now()})','/Temp/gang-focus-reputation.txt',[myGangFaction]);factionRep=rep.rep;factionRepAt=rep.at;gangFactionFavor=rep.favor;}catch{}
  const priorQuote=purchaseFocusQuote;purchaseFocusContext=null;purchaseFocusQuote=null;
- const money=Math.max(0,player.money-(Number(ns.read('reserve.txt'))||0));
- let otherCashRate=0;
+ const reserve=Math.max(0,Number(ns.read('reserve.txt'))||0),money=Math.max(0,player.money-reserve);
+ let otherCashRate=0,externalAt=null;
   try{const c=JSON.parse(ns.read('tasks/progression-speed.json')).reputationPlanningContext,now=Date.now();
    if(c?.nodeReset===resetInfo.lastNodeReset&&c.augReset===resetInfo.lastAugReset&&Number.isFinite(c.at)&&c.at<=now&&now-c.at<=60000&&
-    Number.isFinite(c.cashRate)&&Number.isFinite(c.factionCashRate))otherCashRate=Math.max(0,Math.min(c.cashRate,c.factionCashRate)-Math.max(0,gang.moneyGainRate)*5);
+    Number.isFinite(c.cashRate)&&Number.isFinite(c.factionCashRate)){otherCashRate=Math.max(0,Math.min(c.cashRate,c.factionCashRate)-Math.max(0,gang.moneyGainRate)*5);externalAt=c.at;}
   }catch{}
+ if(incomeObservation.known&&incomeObservation.rateAt<=Date.now()&&Date.now()-incomeObservation.rateAt<=30000){otherCashRate=incomeObservation.externalRate;externalAt=incomeObservation.rateAt;}
+ const plannedCash=gangPlannedEquipmentCash(equipmentFundingQuote,members,snapshot.prices,{nodeReset:resetInfo.lastNodeReset,augReset:resetInfo.lastAugReset,faction:gang.faction,now:Date.now()});
+ const equipmentCash=plannedCash??gangDevelopmentCashTarget(members,equipments.map(e=>({...e,cost:snapshot.prices?.[e.name]})));
+ incomeFunding=gangIncomeFunding({cash:money,equipmentCash,reserveShortfall:Math.max(0,reserve-player.money),augmentationCash:purchaseGoal?.cost??0,
+  augmentationKnown:!!purchaseGoal||Number.isFinite(factionRep)&&Number.isFinite(requiredRep)&&factionRep>=requiredRep,
+  externalCashRate:otherCashRate,externalAt,at:Date.now(),horizonSeconds:growthHorizon.seconds,forceMoney:gangMoneyAllowed(gang)&&options['money-focus']===true,contribution:incomeObservation});
  const respectToRep=player.mults.faction_rep*(1+(gangFactionFavor||0)/100)/75;
  purchaseTimingContext=purchaseGoal&&Number.isFinite(factionRep)&&Number.isFinite(respectToRep)&&respectToRep>0?
-  {goal:purchaseGoal,money,factionRep,respectToRep,otherCashRate}:null;
- if(!options['disable-adaptive-growth']&&!options['reputation-focus']&&!options['money-focus']&&myGangMembers.length>=12&&purchaseGoal&&Number.isFinite(factionRep)&&members){
+  {at:factionRepAt,goal:purchaseGoal,money,factionRep,respectToRep,otherCashRate}:null;
+ if(gangMoneyAllowed(gang)&&!options['disable-adaptive-growth']&&!options['reputation-focus']&&!options['money-focus']&&myGangMembers.length>=12&&purchaseGoal&&Number.isFinite(factionRep)&&members){
   const locked=myGangMembers.filter(n=>memberProtectedTask(n));
   const assignments=Object.fromEntries(myGangMembers.map(n=>[n,memberProtectedTask(n)||assignedTasks[n]]));
   const rates=Object.fromEntries(Object.values(members).map(m=>[m.name,allTaskNames.map(name=>({name,
    money:calculateMoneyGains(gang,name,m),respect:computeRepGains(gang,name,m),wanted:computeWantedGains(gang,name,m)}))]));
-  const warfare=gangWarfareContext(gang,lastOtherGangInfo?.gangs?lastOtherGangInfo:gangRivalsSnapshot,options['warfare-win-chance'],Date.now(),{detected:territoryTickDetected,paddingMs:territoryTickWaitPadding,intervalMs:updateInterval,restoreMs:postTickRestoreMs,periodMs:territoryTickTime,powerFocusEnabled:!options['disable-adaptive-growth']&&(options['power-focus']||!options['money-focus']),powerPriority:options['power-focus']===true});
+  const warfare=gangWarfareContext(gang,lastOtherGangInfo?.gangs?lastOtherGangInfo:gangRivalsSnapshot,gangWarfareThreshold(),Date.now(),{detected:territoryTickDetected,paddingMs:territoryTickWaitPadding,intervalMs:updateInterval,restoreMs:postTickRestoreMs,periodMs:territoryTickTime,powerFocusEnabled:!options['disable-adaptive-growth']&&(options['power-focus']||!options['money-focus']),powerPriority:options['power-focus']===true,trainingFirst:gangTrainingFirst(),incomeFunding});
   purchaseFocusContext={goal:purchaseGoal,money,factionRep,respectToRep,assignments,locked,tolerance:gangWantedTolerance(gang,wantedPenaltyThreshold),otherCashRate,
    warfare,workFractions:gangWarfareWorkFractions(members,warfare,locked),bonusSeconds:Math.max(0,growthHorizon.bonusSeconds||0)};
   purchaseFocusQuote=gangPurchaseFocus({...purchaseFocusContext,rates,previous:priorQuote});
  }
  growthFocus=gangFocus({reputationFocus:options['reputation-focus'],moneyFocus:options['money-focus'],members:myGangMembers.length,
-  factionRep:factionRep??0,requiredRep,money,respect:gang.respect,goal:options['disable-adaptive-growth']?null:purchaseGoal,purchaseForecast:purchaseFocusQuote});
+  factionRep:factionRep??0,requiredRep,money,respect:gang.respect,goal:options['disable-adaptive-growth']?null:purchaseGoal,purchaseForecast:purchaseFocusQuote,incomeFunding});
+ if(options['training-first']===true&&options['power-focus']===true&&gangStatPriorityAllowed({preparation:preparationFor(gang),funding:incomeFunding,members:myGangMembers.length,options}))growthFocus='stats';
+ growthFocus=gangTerritoryDevelopmentFocus(gang,myGangMembers.length,growthFocus,options);
+ const focusReason=!gangMoneyAllowed(gang)?'Gang income disabled until territory exceeds 90%; prioritizing '+growthFocus:growthFocus==='stats'?'Prioritizing gang stat growth until safe clash readiness; retaining a cash producer':null;
+ if(focusReason&&updateGrowthFocus.statReason!==focusReason)ns.print?.('INFO: '+focusReason);updateGrowthFocus.statReason=focusReason;
+ const incomeReason=(!gangMoneyAllowed(gang)?'territory-locked':incomeFunding.reason)+':'+(incomeObservation.known?'measured':'sampling');
+ if(updateGrowthFocus.incomeReason!==incomeReason){updateGrowthFocus.incomeReason=incomeReason;ns.print?.('INFO: Gang income priority: '+(!gangMoneyAllowed(gang)?'Disabled until territory exceeds 90%':incomeFunding.reason)+(Number.isFinite(incomeObservation.gangShare)?' (gang '+(incomeObservation.gangShare*100).toFixed(1)+'% of conservatively credited recurring income)':' (income sampling)'));}
  return growthFocus;
 }
 function refreshForecastWantedLimits(members,gang){
@@ -1105,7 +1283,8 @@ function memberBestValue(member,gang,shadow=null,forcedTask=null){
  const weight=shadow??(purchaseFocusQuote?.weight??gangObjectiveWeight(purchaseGoal));
  const rate=task=>{
   const money=calculateMoneyGains(gang,task,member)*5,respect=computeRepGains(gang,task,member)*5,wanted=computeWantedGains(gang,task,member)*5;
-  return {value:gangObjectiveValue({money,respect},growthFocus,weight),task,money,respect,wanted};
+  const stats=growthFocus==='stats'?gangStatTaskRate(member,allTaskStats[task],projectGangMember):0;
+  return {value:gangObjectiveValue({money,respect,stats},growthFocus,weight),task,money,respect,wanted};
  };
  if(options.manualTasks?.[member.name])return rate(options.manualTasks[member.name]);
  if(forcedTask&&allTaskStats[forcedTask])return rate(forcedTask);
@@ -1117,10 +1296,17 @@ function memberBestValue(member,gang,shadow=null,forcedTask=null){
   if(candidate.value>best.value)best=candidate;
  }return best;
 }
+function gangWarfareThreshold(){return options['warfare-win-chance'];}
+function gangTrainingFirst(){return options['training-first']===true&&options['power-focus']===true&&!options['disable-adaptive-growth'];}
+function preparationFor(gang){return gangPreparationStatus(gang,lastOtherGangInfo?.gangs?lastOtherGangInfo:gangRivalsSnapshot,gangWarfareThreshold(),Date.now(),gangTrainingFirst());}
 async function refreshTrainingPlans(ns,members,gang){
  if(options['disable-adaptive-growth'])return;
  trainingPlans={};trainingForecasts={};
  if(wantedPreparation){trainingReference=[];trainingPlans=Object.fromEntries(myGangMembers.map(n=>[n,false]));trainingDiagnostics={model:activeWantedPreparation()?'wanted-preparation':'ascension-review',recruitmentSprint:false,until:wantedPreparation.until};return;}
+ const preparation=preparationFor(gang);
+ const phase=preparation.reason;if(phase!==lastPreparationReason){lastPreparationReason=phase;log(ns,'INFO: '+phase+(Number.isFinite(preparation.minimum)?' (lowest clash chance '+(preparation.minimum*100).toFixed(1)+'%, target '+(preparation.target*100).toFixed(1)+'%)':''),false);}
+ const fundingRelease=releaseGangIncomeTraining(trainingEpisodes,incomeFunding);trainingEpisodes=fundingRelease.episodes;
+ const released=releaseGangPreparationTraining(trainingEpisodes,preparation);trainingEpisodes=released.episodes;released.changed ||= fundingRelease.changed;
  const task=allTaskStats['Train '+(isHackGang?'Hacking':'Combat')],at=Date.now(),previousRecoveries=JSON.stringify(ascensionRecoveries);
  for(const [name,recovery]of Object.entries(ascensionRecoveries))if(!members[name]||recovery.resetAt!==lastMemberReset[name]||recovery.until<=at)delete ascensionRecoveries[name];
  const values=Object.fromEntries(Object.values(members).map(member=>[member.name,memberBestValue(member,gang)]));
@@ -1142,7 +1328,7 @@ async function refreshTrainingPlans(ns,members,gang){
   goals.push({name:'recruit',resource:'respect',amount:gang.respectForNextRecruit-gang.respect});
  if(context){
   const cash=Math.max(0,context.goal.cost-context.money),rep=Math.max(0,context.goal.rep-context.factionRep);
-  if(cash>0)goals.push({name:'augmentationCash',group:'augmentation',resource:'money',amount:cash});
+  if(gangMoneyAllowed(gang)&&cash>0)goals.push({name:'augmentationCash',group:'augmentation',resource:'money',amount:cash});
   if(rep>0&&context.respectToRep>0)goals.push({name:'augmentationReputation',group:'augmentation',resource:'respect',amount:rep/context.respectToRep});
  }
  const active=rows.filter(row=>trainingEpisodes[row.name]?.until>at&&trainingEpisodes[row.name].resetAt===row.resetAt);
@@ -1151,17 +1337,17 @@ async function refreshTrainingPlans(ns,members,gang){
  const candidates=rows.filter(row=>(!ascensionRecovering||options['power-focus'])&&row.permitted&&!row.mandatory&&!row.urgent&&(!active.length||active.some(a=>a.name===row.name))).map(row=>row.name);
  const weight=purchaseFocusQuote?.weight??gangObjectiveWeight(purchaseGoal);
  const crew=candidates.length?forecastGangCrewTraining({members,gang,training:task,mixedTraining:options['power-focus']===true,trainingOptions:['Train Combat','Train Hacking','Train Charisma'],allowJointTraining:true,activeTraining,growthFirst:true,prioritizeWeakTraining:true,recruitmentSprint:myGangMembers.length<12,tasks:allTaskStats,assignments:assignedTasks,fixedTasks:options.manualTasks||{},
-  evaluate:(m,state,forced)=>memberBestValue(m,state,weight,forced),names:candidates,recoveryUntil,recoveryTasks,committedTraining:gangCommittedTraining(ascensionRecoveries,members,lastMemberReset,at),warfare:gangWarfareContext(gang,lastOtherGangInfo?.gangs?lastOtherGangInfo:gangRivalsSnapshot,options['warfare-win-chance'],Date.now(),{detected:territoryTickDetected,paddingMs:territoryTickWaitPadding,intervalMs:updateInterval,restoreMs:postTickRestoreMs,periodMs:territoryTickTime,powerFocusEnabled:!options['disable-adaptive-growth']&&(options['power-focus']||!options['money-focus']),powerPriority:options['power-focus']===true}),
+  evaluate:(m,state,forced)=>memberBestValue(m,state,weight,forced),names:candidates,recoveryUntil,recoveryTasks,committedTraining:gangCommittedTraining(ascensionRecoveries,members,lastMemberReset,at),warfare:gangWarfareContext(gang,lastOtherGangInfo?.gangs?lastOtherGangInfo:gangRivalsSnapshot,gangWarfareThreshold(),Date.now(),{detected:territoryTickDetected,paddingMs:territoryTickWaitPadding,intervalMs:updateInterval,restoreMs:postTickRestoreMs,periodMs:territoryTickTime,powerFocusEnabled:!options['disable-adaptive-growth']&&(options['power-focus']||!options['money-focus']),powerPriority:options['power-focus']===true,trainingFirst:gangTrainingFirst(),incomeFunding}),
   horizonSeconds:growthHorizon.seconds,bonusSeconds:growthHorizon.bonusSeconds,goals,otherCashRate:context?.otherCashRate||0,
   maxPlanningMs:150,maxSimulations:60,valuationOffset:trainingValuationCursor}):{forecasts:{},diagnostics:{model:'whole-crew',simulations:0},nextOffset:trainingValuationCursor};
- trainingValuationCursor=crew.nextOffset;trainingDiagnostics=crew.diagnostics;
+ trainingValuationCursor=crew.nextOffset;trainingDiagnostics={...crew.diagnostics,preparation};
  for(const row of rows){row.forecast=crew.forecasts[row.name]||{train:false,window:0};trainingForecasts[row.name]=row.forecast;}
  const previousEpisodes=JSON.stringify(trainingEpisodes);
- const plan=planGangTrainingBursts(rows,trainingEpisodes,at,crew.jointPlan,{growthFirst:true});
+ const plan=planGangTrainingBursts(rows,trainingEpisodes,at,crew.jointPlan,{growthFirst:true,preparation:preparation.active});
  trainingPlans=plan.plans;trainingEpisodes=plan.episodes;
  trainingReference=gangCommittedTraining(trainingEpisodes,members,lastMemberReset,at).filter(p=>trainingPlans[p.name]&&!rows.find(row=>row.name===p.name)?.mandatory);
  for(const [name,episode]of Object.entries(trainingEpisodes))if(trainingPlans[name]&&episode.until>at&&episode.task)assignedTasks[name]=episode.task;
- if(JSON.stringify(trainingEpisodes)!==previousEpisodes||JSON.stringify(ascensionRecoveries)!==previousRecoveries)await saveGangTraining(ns);
+ if(released.changed||JSON.stringify(trainingEpisodes)!==previousEpisodes||JSON.stringify(ascensionRecoveries)!==previousRecoveries)await saveGangTraining(ns);
  for(const row of rows)trainingForecasts[row.name].reason=plan.reasons[row.name];
 }
 function activeWantedPreparation(name=null){
@@ -1173,6 +1359,11 @@ function memberProtectedTask(name){
  if(options.manualTasks?.[name])return options.manualTasks[name];
  if(activeWantedPreparation(name))return 'Vigilante Justice';
  return memberNeedsTraining(name)?gangTrainingScheduleTask(ascensionRecoveries[name])||gangTrainingScheduleTask(trainingEpisodes[name])||gangTrainingTaskName(assignedTasks[name],isHackGang):null;
+}
+function memberRecoveryProtected(name){
+ return !!options.manualTasks?.[name]||!!activeWantedPreparation(name)||
+  gangTrainingRequired(lastMemberReset[name],Date.now(),options['min-training-ticks'],territoryTickTime)||
+  ascensionRecoveries[name]?.until>Date.now();
 }
 function expectedAscensionAt(name){
  const now=Date.now(),p=expectedAscensions[name],episode=trainingEpisodes[name];
@@ -1190,22 +1381,32 @@ async function renewWarfareLease(ns){
  const now=Date.now();let previous;try{previous=JSON.parse(ns.read('tasks/gang-warfare-lease.json'));}catch{}
  if(previous?.ownerPid===ns.pid&&now-previous.at<2000)return;
  const tasks=Object.fromEntries(Object.entries(assignedTasks).filter(([name,task])=>task!=='Territory Warfare'&&!options.manualTasks?.[name]));
- await ns.write('tasks/gang-warfare-lease.json',JSON.stringify({at:now,expiresAt:now+60000,ownerPid:ns.pid,nodeReset:resetInfo.lastNodeReset,augReset:resetInfo.lastAugReset,faction:myGangFaction,tasks}),'w');
+ await ns.write('tasks/gang-warfare-lease.json',JSON.stringify({at:now,expiresAt:now+60000,ownerPid:ns.pid,nodeReset:resetInfo.lastNodeReset,augReset:resetInfo.lastAugReset,faction:myGangFaction,conditionalAggression:options['aggressive-warfare']===true&&gangWarfareThreshold()===.7&&!options['disable-attrition'],tasks}),'w');
 }
 function gangRecoveryStatus(gang,members){
- const warfare=gangWarfareContext(gang,lastOtherGangInfo?.gangs?lastOtherGangInfo:gangRivalsSnapshot,options['warfare-win-chance'],Date.now());
+ const warfare=gangWarfareContext(gang,lastOtherGangInfo?.gangs?lastOtherGangInfo:gangRivalsSnapshot,gangWarfareThreshold(),Date.now());
  const locked=myGangMembers.filter(n=>memberProtectedTask(n));
  return gangTerritoryRecovery(warfare,gangWarfarePowerPerTick(members,gang.territory,warfare.clashChance??0,locked),gangWarfareReadyDelay,growthHorizon.seconds,growthHorizon.bonusSeconds||0);
 }
 
-/** Preserve manual work, wanted preparation and mandatory recovery. Pulse optional trainees only at zero clash exposure. */
+/** Preserve manual work and mandatory recovery; exposed optional trainees share one guarded slot. */
 async function prepareGangPowerPulse(ns,gang){
- const members=await getGangInfoDict(ns,myGangMembers,'getMemberInformation'),at=Date.now(),pulseTraining={};
- const warfare=gangWarfareContext(gang,lastOtherGangInfo?.gangs?lastOtherGangInfo:gangRivalsSnapshot,options['warfare-win-chance'],at,{detected:territoryTickDetected,paddingMs:territoryTickWaitPadding,intervalMs:updateInterval,restoreMs:postTickRestoreMs,periodMs:territoryTickTime,powerFocusEnabled:!options['disable-adaptive-growth']&&(options['power-focus']||!options['money-focus']),powerPriority:options['power-focus']===true});
+ const snapshot=await getNsDataThroughFile(ns,'({gang:ns.gang.getGangInformation(),rivals:ns.gang.getAllGangInformation(),members:Object.fromEntries(JSON.parse(ns.args[0]).map(n=>[n,ns.gang.getMemberInformation(n)])),at:Date.now()})','/Temp/gang-pulse-snapshot.txt',[JSON.stringify(myGangMembers)]);
+ gang=snapshot.gang;
+ const members=snapshot.members,at=Date.now(),pulseTraining={};
+ const warfare=gangWarfareContext(gang,{at:snapshot.at,faction:gang.faction,gangs:snapshot.rivals},gangWarfareThreshold(),at,{detected:territoryTickDetected,paddingMs:territoryTickWaitPadding,intervalMs:updateInterval,restoreMs:postTickRestoreMs,periodMs:territoryTickTime,powerFocusEnabled:!options['disable-adaptive-growth']&&(options['power-focus']||!options['money-focus']),powerPriority:options['power-focus']===true,trainingFirst:gangTrainingFirst(),incomeFunding});
  for(const [name,member]of Object.entries(members)){
   const episode=trainingEpisodes[name];
-  pulseTraining[name]=!options['disable-adaptive-growth']&&!options.manualTasks?.[name]&&!activeWantedPreparation(name)&&!(ascensionRecoveries[name]?.until>at)&&at-(lastMemberReset[name]||0)>=2000&&
+  pulseTraining[name]=!options['disable-adaptive-growth']&&!options['no-training']&&!options.manualTasks?.[name]&&!activeWantedPreparation(name)&&!(ascensionRecoveries[name]?.until>at)&&!episode?.developmentCycle&&at-(lastMemberReset[name]||0)>=2000&&
    episode?.until>at&&gangTraineePulse(member,allTaskStats[episode.task],warfare,growthHorizon.seconds,growthHorizon.bonusSeconds||0,projectGangMember);
  }
- await updateMemberActivities(ns,members,'Territory Warfare',{...gang,pulseTraining});
+ const selected=selectGangTraineePulses(pulseTraining,members,warfare),name=Object.keys(selected).find(n=>selected[n]);
+ let traineePulseQuote=null;
+ if(warfare.clashChance>0&&name){
+  const episode=trainingEpisodes[name],assessment=assessGangTraineePulse(members[name],allTaskStats[episode.task],warfare,growthHorizon.seconds,growthHorizon.bonusSeconds||0,projectGangMember);
+  const fields=['hack','str','def','dex','agi','cha'].flatMap(k=>[k,k+'_exp',k+'_mult',k+'_asc_mult']);
+  traineePulseQuote={version:1,at,expiresAt:Math.min(at+2000,territoryNextTick),targetTickAt:territoryNextTick,ownerPid:ns.pid,nodeReset:resetInfo.lastNodeReset,augReset:resetInfo.lastAugReset,name,task:episode.task,episodeUntil:episode.until,faction:gang.faction,power:gang.power,territory:gang.territory,member:Object.fromEntries(fields.map(k=>[k,members[name][k]])),...assessment};
+ }
+ await ns.write('tasks/gang-trainee-pulse.json',JSON.stringify({at,ownerPid:ns.pid,nodeReset:resetInfo.lastNodeReset,augReset:resetInfo.lastAugReset,eligible:Object.keys(pulseTraining).filter(n=>pulseTraining[n]),selected:Object.keys(selected).filter(n=>selected[n]),quote:traineePulseQuote}),'w');
+ await updateMemberActivities(ns,members,'Territory Warfare',{...gang,pulseTraining:selected,traineePulseQuote});
 }

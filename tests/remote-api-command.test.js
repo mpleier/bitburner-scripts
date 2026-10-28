@@ -56,3 +56,25 @@ test('IPvGO timing survives bounded status replies without expanding game histor
  assert.equal(result.result.go.timing.nativeWaitMs,1000);assert.equal(result.result.go.performance.a.totalReward,400);
  assert.equal(result.result.go.performance.a.history,undefined);
 });
+
+
+test('division replies preserve supported fields without reading the deprecated type getter',async()=>{
+ const request=command('corporation.getDivision',['Agri']),writes=[],args=[];
+ const division={name:'Agri',industry:'Agriculture',awareness:1,popularity:2,productionMult:3,researchPoints:4,lastCycleRevenue:5,lastCycleExpenses:6,thisCycleRevenue:7,thisCycleExpenses:8,numAdVerts:9,cities:['Sector-12'],products:[],makesProducts:false,maxProducts:0};
+ Object.defineProperty(division,'type',{enumerable:true,get(){throw Error('Deprecated division.type was read');}});
+ const worker=await job(request);
+ await worker.main({pid:1,args:[JSON.stringify(request.args),'result.json',request.id],write:async(_f,text)=>writes.push(JSON.parse(text)),corporation:{getDivision:(...input)=>{args.push(input);return division;}}});
+ const response=writes.at(-1);assert.equal(response.state,'completed');assert.deepEqual(args,[['Agri']]);
+ assert.equal(response.result.industry,'Agriculture');assert.equal(Object.hasOwn(response.result,'type'),false);
+ assert.deepEqual(Object.keys(response.result).sort(),Object.keys(division).filter(n=>n!=='type').sort());
+ for(const name of Object.keys(response.result))assert.deepEqual(response.result[name],division[name]);
+});
+
+test('division query failures remain graceful and other query type fields are preserved',async()=>{
+ const request=command('corporation.getDivision',['Missing']),writes=[],worker=await job(request);
+ await worker.main({pid:1,args:[JSON.stringify(request.args),'result.json',request.id],write:async(_f,text)=>writes.push(JSON.parse(text)),corporation:{getDivision:()=>{throw Error('Source File unavailable');}}});
+ assert.equal(writes.at(-1).state,'failed');assert.match(writes.at(-1).error,/Source File/);
+ const playerRequest=command('getPlayer'),player=await job(playerRequest),playerWrites=[];
+ await player.main({pid:1,args:['[]','result.json',playerRequest.id],write:async(_f,text)=>playerWrites.push(JSON.parse(text)),getPlayer:()=>({type:'legitimate-data'})});
+ assert.equal(playerWrites.at(-1).result.type,'legitimate-data');
+});

@@ -55,7 +55,7 @@ test('targeted sleeve ranking retains unfinished crime until completion',()=>{
 const now=1e7;
 function observe(rate=0,lastCacheAt=0) {
  let state;
- for(let i=0;i<=12;i++)state=darknetEconomics(state,1000+rate*i*30,lastCacheAt,42,now+i*30000);
+ for(let i=0;i<=12;i++)state=darknetEconomics(state,1000+rate*i*30,lastCacheAt>now+i*30000?0:lastCacheAt,42,now+i*30000);
  return state;
 }
 test('StormSeed economics measures two native cache cooldowns before allowing an unproductive refresh',()=>{
@@ -72,7 +72,7 @@ test('unknown, stale, reset or backwards native income evidence cannot authorize
  assert.equal(darknetEconomics(state,999,0,42,now+390000).allow,false);
 });
 test('economic telemetry and target metadata are integrated without parsing native formatted messages',()=>{
- assert.match(read('darknet-manager.js'),/ns.getMoneySources\(\).sinceInstall.darknet/);
+ assert.match(read('darknet-manager.js'),/const sources=ns.getMoneySources\(\).sinceInstall;totalIncome=sources.darknet;playerIncome=recurringPlayerIncome\(sources\)/);
  assert.match(read('darknet-manager.js'),/decision.launch&&!decision.state.economics.allow/);
  assert.match(read('darknet-node.js'),/lastCacheAt/);
  for(const file of ['darknet-loot.js','darknet-cache.js'])assert.match(read(file),/result\?\.success\) await ns.write\('tasks\/dnet-last-cache.json'/);

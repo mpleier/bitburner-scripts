@@ -1,3 +1,4 @@
+import {coreAdjustedThreads} from '../hacking-core-policy.js';
 import {withHgwPiece,withHgwBatch,createHgwBatch} from '../hgw-batch-policy.js';
 import {reserveHackingProcess,releaseHackingProcess} from '../hacking-process-policy.js';
 import {commitHackingCapacity,hackingWorker,withHackingLoopCapacity} from '../hacking-drain-policy.js';
@@ -25,17 +26,32 @@ test('failed or throwing batches roll back only their recorded worker PIDs',asyn
  let calls=0;assert.equal(await launchHackingBatch([{threadsNeeded:0}],()=>{calls++;},()=>{}),true);assert.equal(calls,0);
 });
 
-async function executor({ram=[16,8],names=['alpha','beta'],split=false,copy=true,threads=10,args=[],captureCapacity=false,failLedger=false,ramAfterWrite=null,processLimit=100,failExecution=false,deadlineInventory=null}={}) {
+async function executor({ram=[16,8],names=['alpha','beta'],split=false,copy=true,threads=10,args=[],captureCapacity=false,failLedger=false,ramAfterWrite=null,processLimit=100,failExecution=false,deadlineInventory=null,toolShortName="hack",cores=1,growth=1}={}) {
  const source=await readFile(new URL('../daemon.js',import.meta.url),'utf8'),start=source.indexOf('    async function arbitraryExecution('),end=source.indexOf('\n    }',start)+6,launched=[],runs=[];
- const servers=ram.map((n,i)=>({name:names[i],_files:{},hasRoot:()=>true,totalRam:()=>n,ramAvailable:()=>writes&&ramAfterWrite!==null?ramAfterWrite[i]:n}));
+ const servers=ram.map((n,i)=>({name:names[i],server:{cpuCores:Array.isArray(cores)?cores[i]:cores},_files:{},hasRoot:()=>true,totalRam:()=>n,ramAvailable:()=>writes&&ramAfterWrite!==null?ramAfterWrite[i]:n}));
  const ledger=new Map();let writes=0;
  const ns={write:async(f,text)=>{writes++;if(failLedger)throw Error('write failed');ledger.set(f,text);},pid:7,getScriptName:()=> 'daemon.js',read:f=>ledger.get(f)||(f.includes('paused')||f.includes('maintenance')||f.includes('achievement')?'':'source')};
- const context={lastHackingInventory:deadlineInventory,withHgwPiece,reserveHackingProcess,releaseHackingProcess,hackingProcessBudget:{ready:true,inventoryAt:Date.now(),used:0,limit:processLimit},commitHackingCapacity,resetInfo:{lastNodeReset:1,lastAugReset:2},hackingWorker,loopJobSequence:0,withHackingLoopCapacity,hackingDrain:null,reclaimHomeRam:()=>true,homeRamReserve:()=>0,canFitHackingJob,isScriptPaused:()=>false,maintenanceRequested:()=>false,getAllServersByFreeRam:()=>servers,getAllServersByMaxRam:()=>servers.slice(),verbose:false,daemonHost:'home',getFilePath:s=>s,doesFileExist:async()=>true,getNsDataThroughFile:async()=>copy,hashCode:()=>1,exec:async(ns,name,host,options,...args)=>{if(failExecution)return 0;if(options.threads*2>servers.find(s=>s.name===host).ramAvailable())return 0;runs.push({host,threads:options.threads,args,capacityRecorded:ledger.has("tasks/hgw-capacity-7.json")});return runs.length;},log:()=>{},formatRam:String,homeServer:{ramAvailable:()=>100},options:{}};
+ const context={coreAdjustedThreads,getServerByName:()=>({serverGrowthPercentage:()=>growth}),unadjustedGrowthRate:1.03,lastHackingInventory:deadlineInventory,withHgwPiece,reserveHackingProcess,releaseHackingProcess,hackingProcessBudget:{ready:true,inventoryAt:Date.now(),used:0,limit:processLimit},commitHackingCapacity,resetInfo:{lastNodeReset:1,lastAugReset:2},hackingWorker,loopJobSequence:0,withHackingLoopCapacity,hackingDrain:null,reclaimHomeRam:()=>true,homeRamReserve:()=>0,canFitHackingJob,isScriptPaused:()=>false,maintenanceRequested:()=>false,getAllServersByFreeRam:()=>servers,getAllServersByMaxRam:()=>servers.slice(),verbose:false,daemonHost:'home',getFilePath:s=>s,doesFileExist:async()=>true,getNsDataThroughFile:async()=>copy,hashCode:()=>1,exec:async(ns,name,host,options,...args)=>{if(failExecution)return 0;if(options.threads*2>servers.find(s=>s.name===host).ramAvailable())return 0;runs.push({host,threads:options.threads,args,capacityRecorded:ledger.has("tasks/hgw-capacity-7.json")});return runs.length;},log:()=>{},formatRam:String,homeServer:{ramAvailable:()=>100},options:{}};
  vm.runInNewContext(source.slice(start,end)+';globalThis.execute=arbitraryExecution;',context);
- const tool={name:'Remote/hack-target.js',shortName:'hack',cost:2,ignoreReservedRam:false,isThreadSpreadingAllowed:split,existsOnHost:async()=>false,deployedHashes:new Map(),runOptions:{}};
+ const tool={name:'Remote/'+toolShortName+'-target.js',shortName:toolShortName,cost:2,ignoreReservedRam:false,isThreadSpreadingAllowed:split,existsOnHost:async()=>false,deployedHashes:new Map(),runOptions:{}};
  const capacityJobs=captureCapacity?[]:null;const result=await context.execute(ns,tool,threads,args,null,false,null,launched,capacityJobs);return {result,runs,launched,tool,capacityJobs,ledger,writes,budget:context.hackingProcessBudget};
 }
 
+test('real executor fits core-adjusted weak work and preserves credited batch units',async()=>{
+ const args=['n',1000,100,'Batch 1-weak1',false,false,7,JSON.stringify({batchVersion:1})];
+ const r=await executor({ram:[128],names:['home'],threads:100,toolShortName:'weak',cores:17,args});assert.equal(r.result,true);assert.equal(r.runs[0].threads,50);
+ const meta=JSON.parse(r.runs[0].args.at(-1));assert.equal(meta.pieceThreads,100);assert.equal(meta.physicalThreads,50);
+});
+test('real executor skips a larger host that cannot fit an unsplit grow and uses home cores',async()=>{
+ const args=['n',1000,100,'Batch 1-grow',false,false,false,7,JSON.stringify({batchVersion:1})];
+ const r=await executor({ram:[180,128],names:['ordinary','home'],threads:100,toolShortName:'grow',cores:[1,17],growth:100,args});assert.equal(r.result,true);assert.equal(r.runs.length,1);assert.equal(r.runs[0].host,'home');assert.ok(r.runs[0].threads<=64);
+});
+test('real executor preserves exact grow and weaken XP-loop thread counts on many-core hosts',async()=>{
+ for(const tool of ['grow','weak']){
+  const args=tool==='weak'?['n',1000,100,'FarmXP',false,true,7,'{}']:['n',1000,100,'FarmXP',false,false,true,7,'{}'];
+  const r=await executor({ram:[256],names:['home'],threads:100,toolShortName:tool,cores:17,args});assert.equal(r.result,true);assert.equal(r.runs[0].threads,100);
+ }
+});
 test('real executor refuses partial unsplittable launches and failed script copies',async()=>{
  assert.deepEqual((await executor()).runs,[]);
  for(const threads of [NaN,Infinity,.5,-1])assert.deepEqual((await executor({split:true,threads})).runs,[]);

@@ -1,7 +1,8 @@
+import {homeRamHeadroom} from '../home-ram-policy.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {simulateGangAttrition,planGangAttrition,observeGangAttrition,gangAttritionSignature,startGangAttrition,stopGangAttrition} from '../gang-attrition-policy.js';
+import {gangAttritionCooldown,gangMonitorBackoff,gangAttritionCalibration,simulateGangAttrition,planGangAttrition,observeGangAttrition,gangAttritionSignature,startGangAttrition,stopGangAttrition} from '../gang-attrition-policy.js';
 import {forecastGangCrewTraining,projectGangMember} from '../gang-policy.js';
 import {gangTerritoryProjection} from '../gang-power-policy.js';
 const members=()=>Array.from({length:12},(_,i)=>({name:'M'+i,def:1e6,...Object.fromEntries(['hack','str','def','dex','agi','cha'].map(k=>[k+'_exp',1000])),upgrades:[],augmentations:[]}));
@@ -48,7 +49,7 @@ test('controller exposes opt-out and retains native defensive and pause checks',
 
 test('actual generated start transaction preserves native guard arguments and has no hidden helper dependency',()=>{
  const s=readFileSync(new URL('../gangs.js',import.meta.url),'utf8'),literal=s.match(/const engaged=await getNsDataThroughFile\(ns,(`[^`]+`)/)[1];
- const expression=Function('startGangAttrition','gangMutationAllowed','return '+literal)(startGangAttrition,()=>true),f=native();f.ns.args=[7,JSON.stringify(f.q)];
+ const expression=Function('startGangAttrition','gangMutationAllowed','gangAttritionCalibration','homeRamHeadroom','gangMonitorBackoff','gangAttritionCooldown','return '+literal)(startGangAttrition,()=>true,gangAttritionCalibration,homeRamHeadroom,gangMonitorBackoff,gangAttritionCooldown),f=native();f.ns.args=[7,JSON.stringify(f.q)];
  assert.equal(Function('ns','return '+expression)(f.ns),true);assert.deepEqual(f.calls,[true]);
 });
 

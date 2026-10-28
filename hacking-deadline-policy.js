@@ -10,11 +10,11 @@ export function recordHackingDeadline(snapshot,p){
   if(match[1]==='manualhack'||owner!==snapshot.ownerPid||![false,0].includes(loop)||typeof raw!=='string'||raw.length>30000)throw Error('Unclassified worker');
   const meta=JSON.parse(raw),tool=weak?'weaken':match[1],deadline=args[1]+args[2];
   const prefix=[snapshot.nodeReset,snapshot.augReset,snapshot.ownerPid].join(':')+':';
-  if(meta?.batchVersion!==1||meta.port!==20||meta.nodeReset!==snapshot.nodeReset||meta.augReset!==snapshot.augReset||typeof meta.batchId!=='string'||meta.batchId.length>160||!meta.batchId.startsWith(prefix)||meta.batchTarget!==target||!Array.isArray(meta.batchPlan)||meta.batchPlan.length<1||meta.batchPlan.length>5||!Number.isSafeInteger(p.pid)||p.pid<=0||!Number.isSafeInteger(p.threads)||p.threads<=0||meta.pieceThreads!==p.threads||!Number.isFinite(args[1])||!Number.isFinite(args[2])||args[2]<=0||!Number.isFinite(deadline)||deadline<=snapshot.at)throw Error('Invalid deadline identity');
+  if(meta?.batchVersion!==1||meta.port!==20||meta.nodeReset!==snapshot.nodeReset||meta.augReset!==snapshot.augReset||typeof meta.batchId!=='string'||meta.batchId.length>160||!meta.batchId.startsWith(prefix)||meta.batchTarget!==target||!Array.isArray(meta.batchPlan)||meta.batchPlan.length<1||meta.batchPlan.length>5||!Number.isSafeInteger(p.pid)||p.pid<=0||!Number.isSafeInteger(p.threads)||p.threads<=0||(meta.physicalThreads??meta.pieceThreads)!==p.threads||!Number.isSafeInteger(meta.pieceThreads)||meta.pieceThreads<p.threads||!Number.isFinite(args[1])||!Number.isFinite(args[2])||args[2]<=0||!Number.isFinite(deadline)||deadline<=snapshot.at)throw Error('Invalid deadline identity');
   const tools={hack:'hack',weak1:'weaken','grow-from-zero':'grow',grow:'grow',weak2:'weaken'};
   if(new Set(meta.batchPlan.map(step=>step?.step)).size!==meta.batchPlan.length||meta.batchPlan.some((step,i)=>!step||tools[step.step]!==step.tool||!Number.isSafeInteger(step.threads)||step.threads<=0||!Number.isFinite(step.deadline)||step.deadline<0||i>0&&step.deadline<=meta.batchPlan[i-1].deadline))throw Error('Invalid batch plan');
   const step=meta.batchPlan.find(step=>step.step===meta.batchStep);
-  if(!step||step.tool!==tool||step.deadline!==deadline||step.threads<p.threads)throw Error('Mismatched batch step');
+  if(!step||step.tool!==tool||step.deadline!==deadline||step.threads<meta.pieceThreads)throw Error('Mismatched batch step');
   row.known++;row.latestDeadline=Math.max(row.latestDeadline??0,deadline);
  }catch{row.uncertain=true;}
 }

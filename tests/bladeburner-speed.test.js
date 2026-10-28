@@ -1,3 +1,6 @@
+import {quoteBladeburnerSkillThroughputs} from '../bladeburner-rank-acceleration-policy.js';
+import {planBladeburnerLevels as skillLevelPlanner,bladeburnerRankRate as skillRankRate,bladeburnerStaminaChance as skillChance,readBladeburnerMaintenance as skillMaintenance} from '../bladeburner-policy.js';
+import {bladeburnerSkillContext} from '../bladeburner-policy.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {nextBladeburnerProgressSkill,nextSkill,bladeburnerRecoveryTarget,recoveryRequired,spendBladeburnerSkills,bladeburnerSkillGoal} from '../bladeburner-policy.js';
@@ -75,8 +78,8 @@ test('executed production worker supplies throughput context and publishes its p
  const ns={pid:7,read:file=>files[file]||'',write:(file,value)=>files[file]=value,isRunning:()=>true,getResetInfo:()=>({lastNodeReset:1,lastAugReset:2}),
   getPlayer:()=>({skills:context.skills,mults:{...context.mults,bladeburner_max_stamina:1}}),bladeburner:api};
  const read=async(_ns,expression,_file,args)=>Function('ns','return '+expression)({...ns,args});
- const make=Function('getNsDataThroughFile','spendBladeburnerSkills','bladeburnerSkillGoal','nextBladeburnerProgressSkill','nextSkill','bbMutationGuard','resetInfo','skillNames','costAdjustments','remainingBlackOpsNames','blackOpsRanks','options','blackOpMetadata','bladeburnerDifficulty','log','cityPlanCache','levelPlanCache',source.slice(start,end)+'return spendSkillPoints;');
- const run=make(read,spendBladeburnerSkills,bladeburnerSkillGoal,nextBladeburnerProgressSkill,nextSkill,'true',{lastNodeReset:1},['Overclock'],{},[],{},{'success-threshold':.99},{},{Test:{base:100000,factor:1}},()=>{});
+ const make=Function('quoteBladeburnerSkillThroughputs','planBladeburnerLevels','bladeburnerRankRate','bladeburnerStaminaChance','readBladeburnerMaintenance','bladeburnerSkillContext','getNsDataThroughFile','spendBladeburnerSkills','bladeburnerSkillGoal','nextBladeburnerProgressSkill','nextSkill','bbMutationGuard','resetInfo','skillNames','costAdjustments','remainingBlackOpsNames','blackOpsRanks','options','blackOpMetadata','bladeburnerDifficulty','log','cityPlanCache','levelPlanCache',source.slice(start,end)+'return spendSkillPoints;');
+ const run=make(quoteBladeburnerSkillThroughputs,skillLevelPlanner,skillRankRate,skillChance,skillMaintenance,bladeburnerSkillContext,read,spendBladeburnerSkills,bladeburnerSkillGoal,nextBladeburnerProgressSkill,nextSkill,'true',{lastNodeReset:1},['Overclock'],{},[],{},{'success-threshold':.99},{},{Test:{base:100000,factor:1}},()=>{});
  await run(ns);
  assert.equal(level,81);assert.equal(points,0);
  const goal=JSON.parse(files['tasks/hash-skill-goal.json']);

@@ -112,7 +112,7 @@ test('executed controller switches mixed phases, saves once and respects manual 
   const cycle={at,bonusMs:0,info:{power:10,territoryWarfareEngaged:false},others:{Own:{power:10,territory:.5}}};
   const maintenanceRequested=()=>false,myGangFaction='Own',myGangMembers=Array(12),updateInterval=200,territoryTickTime=20000;
   const getNsDataThroughFile=async()=>cycle,log=()=>{};
-  let lastOtherGangInfo=gangTerritorySample(null,cycle.others,'Own',at),lastLoopTime=at,territoryNextTick=at+20000,territoryTickDetected=true,isReadyForNextTerritoryTick=false,warfareFinished=false,territoryTickWaitPadding=200,lastTerritoryPower=10;
+  let preparationPhase=null,pendingPowerPulse=null,powerCalibration=[];let lastOtherGangInfo=gangTerritorySample(null,cycle.others,'Own',at),lastLoopTime=at,territoryNextTick=at+20000,territoryTickDetected=true,isReadyForNextTerritoryTick=false,nextWarfareCheck=Infinity,warfareFinished=false,territoryTickWaitPadding=200,lastTerritoryPower=10;
   const updateMemberActivities=async()=>events.push('assign'),saveGangTraining=async()=>events.push('save');
   const onTerritoryTick=async()=>{throw Error('unexpected slow pass');};
   ${source.slice(start,end)}

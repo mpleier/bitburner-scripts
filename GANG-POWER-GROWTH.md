@@ -18,3 +18,20 @@ Forecasts retain fixed territory as their authorization baseline. A bounded expe
 Gang training, ascension and equipment diagnostics include power objective, power gain, power payback and estimated safe-clash time savings where available. Selected development forecasts also expose the conditional territory scenario. Internal simulation traces are removed before persistence to keep diagnostics bounded.
 
 `tasks/gang-growth.json` reports whether power focus was active for its latest equipment valuation pass.
+
+## Territory conquest and verification
+
+Explicit `--power-focus` remains active after training-first readiness is reached. Readiness still targets at least 75%; training, equipment and ascension forecasts retain their production, payback, milestone and cash-reserve checks. Balanced mode can stop power prioritization at readiness.
+
+Ordinary safe warfare can continue through ascension when a fresh native rival snapshot meets the configured ordinary threshold (at least 70%). The member must first move to training. Unknown odds, unsafe odds and failed training confirmation disable warfare. Conditional aggression never qualifies for this exception. The controller also checks disabled warfare every two seconds, subject to the existing pause, maintenance, profile and clash-safety rules.
+
+Completion uses remaining positive rival territory, avoiding premature completion from rounding player territory. Missing or malformed observations never establish completion.
+
+Local diagnostic files are observational and do not grant permission to enable warfare:
+- `tasks/gang-warfare-decision.json`: latest native request, confirmed engagement and decision reason.
+- `tasks/gang-warfare-supervisor.json`: last independent supervisor suspension, including its reason and timestamp; an old record is not current suspension evidence.
+- `tasks/gang-power-pulses.json`: up to twelve recent update observations with expected/actual pulse members, predicted/observed power, lead time and classification. Clash-confounded observations do not calibrate timing. Already assigned crews still get a native pulse snapshot.
+
+Three consecutive verified flat/mismatched pulses produce a rate-limited script-log warning. Failed pulses widen timing padding; padding contracts only following a confirmed power increase. No tails open automatically.
+
+See [optional trainee power pulses](GANG-OPTIONAL-PULSES.md) for guarded participation during active clashes, the shared one-trainee risk allowance, atomic preparation snapshots, and whole-rival-group diagnostics.

@@ -1,5 +1,5 @@
 /** Independent supervisor guard. This function is also serialized into a native worker. */
-export function guardGangWarfare(ns,observedAt,now=Date.now()){
+export function guardGangWarfare(ns,observedAt,now=Date.now(),aggressionGuard=null){
  const read=file=>{try{return JSON.parse(ns.read(file));}catch{return null;}};
  const reset=ns.getResetInfo(),lease=read('tasks/gang-warfare-lease.json');
  const owners=ns.ps('home').filter(p=>p.filename.replace(/^\//,'')==='gangs.js');
@@ -12,8 +12,21 @@ export function guardGangWarfare(ns,observedAt,now=Date.now()){
  // Preserve manual gang play when this automation has never owned warfare in this reset.
  if(!owners.length&&!scoped)return {state:'unmanaged'};
  const starting=owners.length&&!owner&&Number.isFinite(observedAt)&&now>=observedAt&&now-observedAt<60000;
- const reason=paused?'paused':maintaining?'maintenance':owner&&lease.expiresAt>now?'healthy':starting?'starting':!owners.length?'owner-exited':'lease-expired';
- if(['healthy','starting'].includes(reason))return {state:reason};
+ let reason=paused?'paused':maintaining?'maintenance':owner&&lease.expiresAt>now?'healthy':starting?'starting':!owners.length?'owner-exited':'lease-expired';
+ if(['healthy','starting'].includes(reason)){
+  if(!lease?.conditionalAggression)return {state:reason};
+  if(!ns.gang.inGang())return {state:'no-gang'};
+  const g=ns.gang.getGangInformation();
+  if(!g.territoryWarfareEngaged)return {state:reason};
+  const rivals=Object.entries(ns.gang.getAllGangInformation()).filter(([name,v])=>name!==g.faction&&v.territory>0);
+  const minimum=rivals.length?Math.min(...rivals.map(([,v])=>Number.isFinite(v.power)&&v.power>0?g.power/(g.power+v.power):0)):0;
+  if(Number.isFinite(g.power)&&g.power>0&&minimum>=.7)return {state:reason};
+  const early=read('tasks/gang-attrition.json');
+  if(minimum>=.65&&early?.state==='active'&&early.ownerPid===lease.ownerPid&&early.faction===g.faction&&early.nodeReset===reset.lastNodeReset&&early.augReset===reset.lastAugReset&&early.deadline>now&&early.deadline<=early.startedAt+22000&&ns.isRunning(early.ownerPid)&&(!early.monitorRequired||ns.isRunning(early.monitorPid)))return {state:reason,earlyAttempt:true};
+  const proof=typeof aggressionGuard==='function'?aggressionGuard(ns,lease.ownerPid,now):null;
+  if(proof?.valid)return {state:reason,conditionalAggression:true};
+  reason='aggression-'+(proof?.reason||'proof-unavailable');
+ }
  if(!ns.gang.inGang())return {state:'no-gang'};
  const gang=ns.gang.getGangInformation();
  if(gang.territoryWarfareEngaged)ns.gang.setTerritoryWarfare(false);
@@ -27,7 +40,9 @@ export function guardGangWarfare(ns,observedAt,now=Date.now()){
    }
   }
  }
- return {state:'suspended',reason,restored,residualClashChance:gang.territoryClashChance};
+ const result={state:'suspended',reason,restored,residualClashChance:gang.territoryClashChance};
+ if(typeof ns.write==='function')ns.write('tasks/gang-warfare-supervisor.json',JSON.stringify({at:now,nodeReset:reset.lastNodeReset,augReset:reset.lastAugReset,ownerPid:lease?.ownerPid,...result}),'w');
+ return result;
 }
 
 /** Read an explicit optional map; never infer manual intent from our own temporary task switches. */

@@ -1,11 +1,12 @@
+import {observeSoAInfiltration} from './soa-policy.js';
 import {readNodeRoutePlan} from './node-route-policy.js';
 import {redPillInfiltrationChoices} from './red-pill-policy.js';
 import {registerAutomation,automationHeartbeat,maintenanceRequested} from './runtime-policy.js';
 import { getNsDataThroughFile, getActiveSourceFiles } from './helpers.js';
 import { isScriptPaused } from './automation-control.js';
-import { activityBusy, claimActivity, releaseActivity, compatibleFocusWorkers } from './activity-coordination.js';
+import { activityRecord, activityBusy, claimActivity, releaseActivity, compatibleFocusWorkers } from './activity-coordination.js';
 import { transitionActive, transitionFile } from './progression-coordination.js';
-import { infiltrationInput, chooseInfiltration, findInfiltrationState, selectRewardFaction, selectedRewardFaction, infiltrationUiDetails, enterInfiltration, marketRecoveryDelay, recordInfiltrationOutcome, infiltrationEntryAllowed } from './infiltration-solvers.js';
+import { infiltrationRewardFaction, infiltrationInput, chooseInfiltration, findInfiltrationState, selectRewardFaction, selectedRewardFaction, infiltrationUiDetails, enterInfiltration, marketRecoveryDelay, recordInfiltrationOutcome, infiltrationEntryAllowed } from './infiltration-solvers.js';
 
 export const infiltrationStatusFile = 'tasks/infiltration-status.json';
 function transitionBusy(ns) {
@@ -17,10 +18,11 @@ function button(document, pattern) {
   return [...document.querySelectorAll('button')].find(node => !node.disabled && pattern.test(node.textContent.trim()));
 }
 /** Runs the actual puzzle handlers. No synthetic keyboard events or fabricated success. */
-export async function playInfiltration(ns, document, state, faction = null, minDemand = 2 / 3, manuallyStarted = false) {
+export async function playInfiltration(ns, document, state, faction = null, minDemand = 2 / 3, manuallyStarted = false, resolveFaction = null) {
   let lastLease = 0, emptyStageSince = 0, lastStage;
+  let factionResolved=false;
   const startedAt = Date.now();
-  const controlAllowed=()=>!isScriptPaused(ns,ns.getScriptName?.()||'infiltration-manager.js')&&!transitionBusy(ns)&&!activityBusy(ns);
+  const controlAllowed=()=>{const lease=activityRecord(ns);return lease?.ownerPid===ns.pid&&lease.kind==='infiltration'&&Number.isFinite(lease.expiresAt)&&!isScriptPaused(ns,ns.getScriptName?.()||'infiltration-manager.js')&&!transitionBusy(ns);};
   while (findInfiltrationState(document) === state) {
     if (!controlAllowed() || Date.now() - startedAt > 10 * 60_000) {
       state.cancel(); return { status: 'interrupted' };
@@ -34,18 +36,38 @@ export async function playInfiltration(ns, document, state, faction = null, minD
       await ns.write(infiltrationStatusFile, JSON.stringify({ at: Date.now(), pid: ns.pid, status: 'running',
         manuallyStarted,location: state.location?.name, level: state.level, maxLevel: state.maxLevel, stage: state.stage.constructor?.name }), 'w');
     }
+    if(!controlAllowed()||findInfiltrationState(document)!==state){state.cancel();return {status:'interrupted'};}
     if (String(state.results).includes('✗')) { state.cancel(); return { status: 'failed' }; }
     const stage = state.stage;
     if (stage !== lastStage) { lastStage = stage; emptyStageSince = Date.now(); }
     const victory = button(document, /^Sell for\b/i);
     if (victory && /Infiltration successful!/i.test(document.body.textContent)) {
-      if (faction && selectRewardFaction(document, faction)) await ns.sleep(100);
-      if(!controlAllowed()){state.cancel();return {status:'interrupted'};}
+      // Optional work metadata is read only at victory, outside puzzle timing windows.
+      if(!factionResolved&&typeof resolveFaction==='function'){
+        try{const resolved=await resolveFaction();if(resolved===null||typeof resolved==='string')faction=resolved;}catch{}factionResolved=true;
+      }
+      if(!controlAllowed()||findInfiltrationState(document)!==state){state.cancel();return {status:'interrupted'};}
+      if(Date.now()-lastLease>3000){
+        if(!(await claimActivity(ns,'infiltration'))){state.cancel();return {status:'interrupted'};}
+        lastLease=Date.now();automationHeartbeat(ns);
+      }
+      let requested=false;
+      for(let retry=0;faction&&retry<30;retry++){
+        if(!controlAllowed()||findInfiltrationState(document)!==state){state.cancel();return {status:'interrupted'};}
+        if(selectedRewardFaction(document,faction)&&button(document,/^Trade for\b/i))break;
+        if(!requested)requested=selectRewardFaction(document,faction);
+        await ns.sleep(50);
+      }
+      if(!controlAllowed()||findInfiltrationState(document)!==state){state.cancel();return {status:'interrupted'};}
       const trade = faction && selectedRewardFaction(document, faction) && button(document, /^Trade for\b/i);
-      (trade || button(document, /^Sell for\b/i) || victory).click();
+      const rewardButton=trade||button(document,/^Sell for\b/i);
+      if(!rewardButton){await ns.sleep(50);continue;}
+      let cashBefore=null;try{cashBefore=ns.getMoneySources().sinceInstall.infiltration;}catch{}
+      rewardButton.click();
       for(let retry=0;retry<30&&findInfiltrationState(document)===state;retry++)await ns.sleep(50);
       if (findInfiltrationState(document) === state) throw new Error('Reward selection did not leave the infiltration');
-      return { status: 'completed', reward: trade ? 'reputation' : 'money', faction: trade ? faction : null, durationMs: Date.now() - startedAt };
+      let cashReward=null;try{const after=ns.getMoneySources().sinceInstall.infiltration;if(!trade&&Number.isFinite(cashBefore)&&Number.isFinite(after)&&after>=cashBefore)cashReward=after-cashBefore;}catch{}
+      return { status: 'completed',cashReward, reward: trade ? 'reputation' : 'money', faction: trade ? faction : null,...(faction&&!trade?{requestedFaction:faction,rewardFallback:'faction-not-confirmed'}:{}), durationMs: Date.now() - startedAt };
     }
     const start = button(document, /^Start$/i);
     if (start && state.gameStartTimestamp < 0) {
@@ -54,6 +76,7 @@ export async function playInfiltration(ns, document, state, faction = null, minD
       if (!manuallyStarted && Number.isFinite(multiplier) && multiplier < minDemand) {
         state.cancel(); return { status: 'market-cooldown', demand: multiplier, retryAfter: marketRecoveryDelay(multiplier, minDemand) };
       }
+      if(!controlAllowed()||findInfiltrationState(document)!==state){state.cancel();return {status:'interrupted'};}
       start.click(); await ns.sleep(30); continue;
     }
     const input = infiltrationInput(stage);
@@ -66,11 +89,25 @@ export async function playInfiltration(ns, document, state, faction = null, minD
       }
       state.cancel(); return { status: 'unsupported-ui', stage: stage.constructor?.name, stageKeys: Object.keys(stage).slice(0,30) };
     }
-    if (input.key && state.stage === stage) stage.onKey({ key: input.key, altKey: false, ctrlKey: false,
+    if (input.key && state.stage === stage && controlAllowed()) stage.onKey({ key: input.key, altKey: false, ctrlKey: false,
       metaKey: false, shiftKey: false, preventDefault() {} });
     await ns.sleep(20);
   }
   return { status: 'cancelled' };
+}
+
+/** Resolve manual rewards at victory; a missing Source File never blocks puzzle assistance. */
+export async function resolveInfiltrationReward(ns,options,sourceFiles,location){
+  let work=null;
+  if(sourceFiles?.[4]&&!options['money-only']&&!options.faction)try{
+    work=await getNsDataThroughFile(ns,'ns.singularity.getCurrentWork()','/Temp/infiltration-manual-work.txt',[],false,1,0,true);
+  }catch{}
+  let redPillReward=null;
+  if(!options['money-only']&&!options.faction&&location)try{
+    const choices=redPillInfiltrationChoices([ns.infiltration.getInfiltration(location)],readNodeRoutePlan(ns)?.redPill);
+    redPillReward=choices.sort((a,b)=>b.reward.tradeRep-a.reward.tradeRep)[0]?.redPillReward??null;
+  }catch{}
+  return infiltrationRewardFaction(options,ns.getPlayer(),work,redPillReward);
 }
 
 export async function main(ns) {
@@ -91,6 +128,7 @@ export async function main(ns) {
   let active = null;
   const reset = ns.getResetInfo(), historyFile = 'tasks/infiltration-history.json';
   let history = {}, retryAt = 0,nextEntryAt=0,lastReport=0,lastReportedStatus='';
+  let soaIncome=null;try{soaIncome=JSON.parse(ns.read('tasks/soa-infiltration-income.json'));}catch{}
   try { const saved = JSON.parse(ns.read(historyFile)); if (saved.augReset === reset.lastAugReset && saved.nodeReset === reset.lastNodeReset) {
     history = saved.locations || {}; retryAt = Number(saved.retryAt) || 0;
   } } catch { }
@@ -106,21 +144,16 @@ export async function main(ns) {
         active=manual;
         if(active.location?.name)target={location:{name:active.location.name}};
         const player=ns.getPlayer();
-        let faction=!options['money-only']&&player.factions.includes(options.faction)?options.faction:null;
-        if(!options['money-only']&&!options.faction&&active.location?.name)try {
-          const choices=redPillInfiltrationChoices([ns.infiltration.getInfiltration(active.location.name)],readNodeRoutePlan(ns)?.redPill);
-          const best=choices.sort((a,b)=>b.reward.tradeRep-a.reward.tradeRep)[0];
-          if(best)faction=best.redPillReward==='reputation'?'Daedalus':null;
-        }catch{}
-        result=await playInfiltration(ns,document,active,faction,minDemand,true);
+        const faction=infiltrationRewardFaction(options,player);
+        result=await playInfiltration(ns,document,active,faction,minDemand,true,()=>resolveInfiltrationReward(ns,options,sourceFiles,active.location?.name));
         result.manuallyStarted=true;result.location=active.location?.name;
         if(result.location)target={location:{name:result.location}};
         continue;
       }
       if(options['manual-only']||!sourceFiles[4]){result.status='waiting-for-manual-infiltration';continue;}
       const route=readNodeRoutePlan(ns);
-      if(!options['ignore-node-route']&&route?.selected==='bladeburner'&&route.simulacrum!==true){
-        result={status:'prioritizing-bladeburner',reason:'Automatic entry waits while Bladeburner has priority without installed Simulacrum'};continue;
+      if(!options['ignore-node-route']&&route?.selected==='bladeburner'){
+        result={status:'prioritizing-bladeburner',reason:'Automatic entry waits while Bladeburner has priority; infiltration stops its action even with Simulacrum'};continue;
       }
       if(Date.now()<nextEntryAt){result.status='waiting-for-entry';continue;}
       if(maintenanceRequested(ns)){result.status='maintenance';continue;}
@@ -137,7 +170,7 @@ export async function main(ns) {
       if (ns.getPlayer().hp.current < ns.getPlayer().hp.max * 0.9) { result.status = 'needs-healing'; continue; }
       const locations = ns.infiltration.getPossibleLocations().map(location => ns.infiltration.getInfiltration(location.name));
       const player = ns.getPlayer();
-      let faction = !options['money-only'] ? (options.faction || (work?.type === 'FACTION' ? work.factionName : null)) : null;
+      let faction = infiltrationRewardFaction(options,player,work);
       if (options.faction && !options['money-only'] && !player.factions.includes(options.faction)) { result.status = 'faction-unavailable'; continue; }
       const pill=readNodeRoutePlan(ns)?.redPill;
       if(pill?.active&&['buy','install','favor-reset'].includes(pill.stage)){result.status='waiting-for-red-pill';continue;}
@@ -146,7 +179,7 @@ export async function main(ns) {
         canTravel: player.money >= 200000 + Math.max(0, Number(ns.read('reserve.txt')) || 0) });
       if (!target) { result.status = 'no-eligible-location'; continue; }
       if(target.redPillReward) {
-        faction=target.redPillReward==='reputation'?'Daedalus':null;
+        faction=infiltrationRewardFaction(options,player,work,target.redPillReward);
         let pace;try{pace=JSON.parse(ns.read('tasks/daedalus-work-rate.json'));}catch{}
         const statSum=['hacking','strength','defense','dexterity','agility','charisma'].reduce((t,k)=>t+player.skills[k],0);
         const valid=pace?.at<=Date.now()&&Date.now()-pace.at<600000&&pace.augReset===reset.lastAugReset&&pace.nodeReset===reset.lastNodeReset&&
@@ -195,6 +228,7 @@ export async function main(ns) {
       if (previousWorker && !activityBusy(ns) && !transitionBusy(ns) && !isScriptPaused(ns, previousWorker.filename) &&
           !ns.ps('home').some(p => p.filename === previousWorker.filename))
         ns.run(previousWorker.filename, previousWorker.threads||1, ...previousWorker.args);
+      if(result.status==='completed'){soaIncome=observeSoAInfiltration(soaIncome,{reset,ownerPid:ns.pid,at:Date.now(),result,automatic:!options['manual-only']&&!!sourceFiles[4]});await ns.write('tasks/soa-infiltration-income.json',JSON.stringify(soaIncome),'w');}
       if (target) { result.location ||= target.location.name; history[target.location.name] = recordInfiltrationOutcome(history[target.location.name], result); }
       if (result.status === 'market-cooldown') retryAt = Date.now() + (result.retryAfter || 60000);
       if(target||result.status==='market-cooldown')await ns.write(historyFile, JSON.stringify({ augReset: reset.lastAugReset, nodeReset: reset.lastNodeReset, retryAt, locations: history }), 'w');

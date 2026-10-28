@@ -11,7 +11,7 @@ export function valueBladeburnerStaminaGrowth(choice,training,stamina,seconds=30
   if(!bounded)return choice;
   const clock=bladeburnerGrowthClock(seconds,Number.isFinite(stamina?.bonusMs)&&stamina.bonusMs>=0?stamina.bonusMs:0);
   const completion=clock?bladeburnerGrowthCompletions(choice.time,seconds,clock.workSeconds,{duty:choice.duty??1,progressMs,maxCompletions}):null;
-  return {...choice,xpScore:choice.score,score:completion?choice.score*completion.multiplier:0,completion};
+  return {...choice,xpScore:choice.score,score:completion?choice.score*completion.multiplier:0,rankRate:completion&&Number.isFinite(choice.rankPerCycle)&&choice.rankPerCycle>=0?completion.count*choice.rankPerCycle/seconds:null,completion};
  };
  if(!stamina||!Number.isFinite(seconds)||seconds<=0||seconds>30)return fallback();
  if(!training||!Number.isFinite(training.score)||training.score<=0)return fallback();
@@ -27,7 +27,7 @@ export function valueBladeburnerStaminaGrowth(choice,training,stamina,seconds=30
  const value=playerTrainingStaminaPayoff({...stamina,speed:clock.multiplier},{nativeRates:scaled(training.rates,native.multiplier),rates:scaled(choice.rates,factor),seconds,baselineGain:training.score*seconds*native.multiplier,projectedGain:choice.score*seconds*factor,nativeCompletions:native.count});
  if(!value)return null;
  const gain=choice.kind==='training'?value.baselineGain:value.projectedGain;
- return {...choice,xpScore:choice.score,score:gain/seconds,bonus:clock,completion,regeneration,stamina:{...value.stamina,horizonSeconds:seconds,selectedCapacity:choice.kind==='training'?value.stamina.nativeCapacity:value.stamina.externalCapacity}};
+ return {...choice,xpScore:choice.score,score:gain/seconds,rankRate:Number.isFinite(choice.rankPerCycle)&&choice.rankPerCycle>=0?completion.count*choice.rankPerCycle/seconds:null,bonus:clock,completion,regeneration,stamina:{...value.stamina,horizonSeconds:seconds,selectedCapacity:choice.kind==='training'?value.stamina.nativeCapacity:value.stamina.externalCapacity}};
 }
 /** Rank every eligible mission, rather than assuming the best XP mission remains best after capacity valuation. */
 export function rankBladeburnerStaminaGrowth(missions,training,stamina,{trainingAllowed=false,seconds=30,switchSeconds=2}={}){

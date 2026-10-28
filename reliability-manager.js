@@ -1,3 +1,6 @@
+import {gangAggressionGuardSource} from './gang-aggression-policy.js';
+import {sampleDarknetObservations} from './darknet-observation-policy.js';
+import {readHgwTimeline} from './hgw-timeline-policy.js';
 import {guardGangWarfare} from './gang-safety-policy.js';
 import {readHackingProcessBudget} from './hacking-process-policy.js';
 import {readBackgroundHealth} from './background-job-policy.js';
@@ -20,6 +23,7 @@ export async function main(ns){
  registerAutomation(ns);
  const launchedSignature=scriptSignature(ns,ns.getScriptName());
  const reset=ns.getResetInfo(),access=autopilotSourceFiles(reset),seen=new Map(),failures=new Map(),pending=new Map();
+ let nextDarknetObservation=0;
  let fileAudit=null,diagnosticState=null,gangOwnerKey=null,gangObservedAt=Date.now(),gangSafety=null;
  const read=file=>{try{return JSON.parse(ns.read(file));}catch{return null;}};
  ns.atExit(()=>{try{if(read('tasks/automation-maintenance.json')?.ownerPid===ns.pid)ns.rm('tasks/automation-maintenance.json');}catch{}});
@@ -28,9 +32,23 @@ export async function main(ns){
    automationHeartbeat(ns);
    reclaimHomeRam(ns,0,homeRamReserve(ns));
    const now=Date.now(),processes=ns.ps('home'),sourceCache=new Map(),statusCache=new Map();
+   if(now>=nextDarknetObservation){
+    nextDarknetObservation=now+30000;
+    try{await sampleDarknetObservations(ns,getNsDataThroughFile);}catch(error){ns.print('Dark Net observation deferred: '+String(error));}
+   }
    const gangKey=processes.filter(p=>p.filename.replace(/^\//,'')==='gangs.js').map(p=>p.pid).sort().join(',');
    if(gangKey!==gangOwnerKey){gangOwnerKey=gangKey;gangObservedAt=now;}
-   if(access[2]||reset.currentNode===2)try{gangSafety=await getNsDataThroughFile(ns,`(${guardGangWarfare.toString()})(ns,ns.args[0])`,'/Temp/gang-warfare-guard.txt',[gangObservedAt]);}catch(error){gangSafety={state:'unavailable',error:String(error)};}
+   if(access[2]||reset.currentNode===2)try{
+    const conditionalGuard=read('tasks/gang-warfare-lease.json')?.conditionalAggression===true;
+    try{
+     gangSafety=await getNsDataThroughFile(ns,`(${guardGangWarfare.toString()})(ns,ns.args[0],Date.now(),(${conditionalGuard?gangAggressionGuardSource():'null'}))`,'/Temp/gang-warfare-guard.txt',[gangObservedAt]);
+     await ns.write('tasks/gang-aggression-guard.json',JSON.stringify({schemaVersion:1,available:conditionalGuard,ownerPid:ns.pid,at:Date.now(),nodeReset:reset.lastNodeReset,augReset:reset.lastAugReset}),'w');
+    }catch(error){
+     if(!conditionalGuard)throw error;
+     await ns.write('tasks/gang-aggression-guard.json',JSON.stringify({schemaVersion:1,available:false,ownerPid:ns.pid,at:Date.now(),nodeReset:reset.lastNodeReset,augReset:reset.lastAugReset}),'w');
+     gangSafety=await getNsDataThroughFile(ns,`(${guardGangWarfare.toString()})(ns,ns.args[0])`,'/Temp/gang-warfare-guard.txt',[gangObservedAt]);
+    }
+   }catch(error){gangSafety={state:'unavailable',error:String(error)};}
    const readStatus=file=>{if(!file)return null;if(!statusCache.has(file))statusCache.set(file,read(file));return statusCache.get(file);};
    const livePids=new Set(processes.map(p=>p.pid));for(const pid of seen.keys())if(!livePids.has(pid))seen.delete(pid);for(const [key,history]of failures)if(now-history.at>15*60000)failures.delete(key);
    const drainStatus=read('tasks/hgw-drain-status.json'),drainProtected=hackingDrainActive(drainStatus,reset,processes,now);
@@ -80,10 +98,11 @@ export async function main(ns){
     const files=names.filter(name=>/\.(js|ns|script)$/.test(name)||name==='darknet-candidates.txt').filter(name=>!name.split('/').some(part=>['Temp','temp','tasks','remote-control','node_modules'].includes(part))).map(filename=>{const content=ns.read(filename);return {filename,length:content.length,hash:runtimeHash(content)};});
     fileAudit={at:now,host:'home',files,allNames:names};
    }
-   const dashboard={gangSafety,hackingProcesses:readHackingProcessBudget(ns,now),backgroundJobs:readBackgroundHealth(ns,now),cloud:currentCloudPurchase(read('tasks/cloud-purchase-status.json'),reset,now),diagnostics:{at:now,detailAt:diagnosticState.detailAt,nextDetailAt:diagnosticState.detailAt+60000,trackedProcesses:diagnosticState.trackedProcesses,omittedProcesses:diagnosticState.omittedProcesses,warnings:diagnosticState.warnings},workerUpgrade,hackingDrain:drainStatus,drainProtected,supervisorUpdate:selfUpdate,homeRamReclaim:(r=>r?.at<=now&&now-r.at<30000&&livePids.has(r.ownerPid)?r:null)(read('tasks/home-ram-reclaim.json')),hashSpending:collectHashSpendingStatus(ns,now),hgw:read('tasks/hgw-misfires.json'),logs,fileAudit,nodeRoute:read('tasks/node-route-plan.json'),overview:read('tasks/overview-status.json'),at:now,ownerPid:ns.pid,node:reset.currentNode,recovery:rows,pending:[...pending.values()].map(p=>p.filename),managers:dashboardRows(ns.ps('home'),readStatus,now),achievements:readStatus('tasks/achievement-status.json')&&{known:readStatus('tasks/achievement-status.json').known,unlocked:readStatus('tasks/achievement-status.json').unlocked?.length},contracts:{...read('tasks/contracts-status.json'),results:(r=>Number.isFinite(r?.at)&&r.at>=reset.lastAugReset&&r.at<=now?r:null)(read('tasks/contracts-results.json'))},validation:read('tasks/contract-validation.json'),speed:read('tasks/progression-speed.json'),budgets:read('tasks/spending-plan.json'),backup:read('tasks/reset-backup-status.json')};
+   const dashboard={darknetRewards:(r=>r&&{totals:r.totals,omitted:r.omitted,pulls:r.pulls})(read('tasks/dnet-cache-rewards-summary.json')),darknetRefresh:(r=>r&&{at:r.at,active:!!r.active,samples:r.samples?.length,last:r.samples?.at(-1)})(read('tasks/dnet-refresh-observations.json')),gangSafety,hackingProcesses:readHackingProcessBudget(ns,now),backgroundJobs:readBackgroundHealth(ns,now),cloud:currentCloudPurchase(read('tasks/cloud-purchase-status.json'),reset,now),diagnostics:{at:now,detailAt:diagnosticState.detailAt,nextDetailAt:diagnosticState.detailAt+60000,trackedProcesses:diagnosticState.trackedProcesses,omittedProcesses:diagnosticState.omittedProcesses,warnings:diagnosticState.warnings},workerUpgrade,hackingDrain:drainStatus,drainProtected,supervisorUpdate:selfUpdate,homeRamReclaim:(r=>r?.at<=now&&now-r.at<30000&&livePids.has(r.ownerPid)?r:null)(read('tasks/home-ram-reclaim.json')),hashSpending:collectHashSpendingStatus(ns,now),hgw:read('tasks/hgw-misfires.json'),logs,fileAudit,nodeRoute:read('tasks/node-route-plan.json'),overview:read('tasks/overview-status.json'),at:now,ownerPid:ns.pid,node:reset.currentNode,recovery:rows,pending:[...pending.values()].map(p=>p.filename),managers:dashboardRows(ns.ps('home'),readStatus,now),achievements:readStatus('tasks/achievement-status.json')&&{known:readStatus('tasks/achievement-status.json').known,unlocked:readStatus('tasks/achievement-status.json').unlocked?.length},contracts:{...read('tasks/contracts-status.json'),results:(r=>Number.isFinite(r?.at)&&r.at>=reset.lastAugReset&&r.at<=now?r:null)(read('tasks/contracts-results.json'))},validation:read('tasks/contract-validation.json'),speed:read('tasks/progression-speed.json'),budgets:read('tasks/spending-plan.json'),backup:read('tasks/reset-backup-status.json')};
+   dashboard.hgwTimeline=readHgwTimeline(ns,reset,now);
    ns.rm('tasks/reliability-error.json');
    if(diagnosticState.detailDue)ns.write('tasks/dashboard.json',JSON.stringify(dashboard),'w');
-   const summary=boundedDiagnostics({...dashboard,logs:undefined,fileAudit:undefined},false,30000);
+   const summary=boundedDiagnostics({hgwTimeline:dashboard.hgwTimeline,...dashboard,logs:undefined,fileAudit:undefined},false,30000);
    Object.assign(summary,{schemaVersion:1,at:now,ownerPid:ns.pid,nodeReset:reset.lastNodeReset,augReset:reset.lastAugReset});
    ns.write('tasks/dashboard-summary.json',JSON.stringify(summary),'w');
   }catch(error){ns.write('tasks/reliability-error.json',JSON.stringify({at:Date.now(),error:String(error)}),'w');}

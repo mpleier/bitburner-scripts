@@ -1,16 +1,23 @@
-import {beginDarknetRefresh,observeDarknetRefresh,darknetRefreshEvidence} from './darknet-refresh-policy.js';
+import {createDarknetCredentials} from './darknet-credentials.js';
+import {refreshDarknetScouts} from './darknet-rollout.js';
+import {cacheContextFile,rewardSummaryFile,darknetRewardProductivity} from './darknet-reward-policy.js';
+import {coordinateDarknetAnchors} from './darknet-anchor-policy.js';
+import {coordinateDarknetDevelopment} from './darknet-development-policy.js';
+import {darknetObservationFile,darknetCapabilityContext} from './darknet-observation-policy.js';
+import {beginDarknetRefresh,darknetRefreshEvidence} from './darknet-refresh-policy.js';
 import {darknetContractDisposition} from './darknet-contract-policy.js';
-import { darknetEconomics } from './darknet-economics-policy.js';
+import { darknetEconomics, recurringPlayerIncome } from './darknet-economics-policy.js';
 import { surveyPrefix, stormRequestFile, stormStateFile, stormResultFile, applyStormReceipt, planStorm } from './darknet-storm-policy.js';
 import {registerAutomation,automationHeartbeat,maintenanceRequested} from './runtime-policy.js';
 import { isScriptPaused } from './automation-control.js';
 /** Darknet coordinator. Tries supplied exact-match candidates on discovered servers. */
-import { isBlankPassword, parsePasswordEntries, solveFeedbackPassword, supportsFeedbackModel, modelCandidates, isStalledScout, dictionaryWords } from './darknet-solvers.js';
+import { candidatePasswordTurn, isBlankPassword, solveFeedbackPassword, supportsFeedbackModel, modelCandidates, isStalledScout, dictionaryWords } from './darknet-solvers.js';
 import { frontierFile } from './darknet-migration-policy.js';
 export async function main(ns) {
  registerAutomation(ns);
     if (isScriptPaused(ns, ns.getScriptName())) return;
-  const passwordFile = "darknet-passwords.txt";
+  const cacheReset=ns.getResetInfo();await ns.write(cacheContextFile,JSON.stringify({nodeReset:cacheReset.lastNodeReset,augReset:cacheReset.lastAugReset}),'w');
+  const credentials = createDarknetCredentials(ns);
   const candidateFile = "darknet-candidates.txt";
   const nodeFile = "darknet-node.js";
   // Helper scripts are split out of the scout so each stays small enough for
@@ -20,7 +27,7 @@ export async function main(ns) {
   const lootFile = "darknet-loot.js";
   const stasisFile = "darknet-stasis.js";
   const cacheFile = "darknet-cache.js";
-  const codeFiles = [nodeFile, lootFile, stasisFile, cacheFile, "darknet-solvers.js", "darknet-feedback.js", "darknet-advanced.js", "darknet-dictionaries.js", "darknet-promote.js", "darknet-stock-policy.js", "darknet-migrate.js", "darknet-migration-policy.js", "darknet-storm-policy.js", "darknet-storm.js", "darknet-contract-policy.js"];
+  const codeFiles = [nodeFile, lootFile, stasisFile, cacheFile, "darknet-solvers.js", "darknet-credentials.js", "darknet-feedback.js", "darknet-advanced.js", "darknet-labyrinth-policy.js", "darknet-anchor-policy.js", "darknet-development-policy.js", "darknet-dictionaries.js", "darknet-promote.js", "darknet-stock-policy.js", "darknet-migrate.js", "darknet-migration-policy.js", "darknet-storm-policy.js", "darknet-storm.js", "darknet-contract-policy.js", "darknet-reward-policy.js", "tasks/dnet-cache-context.json"];
   // Every ns call is logged by default (scp, probe, getServerMaxRam...), which
   // buried the useful lines. Keep only what this script prints itself.
   ns.disableLog("ALL");
@@ -33,6 +40,8 @@ export async function main(ns) {
   // Last state copied to each host, so files are only re-sent when they change
   // or the host was wiped/restarted, not on every poll.
   const deployed = new Map();
+  const deployedFiles = new Map();
+  const upgradePending = new Set();
   const deployedCode = new Map();
   // Only print a status line when it changes.
   const lastNote = new Map();
@@ -49,14 +58,6 @@ export async function main(ns) {
     return `${v.toFixed(2)}GB`;
   };
 
-  const parsePasswords = () => {
-    const result = new Map();
-    const files = [passwordFile, ...ns.ls("home", "darknet-passwords-")];
-    for (const file of files) {
-      for (const [host, password] of parsePasswordEntries(ns.read(file))) result.set(host, password);
-    }
-    return result;
-  };
 
   const parseCandidates = () => [
     ...new Set(
@@ -120,7 +121,9 @@ export async function main(ns) {
   const tryPassword = async (host, password) => {
     let result;
     for (let tries = 0; tries < 3; tries++) {
-      result = await ns.dnet.authenticate(host, password);
+      automationHeartbeat(ns);
+      try { result = await ns.dnet.authenticate(host, password); }
+      finally { automationHeartbeat(ns); }
       if (result.success || Number(result.code) !== TIMED_OUT) break;
     }
     return result;
@@ -152,50 +155,29 @@ export async function main(ns) {
         note(`${host}:nil`, `${host}: ${details.modelId} solving needs ${details.requiredCharismaSkill} Charisma for Heartbleed.`);
         return false;
       }
-      const solution = await solveFeedbackPassword({ ...details, hostname: host },
+      const solution = await solveFeedbackPassword({ ...details, hostname: host, probeBudget: 8 },
         password => tryPassword(host, password),
         () => ns.dnet.heartbleed(host, { peek: true, logsToCapture: 20 }), progress);
       if (!solution.success) {
         note(`${host}:nil`, `${host}: ${details.modelId} waiting: ${solution.reason}${solution.code ? ` (${solution.code})` : ""}.`);
         return false;
       }
-      const reportFile = `darknet-passwords-${host.replace(/[^a-z0-9_-]/gi, "_")}.txt`;
-      await ns.write(reportFile, `${host}=${solution.password}\n`, "w");
+      await credentials.save(host, solution.password);
       nilProgress.delete(host);
-      note(`${host}:nil`, `${host}: ${details.modelId} solved using feedback; saved to ${reportFile}.`);
+      note(`${host}:nil`, `${host}: ${details.modelId} solved using feedback; saved in credential store.`);
       return true;
     }
-    const signature = JSON.stringify([typeof saved === "string" ? saved : null, candidates]);
-    const previous = attemptedInputs.get(host);
-    if (previous && previous.signature === signature && Date.now() - previous.at < RETRY_AFTER_MS) return false;
-    if (typeof saved === "string") {
-      const result = await trySavedPassword(host, saved, details);
-      if (result.success) return true;
-      if (Number(result.code) !== AUTH_FAILURE) {
-        ns.print(`${host}: saved password check stopped (${result.code}: ${result.message}); will retry.`);
-        return false;
-      }
-      ns.print(`${host}: saved password rejected; trying candidates.`);
+    if(!attemptedInputs.has(host))attemptedInputs.set(host,{});
+    const result=await candidatePasswordTurn({...details,hostname:host},saved,candidates,attemptedInputs.get(host),
+      password=>tryPassword(host,password),password=>trySavedPassword(host,password,details),Date.now(),8,RETRY_AFTER_MS);
+    if(result.success) {
+      if(result.saved)return true;
+      await credentials.save(host, result.password);
+      note(host+':candidate',host+': candidate matched; saved in credential store.');
+      return true;
     }
-    for (let i = 0; i < candidates.length; i++) {
-      const password = candidates[i];
-      if (password === saved) continue;
-      const result = await tryPassword(host, password);
-      if (result.success) {
-        const reportFile = `darknet-passwords-${host.replace(/[^a-z0-9_-]/gi, "_")}.txt`;
-        await ns.write(reportFile, `${host}=${password}\n`, "w");
-        ns.print(`${host}: candidate matched (${i + 1}/${candidates.length}); saved to ${reportFile}.`);
-        return true;
-      }
-      if (Number(result.code) !== AUTH_FAILURE) {
-        // Not a wrong-password answer (offline, moved, not adjacent...). Don't
-        // mark the host as tried, so the next pass starts again.
-        ns.print(`${host}: candidate check stopped (${result.code}: ${result.message}); will retry.`);
-        return false;
-      }
-    }
-    attemptedInputs.set(host, { signature, at: Date.now() });
-    ns.print(`${host}: no match in ${candidates.length} candidates; retrying in ${RETRY_AFTER_MS / 60_000} min or when inputs change.`);
+    if(result.reason==='exhausted')ns.print(host+': no match in '+candidates.length+' candidates; retrying in '+RETRY_AFTER_MS/60000+' min or when inputs change.');
+    else if(result.reason==='interrupted')note(host+':candidate',host+': candidate check interrupted ('+result.code+'); progress retained.');
     return false;
   };
 
@@ -211,8 +193,7 @@ export async function main(ns) {
     let state = {};
     try { state = JSON.parse(ns.read(stormStateFile) || '{}'); } catch { }
     const roots = ns.dnet.probe(), now = Date.now(), currentReset=ns.getResetInfo(), reset=currentReset.lastNodeReset;
-    const player=ns.getPlayer(),capabilities=[player.skills.charisma,player.mults?.dnet_money,player.mults?.crime_money,player.mults?.crime_success];
-    const context=capabilities.every(Number.isFinite)?JSON.stringify([reset,currentReset.lastAugReset,Math.floor(capabilities[0]/250),...capabilities.slice(1)]):null;
+    const context=darknetCapabilityContext(currentReset,ns.getPlayer());
     try { state = applyStormReceipt(state, JSON.parse(ns.read(stormResultFile) || '{}'), reset, now); } catch { }
     // A failed scout is not a locked frontier. Only native session state can distinguish them.
     const reachable=new Set(roots);for(const r of reports.filter(r=>r.live&&r.at<=now&&now-r.at<=90000))for(const h of r.neighbours||[])reachable.add(h);
@@ -222,12 +203,16 @@ export async function main(ns) {
     }catch{ /* Unknown hosts never authorize an early refresh. */ }
     const currentReports=reports.filter(r=>!frontier.includes(r.host));
     const decision = planStorm(currentReports, roots, state, now, reset,{stalled:true,frontier});
+    try{const anchor=JSON.parse(ns.read('tasks/dnet-anchor-request.json'));if(anchor.expiresAt>now&&!['done','blocked'].includes(anchor.phase)){decision.launch=false;decision.reason='Stasis anchor transaction active';}}catch{}
     if(ns.ps('home').some(p=>/contractor|contract-solver/i.test(p.filename))){decision.launch=false;decision.reason='Contract solver active';} 
-    let totalIncome=null;try{totalIncome=ns.getMoneySources().sinceInstall.darknet;}catch{}
+    let totalIncome=null,playerIncome=null;try{const sources=ns.getMoneySources().sinceInstall;totalIncome=sources.darknet;playerIncome=recurringPlayerIncome(sources);}catch{}
     const lastCacheAt=Math.max(0,...reports.filter(report=>report.live&&report.at<=now&&now-report.at<90000).map(report=>Number(report.lastCacheAt)||0));
-    decision.state.refresh=observeDarknetRefresh(state.refresh,{at:now,reset,augReset:currentReset.lastAugReset,context,income:totalIncome,lastCacheAt,reports,receipt:state.lastResult});
-    const evidence=darknetRefreshEvidence(decision.state.refresh,{reset,augReset:currentReset.lastAugReset,context},now);
-    decision.state.economics=darknetEconomics(state.economics,totalIncome,lastCacheAt,reset,now,evidence);
+    let observations;try{observations=JSON.parse(ns.read(darknetObservationFile));}catch{}
+    const observationFresh=observations?.nodeReset===reset&&observations.augReset===currentReset.lastAugReset&&Number.isFinite(observations.at)&&observations.at<=now&&now-observations.at<=90000;
+    let rewardSummary;try{rewardSummary=JSON.parse(ns.read(rewardSummaryFile));}catch{}
+    const rewardStatus=darknetRewardProductivity(rewardSummary,currentReset,now);
+    const evidence=darknetRefreshEvidence(observationFresh?observations:null,{reset,augReset:currentReset.lastAugReset,context},now);
+    decision.state.economics=darknetEconomics(state.economics,totalIncome,lastCacheAt,reset,now,evidence,{ready:decision.ready===true,mode:decision.mode,playerIncome,augReset:currentReset.lastAugReset,rewardStatus});
     if(decision.ready){
       const hosts=new Set(JSON.parse(decision.signature).map(row=>row[0]));let contracts,validation;
       try{contracts=JSON.parse(ns.read('tasks/contracts-status.json'));validation=JSON.parse(ns.read('tasks/contract-validation.json'));}catch{}
@@ -239,16 +224,16 @@ export async function main(ns) {
     if (decision.launch && !maintenanceRequested(ns) && !isScriptPaused(ns, ns.getScriptName())) {
       const host = decision.seedHost, helper = 'darknet-storm.js';
       if (ns.ps(host).some(p => p.filename === helper)) return;
-      if (await ns.scp([helper, 'darknet-storm-policy.js', 'darknet-contract-policy.js'], host, 'home')) {
+      if (await ns.scp([helper, 'darknet-storm-policy.js', 'darknet-contract-policy.js','darknet-reward-policy.js'], host, 'home')) {
         const ram = ns.getScriptRam(helper, host);
         if (ram > 0) {
           if (ns.getServerMaxRam(host) - ns.getServerUsedRam(host) < ram)
             for (const p of ns.ps(host)) if (p.filename === lootFile) ns.kill(p.pid);
           if (ns.getServerMaxRam(host) - ns.getServerUsedRam(host) >= ram) {
-            const request = { id: `${ns.pid}:${now}`, host, at: now, reset, reports:currentReports, roots, signature: decision.signature, progressSignature:decision.progressSignature, mode:decision.mode, frontier:decision.frontier, income:totalIncome, incomeTolerance:decision.state.economics.allowLowIncome?decision.state.economics.moneyPerSecond*60:0, lastCacheAt };
+            const request = { id: `${ns.pid}:${now}`, host, at: now, reset, reports:currentReports, roots, signature: decision.signature, progressSignature:decision.progressSignature, mode:decision.mode, frontier:decision.frontier, income:totalIncome, rewardGuard:true, incomeTolerance:decision.state.economics.allowLowIncome?decision.state.economics.moneyPerSecond*60:0, lastCacheAt };
             await ns.write(stormRequestFile, JSON.stringify(request), 'w');
             decision.state.pending = { id: request.id, host, at: now };
-            decision.state.refresh=beginDarknetRefresh(decision.state.refresh,{id:request.id,at:now,reset,augReset:currentReset.lastAugReset,context,hosts:currentReports.filter(r=>r.live&&now-r.at<=90000)});
+            decision.state.refresh=beginDarknetRefresh(observationFresh?observations:null,{id:request.id,at:now,reset,augReset:currentReset.lastAugReset,context,forecast:evidence.measuredReturns?{netRate:evidence.netRate,rebuildMs:evidence.rebuildMs,baselineRate:decision.state.economics.moneyPerSecond}:null,hosts:currentReports.filter(r=>r.live&&now-r.at<=90000)});
             // Save before launching: manager restarts must not dispatch duplicate storms.
             decision.state.lastAttempt = now;
             await ns.write(stormStateFile, JSON.stringify(decision.state), 'w');
@@ -266,7 +251,13 @@ export async function main(ns) {
  automationHeartbeat(ns);
     try {
       ensureDarknetUnlock();
-      const passwords = parsePasswords();
+      const passwords = await credentials.refresh();
+      if(!maintenanceRequested(ns)){
+        const reports=[];
+        for(const file of ns.ls('home',surveyPrefix))try{const r=JSON.parse(ns.read(file));r.live=ns.ps(r.host).some(p=>p.pid===r.pid&&p.filename===nodeFile);reports.push(r);}catch{}
+        const reset=ns.getResetInfo(),values=await coordinateDarknetDevelopment(ns,reports,reset);
+        await coordinateDarknetAnchors(ns,reports,passwords,reset,values);
+      }
       const candidates = [...new Set([...parseCandidates(), ...dictionaryWords(ns)])];
       let depth = 0;
       for (const file of ns.ls('home', 'tasks/dnet-')) {
@@ -278,6 +269,12 @@ export async function main(ns) {
       }
       await ns.write(frontierFile, JSON.stringify({ depth, expiresAt: Date.now() + 90000 }), 'w');
 
+      // Read and hash the small deployment set once per exploration pass.
+      const syncFiles = [...codeFiles, candidateFile].filter(f => ns.fileExists(f, "home"));
+      const fileHashes = new Map(syncFiles.map(f => [f, hashText(ns.read(f))]));
+      const signature = syncFiles.map(f => f+':'+fileHashes.get(f)).join('|');
+      const codeSignature = codeFiles.filter(f => fileHashes.has(f)).map(f => fileHashes.get(f)).join('|');
+      await refreshDarknetScouts(ns,syncFiles,codeSignature,upgradePending);
       for (const host of ns.dnet.probe()) {
         try {
           const details = ns.dnet.getServerDetails(host);
@@ -320,25 +317,21 @@ export async function main(ns) {
           }
 
           if (ns.fileExists(nodeFile, "home")) {
-            // Only scp files that actually exist on home to avoid warnings.
-            const files = [...codeFiles, candidateFile, ...ns.ls("home", "darknet-passwords-")]
-              .filter((f) => ns.fileExists(f, "home"));
-            if (ns.fileExists(passwordFile, "home")) files.push(passwordFile);
-            const signature = files.map((f) => `${f}:${hashText(ns.read(f))}`).join("|");
-            const codeSignature = codeFiles.filter((f) => files.includes(f)).map((f) => hashText(ns.read(f))).join("|");
-
             if (deployed.get(host) !== signature || !ns.fileExists(nodeFile, host)) {
+              const previous = ns.fileExists(nodeFile, host) ? deployedFiles.get(host) : null;
+              const changedFiles = syncFiles.filter(f => previous?.get(f) !== fileHashes.get(f));
               // Running copies keep their old code, so stop them when the scripts
               // changed; the launch step below starts the new version.
               const oldCode = deployedCode.get(host);
               if (oldCode !== undefined && oldCode !== codeSignature) {
                 for (const p of ns.ps(host)) if (codeFiles.includes(p.filename)) ns.kill(p.pid);
               }
-              if (!(await ns.scp(files, host, "home"))) {
+              if (!(await ns.scp(changedFiles, host, "home"))) {
                 note(`${host}:sync`, `${host}: deployment incomplete; will retry.`);
                 continue;
               }
               deployed.set(host, signature);
+              deployedFiles.set(host, fileHashes);
               deployedCode.set(host, codeSignature);
             }
 
@@ -346,6 +339,7 @@ export async function main(ns) {
             try {
               const status = JSON.parse(ns.read(`tasks/dnet-${encodeURIComponent(host)}.json`) || '{}');
               if (isStalledScout(scout, status) || (scout && status.pid === scout.pid && (status.version !== 3 || status.revision !== codeSignature))) {
+                if(!await ns.scp(syncFiles,host,'home'))continue;
                 ns.kill(scout.pid);
                 for (const process of ns.ps(host)) if ([lootFile, stasisFile, cacheFile, 'darknet-promote.js', 'darknet-migrate.js'].includes(process.filename)) ns.kill(process.pid);
                 note(`${host}:restart`, `${host}: refreshing an outdated or stalled scout.`);

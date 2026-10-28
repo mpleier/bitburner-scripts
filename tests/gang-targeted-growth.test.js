@@ -48,7 +48,7 @@ test('native ascension applies the quoted training task and rejects non-training
 test('executed task assignment retains a selected training task during warfare preparation',async()=>{
  const source=readFileSync(new URL('../gangs.js',import.meta.url),'utf8'),start=source.indexOf('async function updateMemberActivities('),end=source.indexOf('\n/** @param {NS} ns',start);let orders;
  const read=async(ns,code,path,args)=>{orders=JSON.parse(args[0]);return {deferred:false,failed:[],assigned:orders.length};};
- const build=Function('gangTrainingTaskName','gangWarfareMemberEligible','getNsDataThroughFile',`const assignedTasks={A:'Train Charisma'},memberNeedsTraining=()=>true,isHackGang=false,memberProtectedTask=n=>gangTrainingTaskName(assignedTasks[n],false),applyGangWorkOrders=()=>{},gangMutationAllowed=()=>true,log=()=>{};${source.slice(start,end)};return updateMemberActivities;`);
+ const build=Function('gangTrainingTaskName','gangWarfareMemberEligible','getNsDataThroughFile',`let pendingPowerPulse=null;const assignedTasks={A:'Train Charisma'},memberNeedsTraining=()=>true,isHackGang=false,memberProtectedTask=n=>gangTrainingTaskName(assignedTasks[n],false),applyGangWorkOrders=()=>{},gangMutationAllowed=()=>true,log=()=>{};${source.slice(start,end)};return updateMemberActivities;`);
  await build(gangTrainingTaskName,gangWarfareMemberEligible,read)({}, {A:{name:'A',def:1000,task:'Work'}},'Territory Warfare',{territoryClashChance:0});
  assert.deepEqual(orders,[{name:'A',task:'Train Charisma'}]);
 });

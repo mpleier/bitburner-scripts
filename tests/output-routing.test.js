@@ -35,7 +35,7 @@ test('faction reports have no unconditional terminal mirror remaining',async()=>
  assert.doesNotMatch(s,/\bns\.tprint(?:f)?\(/);assert.doesNotMatch(s,/log\(ns,[^;]*,\s*true(?:,|\))/);
 });
 test('Dark Net cache success and retry errors remain visible in logs without terminal output',async()=>{
- const lines=[];await openCaches({disableLog(){},getHostname:()=> 'dark:one',ls:()=>['good.cache','bad.cache'],write(){},print:s=>lines.push(s),tprint:()=>assert.fail('routine cache output reached terminal'),dnet:{openCache:file=>{if(file.startsWith('bad'))throw Error('temporary');return {success:true};}}});
+ const lines=[];await openCaches({disableLog(){},getHostname:()=> 'dark:one',pid:9,getResetInfo:()=>({lastNodeReset:7,lastAugReset:42}),read:f=>f==='tasks/dnet-cache-context.json'?JSON.stringify({nodeReset:7,augReset:42}):'',ls:()=>['good.cache','bad.cache'],write(){},print:s=>lines.push(s),tprint:()=>assert.fail('routine cache output reached terminal'),dnet:{openCache:file=>{if(file.startsWith('bad'))throw Error('temporary');return {success:true};}}});
  assert.equal(lines.length,2);assert.ok(lines.some(l=>l.includes('opened good')));assert.ok(lines.some(l=>l.includes('could not open bad')));
 });
 test('automated stasis confirmation uses the worker log',async()=>{

@@ -23,7 +23,7 @@ test('reputation assignments avoid duplicate factions and companies and exclude 
  assert.equal(result[0].name,'NiteSec');assert.equal(result[1].name,'CyberSec');assert.equal(result[4].name,'ECorp');
  assert.equal(result[2],undefined);assert.equal(result[3],undefined);
  const bb=sleeveRepAssignments([sleeve(),sleeve(),sleeve(),sleeve(),sleeve()],targets,{},0,true);
- assert.equal(bb[1],undefined);assert.equal(bb[2],undefined);assert.equal(bb[3],undefined);
+ assert.equal(bb[1].name,'NiteSec');assert.equal(bb[2].name,'ECorp');assert.equal(bb[3],undefined);
 });
 test('augmentation purchases report only successful spending and preserve freshly changed reserves',()=>{
  let money=100,reserve=20;const purchased=[];

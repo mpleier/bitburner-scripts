@@ -16,9 +16,17 @@ export function spendingPlan({money,reserve=0,homeRam=0,node=1,epoch=Date.now(),
  if(signals.bottleneck==='cash'&&node!==9)priorities.cash.hacknet=.35;
  if(priorities[signals.bottleneck]){for(const [category,factor]of Object.entries(priorities[signals.bottleneck]))weights[category]*=factor;reasons.push('Progression bottleneck: '+signals.bottleneck);}
  for(const [category,active]of Object.entries(signals.activeCategories||{}))if(active===false&&category in weights)weights[category]=0;
+ const gear=signals.gangEquipmentPriority;
+ const collect=gear&&Number.isFinite(gear.remainingCost)&&gear.remainingCost>0&&Number.isSafeInteger(gear.remainingCount)&&gear.remainingCount>0&&weights.gang>0;
+ if(collect){weights.gang=Math.max(1000,weights.gang);reasons.push('User priority: collect all gang equipment');}
  const total=Object.values(weights).reduce((a,b)=>a+b,0),free=Math.max(0,money-reserve);
  const gangCapital=gangCorporationCapital(signals,free);
- const startup=signals.corporationStartup&&free>=150e9?Math.min(150e9,free-gangCapital.protectedGangCash):0;
+ if(collect){gangCapital.protectedGangCash=Math.max(gangCapital.protectedGangCash,Math.min(free,gear.remainingCost));gangCapital.reason='Protect cash for the all-equipment gang goal';}
+ const corporationPriority=signals.corporationGrowthPriority===true&&signals.corporationStartup===true&&signals.activeCategories?.corporation!==false&&money>=300000;
+ // Keep essential manager capacity funded while accumulating the startup threshold.
+ const needsRam=homeRam<128||Number.isFinite(signals.essentialHomeRam?.target)&&signals.essentialHomeRam.target>homeRam;
+ const startup=corporationPriority?Math.min(150e9,free*(needsRam ? .5 : 1)):signals.corporationStartup&&signals.activeCategories?.corporation!==false&&free>=150e9?Math.min(150e9,free-gangCapital.protectedGangCash):0;
+ if(corporationPriority){gangCapital.protectedGangCash=0;gangCapital.priority='corporation-startup';gangCapital.reason='Corporation startup savings take priority over optional gang equipment';reasons.push(gangCapital.reason);}
  if(gangCapital.protectedGangCash)reasons.push(gangCapital.reason);
  if(startup)reasons.push('Reserve an allowance for corporation creation');
  const allowances=Object.fromEntries(Object.entries(weights).map(([k,v])=>[k,(free-startup)*v/total]));allowances.corporation+=startup;
@@ -61,7 +69,7 @@ export function spendingPlan({money,reserve=0,homeRam=0,node=1,epoch=Date.now(),
   }
   allowances.home+=shift;reasons.push('Enabled manager capacity target: '+capacity.target+' GB');
  }
- return {gangCapital,epoch,ownerPid,reset,homeRam,expiresAt:epoch+60000,reserve,reasons,signals,allowances};
+ return {gangCapital,corporationStartupReserve:corporationPriority?startup:0,epoch,ownerPid,reset,homeRam,expiresAt:epoch+60000,reserve,reasons,signals,allowances};
 }
 /** Self-contained for generated purchase workers. Native ns.write updates text synchronously.
  * Claim immediately before a synchronous purchase. Failed attempts conservatively consume allowance. */
@@ -112,6 +120,15 @@ export function claimSpending(ns,category,cost,investment=null) {
    growthException=cost<=money*.01&&payback<=Math.min(900,baseline*.5)&&baseline-accelerated-30>=Math.max(30,baseline*.1);
  }
  const essential=category==='home' &&Number.isFinite(plan.homeRam)&&plan.homeRam<128;
+ // Explicit collection priority may precede ordinary savings, never a reset or timed wait.
+ if(category==='gang'&&!resetting&&goal?.source!=='augmentation-wait'&&investment?.kind==='gang-equipment-priority')try{
+  const p=JSON.parse(ns.read('tasks/gang-equipment-priority.json')),now=Date.now();
+  if(p.schemaVersion===1&&p.enabled===true&&p.nodeReset===reset.lastNodeReset&&p.augReset===reset.lastAugReset&&p.ownerPid===investment.ownerPid&&
+   Number.isFinite(p.at)&&p.at<=now&&now-p.at<=30000&&Number.isSafeInteger(p.remainingCount)&&p.remainingCount>0&&Number.isFinite(p.remainingCost)&&p.remainingCost>0&&
+   investment.nodeReset===reset.lastNodeReset&&investment.augReset===reset.lastAugReset&&Number.isFinite(investment.at)&&investment.at<=now&&now-investment.at<=5000&&investment.cost===cost&&
+   ns.ps('home').some(s=>s.pid===p.ownerPid&&s.filename?.replace(/^\//,'')==='gangs.js')&&
+   Array.isArray(p.orders)&&p.orders.some(o=>o.member===investment.member&&o.equipmentName===investment.equipment&&Number.isFinite(o.cost)&&cost<=o.cost))saving=0;
+ }catch{}
  if(category!=='augmentation'&&!essential&&!growthException&&ns.getPlayer().money<cost+Math.max(Number(ns.read('reserve.txt'))||0,saving))return false;
 
  let usage;try{usage=JSON.parse(ns.read('tasks/spending-usage.json'));}catch{}
@@ -198,8 +215,12 @@ export function adaptiveBudgetSignals(ns,corporationStartup=false){
  const economics=incomeFresh&&speedFresh?{cashRate:observation.cashRate,recoveryMs:speed.recoveryMs,rebuildMs:speed.resetEconomics?.rebuildMs,
   remainingMs:route&&route.augReset===reset.lastAugReset&&route.nodeReset===nodeReset&&route.at<=now&&now-route.at<45000&&ns.isRunning(route.ownerPid)?route?.routes?.[route.selected]?.etaMs:null,combat}:null;
  const validRoute=!!route&&route.augReset===ns.getResetInfo().lastAugReset&&route?.nodeReset===nodeReset&&route?.at<=now&&now-route.at<45000&&ns.isRunning(route.ownerPid)?route.selected:null;
+ const collection=read('tasks/gang-equipment-priority.json');
+ const gangEquipmentPriority=collection?.schemaVersion===1&&collection.enabled===true&&collection.nodeReset===nodeReset&&collection.augReset===reset.lastAugReset&&
+  Number.isFinite(collection.at)&&collection.at<=now&&now-collection.at<=30000&&Number.isSafeInteger(collection.remainingCount)&&collection.remainingCount>0&&Number.isFinite(collection.remainingCost)&&collection.remainingCost>0&&
+  ns.ps('home').some(p=>p.pid===collection.ownerPid&&p.filename?.replace(/^\//,'')==='gangs.js')?{remainingCount:collection.remainingCount,remainingCost:collection.remainingCost}:null;
  const capitalGrowth=fresh(growth)&&growth.schemaVersion===2&&growth.nodeReset===nodeReset&&growth.augReset===reset.lastAugReset&&growth.at>now-30000&&ns.ps('home').some(p=>p.pid===growth.pid&&p.filename?.replace(/^\//,'')==='gangs.js');
- return {gangCapitalQuote:capitalGrowth?growth.equipmentOpportunity:null,gangCapitalHorizon:capitalGrowth?growth.horizon?.seconds:null,route:validRoute,essentialHomeRam,fullHomeRam,augmentationCashTarget:augmentationCashReserve(ns,true)||augmentationSavingsTarget(snapshot,ns.getResetInfo(),snapshot?ns.getPlayer().money:0,validRoute,now,economics),augmentationFunding,gangEquipmentPayback:fresh(growth)&&growth.schemaVersion===2&&growth.nodeReset===nodeReset&&growth.augReset===ns.getResetInfo().lastAugReset&&growth.equipmentOpportunity?.reason==='production'?growth.equipmentOpportunity.cashPaybackSeconds:null,gangRecruitmentSecondsSaved:fresh(growth)&&growth.schemaVersion===2&&growth.nodeReset===nodeReset&&growth.augReset===ns.getResetInfo().lastAugReset&&growth.equipmentOpportunity?.reason==='recruitment'?growth.equipmentOpportunity.recruitSecondsSaved:null,gangStalled,sleeveShockHigh:items.length>0&&items.reduce((sum,s)=>sum+(Number(s.shock)||0),0)/items.length>25,sleeveExpansionNeeded:items.length>0&&(items.length<8||items.some(s=>s.memory<100)),corporationStartup};
+ return {gangEquipmentPriority,gangCapitalQuote:capitalGrowth?growth.equipmentOpportunity:null,gangCapitalHorizon:capitalGrowth?growth.horizon?.seconds:null,route:validRoute,essentialHomeRam,fullHomeRam,augmentationCashTarget:augmentationCashReserve(ns,true)||augmentationSavingsTarget(snapshot,ns.getResetInfo(),snapshot?ns.getPlayer().money:0,validRoute,now,economics),augmentationFunding,gangEquipmentPayback:fresh(growth)&&growth.schemaVersion===2&&growth.nodeReset===nodeReset&&growth.augReset===ns.getResetInfo().lastAugReset&&growth.equipmentOpportunity?.reason==='production'?growth.equipmentOpportunity.cashPaybackSeconds:null,gangRecruitmentSecondsSaved:fresh(growth)&&growth.schemaVersion===2&&growth.nodeReset===nodeReset&&growth.augReset===ns.getResetInfo().lastAugReset&&growth.equipmentOpportunity?.reason==='recruitment'?growth.equipmentOpportunity.recruitSecondsSaved:null,gangStalled,sleeveShockHigh:items.length>0&&items.reduce((sum,s)=>sum+(Number(s.shock)||0),0)/items.length>25,sleeveExpansionNeeded:items.length>0&&(items.length<8||items.some(s=>s.memory<100)),corporationStartup};
 }
 
 /** Self-contained for stock workers. waitGoalOnly returns metadata for the budget planner.
@@ -229,7 +250,8 @@ export function augmentationCashReserve(ns,waitGoalOnly=false) {
   if(!ns.ps('home').some(p=>p.pid===plan.ownerPid&&p.filename.replace(/^\//,'')==='autopilot.js'))return 0;
   const goal=plan.signals?.augmentationCashTarget;
   // A cached wait signal must never outlive its current receipt.
-  if(goal?.source==='augmentation-wait')return 0;
-  return typeof goal?.name==='string'&&goal.name&&Number.isFinite(goal.cost)&&goal.cost>0?goal.cost:0;
+  const startup=plan.signals?.corporationGrowthPriority===true&&plan.signals?.corporationStartup===true&&plan.signals?.activeCategories?.corporation!==false&&Number.isFinite(plan.corporationStartupReserve)&&plan.corporationStartupReserve>0?Math.min(150e9,plan.corporationStartupReserve):0;
+  if(goal?.source==='augmentation-wait')return startup;
+  return Math.max(startup,typeof goal?.name==='string'&&goal.name&&Number.isFinite(goal.cost)&&goal.cost>0?goal.cost:0);
  }catch{return 0;}
 }

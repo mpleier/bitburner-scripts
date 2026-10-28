@@ -21,7 +21,7 @@ export async function main(ns) {
   const event={at,tool:'weaken',target,description:String(description).slice(0,100),pid:ns.pid,owner,
    deadline,lateMs,unavoidableMs,startLateMs,toleranceMs,legSpacingMs:Number.isFinite(meta?.legSpacingMs)&&meta.legSpacingMs>0?meta.legSpacingMs:null,outcome,value:Number.isFinite(value)?value:null,
    error:failed?String(error).slice(0,300):null};
-  if(!loop&&meta?.batchVersion===1&&typeof meta.batchId==='string'&&meta.batchId.length<=160&&meta.batchTarget===target&&Array.isArray(meta.batchPlan)&&meta.batchPlan.length<=5)Object.assign(event,{batchVersion:1,batchId:meta.batchId,batchStep:meta.batchStep,batchPlan:meta.batchPlan,pieceThreads:meta.pieceThreads});
+  if(!loop&&meta?.batchVersion===1&&typeof meta.batchId==='string'&&meta.batchId.length<=160&&meta.batchTarget===target&&Array.isArray(meta.batchPlan)&&meta.batchPlan.length<=5)Object.assign(event,{batchVersion:1,batchId:meta.batchId,batchStep:meta.batchStep,batchPlan:meta.batchPlan,pieceThreads:meta.pieceThreads,physicalThreads:meta.physicalThreads});
   const delivered=report(ns,meta,event,silent);
   // Normal zero-effect outcomes and compensated starts are measurements, never timing alerts.
   if(!silent&&(failed||lateMs>Math.max(toleranceMs,Number.isFinite(event.legSpacingMs)&&event.legSpacingMs>0?event.legSpacingMs/2:0))&&!delivered&&at-lastWarningAt>=60000){

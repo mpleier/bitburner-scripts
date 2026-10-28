@@ -1,3 +1,4 @@
+import {extendNeuroFluxOrder} from '../faction-policy.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
@@ -46,13 +47,13 @@ test('actual NF loop fixes a provider per level and charges cumulative donations
  const factionData=Object.fromEntries(factions.map(f=>[f.name,f]));
  const augNf={name:'NeuroFlux Governor',price:1,reputation:10,stats:{},prereqs:[],joinedFactionsWithAug:()=>factions};
  class AugmentationData{constructor(name,rep,price){this.name=name;this.displayName=name;this.price=price;}}
- const fn=Function('chooseNeuroFluxFaction','factionData','augNf','AugmentationData','log','formatMoney','formatNumberShort','getCostString',`
-  const ns={},options={},purchaseableAugs=[],purchaseFactionDonations={},budget=100,nfCountMult=1.14,augCountMult=1.9,nfAppendPosition=0;
+ const fn=Function('extendNeuroFluxOrder','chooseNeuroFluxFaction','factionData','augNf','AugmentationData','log','formatMoney','formatNumberShort','getCostString',`
+  let ns={},options={},purchaseableAugs=[],purchaseFactionDonations={},budget=100,nfCountMult=1.14,augCountMult=1.9,nfAppendPosition=0;
   let nfPurchased=0,nextNfLevel=1,totalAugCost=0,totalRepCost=0,nextUpNf;
   const getTotalCost=items=>items.reduce((sum,a,i)=>sum+a.price*augCountMult**i,0);
   const getReqDonationForRep=(rep,f)=>Math.max(0,rep-f.reputation);
   `+loop+`return {providers:purchaseableAugs.map(a=>a.getFromJoined()),donations:purchaseFactionDonations,totalRepCost};`);
- const result=fn(chooseNeuroFluxFaction,factionData,augNf,AugmentationData,()=>{},String,String,(a,b)=>a+b);
+ const result=fn(extendNeuroFluxOrder,chooseNeuroFluxFaction,factionData,augNf,AugmentationData,()=>{},String,String,(a,b)=>a+b);
  assert.deepEqual(result.providers.slice(0,2),['Free','Free']);assert.ok(result.providers.slice(2).every(n=>n==='Donor'));assert.ok(result.providers.length>2);
  assert.equal(result.totalRepCost,result.donations.Donor);assert.ok(Math.abs(result.donations.Donor-10*1.14**(result.providers.length-1))<1e-9);
 });
@@ -89,21 +90,21 @@ test('donation-only cuts count prerequisite closures and protect shared priority
 test('actual NF loop prices insertion and shifted ordinary purchases before accepting',async()=>{
  const source=await readFile(new URL('../faction-manager.js',import.meta.url),'utf8');
  const start=source.indexOf('    while (nfPurchased < 200)'),end=source.indexOf('    log(ns, `With ${formatMoney(budget)}',start);
- const run=Function('chooseNeuroFluxFaction','budget',`
+ const run=Function('extendNeuroFluxOrder','chooseNeuroFluxFaction','budget',`
   const ns={},options={},nfCountMult=1.14,augCountMult=1.9,nfAppendPosition=-1;
   const factionData={Free:{name:'Free',reputation:1e9,donationsUnlocked:false}};
   const augNf={name:'NeuroFlux Governor',price:50,reputation:10,stats:{},prereqs:[],joinedFactionsWithAug:()=>[factionData.Free]};
-  const purchaseableAugs=[{name:'Expensive',price:100},{name:'Cheap',price:1}],purchaseFactionDonations={};
+  let purchaseableAugs=[{name:'Expensive',price:100},{name:'Cheap',price:1}],purchaseFactionDonations={};
   class AugmentationData{constructor(name,rep,price){this.name=name;this.displayName=name;this.price=price;}}
   const getTotalCost=items=>items.reduce((sum,a,i)=>sum+a.price*augCountMult**i,0);
   let nfPurchased=0,nextNfLevel=1,totalAugCost=getTotalCost(purchaseableAugs),totalRepCost=0,nextUpNf;
   const log=()=>{},formatNumberShort=String,getCostString=(a,b)=>a+b;
   `+source.slice(start,end)+`return {nfPurchased,totalAugCost,actual:getTotalCost(purchaseableAugs),names:purchaseableAugs.map(a=>a.name)};`);
- const below=run(chooseNeuroFluxFaction,198.60);assert.equal(below.nfPurchased,0);
- const one=run(chooseNeuroFluxFaction,198.62);assert.equal(one.nfPurchased,1);
+ const below=run(extendNeuroFluxOrder,chooseNeuroFluxFaction,198.60);assert.equal(below.nfPurchased,0);
+ const one=run(extendNeuroFluxOrder,chooseNeuroFluxFaction,198.62);assert.equal(one.nfPurchased,1);
  assert.ok(Math.abs(one.totalAugCost-198.61)<1e-9);assert.equal(one.totalAugCost,one.actual);
  assert.deepEqual(one.names,['Expensive','NeuroFlux Governor','Cheap']);
- const more=run(chooseNeuroFluxFaction,2000);assert.ok(more.nfPurchased>1);assert.equal(more.totalAugCost,more.actual);assert.ok(more.actual<=2000);
+ const more=run(extendNeuroFluxOrder,chooseNeuroFluxFaction,2000);assert.ok(more.nfPurchased>1);assert.equal(more.totalAugCost,more.actual);assert.ok(more.actual<=2000);
 });
 
 

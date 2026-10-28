@@ -1,3 +1,6 @@
+import {quoteBladeburnerSkillThroughputs} from '../bladeburner-rank-acceleration-policy.js';
+import {planBladeburnerLevels as skillLevelPlanner,bladeburnerRankRate as skillRankRate,bladeburnerStaminaChance as skillChance,readBladeburnerMaintenance as skillMaintenance} from '../bladeburner-policy.js';
+import {bladeburnerSkillContext} from '../bladeburner-policy.js';
 import {scoreBladeburnerCityFallback} from '../bladeburner-city-fallback-policy.js';
 import {bladeburnerStaminaGrowthSource} from '../bladeburner-growth-stamina-policy.js';
 import {combatXpValue,bladeburnerGrowthChoice,bladeburnerCityGrowthScore,quoteBladeburnerCityTraining} from '../combat-growth-policy.js';
@@ -74,8 +77,8 @@ test('production skill worker passes action flags through to actual purchases',a
   getCurrentAction:()=>{throw Error('explicit action list should be used');},getActionCurrentLevel:()=>1,getActionRankGain:()=>100,getActionRankLoss:()=>0,getActionEstimatedSuccessChance:()=>ls['Short-Circuit']?[1,1]:[.95,.95],upgradeSkill:name=>{bought.push(name);ls[name]++;points-=10;return true;}};
  const ns={pid:7,read:()=>'',write:(file,value)=>files[file]=value,isRunning:()=>true,getResetInfo:()=>({lastNodeReset:1,lastAugReset:2}),getPlayer:()=>({skills:context.skills,mults:{...context.mults,bladeburner_max_stamina:1}}),bladeburner:api};
  const read=async(_ns,expression,_file,args)=>Function('ns','return '+expression)({...ns,args});
- const make=Function('getNsDataThroughFile','spendBladeburnerSkills','bladeburnerSkillGoal','nextBladeburnerProgressSkill','nextSkill','bbMutationGuard','resetInfo','skillNames','costAdjustments','remainingBlackOpsNames','blackOpsRanks','options','blackOpMetadata','bladeburnerDifficulty','log','cityPlanCache','levelPlanCache',source.slice(start,end)+'return spendSkillPoints;');
- const run=make(read,spendBladeburnerSkills,bladeburnerSkillGoal,nextBladeburnerProgressSkill,nextSkill,'true',{lastNodeReset:1},names,{},[],{},{'success-threshold':.99},{},bladeburnerDifficulty,()=>{});
+ const make=Function('quoteBladeburnerSkillThroughputs','planBladeburnerLevels','bladeburnerRankRate','bladeburnerStaminaChance','readBladeburnerMaintenance','bladeburnerSkillContext','getNsDataThroughFile','spendBladeburnerSkills','bladeburnerSkillGoal','nextBladeburnerProgressSkill','nextSkill','bbMutationGuard','resetInfo','skillNames','costAdjustments','remainingBlackOpsNames','blackOpsRanks','options','blackOpMetadata','bladeburnerDifficulty','log','cityPlanCache','levelPlanCache',source.slice(start,end)+'return spendSkillPoints;');
+ const run=make(quoteBladeburnerSkillThroughputs,skillLevelPlanner,skillRankRate,skillChance,skillMaintenance,bladeburnerSkillContext,read,spendBladeburnerSkills,bladeburnerSkillGoal,nextBladeburnerProgressSkill,nextSkill,'true',{lastNodeReset:1},names,{},[],{},{'success-threshold':.99},{},bladeburnerDifficulty,()=>{});
  await run(ns,[['Retirement','Contracts']]);assert.deepEqual(bought,['Short-Circuit']);assert.equal(points,0);
  assert.equal(JSON.parse(files['tasks/hash-skill-goal.json']).state,'no-useful-upgrade');
 });

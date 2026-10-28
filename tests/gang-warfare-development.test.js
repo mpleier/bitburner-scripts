@@ -36,7 +36,7 @@ test('fresh rival context ignores defeated rivals and protects newly enabled war
  const snapshot={at:now-100,faction:'Own',gangs:{Own:{power:100,territory:.5},Rival:{power:10,territory:.5},Dead:{power:10000,territory:0}}};
  const r=gangWarfareContext(gang,snapshot,.75,now);
  assert.equal(r.active,true);assert.equal(r.rivalPower,10);assert.equal(r.clashChance,1);
- assert.equal(gangWarfareContext({...gang,territory:1},snapshot,.75,now).active,false);
+ assert.equal(gangWarfareContext({...gang,territory:1},snapshot,.75,now).active,true);
  assert.equal(gangWarfareContext(gang,{...snapshot,at:now-45001},.75,now).active,false);
  assert.equal(gangWarfareContext(gang,{...snapshot,at:now+1},.75,now).active,false);
  assert.equal(gangWarfareContext(gang,{...snapshot,faction:'Other'},.75,now).active,false);
@@ -99,7 +99,7 @@ test('executed assignments protect a weak member on the first enabled warfare pu
  const start=source.indexOf('async function updateMemberActivities('),end=source.indexOf('\n/** @param {NS} ns',start);
  let orders=[];
  const getNsDataThroughFile=async(ns,code,path,args)=>{orders=JSON.parse(args[0]);return {deferred:false,failed:[],assigned:orders.length};};
- const build=Function('gangWarfareMemberEligible','getNsDataThroughFile',`const assignedTasks={Low:'Work',High:'Work'},memberNeedsTraining=()=>false,memberProtectedTask=()=>null,applyGangWorkOrders=()=>{},gangMutationAllowed=()=>true,log=()=>{};${source.slice(start,end)};return updateMemberActivities;`);
+ const build=Function('gangWarfareMemberEligible','getNsDataThroughFile',`let pendingPowerPulse=null;const assignedTasks={Low:'Work',High:'Work'},memberNeedsTraining=()=>false,memberProtectedTask=()=>null,applyGangWorkOrders=()=>{},gangMutationAllowed=()=>true,log=()=>{};${source.slice(start,end)};return updateMemberActivities;`);
  const apply=build(gangWarfareMemberEligible,getNsDataThroughFile),members={Low:{name:'Low',def:50,task:'Work'},High:{name:'High',def:200,task:'Work'}};
  await apply({},members,'Territory Warfare',{territoryClashChance:0,territoryWarfareEngaged:true});
  assert.deepEqual(orders,[{name:'High',task:'Territory Warfare'}]);
@@ -107,7 +107,7 @@ test('executed assignments protect a weak member on the first enabled warfare pu
 });
 test('startup and both development planners receive fresh rival observations',()=>{
  const source=readFileSync(new URL('../gangs.js',import.meta.url),'utf8');
- assert.match(source,/initialCycle.rivals/);assert.match(source,/bonusMs:cycle.bonusMs},cycle.others/);
+ assert.match(source,/initialCycle.rivals/);assert.match(source,/bonusMs:cycle.bonusMs,powerPulseState:pulseObservation\?.state},cycle.others/);
  assert.match(source,/gangRivalsSnapshot=\{at:tick.at,faction:myGangFaction,gangs:rivals\}/);
  assert.match(source,/names:Object.keys\(ascensions\),ascensions,goals,warfare/);
  assert.match(source,/warfare:gangWarfareContext\(gang,lastOtherGangInfo/);

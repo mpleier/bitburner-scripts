@@ -1,4 +1,6 @@
 // Additional solvers for the game's password puzzles. All work is bounded per pass.
+import {feedbackTurnBudget} from './darknet-feedback.js';
+import {observeLabyrinth,nextLabyrinthMove} from './darknet-labyrinth-policy.js';
 export const factorPrimes = [2,3,5,7,11,13,17,19,23,29,31,37,41,43,47,53,59,61,67,71,73,79,83,89,97,
   1069,1409,1471,1567,1597,1601,1697,1747,1801,1889,1979,1999,2063,2207,2371,2503,2539,2693,2741,
   2753,2801,2819,2837,2909,2939,3169,3389,3571,3761,3881,4217,4289,4547,4729,4789,4877,4943,4951,
@@ -20,10 +22,10 @@ export function packetCandidates(text, length, hostname = '') {
   return [...candidates].filter(word => word.length === length);
 }
 
-export async function solveAdvancedPassword(details, probe, readLogs, state, readLabReport) {
+export async function solveAdvancedPassword(details, probe, readLogs, state, readLabReport,readLabRadar) {
   const length = details.passwordLength;
-  if (details.modelId === '(The Labyrinth)') return solveLabyrinth(probe, state, readLabReport);
-  for (let tries = 0; tries < 64; tries++) {
+  if (details.modelId === '(The Labyrinth)') return solveLabyrinth(probe, state, readLabReport,readLabRadar,feedbackTurnBudget(details));
+  for (let tries = 0; tries < feedbackTurnBudget(details); tries++) {
     if (details.modelId === 'PHP 5.4') {
       if (length < 5 || length > 32) return { success: false, reason: 'unsupported RMS length' };
       const index = state.rmsDigits?.length || 0;
@@ -125,10 +127,10 @@ export async function solveAdvancedPassword(details, probe, readLogs, state, rea
 
 const directions = [{ name: 'north', dx: 0, dy: -2 }, { name: 'east', dx: 2, dy: 0 },
   { name: 'south', dx: 0, dy: 2 }, { name: 'west', dx: -2, dy: 0 }];
-export async function solveLabyrinth(probe, state, readReport) {
+export async function solveLabyrinth(probe, state, readReport,readRadar=null, turnBudget=64) {
   if (!readReport) return { success: false, reason: 'waiting for an adjacent Dark Net scout' };
   state.labVisited ??= new Set(); state.labPath ??= [];
-  for (let moves = 0; moves < 64; moves++) {
+  for (let moves = 0; moves < feedbackTurnBudget({probeBudget:turnBudget}); moves++) {
     const report = await readReport();
     if (!report?.success || !Array.isArray(report.coords) || report.coords.length !== 2 || !report.coords.every(Number.isInteger))
       return { success: false, reason: 'labyrinth location unavailable' };
@@ -138,8 +140,11 @@ export async function solveLabyrinth(probe, state, readReport) {
       if (previous >= 0) state.labPath.length = previous + 1;
       else state.labPath.push(key);
     }
-    state.labVisited.add(key);
-    let next = directions.find(direction => report[direction.name] === true && !state.labVisited.has(`${x + direction.dx},${y + direction.dy}`));
+    let radar=null;
+    if(readRadar&&(state.labReports||0)%8===0)try{radar=await readRadar();}catch{/* Radar is optional. */}
+    state.labReports=(state.labReports||0)+1;
+    observeLabyrinth(state,report,radar);
+    let next = directions.find(direction=>direction.name===nextLabyrinthMove(state,[x,y]));
     if (!next && state.labPath.length > 1) {
       const [px, py] = state.labPath[state.labPath.length - 2].split(',').map(Number);
       next = directions.find(direction => x + direction.dx === px && y + direction.dy === py && report[direction.name] === true);

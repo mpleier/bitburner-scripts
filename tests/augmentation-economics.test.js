@@ -1,3 +1,4 @@
+import {augmentationBatchFunded} from '../augmentation-economics-policy.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
@@ -43,9 +44,9 @@ test('invalid, partial, nonfinite, reordered-time and reset-mismatched snapshots
 });
 function harness(f){
  const source=readFileSync(new URL('../faction-manager.js',import.meta.url),'utf8').replace(/^import[\s\S]*?from\s+['"][^'"]+['"];?\r?$/gm,'').replaceAll('export async function','async function').replaceAll('export function','function');
- const context={ns:f.ns,watch:f.watch,captureAugmentationEconomics,augmentationEconomicsChange,captureAugmentationOwnership,factionPurchaseBatch,factionControlAllowed,achievementActionAllowed:()=>true,
+ const context={augmentationBatchFunded,ns:f.ns,watch:f.watch,captureAugmentationEconomics,augmentationEconomicsChange,captureAugmentationOwnership,factionPurchaseBatch,factionControlAllowed,achievementActionAllowed:()=>true,
  getNsDataThroughFile:async(ns,expr,file,args)=>{ns.args=args;return vm.runInNewContext(expr,{ns});}};
- vm.runInNewContext(source+';ownershipSnapshot=captureAugmentationOwnership(ns);economicsSnapshot=captureAugmentationEconomics(ns,watch);options={};bitNodeMults={FactionWorkRepGain:1};globalThis.buy=executeFactionPurchases;',context);
+ vm.runInNewContext(source+';ownershipSnapshot=captureAugmentationOwnership(ns);economicsSnapshot=captureAugmentationEconomics(ns,watch);options={};augCountMult=1.9;purchaseableAugs=[{name:"Target"}];bitNodeMults={FactionWorkRepGain:1};globalThis.buy=executeFactionPurchases;',context);
  return context;
 }
 test('actual serialized purchase workers reject changed prices or reputation before spending',async()=>{
@@ -73,7 +74,7 @@ test('producer and autopilot validate economics before summary publication or re
 });
 test('native quotes are applied before count-filler selection and refresh after automatic faction joins',async()=>{
  const f=fixture(),source=readFileSync(new URL('../faction-manager.js',import.meta.url),'utf8'),start=source.indexOf('async function refreshAugmentationQuotes('),fn=source.slice(start);
- const context={captureAugmentationEconomics,getNsDataThroughFile:async(ns,expr,file,args)=>{ns.args=args;return vm.runInNewContext(expr,{ns});},ns:f.ns};
+ const context={augmentationBatchFunded,captureAugmentationEconomics,getNsDataThroughFile:async(ns,expr,file,args)=>{ns.args=args;return vm.runInNewContext(expr,{ns});},ns:f.ns};
  vm.runInNewContext('let economicsSnapshot=null;const strNF="NeuroFlux Governor",gangFaction=null,factionsWithoutDonation=[];let favorToDonate=0;const augmentationData={Target:{name:"Target",owned:false,price:1,reputation:1}};const factionData={A:{name:"A",augmentations:["Target"],reputation:0,favor:0,joined:false}};const playerData={mults:{faction_rep:1}};'+fn+';globalThis.refresh=refreshAugmentationQuotes;globalThis.state=()=>({augmentationData,factionData});',context);
  assert.equal(await context.refresh(f.ns),true);assert.equal(context.state().augmentationData.Target.price,1000);assert.equal(context.state().factionData.A.reputation,10000);assert.equal(context.state().factionData.A.joined,true);
  assert.ok(source.indexOf('await refreshAugmentationQuotes(ns)')<source.indexOf('const countAugs=augmentationCountCandidates'));
@@ -88,4 +89,45 @@ test('repeated requotes retain the actual install deadline while a cancelled pla
  state=run({...state,installWindowStarted:0},1000000,300000);assert.equal(state.installCountdown,1300000);
  const check=a.slice(a.indexOf('const change=augmentationEconomicsChange'),a.indexOf('        if (!facman)',a.indexOf('const change=augmentationEconomicsChange')));
  assert.doesNotMatch(check,/installCountdown=0|installWindowStarted=0/);
+});
+
+
+test('serialized donation preflight requires the full basket plus fresh reserve before spending',async()=>{
+ for(const reserve of ['100','corrupt',Infinity,-1]){
+  const f=fixture(),h=harness(f);f.money=90e9+1099;f.ns.read=file=>file==='reserve.txt'?String(reserve):'';
+  assert.equal(await h.buy(f.ns,[{faction:'A',targetRep:100000,repDonation:90e9}],true),-3);
+  assert.deepEqual(f.donations,[]);assert.deepEqual(f.bought,[]);
+ }
+ const f=fixture(),h=harness(f);f.money=90e9+1100;f.ns.read=file=>file==='reserve.txt'?'100':'';
+ assert.equal(await h.buy(f.ns,[{faction:'A',targetRep:100000,repDonation:90e9}],true),1);
+ assert.equal(f.money,1100);assert.equal(await h.buy(f.ns,[{faction:'A',augmentation:'Target'}]),1);assert.equal(f.money,100);
+});
+
+test('funding preflight prices queued native quotes, repeated NF and shared donations once',()=>{
+ const market={complete:true,repMultiplier:2,quotes:{Ordinary:{price:105},'NeuroFlux Governor':{price:100}},factions:{A:{rep:10}}};
+ const basket=[{augmentation:'NeuroFlux Governor'},{augmentation:'NeuroFlux Governor'},{augmentation:'Ordinary'}];
+ const donations=[{faction:'A',targetRep:11,repDonation:500000}],cost=695.65+500000;
+ assert.equal(augmentationBatchFunded(market,basket,donations,1.9,1,cost+10,'10'),true);
+ assert.equal(augmentationBatchFunded(market,basket,donations,1.9,1,cost+9,'10'),false);
+ const later={...market,factions:{A:{rep:10.5}}};
+ assert.equal(augmentationBatchFunded(later,basket,donations,1.9,1,695.65+250000,0),true);
+ for(const bad of [[],[{augmentation:'Missing'}],[{augmentation:'Ordinary'},{augmentation:'Ordinary'}]])
+  assert.equal(augmentationBatchFunded(market,bad,donations,1.9,1,1e12,0),false);
+ assert.equal(augmentationBatchFunded(market,basket,[...donations,...donations],1.9,1,1e12,0),false);
+ assert.equal(augmentationBatchFunded(market,basket,[{...donations[0],repDonation:1}],1.9,1,1e12,0),false);
+ assert.equal(augmentationBatchFunded(market,basket,donations,NaN,1,1e12,0),false);
+ assert.equal(augmentationBatchFunded(market,basket,donations,1.9,0,1e12,0),false);
+});
+
+test('a failed or unfunded donation phase never falls through into partial augmentation purchases',async()=>{
+ const source=readFileSync(new URL('../faction-manager.js',import.meta.url),'utf8'),start=source.indexOf('async function purchaseDesiredAugs('),end=source.indexOf('/** @param {NS} ns',start);
+ for(const outcome of [-3,0]){
+  const calls=[],logs=[];
+  const context={isScriptPaused:()=>false,achievementActionAllowed:()=>true,options:{},purchaseFactionDonations:{A:10},purchaseableAugs:[{name:'Target',getFromJoined:()=> 'A',reputation:10}],
+   getTotalCost:()=>100,getPlayerInfo:async()=>({money:1000}),stockValue:0,startingPlayerMoney:1000,
+   executeFactionPurchases:async(_ns,_orders,donations)=>{calls.push(donations);return outcome;},log:(_ns,msg)=>logs.push(msg),printToTerminal:false};
+  vm.createContext(context);vm.runInContext(source.slice(start,end),context);
+  await context.purchaseDesiredAugs({getScriptName:()=> 'faction-manager.js'});
+  assert.deepEqual(calls,[true]);assert.ok(logs.some(s=>s.includes(outcome===-3?'no longer funded':'donation failed')));
+ }
 });

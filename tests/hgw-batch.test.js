@@ -43,7 +43,7 @@ test('actual daemon schedule construction gives each wave one stable identity an
  const target={name:'x',getHackThreadsNeeded:()=>2,getWeakenThreadsNeededAfterTheft:()=>4,percentageStolenPerHackThread:()=>.1,getGrowThreadsNeededAfterTheft:()=>2,getWeakenThreadsNeededAfterGrowth:()=>2};
  const ctx=vm.createContext({createHgwBatch,resetInfo:reset,ns:{pid:7},target,timing,loopingMode:false,hackOnly:false,hgwBatchSequence:0});vm.runInContext(source.slice(start,end)+source.slice(itemStart,itemEnd),ctx);
  const a=vm.runInContext('getScheduleObject(ns,timing,target,0)',ctx),b=vm.runInContext('getScheduleObject(ns,timing,target,0)',ctx);assert.notEqual(a.batchIdentity.batchId,b.batchIdentity.batchId);assert.equal(a.batchIdentity.batchPlan.length,4);ctx.loopingMode=true;assert.equal(vm.runInContext('getScheduleObject(ns,timing,target,0)',ctx).batchIdentity,null);
- assert.match(source,/withHgwBatch\(\[currentTarget.name/);assert.match(source,/withHgwPiece\(args,maxThreadsHere\)/);
+ assert.match(source,/withHgwBatch\(\[currentTarget.name/);assert.match(source,/withHgwPiece\(args,physical,maxThreadsHere\)/);
 });
 test('actual workers publish their allocated thread receipts but looping events remain untagged',async()=>{
  for(const name of ['hack','grow','weak'])for(const loop of [false,true]){

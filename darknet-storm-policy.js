@@ -54,7 +54,7 @@ export function planStorm(reports, roots, state = {}, now = Date.now(), reset = 
   next.signature = decision.signature;
   next.quietSince = prior.progressSignature === decision.progressSignature && Number.isFinite(prior.observedAt) && prior.observedAt<=now && now-prior.observedAt<=90000 && Number.isFinite(prior.quietSince) && prior.quietSince <= now ? prior.quietSince : now;
   next.progressSignature=decision.progressSignature;next.observedAt=now;next.mode=decision.mode;
-  const quietMs=decision.mode==='stalled'?600000:90000;
+  const quietMs=decision.mode==='stalled'?180000:30000;
   const launch = now - next.quietSince >= quietMs && (!next.lastAttempt || now - next.lastAttempt >= 60000) && (!next.lastSuccess || now - next.lastSuccess >= 1800000);
-  return { ...decision, state: next, launch, quietMs, reason: launch ? (decision.mode==='stalled'?'Exploration stalled for ten minutes; refreshing remaining opportunities':'Cleared network quiet for ninety seconds') : 'Waiting for quiet period or cooldown' };
+  return { ...decision, state: next, launch, quietMs, reason: launch ? (decision.mode==='stalled'?'Exploration stalled for three minutes; refreshing remaining opportunities':'Cleared network quiet for thirty seconds') : 'Waiting for quiet period or cooldown' };
 }

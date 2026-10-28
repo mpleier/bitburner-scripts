@@ -1,8 +1,10 @@
 import {bestSleeveCrime,sleeveCrimeChance} from './sleeve-policy.js';
 /** Free crime conditioning; compare both paths with their own evolving XP and karma. */
-export function sleeveKarmaTrainingPlan({sleeves=[],tasks=[],crimes={},workers=[],karma=0,nodeMultiplier=1,crimeExpMultiplier=1,levelMultipliers={},recoveryRates=[],enabled=true,canEvaluate=()=>true}){
+export function sleeveKarmaTrainingPlan({sleeves=[],tasks=[],crimes={},workers=[],assignments=null,karma=0,nodeMultiplier=1,crimeExpMultiplier=1,levelMultipliers={},recoveryRates=[],enabled=true,canEvaluate=()=>true}){
  const result={choices:{},best:null,evaluations:0,deferred:false};
  if(!enabled||!Number.isFinite(karma)||karma<=-54000||!Number.isFinite(crimeExpMultiplier)||crimeExpMultiplier<0)return result;
+ const activeWorkers=[...new Set(workers)].filter(i=>Number.isSafeInteger(i)&&i>=0&&i<sleeves.length&&(assignments?assignments[i]==='karma':!['RECOVERY','SYNCHRO'].includes(tasks[i]?.type)));
+ result.activeWorkers=activeWorkers;result.otherKarmaPerSecond={};
  const keys=['hacking','strength','defense','dexterity','agility','charisma'];
  const rate=s=>{const c=crimes[bestSleeveCrime(s,crimes,'karma',nodeMultiplier)];return c?.time>0?sleeveCrimeChance(s,c,nodeMultiplier)*Math.max(0,c.karma||0)*s.sync/100/(c.time/1000):0;};
  const remaining=54000+karma;
@@ -18,11 +20,12 @@ export function sleeveKarmaTrainingPlan({sleeves=[],tasks=[],crimes={},workers=[
   }
   const tail=other+rate(p);return tail>0?elapsed+Math.max(0,goal-earned)/tail:Infinity;
  };
- for(const i of workers){
+ for(const i of activeWorkers){
   const s=sleeves[i],task=tasks[i];if(!s||s.sync!==100||!(s.shock>=0&&s.shock<100)||keys.some(k=>!Number.isFinite(s.exp?.[k])||s.exp[k]<0||!Number.isFinite(s.skills?.[k])||!Number.isFinite(s.mults?.[k]??1)||!Number.isFinite(levelMultipliers[k]??1)))continue;
   if(task?.type==='CRIME'&&task.cyclesWorked>0&&task.cyclesNeeded>task.cyclesWorked&&crimes[task.crimeType]){result.choices[i]=task.crimeType;continue;}
   if(!canEvaluate()){result.deferred=true;break;}
-  const other=workers.filter(j=>j!==i).reduce((sum,j)=>sum+rate(sleeves[j]),0);
+  const other=activeWorkers.filter(j=>j!==i).reduce((sum,j)=>sum+rate(sleeves[j]),0);
+  result.otherKarmaPerSecond[i]=other;
   let baseline=forecast(s,other);const recovery=recoveryRates[i];
   if(Number.isFinite(recovery)&&recovery>0){const delay=s.shock/recovery,left=remaining-other*delay;if(left<=0)baseline=Math.min(baseline,remaining/other);else {const recovered=forecast({...s,shock:0},other,null,0,left);baseline=Math.min(baseline,delay+recovered);}}
   const weights=crimes[bestSleeveCrime(s,crimes,'karma',nodeMultiplier)]||{};

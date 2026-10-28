@@ -64,7 +64,7 @@ export function planSleeveWorkAugPurchase(ns,index,offers,budget,options,plan,fo
    work.externalXpSeconds=Math.max(0,Math.min(90,(options.xpObservation.observedAt+90000-Date.now())/1000));
   }
   const workForecast=(s,stats,seconds,reset)=>forecast(s,stats,seconds,work,reset,options.levelMultipliers);
-  const result=plan({sleeve,offers,budget,objective:work.objective,minBatch:options.minBatch,workForecast});
+  const result=plan({sleeve,offers,budget,objective:work.objective,minBatch:options.minBatch,workForecast,includeAlternatives:options.includeAlternatives===true});
   return {...result,xpSource:Object.values(work.externalXpPerSecond||{}).some(n=>n>0)?'observed-peer-xp':'own-work-only',taskType:task.type,model:task.type==='BLADEBURNER'?'source-general-action':'native-work-formulas'};
  }catch(error){return deferred('Work forecast unavailable; preserving sleeve skills: '+String(error));}
 }

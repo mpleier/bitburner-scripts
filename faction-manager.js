@@ -1,12 +1,14 @@
+import {readSoAInfiltrationIncome,wksAugmentation} from './soa-policy.js';
+import {publishAugmentationPurchase} from './augmentation-install-policy.js';
 import {readAugmentationReputationContext} from './augmentation-reputation-policy.js';
 import {estimateMixedAugmentationWait} from './progression-speed-policy.js';
 import {readCombatGrowthContext} from './combat-growth-policy.js';
-import {captureAugmentationEconomics,augmentationEconomicsChange,invalidateAugmentationFunding} from './augmentation-economics-policy.js';
+import {augmentationBatchFunded,captureAugmentationEconomics,augmentationEconomicsChange,invalidateAugmentationFunding} from './augmentation-economics-policy.js';
 import {captureAugmentationOwnership} from './augmentation-ownership-policy.js';
 import {augmentationCashReserve} from './spending-policy.js';
 import {ensureFactionJoinPlan} from './faction-joining.js';
 import {readNodeRoutePlan} from './node-route-policy.js';
-import { augmentationStatFilters,factionTerminalOutput,chooseNeuroFluxFaction,augmentationDonationTopUp,augmentationPrerequisiteChain,selectAugmentationBasketDrop,optimizeAugmentationOrder,futureAugmentationBasketCost,pruneAugmentationPrerequisites,neuroFluxLevels,augmentationCountCandidates,selectGangAugmentationGoal,factionJoinAllowed,rankFactionInvites,gangHostPreferences,factionForcedJoins, factionControlAllowed, factionPurchaseBatch } from './faction-policy.js';
+import { augmentationPurchaseBudget,extendNeuroFluxOrder,augmentationStatFilters,factionTerminalOutput,chooseNeuroFluxFaction,augmentationDonationTopUp,augmentationPrerequisiteChain,selectAugmentationBasketDrop,optimizeAugmentationOrder,futureAugmentationBasketCost,pruneAugmentationPrerequisites,neuroFluxLevels,augmentationCountCandidates,selectGangAugmentationGoal,factionJoinAllowed,rankFactionInvites,gangHostPreferences,factionForcedJoins, factionControlAllowed, factionPurchaseBatch } from './faction-policy.js';
 import { isScriptPaused } from './automation-control.js';
 import { achievementActionAllowed } from './achievement-policy.js';
 import {
@@ -70,6 +72,7 @@ const argsSchema = [ // The set of all command line arguments
     ['stat-desired', []], // Augs that give these will be starred (marked as desired and staged for purchase). If empty, defaults are picked based on your situation.
     ['neuroflux-disabled', false], // Set to true to skip including as many neuroflux upgrades as we can afford
     ['disable-donations', false], // When displaying "obtainable" augs and prices, don't include augs that require a donation to meet their rep requirements
+    ['purchase-request', ''], // Internal reset-scoped purchase receipt requested by ascend.js
     ['purchase', false], // Set to true to pull the trigger on purchasing all desired augs in the order specified
     ['ignore-stocks', false], // Set to true to ignore the liquidation value of stocks currently held when running
     ['ignore-stanek', false], // Set to true to ignore the fact that stanek is not yet taken before purchasing your first augs
@@ -194,7 +197,7 @@ export async function main(ns) {
         const needed=bitNodeMults.DaedalusAugsRequirement||30;
         const candidates=Object.values(augmentationData).filter(a=>!omitAugs.includes(a.name)).map(a=>({name:a.name,price:a.price,rep:a.reputation,
             prereqs:a.prereqs,available:a.joinedFactionsWithAug().length>0}));
-        const countAugs=augmentationCountCandidates(candidates,ownedAugmentations,needed,playerData.money+stockValue);
+        const countAugs=augmentationCountCandidates(candidates,ownedAugmentations,needed,augmentationPurchaseBudget(playerData.money,stockValue,ns.read("reserve.txt")));
         for(const name of countAugs)augmentationData[name].desired=true;
         if(countAugs.length)log(ns,'Daedalus count additions: '+countAugs.join(', '));
     }
@@ -229,7 +232,8 @@ export async function main(ns) {
         log(ns, `WARNING: You have not yet accepted Stanek's Gift from the church in Chongqing. Purchasing augs will ` +
             `prevent you from doing so for the rest of this BN. (Run with '--ignore-stanek' to bypass this warning.)`, printToTerminal);
     else if (options.purchase && purchaseableAugs) {
-        await purchaseDesiredAugs(ns);
+        const outcome=await purchaseDesiredAugs(ns);
+        await publishAugmentationPurchase(ns,options['purchase-request'],resetInfo,outcome,purchaseableAugs.length);
         ns.write(output_file, "", "w"); // Clear the file so it isn't misinterpreted on next reset.
     } else if (!ignorePlayerData) { // Don't do this next part if we were "mocking" the player for this run
         // Write a file that summarizes what augs we could afford if we could ascend right now. (used by autopilot.js)
@@ -275,6 +279,7 @@ export async function main(ns) {
         let income=null;
         try{income=await getNsDataThroughFile(ns,'({at:Date.now(),sources:ns.getMoneySources().sinceInstall,...((w)=>({workFaction:w?.type==="FACTION"?w.factionName:null,workType:w?.factionWorkType??null}))(ns.singularity.getCurrentWork())})','/Temp/augmentation-income-sources.txt');}catch{}
         const speedSnapshot={income,resetEconomics,gangFaction,gangRepRate:gangFaction?Math.max(0,gangInfo.respectGainRate||0)*5*playerData.mults.faction_rep*(1+(factionData[gangFaction]?.favor||0)/100)/75:0,workFaction:income?.workFaction,workType:income?.workType,repMultiplier:playerData.mults.faction_rep,factionFavor:Object.fromEntries(Object.values(factionData).filter(f=>f.joined).map(f=>[f.name,f.favor])),nodeReset:resetInfo.lastNodeReset,ownershipSignature:ownershipSnapshot.signature,donationUnitCost:playerData.mults.faction_rep>0&&bitNodeMults.FactionWorkRepGain>0?1e6/playerData.mults.faction_rep/bitNodeMults.FactionWorkRepGain:null,installedCount:installedAugmentations.filter(n=>n!==strNF).length,requiredCount:bitNodeMults.DaedalusAugsRequirement||30,at:Date.now(),augReset:resetInfo.lastAugReset,worth:playerData.money+stockValue,
+            soa:{installed:installedAugmentations.includes(wksAugmentation),queued:augsAwaitingInstall.includes(wksAugmentation),infiltration:readSoAInfiltrationIncome(ns)},
             ready:readyAugs.map(name=>({name,stats:augmentationData[name]?.stats||{}})),
             waitReady:futureReadyAugs.map(name=>({name,stats:augmentationData[name]?.stats||{}})),
             reputation:Object.fromEntries(Object.values(factionData).filter(f=>f.joined).map(f=>[f.name,f.reputation])),
@@ -759,7 +764,7 @@ async function manageFilteredSubset(ns, outputRows, subsetName, subset, printLis
 async function managePurchaseableAugs(ns, outputRows, accessibleAugs) {
     // Refresh player data to get an accurate read of current money
     playerData = await getPlayerInfo(ns);
-    const budget = playerData.money + stockValue;
+    const budget = augmentationPurchaseBudget(playerData.money,stockValue,ns.read("reserve.txt"));
     let totalRepCost, totalAugCost, dropped, restart;
     // We will make every effort to keep "priority" augs in the purchase order, but start dropping them if we find we cannot afford them all
     const inaccessiblePriorityAugs = priorityAugs.filter(name => {
@@ -865,22 +870,17 @@ async function managePurchaseableAugs(ns, outputRows, accessibleAugs) {
         else if (joined)
             outputRows.push(`SUCCESS: Joined ${joined} factions just to gain access to additional NeuroFlux levels.`);
     }
-    // Make note of any augmentations at the end of the purchase order list that are cheaper than NF. We will insert NF above them.
-    // Note, we cannot simply count all augmentations cheaper than NF, as some may be prerequisites higher up the list.
-    let nfAppendPosition = 0;
-    for (let i = purchaseableAugs.length - 1; i >= 0 && purchaseableAugs[i].price < augNf.price; i--)
-        nfAppendPosition--;
     // Start adding as many NeuroFlux levels as we can afford
     let nfPurchased = purchaseableAugs.filter(a => a.name === augNf.name).length;
     let nextUpNf; // Will tell the user when they will unlock the next NF level
     while (nfPurchased < 200) { // Limit to 200 to avoid breaking the game if near infinite money.
         const nextNfPrice = augNf.price * (nfCountMult ** nfPurchased);
-        const proposedOrder = purchaseableAugs.slice();
-        proposedOrder.splice(proposedOrder.length + nfAppendPosition, 0, {price:nextNfPrice});
+        const nextNfRep = augNf.reputation * (nfCountMult ** nfPurchased);
+        const nfClone = new AugmentationData(augNf.name,nextNfRep,nextNfPrice,augNf.stats,augNf.prereqs);
+        const proposedOrder = extendNeuroFluxOrder(purchaseableAugs,nfClone,augCountMult);
         // Inserting NF also shifts every following augmentation's global price multiplier.
         const proposedAugCost = getTotalCost(proposedOrder);
         const nextNfCost = proposedAugCost - totalAugCost;
-        const nextNfRep = augNf.reputation * (nfCountMult ** nfPurchased);
         const choice=chooseNeuroFluxFaction(augNf.joinedFactionsWithAug().map(f=>({name:f.name,rep:f.reputation,
             donationCost:f.donationsUnlocked&&!options['disable-donations']?getReqDonationForRep(nextNfRep,f):null})),nextNfRep,purchaseFactionDonations);
         if(!choice){nextUpNf='Next NeuroFlux level requires more reputation or an eligible donation provider.';break;}
@@ -903,11 +903,10 @@ async function managePurchaseableAugs(ns, outputRows, accessibleAugs) {
         }
         // Otherwise, add the next NF to our purchase order, and see if we can afford any more.
         // Each level retains its selected provider through donation and purchase execution.
-        const nfClone = new AugmentationData(augNf.name, nextNfRep, nextNfPrice, augNf.stats, augNf.prereqs); // { ...augNf };
         nfClone.getFromJoined=()=>choice.faction;
         nfClone.displayName += ` Level ${nextNfLevel}`
-        // Note, insert all NF purchases after the current NF purchase, in front of all augs cheaper than the first NF
-        purchaseableAugs.splice(purchaseableAugs.length + nfAppendPosition, 0, nfClone);
+        // Commit the exact basket and provider used by the affordability quote.
+        purchaseableAugs = proposedOrder;
         totalAugCost = proposedAugCost;
         const newDonationForRep = Math.max(currentNfFactionDonation, nextNfTotalRepDonation);
         if (newDonationForRep > 0) purchaseFactionDonations[augNfFaction.name] = newDonationForRep;
@@ -1000,25 +999,29 @@ async function purchaseDesiredAugs(ns) {
     // Donate to factions if necessary (using a ram-dodging script of course)
     if (Object.keys(purchaseFactionDonations).length > 0 && Object.values(purchaseFactionDonations).some(v => v > 0)) {
         const donationResult=await executeFactionPurchases(ns,Object.keys(purchaseFactionDonations).map(f => ({ faction:f,repDonation:purchaseFactionDonations[f],targetRep:Math.max(...purchaseableAugs.filter(a=>a.getFromJoined()===f).map(a=>a.reputation),0) })),true);
+        if(donationResult===-3)return log(ns,'Full augmentation basket is no longer funded above the cash reserve; deferring donations and purchases.',printToTerminal);
         if(donationResult===-2)return log(ns,'Augmentation prices or reputation changed before donation; deferring to a fresh plan.',printToTerminal);
         if(donationResult===-1)return log(ns,'Augmentation ownership changed before donation; deferring to a fresh plan.',printToTerminal);
         if(donationResult===Object.keys(purchaseFactionDonations).length)
             log(ns, `SUCCESS: Donated to ${Object.keys(purchaseFactionDonations).length} factions to gain access to desired augmentations.`, printToTerminal, 'success')
         else
-            log(ns, `ERROR: One or more attempts to donate to factions for reputation failed. Go investigate!`, printToTerminal, 'error');
+            return log(ns, `WARNING: A reputation donation failed; deferring augmentation purchases to a fresh plan.`, printToTerminal, 'warning');
     }
     // Purchase desired augs (using a ram-dodging script of course)
-    if (purchaseableAugs.length == 0)
-        return log(ns, `INFO: Cannot afford to buy any augmentations at this time.`, printToTerminal)
+    if (purchaseableAugs.length == 0) {
+        log(ns, `INFO: Cannot afford to buy any augmentations at this time.`, printToTerminal);
+        return {complete:true,purchased:0};
+    }
     const purchased = await executeFactionPurchases(ns,purchaseableAugs.map(aug => ({faction:aug.getFromJoined(),augmentation:aug.name})));
     if(purchased===-2)return log(ns,'Augmentation prices or reputation changed before purchase; deferring to a fresh plan.',printToTerminal);
     if(purchased===-1)return log(ns,'Augmentation ownership changed before purchase; deferring to a fresh plan.',printToTerminal);
     if (purchased == purchaseableAugs.length)
         log(ns, `SUCCESS: Purchased ${purchased} desired augmentations in optimal order!`, printToTerminal, 'success')
     else
-        log(ns, `ERROR: We were only able to purchase ${purchased} of our ${purchaseableAugs.length} augmentations. ` +
+        log(ns, `WARNING: Purchased ${purchased} of ${purchaseableAugs.length} augmentations; stopped at the first blocked purchase. Remaining purchases require a fresh plan. ` +
             `Expected cost was ${getCostString(totalAugCost, totalRepCost)}. Player money was ${formatMoney(playerData.money)} right before purchase, ` +
-            `is now ${formatMoney((await getPlayerInfo(ns)).money)}`, printToTerminal, 'error');
+            `is now ${formatMoney((await getPlayerInfo(ns)).money)}`, printToTerminal, 'warning');
+    return {complete:purchased===purchaseableAugs.length,purchased};
 }
 
 /** @param {NS} ns **/
@@ -1106,12 +1109,13 @@ async function executeFactionPurchases(ns,orders,donations=false) {
   if(!snapshot?.complete||snapshot.signature!==ns.args[4])return {count:-1};
   const expected=JSON.parse(ns.args[5]),market=(${captureAugmentationEconomics.toString()})(ns,expected?.watch);
   if((${augmentationEconomicsChange.toString()})(expected,market,{allowRepDrift:true}).changed)return {count:-2};
+  if(ns.args[2]&&!(${augmentationBatchFunded.toString()})(market,JSON.parse(ns.args[6]),JSON.parse(ns.args[0]),ns.args[7],ns.args[3],ns.getPlayer().money,ns.read("reserve.txt")))return {count:-3};
   const count=(${factionPurchaseBatch.toString()})({player:()=>ns.getPlayer(),${adapter}},JSON.parse(ns.args[0]),
-   ()=>(${factionControlAllowed.toString()})({isRunning:p=>ns.isRunning(p),read:f=>ns.read(f)},ns.args[1],"faction-manager.js")&&(${achievementActionAllowed.toString()})(ns,"cashSpending"),
+   ()=>(!ns.args[8]||ns.isRunning(ns.args[8]))&&(${factionControlAllowed.toString()})({isRunning:p=>ns.isRunning(p),read:f=>ns.read(f)},ns.args[1],"faction-manager.js")&&(${achievementActionAllowed.toString()})(ns,"cashSpending"),
    ()=>ns.read("reserve.txt"),ns.args[2],ns.args[3]);
   return {count,market:ns.args[2]?(${captureAugmentationEconomics.toString()})(ns,expected.watch):null};
  })()`,donations?'/Temp/facman-donate.txt':'/Temp/facman-purchase-augs.txt',
- [JSON.stringify(orders),ns.pid,donations,bitNodeMults.FactionWorkRepGain,ownershipSnapshot?.signature||'',JSON.stringify(economicsSnapshot)]);
+ [JSON.stringify(orders),ns.pid,donations,bitNodeMults.FactionWorkRepGain,ownershipSnapshot?.signature||'',JSON.stringify(economicsSnapshot),JSON.stringify(purchaseableAugs.map(a=>({augmentation:a.name}))),augCountMult,Number(String(options['purchase-request']||'').split(':')[0])||0]);
  if(donations&&result?.count>=0&&result.market?.complete)economicsSnapshot=result.market; // Own donations must not invalidate the following purchase phase.
  return result?.count??0;
 }

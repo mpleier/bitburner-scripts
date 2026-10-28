@@ -30,7 +30,7 @@ test('fresh context carries timing only while territory development remains acti
  const gang={faction:'Own',power:1,territory:.5,territoryClashChance:0},snapshot={at:1,faction:'Own',gangs:{Rival:{power:1,territory:.5}}};
  assert.equal(gangWarfareContext(gang,snapshot,.75,1,timing).duty.normalFraction,.1);
  assert.equal(gangWarfareContext(gang,snapshot,.75,1).duty,null);
- assert.equal(gangWarfareContext({...gang,territory:1},snapshot,.75,1,timing).active,false);
+ assert.equal(gangWarfareContext({...gang,territory:1},snapshot,.75,1,timing).active,true);
 });
 test('normal production and respect lose pulse batches, external income remains available',()=>{
  const input=fixture(),before=structuredClone({...input,evaluate:undefined});
@@ -91,7 +91,7 @@ test('active duty requires known warfare XP task and valid fractions',()=>{
 });
 test('controller planners and attrition receive confirmed phase, padding and measured restore time',()=>{
  const source=readFileSync(new URL('../gangs.js',import.meta.url),'utf8');
- assert.equal((source.match(/detected:territoryTickDetected,paddingMs:territoryTickWaitPadding,intervalMs:updateInterval,restoreMs:postTickRestoreMs,periodMs:territoryTickTime/g)||[]).length,7);
+ assert.equal((source.match(/detected:territoryTickDetected,paddingMs:territoryTickWaitPadding,intervalMs:updateInterval,restoreMs:postTickRestoreMs,periodMs:territoryTickTime/g)||[]).length,8);
 });
 
 function developmentFixture(){

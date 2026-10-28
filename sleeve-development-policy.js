@@ -342,3 +342,16 @@ export function planSleeveAugPurchase({sleeve,offers,budget,crimes={},objective=
  if(best)return {...best,names:[...best.names],...(alternatives?{alternatives}:{}),search:{evaluations,projections,projectionHits,limit:searchLimit,pool:pool.length,exhaustive:false,timeLimited,budgetExhausted:evaluations>=searchLimit}};
  return best||{...invalid,baseline,...(timeLimited?{search:{timeLimited:true,evaluations,limit:searchLimit}}:{}),reason:timeLimited?'Planning time allowance exhausted; forecast deferred':'Batch does not repay sleeve skill rebuilding within fifteen minutes'};
 }
+
+/** Compare same-unit gains directly; mixed objectives use fractional output gains.
+ * The bounded bundle allocator can select one alternative per sleeve. */
+export function allocateSleeveAugBudget(quotes,budget) {
+ const rows=(quotes||[]).filter(r=>Number.isSafeInteger(r?.index)&&r.index>=0&&r.plan?.names?.length);
+ const objectives=new Set(rows.map(r=>r.plan.objective));
+ const sameUnits=objectives.size===1&&['money','xp','karma','reputation'].includes(rows[0]?.plan.objective);
+ const metric=sameUnits?'projected-'+rows[0].plan.objective:'fractional-output-gain';
+ const groups=rows.map(({index,plan})=>({index,choices:[plan,...(Array.isArray(plan.alternatives)?plan.alternatives:[])].filter(p=>
+  p.objective===plan.objective&&Number.isFinite(p.horizon)&&p.horizon>0&&p.horizon<=900&&Number.isFinite(p.baseline)&&p.baseline>=0&&Number.isFinite(p.output)&&p.output>0&&Number.isFinite(p.gain)&&p.gain>0&&p.horizon===plan.horizon).map(p=>({...p,reason:plan.reason,extra:sameUnits?p.gain:p.gain/Math.max(p.output,p.baseline,1e-12)}))}));
+ const selected=selectSleeveAugBundles(groups,budget);
+ return {...selected,metric};
+}

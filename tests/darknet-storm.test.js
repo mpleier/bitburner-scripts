@@ -10,7 +10,7 @@ function reports() { return [
 ]; }
 function settle(options={},rows=reports(),start=now){
  let result=planStorm(rows.map(r=>({...r,at:start})),['darkweb'],{},start,42,options);
- const duration=options.stalled?600000:90000;
+ const duration=options.stalled?180000:30000;
  for(let t=30000;t<=duration;t+=30000)result=planStorm(rows.map(r=>({...r,at:start+t})),['darkweb'],result.state,start+t,42,options);
  return result;
 }
@@ -33,7 +33,7 @@ test('StormSeed quiet period survives restart and applies a short failed-attempt
  const first=planStorm(reports(),['darkweb'],{},now,42);
  assert.equal(first.launch,false);
  const fresh=reports().map(row=>({...row,at:now+300000}));
- const ready=settle({},reports(),now+210000);
+ const ready=settle({},reports(),now+270000);
  assert.equal(ready.launch,true);
  ready.state.lastAttempt=now+300000;
  assert.equal(planStorm(fresh,['darkweb'],ready.state,now+300000,42).launch,false);
@@ -55,20 +55,22 @@ test('New rewards, missing reports, topology changes and busy scouts reset quiet
   assert.equal(planStorm(fresh,['darkweb'],changed.state,now+330000,42).launch,false,change);
  }
 });
+function rewardEvidence(time=Date.now(),patch={}) {return {schemaVersion:1,nodeReset:42,augReset:7,at:time,totals:{money:0,shares:0,programs:0,stockAccess:0,dataFiles:0,contracts:0,augmentations:0,karma:0,unknown:0},lastNoncashAt:{shares:0,programs:0,stockAccess:0,dataFiles:0,contracts:0,augmentations:0,unknown:0},coverage:{complete:true,liveHosts:2,pendingHosts:0},omitted:0,...patch};}
 async function fixture(change={}) {
  const time=Date.now(),rows=reports().map(row=>({...row,at:time}));
- const request={income:1000,lastCacheAt:0,id:'test-dispatch',host:'seed',at:time,reset:42,reports:rows,roots:['darkweb'],signature:stormReadiness(rows,['darkweb'],time).signature};
+ const request={rewardGuard:true,income:1000,lastCacheAt:0,id:'test-dispatch',host:'seed',at:time,reset:42,reports:rows,roots:['darkweb'],signature:stormReadiness(rows,['darkweb'],time).signature};
  if(change.request)Object.assign(request,change.request);
  for(const r of rows){r.stormHoldId=change.noAck?'old':request.id;r.at=time;r.contractFiles=[];r.lastCacheAt=0;}
  if(change.report)Object.assign(rows[1],change.report);
  if(change.locked)rows[1].neighbours.push('locked');
  request.signature=stormReadiness(rows,request.roots,time,{stalled:request.mode==='stalled',frontier:request.frontier||[]}).signature;
- let calls=0;const local=new Map(Object.entries(change.local||{})),home=new Map([['tasks/contracts-status.json',JSON.stringify({at:time,nodeReset:42,augReset:7,validationVersion:'v1',contracts:[{host:'seed',file:'hard.cct',type:'Unsupported'}]})],['tasks/contract-validation.json',JSON.stringify({at:time,version:'v1',types:{Unsupported:{state:'unsupported'}}})],...rows.map(r=>[surveyFile(r.host),JSON.stringify(r)]),...Object.entries(change.home||{})]);
+ let calls=0;const local=new Map(Object.entries(change.local||{})),home=new Map([['tasks/dnet-cache-rewards-summary.json',JSON.stringify(rewardEvidence(time))],['tasks/contracts-status.json',JSON.stringify({at:time,nodeReset:42,augReset:7,validationVersion:'v1',contracts:[{host:'seed',file:'hard.cct',type:'Unsupported'}]})],['tasks/contract-validation.json',JSON.stringify({at:time,version:'v1',types:{Unsupported:{state:'unsupported'}}})],...rows.map(r=>[surveyFile(r.host),JSON.stringify(r)]),...Object.entries(change.home||{})]);
  const ns={disableLog(){},getHostname:()=> 'seed',
   fileExists:(file,host)=>host==='home'?home.has(file):local.has(file),
   scp:async(file,to,from)=>{
    if(file===change.failCopy)return false;
    if(to==='seed'&&from==='home'&&home.has(file))local.set(file,home.get(file));
+   if(change.afterCopy)change.afterCopy(file);
    if(to==='home'&&from==='seed'&&local.has(file))home.set(file,local.get(file));
    return true;
   },
@@ -123,7 +125,7 @@ test('StormSeed helper acknowledges native success, native failure, cancellation
 test('only matching successful receipts establish thirty minute cooldown; failures retry in one minute',()=>{
  const first=settle();
  const fresh=t=>reports().map(row=>({...row,at:t}));
- let state=settle({},reports(),now+210000).state;
+ let state=settle({},reports(),now+270000).state;
  state.lastAttempt=now+300000;state.pending={id:'dispatch',host:'seed',at:now+300000};
  const success={id:'dispatch',host:'seed',reset:42,at:now+300001,success:true};
  for(const patch of [{id:'old'},{host:'other'},{reset:43},{at:now+299999},{at:now+330001},{at:now+500000},{success:'true'}])
@@ -137,13 +139,13 @@ test('only matching successful receipts establish thirty minute cooldown; failur
  assert.equal(planStorm(fresh(now+2100001),['darkweb'],succeeded,now+2100001,42).launch,false); // Cooldown expiry alone cannot replace observation.
 });
 
-test('cleared networks qualify at ninety seconds with continuous reports, not five minutes',()=>{
+test('cleared networks qualify at thirty seconds with continuous reports, not five minutes',()=>{
  const first=planStorm(reports(),['darkweb'],{},now,42);assert.equal(first.launch,false);
- const almost=planStorm(reports().map(r=>({...r,at:now+89999})),['darkweb'],first.state,now+89999,42);assert.equal(almost.launch,false);
- assert.equal(settle().launch,true);assert.equal(settle().quietMs,90000);
+ const almost=planStorm(reports().map(r=>({...r,at:now+29999})),['darkweb'],first.state,now+29999,42);assert.equal(almost.launch,false);
+ assert.equal(settle().launch,true);assert.equal(settle().quietMs,30000);
  assert.equal(planStorm(reports().map(r=>({...r,at:now+300000})),['darkweb'],first.state,now+300000,42).launch,false);
 });
-test('confirmed locked frontiers qualify only after ten minutes without progress',()=>{
+test('confirmed locked frontiers qualify only after three minutes without progress',()=>{
  const rows=reports();rows[1].neighbours.push('locked');
  assert.equal(stormReadiness(rows,['darkweb'],now).ready,false);
  assert.equal(settle({stalled:true,frontier:['locked']},rows).launch,true);
@@ -218,4 +220,31 @@ test('measured low-income allowance is bounded and never ignores a new cache',as
  assert.equal(await fixture({income:1005,request:{incomeTolerance:10},report:{lastCacheAt:Date.now()}}),0);
  assert.equal(await fixture({income:999,request:{incomeTolerance:10}}),0);
  for(const tolerance of [-1,Infinity,'10'])assert.equal(await fixture({request:{incomeTolerance:tolerance}}),0);
+});
+
+ test('anchor changes during hold are rechecked before consuming a StormSeed',async()=>{
+  const file='tasks/dnet-anchor-request.json';
+  for(const phase of ['prepare','release','apply','rollback'])assert.equal(await fixture({home:{[file]:JSON.stringify({expiresAt:Date.now()+60000,phase})}}),0);
+  for(const phase of ['done','blocked'])assert.equal(await fixture({home:{[file]:JSON.stringify({expiresAt:Date.now()+60000,phase})}}),1);
+  assert.equal(await fixture({home:{[file]:'malformed'}}),0);
+  assert.equal(await fixture({home:{[file]:JSON.stringify({expiresAt:Date.now()+60000,phase:'prepare'})},failCopy:file}),0);
+  assert.equal(await fixture({home:{[file]:JSON.stringify({expiresAt:Date.now()-1,phase:'prepare'})}}),1);
+ });
+
+test('final native refresh protects noncash rewards and incomplete or stale reward evidence',async()=>{
+ const file='tasks/dnet-cache-rewards-summary.json',at=Date.now();
+ for(const kind of ['shares','programs','stockAccess','dataFiles','contracts','augmentations','unknown']) {
+  const summary=rewardEvidence(at);summary.totals[kind]=1;summary.lastNoncashAt[kind]=at;
+  assert.equal(await fixture({home:{[file]:JSON.stringify(summary)}}),0,kind);
+ }
+ for(const patch of [{at:at-90001},{at:at+100000},{nodeReset:43},{augReset:8},{coverage:{complete:false,liveHosts:2,pendingHosts:1}},{omitted:1}])
+  assert.equal(await fixture({home:{[file]:JSON.stringify(rewardEvidence(at,patch))}}),0);
+ assert.equal(await fixture({home:{[file]:''}}),0);
+ assert.equal(await fixture({failCopy:file}),0);
+ assert.equal(await fixture({request:{rewardGuard:false}}),0);
+});
+test('dispatch expires if final reward evidence sync exceeds its lifetime',async()=>{
+ const original=Date.now,at=original();let clock=at;Date.now=()=>clock;
+ try{assert.equal(await fixture({afterCopy:file=>{if(file==='tasks/dnet-cache-rewards-summary.json')clock=at+30001;}}),0);}
+ finally{Date.now=original;}
 });

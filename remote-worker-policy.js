@@ -16,7 +16,10 @@ export function upgradeRemoteWorker(ns,{policy,signature,reset,now=Date.now(),re
  if(now-record.candidateAt<10000)return finish('settling');
  const request=read('remote-control/request.json');
  const response=/^[a-zA-Z0-9_-]{1,80}$/.test(request?.id||'')?read('remote-control/results/'+request.id+'.json'):null;
- if(processes.some(p=>p.filename.replace(/^\//,'')==='remote-control/job.js')||request?.expiresAt>now&&(!response||response.id!==request.id||!['completed','failed','uncertain'].includes(response.state)))return finish('waiting-command');
+ const activeJob=processes.some(p=>p.filename.replace(/^\//,'')==='remote-control/job.js');
+ // A missing monitor may be restored around a live job; it reconciles receipts without replay.
+ // A stale monitor with no live job cannot finish a queued command by merely waiting.
+ if(worker&&(activeJob||fresh&&request?.expiresAt>now&&(!response||response.id!==request.id||!['completed','failed','uncertain'].includes(response.state))))return finish('waiting-command');
  const script='remote-api-agent.js',newRam=ns.getScriptRam(script,'home'),running=worker?ns.getRunningScript(worker.pid):null;
  const oldRam=running?.ramUsage??0,threads=running?.threads??1;
  if(worker&&!running||!automationReloadFits({free:ns.getServerMaxRam('home')-ns.getServerUsedRam('home'),newRam,oldRam,threads,reserve}))return finish('waiting-ram');

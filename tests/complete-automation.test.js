@@ -11,6 +11,7 @@ import { solveFeedbackPassword, modelCandidates } from '../darknet-solvers.js';
 import { packetCandidates } from '../darknet-advanced.js';
 import { chooseMigrationTarget } from '../darknet-migration-policy.js';
 
+const ownedInfiltrationFiles=()=>new Map([['tasks/activity-lock.json',JSON.stringify({kind:'infiltration',ownerPid:1,expiresAt:Date.now()+15000})]]);
 const stage = data => ({ onKey() {}, ...data });
 test('all eight infiltration puzzle models produce valid incremental inputs', () => {
   assert.equal(infiltrationInput(stage({ answer: 'CAPS LOCK', guess: 'CAPS' })).key, ' ');
@@ -84,7 +85,7 @@ test('victory falls back to cash when the requested faction cannot be verified',
   const trade={textContent:'Trade for reputation',click(){selected='wrong-faction';ended=true;}};
   const document=fakeDocument(model,[sell,trade]);document.body.textContent='Infiltration successful!';
   const query=document.querySelectorAll;document.querySelectorAll=selector=>ended?[]:query(selector);
-  const files=new Map(),ns={pid:1,read:f=>files.get(f)||'',ps:()=>[],isRunning:()=>true,write:async(f,v)=>files.set(f,v),sleep:async()=>{}};
+  const files=ownedInfiltrationFiles(),ns={pid:1,read:f=>files.get(f)||'',ps:()=>[],isRunning:()=>true,write:async(f,v)=>files.set(f,v),sleep:async()=>{}};
   const result=await playInfiltration(ns,document,model,'CyberSec');
   assert.equal(result.status,'completed');assert.equal(result.reward,'money');assert.equal(selected,'money');
 });
@@ -93,7 +94,7 @@ test('low demand cancels entry and returns a recovery wait without starting puzz
   const model={maxLevel:3,gameStartTimestamp:-1,startInfiltration(){},cancel(){cancelled=true;},results:'',stage:stage({})};
   const document=fakeDocument(model,[{textContent:'Start',click(){throw new Error('must wait for demand');}}]);
   document.body.textContent='Market demand: 20.00%';
-  const files=new Map(),ns={pid:1,read:f=>files.get(f)||'',ps:()=>[],isRunning:()=>true,write:async(f,v)=>files.set(f,v),sleep:async()=>{}};
+  const files=ownedInfiltrationFiles(),ns={pid:1,read:f=>files.get(f)||'',ps:()=>[],isRunning:()=>true,write:async(f,v)=>files.set(f,v),sleep:async()=>{}};
   const result=await playInfiltration(ns,document,model);
   assert.equal(result.status,'market-cooldown');assert.equal(cancelled,true);assert.ok(result.retryAfter>20000);
 });
@@ -108,7 +109,7 @@ test('infiltration entry calls only the enabled company-entry handler', () => {
 test('the infiltration runner cancels an unknown model without dispatching keyboard events', async () => {
   let cancelled=false;
   const model={maxLevel:3,startInfiltration(){},cancel(){cancelled=true;},results:'',stage:stage({unknown:true})};
-  const files=new Map();
+  const files=ownedInfiltrationFiles();
   const ns={pid:1,getServerMaxRam:()=>512,read:file=>files.get(file)||'',ps:()=>[],isRunning:()=>true,write:async(file,data)=>files.set(file,data),sleep:async()=>{}};
   const result=await playInfiltration(ns,fakeDocument(model),model);
   assert.equal(result.status,'unsupported-ui'); assert.equal(cancelled,true);
@@ -279,7 +280,7 @@ test('reward completion tolerates delayed rendering without clicking twice',asyn
  const sell={textContent:'Sell for $100',click(){clicks++;pending=true;}};
  const document=fakeDocument(model,[sell]);document.body.textContent='Infiltration successful!';
  const query=document.querySelectorAll;document.querySelectorAll=selector=>ended?[]:query(selector);
- const files=new Map(),ns={pid:1,read:f=>files.get(f)||'',ps:()=>[],isRunning:()=>true,write:async(f,v)=>files.set(f,v),sleep:async()=>{if(pending&&++sleeps===3)ended=true;}};
+ const files=ownedInfiltrationFiles(),ns={pid:1,read:f=>files.get(f)||'',ps:()=>[],isRunning:()=>true,write:async(f,v)=>files.set(f,v),sleep:async()=>{if(pending&&++sleeps===3)ended=true;}};
  const result=await playInfiltration(ns,document,model);assert.equal(result.status,'completed');assert.equal(clicks,1);assert.equal(sleeps,3);
 });
 test('losing the activity lease prevents puzzle input',async()=>{

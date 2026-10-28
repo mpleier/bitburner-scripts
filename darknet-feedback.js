@@ -1,3 +1,4 @@
+export const feedbackTurnBudget = details => Number.isInteger(details?.probeBudget) && details.probeBudget > 0 ? Math.min(64, details.probeBudget) : 64;
 /** Empty is a real credential, distinct from a missing saved password. */
 export function isBlankPassword(details) {
   if (details.passwordLength === 0 || String(details.modelId || '').toLowerCase() === 'zerologon') return true;
@@ -112,7 +113,7 @@ export async function solveNilPassword(details, authenticate, readLogs, state = 
     state.signature = null;
     return {success:false, reason:'contradictory feedback; resetting progress'};
   }
-  for (let attempts = 0; attempts < 64; attempts++) {
+  for (let attempts = 0; attempts < feedbackTurnBudget(details); attempts++) {
     const password = state.pendingPassword ?? state.choices.map(choices => choices[0]).join('');
     const result = await feedbackProbe(password, authenticate, readLogs, nilFeedbackFromLogs, length, state);
     if (!result.feedback) return result;
@@ -147,7 +148,7 @@ export async function solveMastermindPassword(details, authenticate, readLogs, s
     state.counts[char] = record.exact;
     if (state.pendingPassword === record.password) delete state.pendingPassword;
   }
-  for (let attempts = 0; attempts < 64; attempts++) {
+  for (let attempts = 0; attempts < feedbackTurnBudget(details); attempts++) {
     if (state.phase === 'counts') {
       const total = Object.values(state.counts).reduce((sum, count) => sum+count, 0);
       if (total > length) return reset('invalid character counts');

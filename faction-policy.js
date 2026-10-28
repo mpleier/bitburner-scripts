@@ -17,7 +17,7 @@ export function factionControlAllowed(api,parent,script,focus=false,now=Date.now
  }
  return true;
 }
-/** Spend only fresh affordable amounts; native APIs enforce membership/prerequisites. */
+/** Preserve the committed order: stop at the first blocked spend and let the next plan reassess. */
 export function factionPurchaseBatch(api,orders,allowed,reserve,donations=false,repMultiplier=1) {
  let successes=0;
  for(const o of orders){
@@ -29,14 +29,16 @@ export function factionPurchaseBatch(api,orders,allowed,reserve,donations=false,
    const gap=Math.max(0,o.targetRep-api.rep(o.faction));
    if(gap===0){successes++;continue;}
    const multiplier=api.player().mults.faction_rep*repMultiplier;
-   if(!Number.isFinite(multiplier)||multiplier<=0)continue;
+   if(!Number.isFinite(multiplier)||multiplier<=0)break;
    const amount=Math.min(o.repDonation,Math.ceil(1e6*gap/multiplier));
-   if(!Number.isFinite(amount)||amount<=0||amount>cash-keep)continue;
-   if(api.donate(o.faction,amount))successes++;
+   if(!Number.isFinite(amount)||amount<=0||amount>cash-keep)break;
+   if(!api.donate(o.faction,amount))break;
+   successes++;
   }else{
    const price=api.price(o.augmentation);
-   if(!Number.isFinite(price)||price<0||price>cash-keep)continue;
-   if(api.buy(o.faction,o.augmentation))successes++;
+   if(!Number.isFinite(price)||price<0||price>cash-keep)break;
+   if(!api.buy(o.faction,o.augmentation))break;
+   successes++;
   }
  }
  return successes;
@@ -360,4 +362,20 @@ export function augmentationStatFilters({route='hacking',node=1,explicit=[]}={})
  return route==='bladeburner'?
   ['strength','defense','dexterity','agility','bladeburner','hacking_level','charisma','faction_rep','hacknet_node_money']:
   ['hacking','faction_rep','company_rep','charisma','hacknet','crime_money','work_money'];
+}
+
+/** Use the same spendable cash for basket selection and native execution. */
+export function augmentationPurchaseBudget(cash,stocks=0,reserve='') {
+ const keep=Number(reserve);
+ if(![cash,stocks,keep].every(Number.isFinite)||cash<0||stocks<0||keep<0)return 0;
+ return Math.max(0,cash+stocks-keep);
+}
+
+/** Reprice the entire basket when a new repeatable level changes the best ordering.
+ * Keep the valid committed order plus the next level if bounded search is worse. */
+export function extendNeuroFluxOrder(items,next,multiplier=1.9) {
+ if(next?.name!=='NeuroFlux Governor')throw Error('Expected next NeuroFlux level');
+ const append=[...items,next],optimized=optimizeAugmentationOrder(append,multiplier);
+ const cost=order=>order.reduce((sum,a,i)=>sum+a.price*multiplier**i,0);
+ return cost(optimized)<=cost(append)?optimized:append;
 }

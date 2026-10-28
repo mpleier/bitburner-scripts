@@ -1,5 +1,14 @@
 const arrows = { '←': 'ArrowLeft', '→': 'ArrowRight', '↑': 'ArrowUp', '↓': 'ArrowDown' };
 const closers = { '[': ']', '<': '>', '(': ')', '{': '}' };
+/** Shared manual/automatic reward precedence; unknown or unjoined factions use cash. */
+export function infiltrationRewardFaction(options,player,work=null,redPillReward=null){
+  if(options?.['money-only'])return null;
+  const joined=Array.isArray(player?.factions)?player.factions:[];
+  if(options?.faction)return joined.includes(options.faction)?options.faction:null;
+  if(redPillReward==='money')return null;
+  if(redPillReward==='reputation')return joined.includes('Daedalus')?'Daedalus':null;
+  return work?.type==='FACTION'&&joined.includes(work.factionName)?work.factionName:null;
+}
 function moveTo(stage, x, y, width, height) {
   const dx = (x - stage.x + width) % width, dy = (y - stage.y + height) % height;
   if (dx) return dx <= width / 2 ? 'ArrowRight' : 'ArrowLeft';
@@ -157,7 +166,7 @@ export function infiltrationEntryAllowed(ns,ownerPid,respectRoute=false){
  if(lease?.ownerPid!==ownerPid||!(lease.expiresAt>now))return false;
  if(respectRoute){
   const route=record('tasks/node-route-plan.json'),reset=ns.getResetInfo();
-  if(route?.selected==='bladeburner'&&route.simulacrum!==true&&Number.isFinite(route.at)&&route.at<=now&&now-route.at<=45000&&
+  if(route?.selected==='bladeburner'&&Number.isFinite(route.at)&&route.at<=now&&now-route.at<=45000&&
    route.augReset===reset.lastAugReset&&route.nodeReset===reset.lastNodeReset&&
    ns.ps('home').some(p=>p.pid===route.ownerPid&&p.filename.replace(/^\//,'')==='autopilot.js'))return false;
  }

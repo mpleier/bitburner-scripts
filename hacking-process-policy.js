@@ -1,4 +1,5 @@
 import {recordHackingDeadline} from './hacking-deadline-policy.js';
+import {recordHgwTimeline,summarizeHgwTimeline} from './hgw-timeline-policy.js';
 /** Global HGW process limit, independent of thread/RAM counts. Existing work is never killed. */
 export function updateHackingProcessBudget(previous,{now=Date.now(),inventory=null,lagMs=0,maxWorkers=2048}={}) {
  const maximum=Number.isSafeInteger(maxWorkers)&&maxWorkers>=4?maxWorkers:2048;
@@ -15,23 +16,24 @@ export function updateHackingProcessBudget(previous,{now=Date.now(),inventory=nu
 }
 /** Count all HGW owners so simultaneous schedulers cannot bypass the global limit. */
 export function hackingProcessInventory(ns,hosts,ownerPid,now=Date.now(),reset=null) {
- let workers=0,total=0,complete=true;const allocations={};
+ let workers=0,total=0,complete=true;const allocations={},timeline=[],hostBudgets={};let timelineComplete=true;
  const drain={schemaVersion:1,hostCount:0,at:now,ownerPid,nodeReset:reset?.lastNodeReset??null,augReset:reset?.lastAugReset??null,complete:true,invalidated:false,targets:Object.create(null)};
  for(const host of new Set(hosts))try{
   if(typeof ns.hasRootAccess==='function'&&!ns.hasRootAccess(host))continue;
-  const ps=ns.ps(host);drain.hostCount++;total+=ps.length;const costs=new Map();
+  const ps=ns.ps(host);drain.hostCount++;total+=ps.length;const costs=new Map();let ownedRam=0;
   for(const p of ps){
    const match=/^\/?Remote\/(hack|grow|weak|manualhack)-target\.js$/.exec(p.filename);if(!match)continue;workers++;
-   if(ownerPid!==undefined)recordHackingDeadline(drain,p);
+   if(ownerPid!==undefined){recordHackingDeadline(drain,p);if(!recordHgwTimeline(timeline,p,ownerPid))timelineComplete=false;}
    if(ownerPid===undefined||p.args?.[match[1]==='weak'?6:7]!==ownerPid)continue;
    const target=p.args?.[0];if(typeof target!=='string')continue;
    const a=allocations[target]||={ram:0,manual:false};if(match[1]==='manualhack')a.manual=true;
    if(!costs.has(p.filename))costs.set(p.filename,ns.getScriptRam(p.filename,host));
-   const ram=costs.get(p.filename)*p.threads;if(!(Number.isFinite(ram)&&ram>0)){complete=false;continue;}a.ram+=ram;
+   const ram=costs.get(p.filename)*p.threads;if(!(Number.isFinite(ram)&&ram>0)){complete=false;continue;}a.ram+=ram;ownedRam+=ram;
   }
+  if(ownerPid!==undefined&&typeof ns.getServerUsedRam==='function'){const usedRam=ns.getServerUsedRam(host);if(Number.isFinite(usedRam)&&usedRam>=ownedRam)hostBudgets[host]={usedRam,ownedRam};}
  }catch{complete=false;}
  drain.complete=drain.complete&&complete&&drain.hostCount>0;
- return {workers,total,complete,...(ownerPid===undefined?{}:{allocations,drain})};
+ return {workers,total,complete,...(ownerPid===undefined?{}:{allocations,hostBudgets,drain,timeline:{complete:complete&&timelineComplete,targets:summarizeHgwTimeline(timeline,now)}})};
 }
 export function reserveHackingProcess(state,now=Date.now()) {
  if(!state?.ready||!Number.isFinite(state.inventoryAt)||state.inventoryAt>now||now-state.inventoryAt>=15000||state.used>=state.limit)return false;

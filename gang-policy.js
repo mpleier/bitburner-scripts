@@ -1,9 +1,10 @@
 import {chooseGangStatTraining,gangTrainingScheduleTask} from './gang-stat-policy.js';
-import {gangPowerFocus,gangPowerBenefit,gangTerritoryProjection,gangTraineePulse} from './gang-power-policy.js';
-export function gangFocus({moneyFocus,reputationFocus,members,factionRep,requiredRep,money,respect,goal,purchaseForecast}) {
+import {gangIncomeDelayAllowance,gangPreparationComparison,gangPreparationStatus,gangPowerFocus,gangPowerBenefit,gangTerritoryProjection,gangTraineePulse,selectGangTraineePulses} from './gang-power-policy.js';
+export function gangFocus({moneyFocus,reputationFocus,members,factionRep,requiredRep,money,respect,goal,purchaseForecast,incomeFunding}) {
   if(reputationFocus)return 'respect';
   if(moneyFocus)return 'money';
   if(members<12)return 'respect';
+  if(incomeFunding?.known===true&&incomeFunding.deprioritize===true&&incomeFunding.at<=Date.now()&&incomeFunding.expiresAt>Date.now()&&(!purchaseForecast||purchaseForecast.focus!=='money')&&factionRep<(goal?.rep??requiredRep))return 'respect';
   if(goal&&Number.isFinite(goal.rep)&&Number.isFinite(goal.cost)){
     if(factionRep>=goal.rep)return 'money';
     if(money>=goal.cost)return 'respect';
@@ -14,10 +15,24 @@ export function gangFocus({moneyFocus,reputationFocus,members,factionRep,require
   return money>1e11||respect<9000?'respect':'both money and respect';
 }
 export function warfareDecision(gang,others,threshold=0.75) {
-  const rivals=Object.entries(others).filter(([name,info])=>name!==gang.faction&&info.territory>0);
+  const rows=Object.entries(others||{});
+  if(!rows.length||typeof gang?.faction!=='string'||!Number.isFinite(gang.power)||gang.power<0||!Number.isFinite(gang.territory)||gang.territory<0||gang.territory>1||!Number.isFinite(threshold)||threshold<.5||threshold>1||rows.some(([,r])=>!Number.isFinite(r?.territory)||r.territory<0||r.territory>1||!Number.isFinite(r.power)||r.power<0))return {engage:false,minimum:0,average:0,finished:false,reason:'invalid-observations'};
+  const rivals=rows.filter(([name,info])=>name!==gang.faction&&info.territory>0);
   const chances=rivals.map(([name,info])=>({name,chance:gang.power>0?gang.power/(gang.power+Math.max(0,info.power)):0}));
   const minimum=chances.length?Math.min(...chances.map(c=>c.chance)):0;
-  return {engage:gang.territory<1-1e-6&&chances.length>0&&minimum>=threshold,minimum,
+  // Integrate the random 0.5..1.5 transfer before capping by remaining land.
+  const cappedMean=(territory,winner,loser)=>{
+    if(territory<=0)return 0;
+    if(loser===0&&winner>0)return territory;
+    const scale=.0001*Math.max(1,1+Math.log(winner/loser)/Math.log(50));
+    if(territory<=scale*.5)return territory;
+    if(territory>=scale*1.5)return scale;
+    const u=territory/scale;return scale*(u*u-.25)/2+territory*(1.5-u);
+  };
+  const expectedTerritoryPerUpdate=!rivals.length?0:rivals.some(([,r])=>gang.power+r.power<=0)?null:
+    2/rivals.length*rivals.reduce((sum,[,r],i)=>sum+chances[i].chance*cappedMean(r.territory,gang.power,r.power)-(1-chances[i].chance)*cappedMean(gang.territory,r.power,gang.power),0);
+  return {engage:chances.length>0&&minimum>=threshold,minimum,finished:!rivals.length,reason:!rivals.length?'no-active-rivals':minimum>=threshold?'routine-threshold-met':'below-routine-threshold',
+    expectedTerritoryPerUpdate,cohortProfitable:Number.isFinite(expectedTerritoryPerUpdate)&&expectedTerritoryPerUpdate>0,blockedByWorstOpponent:Number.isFinite(expectedTerritoryPerUpdate)&&expectedTerritoryPerUpdate>0&&minimum<threshold,
     average:chances.length?chances.reduce((s,c)=>s+c.chance,0)/chances.length:0};
 }
 /** Match the live controller's defense protection during active/residual clashes. */
@@ -39,8 +54,9 @@ export function gangWarfarePowerPerTick(members,territory,clashChance=0,locked=[
 
 /** Only fresh observations of rivals that still own territory can constrain development. */
 export function gangWarfareContext(gang,snapshot,threshold=.75,now=Date.now(),timing=null){
+ const engageThreshold=threshold;
+ if(timing?.trainingFirst===true)threshold=Math.max(.75,threshold);
  if(!Number.isFinite(gang?.territory)||gang.territory<0||gang.territory>1)return {active:false,reason:'Unknown territory'};
- if(gang.territory>=1-1e-6)return {active:false,reason:'Territory complete'};
  if(!snapshot||snapshot.faction!==gang.faction||!Number.isFinite(snapshot.at)||snapshot.at>now||now-snapshot.at>45000||
   !Number.isFinite(gang.power)||gang.power<0||!Number.isFinite(gang.territoryClashChance)||gang.territoryClashChance<0||gang.territoryClashChance>1||
   !Number.isFinite(threshold)||threshold<.5||threshold>1)return {active:false,reason:'Fresh warfare observations unavailable'};
@@ -48,15 +64,17 @@ export function gangWarfareContext(gang,snapshot,threshold=.75,now=Date.now(),ti
  if(!rows.length||rows.some(([,r])=>!Number.isFinite(r?.power)||r.power<0||!Number.isFinite(r.territory)||r.territory<0||r.territory>1))return {active:false,reason:'Invalid rival observations'};
  const rivals=rows.filter(([name,r])=>name!==gang.faction&&r.territory>0);
  if(!rivals.length)return {active:false,reason:'No active rivals'};
- const context={active:true,powerPriority:timing?.powerPriority===true,at:snapshot.at,faction:gang.faction,power:gang.power,territory:gang.territory,clashChance:gang.territoryWarfareEngaged?1:gang.territoryClashChance,
-  rivalPower:Math.max(...rivals.map(([,r])=>r.power)),threshold,maxChanceDrop:.01,duty:gangWarfareDuty(timing),
+ const preparation=gangPreparationStatus(gang,snapshot,threshold,now,timing?.trainingFirst===true);
+ threshold=preparation.target??threshold;
+ const context={active:true,preparation,incomeFunding:timing?.incomeFunding,powerPriority:timing?.powerPriority===true||timing?.trainingFirst===true&&preparation.active,at:snapshot.at,faction:gang.faction,power:gang.power,territory:gang.territory,clashChance:gang.territoryWarfareEngaged?1:gang.territoryClashChance,
+  rivalPower:Math.max(...rivals.map(([,r])=>r.power)),threshold,engageThreshold,maxChanceDrop:.01,duty:gangWarfareDuty(timing),
   rivals:rivals.map(([name,r])=>{
    const history=(snapshot.powerHistory?.[name]||[]).filter(v=>Number.isFinite(v)&&v>=0).slice(-8).sort((a,b)=>a-b);
    const observed=history.length>=3,median=history.length?history[Math.floor(history.length/2)]:0;
    return {name,territory:r.territory,power:r.power,rate:observed?median/20:0,samples:history.length,
     lowRate:observed?history[0]/20:0,highRate:observed?history.at(-1)/20:0};
   })};
- return {...context,powerFocus:timing?.powerFocusEnabled!==false&&gangPowerFocus(context),traineePulses:true};
+ return {...context,statPriority:timing?.trainingFirst===true&&preparation.active===true&&timing?.powerFocusEnabled!==false,powerFocus:timing?.powerFocusEnabled!==false&&gangPowerFocus(context),traineePulses:true};
 }
 
 /** Batch-adjusted productive time displaced by warfare preparation and restoration.
@@ -142,9 +160,20 @@ export function gangWarfareReadyDelay(power,rate,warfare,gameAt=0){
  return earliest<=latest?earliest:Infinity;
 }
 
-export function chooseGangAscensions(results,gang,names,stats,base=1.05,spacing=0.05,limit=1,adaptive=false) {
-  if(names.length<12&&gang.respectForNextRecruit>0&&gang.respect>=gang.respectForNextRecruit*0.8)return [];
-  const lossBudget=Math.max(0,gang.respect)*(names.length<12?0.1:0.25);
+export function chooseGangAscensions(results,gang,names,stats,base=1.05,spacing=0.05,limit=1,adaptive=false,economicReview=false,ignoreRespectLoss=false) {
+  if(!Number.isFinite(gang?.respect)||gang.respect<0)return [];
+  const review=adaptive&&economicReview===true;
+  const nearRecruit=!ignoreRespectLoss&&names.length<12&&gang.respectForNextRecruit>0&&gang.respect>=gang.respectForNextRecruit*0.8;
+  if(nearRecruit&&!review)return [];
+  const legacyLossBudget=gang.respect*(names.length<12?0.1:0.25);
+  let lossBudget=legacyLossBudget,penaltyFloor=null;
+  // Broader candidate screening still needs a completed crew forecast before execution.
+  // Bound the immediate wanted-penalty drop even when the old respect fraction is relaxed.
+  if(review&&Number.isFinite(gang.respect)&&gang.respect>0&&Number.isFinite(gang.wantedLevel)&&gang.wantedLevel>=1){
+    const penalty=gang.respect/(gang.respect+gang.wantedLevel),floor=Math.min(penalty,Math.max(.9,penalty-.02));
+    penaltyFloor=floor;
+    lossBudget=Math.max(lossBudget,Math.max(0,gang.respect-gang.wantedLevel*floor/(1-floor)));
+  }
   return names.map((name,index)=>{
     const result=results[name];if(!result)return null;
     const weights=Array.isArray(stats)?Object.fromEntries(stats.map(k=>[k,1])):stats?.[name]||{};
@@ -152,10 +181,12 @@ export function chooseGangAscensions(results,gang,names,stats,base=1.05,spacing=
     if(!entries.length||entries.some(([k])=>result[k]!==undefined&&(!Number.isFinite(result[k])||result[k]<1)))return null;
     const totalWeight=entries.reduce((v,[,w])=>v+w,0);
     const gain=Math.exp(entries.reduce((sum,[key,w])=>sum+w*Math.log(Math.max(1,Number(result[key])||1)),0)/totalWeight);
-    const loss=Math.max(0,Number(result.respect)||0);
+    const loss=result.respect??0;if(!Number.isFinite(loss)||loss<0)return null;
     return {name,gain,loss,threshold:base+(adaptive?0:(11-index)*spacing)};
-  }).filter(item=>item&&item.gain>=item.threshold&&item.loss<=lossBudget)
-    .sort((a,b)=>(b.gain-1)/(1+b.loss/Math.max(1,gang.respect))-(a.gain-1)/(1+a.loss/Math.max(1,gang.respect))).slice(0,limit);
+  }).filter(item=>item&&item.gain>=item.threshold&&(ignoreRespectLoss||item.loss<=lossBudget&&
+    (item.loss<=legacyLossBudget||penaltyFloor!==null&&gang.respect-item.loss>0&&(gang.respect-item.loss)/(gang.respect-item.loss+gang.wantedLevel)>=penaltyFloor-1e-12))&&
+    (!nearRecruit||gang.respect-item.loss>=(gang.respect>=gang.respectForNextRecruit?gang.respectForNextRecruit:gang.respectForNextRecruit*.8)))
+    .sort((a,b)=>ignoreRespectLoss?b.gain-a.gain:(b.gain-1)/(1+b.loss/Math.max(1,gang.respect))-(a.gain-1)/(1+a.loss/Math.max(1,gang.respect))).slice(0,limit);
 }
 export function gangTaskTotals(assignments) {
   return Object.values(assignments).reduce((sum,task)=>({wanted:sum.wanted+task.wanted,respect:sum.respect+task.respect,money:sum.money+task.money}),{wanted:0,respect:0,money:0});
@@ -175,6 +206,11 @@ export function purchaseGangEquipment(ns,orders,reserve,budget,claim = () => tru
   let readinessInterrupted=false,guardedOrder=false;
   const quoteInvestment=(order,cost)=>{
     try{
+      if(order.reason==='priority'){
+        const member=ns.gang.getMemberInformation(order.member),reset=ns.getResetInfo();
+        if([...member.upgrades,...member.augmentations].includes(order.equipmentName))return null;
+        return {kind:'gang-equipment-priority',at:Date.now(),ownerPid,nodeReset:reset.lastNodeReset,augReset:reset.lastAugReset,cost,member:order.member,equipment:order.equipmentName};
+      }
       if(!Number.isSafeInteger(ownerPid)||ownerPid<=0||order.bundleId||order.reason!=='production'||!ns.fileExists('Formulas.exe','home'))return null;
       const member=ns.gang.getMemberInformation(order.member);
       if([...member.upgrades,...member.augmentations].includes(order.equipmentName))return null;
@@ -200,6 +236,10 @@ export function purchaseGangEquipment(ns,orders,reserve,budget,claim = () => tru
     guardedOrder=order.readinessGuarded===true;
     if(guardedOrder&&readinessInterrupted)return result(false,'readiness-batch-interrupted');
     if(!allowed(ns))return result(false,'controller-paused');
+    if(order.reason==='priority'){
+      const member=ns.gang.getMemberInformation(order.member);
+      if([...member.upgrades,...member.augmentations].includes(order.equipmentName))return result(false,'already-owned');
+    }
     if(guardedOrder&&Number.isFinite(order.readinessCashFloor)&&ns.getPlayer().money-Math.max(0,reserve,Number(ns.read('reserve.txt'))||0)<order.readinessCashFloor)return result(false,'readiness-cash-changed');
     if(order.bundleId&&!bundles.has(order.bundleId)){
       const group=orders.filter(o=>o.bundleId===order.bundleId),prices=group.map(o=>ns.gang.getEquipmentCost(o.equipmentName));
@@ -247,6 +287,9 @@ export function gangMutationAllowed(ns,ownerPid=null) {
  return true;
 }
 export function gangOptionsError(o) {
+ if(o['prioritize-all-equipment']!==undefined&&typeof o['prioritize-all-equipment']!=='boolean')return 'prioritize-all-equipment must be true or false.';
+ if(o['training-first']!==undefined&&typeof o['training-first']!=='boolean')return 'training-first must be true or false.';
+ if(o['ignore-ascension-respect-loss']!==undefined&&typeof o['ignore-ascension-respect-loss']!=='boolean')return 'ignore-ascension-respect-loss must be true or false.';
  for(const k of ['training-percentage','equipment-budget','augmentations-budget'])if(o[k]!==null&&(!Number.isFinite(o[k])||o[k]<0||o[k]>1))return k+' must be between 0 and 1.';
  if(!Number.isFinite(o['warfare-win-chance'])||o['warfare-win-chance']<0.5||o['warfare-win-chance']>1)return 'warfare-win-chance must be between 0.5 and 1.';
  for(const k of ['min-training-ticks','ascend-multi-threshold-spacing','reserve'])if(o[k]!==null&&(!Number.isFinite(o[k])||o[k]<0))return k+' must be nonnegative.';
@@ -311,41 +354,57 @@ export function betterGangPlan(wanted,gain,previousWanted,previousGain,tolerance
 }
 
 /** Recheck the candidate against fresh respect, then remove combat exposure before resetting stats. */
-export function ascendGangMemberSafely(ns,name,stats,base,spacing,choose,allowed,economics=null){
- if(!allowed(ns))return null;
+export function ascendGangMemberSafely(ns,name,stats,base,spacing,choose,allowed,economics=null,detailed=false,ignoreRespectLoss=economics?.ignoreRespectLoss===true){
+ const deny=reason=>detailed?{success:false,reason,at:Date.now()}:null;
+ if(!allowed(ns))return deny('control-blocked');
  const names=ns.gang.getMemberNames(),gang=ns.gang.getGangInformation();
  const results=Object.fromEntries(names.map(n=>[n,ns.gang.getAscensionResult(n)]));
  if(economics){
-  if(economics.restoreEquipment===true)return null; // No post-reset purchases are guaranteed.
-  if(!(economics.expiresAt>Date.now())||economics.name!==name||!Number.isFinite(economics.paybackSeconds)||economics.paybackSeconds>economics.horizonSeconds)return null;
-  if(!choose(results,gang,names,stats,base,spacing,12,economics.adaptive===true).some(c=>c.name===name))return null;
-  if(economics.crewNames&&(names.length!==economics.crewNames.length||names.some(n=>!economics.crewNames.includes(n))))return null;
-   if(economics.gang&&['respect','wantedLevel'].some(k=>Math.abs(gang[k]-economics.gang[k])>Math.max(1,Math.abs(economics.gang[k])*.02)))return null;
-   if(Number.isFinite(economics.respectLoss)&&Math.abs((results[name]?.respect||0)-economics.respectLoss)>Math.max(1,economics.respectLoss*.02))return null;
+  if(economics.restoreEquipment===true)return deny('equipment-restoration-required'); // No post-reset purchases are guaranteed.
+  if(!(economics.expiresAt>Date.now())||economics.name!==name||!Number.isFinite(economics.paybackSeconds)||economics.paybackSeconds>economics.horizonSeconds)return deny('quote-expired-or-invalid');
+  const reviewed=economics.economicReview===true;
+  if(reviewed&&(economics.adaptive!==true||economics.model!=='whole-crew'||!economics.gang||!economics.crewSnapshot||!Array.isArray(economics.crewNames)||
+    ![economics.trainingSeconds,economics.paybackSeconds,economics.horizonSeconds,economics.netGain].every(Number.isFinite)||economics.trainingSeconds<=0||economics.paybackSeconds<0||economics.horizonSeconds<=0||
+    !(economics.netGain>0||economics.powerObjective===true&&Number.isFinite(economics.powerGain)&&economics.powerGain>0)))return deny('economic-proof-invalid');
+  if(!choose(results,gang,names,stats,base,spacing,12,economics.adaptive===true,reviewed,ignoreRespectLoss).some(c=>c.name===name))return deny('eligibility-changed');
+  if(economics.crewNames&&(names.length!==economics.crewNames.length||names.some(n=>!economics.crewNames.includes(n))))return deny('crew-changed');
+   if(economics.gang&&(ignoreRespectLoss?['wantedLevel']:['respect','wantedLevel']).some(k=>Math.abs(gang[k]-economics.gang[k])>Math.max(1,Math.abs(economics.gang[k])*.02)))return deny('gang-economy-changed');
+   if(!ignoreRespectLoss&&Number.isFinite(economics.respectLoss)&&Math.abs((results[name]?.respect||0)-economics.respectLoss)>Math.max(1,economics.respectLoss*.02))return deny('respect-loss-changed');
    if(economics.warfare?.active){
     const w=economics.warfare,others=ns.gang.getAllGangInformation();
     if(![gang.power,gang.territory,gang.territoryClashChance].every(Number.isFinite)||
-     Math.abs((gang.territoryWarfareEngaged?1:gang.territoryClashChance)-w.clashChance)>.01||gang.faction!==w.faction||Math.abs(gang.power-w.power)>Math.max(1e-6,w.power*.02)||Math.abs(gang.territory-w.territory)>.001)return null;
+     Math.abs((gang.territoryWarfareEngaged?1:gang.territoryClashChance)-w.clashChance)>.01||gang.faction!==w.faction||Math.abs(gang.power-w.power)>Math.max(1e-6,w.power*.02)||Math.abs(gang.territory-w.territory)>.001)return deny('warfare-context-changed');
     const rivals=Object.entries(others).filter(([other,r])=>other!==gang.faction&&r.territory>0);
-    if(rivals.some(([,r])=>!Number.isFinite(r.power)||r.power>w.rivalPower+Math.max(1e-6,w.rivalPower*.02)))return null;
+    if(w.preparation?.active===true&&rivals.length&&rivals.every(([,r])=>gang.power/(gang.power+r.power)>=w.threshold))return deny('warfare-goal-already-met');
+    if(rivals.some(([,r])=>!Number.isFinite(r.power)||r.power>w.rivalPower+Math.max(1e-6,w.rivalPower*.02)))return deny('rival-power-changed');
    }
    if(economics.crewSnapshot)for(const [other,snapshot]of Object.entries(economics.crewSnapshot)){
-    if(!names.includes(other))return null;
+    if(!names.includes(other))return deny('crew-changed');
     const live=ns.gang.getMemberInformation(other);
-    if(live.task!==snapshot.task||['upgrades','augmentations'].some(key=>JSON.stringify([...(live[key]||[])].sort())!==JSON.stringify([...(snapshot[key]||[])].sort())))return null;
-    if(['hack','str','def','dex','agi','cha'].some(key=>!Number.isFinite(live[key])||Math.abs(live[key]-snapshot[key])>Math.max(1,Math.abs(snapshot[key])*.02)))return null;
+    if(live.task!==snapshot.task||['upgrades','augmentations'].some(key=>JSON.stringify([...(live[key]||[])].sort())!==JSON.stringify([...(snapshot[key]||[])].sort())))return deny('crew-task-or-equipment-changed');
+    if(['hack','str','def','dex','agi','cha'].some(key=>!Number.isFinite(live[key])||Math.abs(live[key]-snapshot[key])>Math.max(1,Math.abs(snapshot[key])*.02)))return deny('crew-stats-changed');
    }
-   if(Number.isFinite(economics.cashAtQuote)&&ns.getServerMoneyAvailable('home')<economics.cashAtQuote-1)return null;
+   if(Number.isFinite(economics.cashAtQuote)&&ns.getServerMoneyAvailable('home')<economics.cashAtQuote-1)return deny('cash-spent');
    const member=ns.gang.getMemberInformation(name);
   if((Array.isArray(stats)?stats:Object.keys(stats?.[name]||{})).some(k=>Math.abs((results[name]?.[k]||0)-(economics.ascension?.[k]||0))>.01||
-    Math.abs((member[k]||0)-(economics.member?.[k]||0))>Math.max(1,(economics.member?.[k]||0)*.02)))return null;
- }else if(choose(results,gang,names,stats,base,spacing)[0]?.name!==name)return null;
+    Math.abs((member[k]||0)-(economics.member?.[k]||0))>Math.max(1,(economics.member?.[k]||0)*.02)))return deny('candidate-stats-or-multipliers-changed');
+ }else if(choose(results,gang,names,stats,base,spacing,1,false,false,ignoreRespectLoss)[0]?.name!==name)return deny('eligibility-changed');
  const trainingTask=economics?.trainingTask||'Train '+(gang.isHacking?'Hacking':'Combat');
- if(!['Train Combat','Train Hacking','Train Charisma'].includes(trainingTask))return null;
- ns.gang.setTerritoryWarfare(false);
+ if(!['Train Combat','Train Hacking','Train Charisma'].includes(trainingTask))return deny('invalid-training-task');
+ // Ascension leaves gang power intact. Preserve ordinary safe warfare only after
+ // removing this member from combat; conditional/unknown odds still disengage.
+ let preserveWarfare=false,trainingBefore=false;
+ if(gang.territoryWarfareEngaged===true)try{
+  const threshold=Math.max(.7,economics?.warfare?.engageThreshold??economics?.warfare?.threshold??.75);
+  const rows=Object.entries(ns.gang.getAllGangInformation()),rivals=rows.filter(([n,r])=>n!==gang.faction&&r.territory>0);
+  const valid=Number.isFinite(gang.power)&&gang.power>0&&Number.isFinite(threshold)&&threshold<1&&rows.length&&rows.every(([,r])=>Number.isFinite(r?.power)&&r.power>=0&&Number.isFinite(r.territory)&&r.territory>=0&&r.territory<=1);
+  if(valid&&rivals.length&&rivals.every(([,r])=>gang.power/(gang.power+r.power)>=threshold))trainingBefore=preserveWarfare=ns.gang.setMemberTask(name,trainingTask)===true;
+ }catch{}
+ if(!preserveWarfare)ns.gang.setTerritoryWarfare(false);
  const result=ns.gang.ascendMember(name);
- if(result)ns.gang.setMemberTask(name,trainingTask);
- return result;
+ const trainingAssigned=result?ns.gang.setMemberTask(name,trainingTask):trainingBefore;
+ if(preserveWarfare&&result&&trainingAssigned===false){ns.gang.setTerritoryWarfare(false);preserveWarfare=false;}
+ return detailed?{success:!!result,reason:result?trainingAssigned===false?'ascended-training-unconfirmed':'ascended':'native-declined',trainingAssigned:!!trainingAssigned,warfarePreserved:preserveWarfare,at:Date.now(),result}:result;
 }
 export function restoreGangTraining(saved,reset,names,now=Date.now()){
  if(saved?.nodeReset!==reset.lastNodeReset||saved?.augReset!==reset.lastAugReset)return {};
@@ -441,6 +500,7 @@ export function rankGangEquipment(orders,horizon=900,recruitment=null) {
 
 /** Both the planner and forecasts express their objective in the same units. */
 export function gangObjectiveValue(rate,focus,weight=1000) {
+ if(focus==='stats')return Number.isFinite(rate.stats)&&rate.stats>0?rate.stats:0;
  const money=Number(rate.money)||0,respect=Number(rate.respect)||0;
  return focus==='money'?money:focus==='respect'?respect:money/Math.max(1,Number(weight)||1000)+respect;
 }
@@ -476,6 +536,33 @@ export function restoreGangProductiveTasks(ns,assignments,allowed,owner) {
   else failed.push(name);
  }
  return {deferred:false,restored,failed};
+}
+
+/** Cheap search ordering only. Full crew forecasts still authorize every training plan.
+ * Compare training with natural work XP and charge for both time and displaced output.
+ * Cover each member before spending a second pass on a different training duration. */
+export function gangPowerTrainingPriority(pairs,members,tasks,assignments,memberTotals,horizon,bonusSeconds=0){
+ const keys=['hack','str','def','dex','agi','cha'];
+ if(!Number.isFinite(horizon)||horizon<=0)return [];
+ const totals=Object.values(memberTotals||{}).filter(v=>Number.isFinite(v)&&v>=0);
+ const average=totals.reduce((s,v)=>s+v,0)/Math.max(1,totals.length);
+ const ranked=[];
+ for(const pair of pairs){
+  const member=members?.[pair.name],task=tasks?.[pair.trainingTask];
+  const work=tasks?.[assignments?.[pair.name]||member?.task],value=memberTotals?.[pair.name];
+  if(!member||!task||!work||pair.wait||pair.mixed||pair.preTraining||pair.preWanted||pair.repeatAt||pair.sequence||
+   !Number.isFinite(pair.seconds)||pair.seconds<=0||pair.seconds>=horizon||pair.seconds>900||
+   !Number.isFinite(value)||value<0)continue;
+  const seconds=gangGameSeconds(pair.seconds,bonusSeconds);
+  const trained=projectGangMember(member,task,seconds),working=projectGangMember(member,work,seconds);
+  const gain=keys.reduce((sum,k)=>sum+trained[k]-working[k],0);
+  const score=gain*(horizon-pair.seconds)/horizon/pair.seconds/(1+value/Math.max(1e-9,average));
+  if(Number.isFinite(score)&&score>0)ranked.push({pair,score,long:seconds>=600});
+ }
+ ranked.sort((a,b)=>b.score-a.score||a.pair.name.localeCompare(b.pair.name)||a.pair.seconds-b.pair.seconds||a.pair.trainingTask.localeCompare(b.pair.trainingTask));
+ const first=new Map();for(const row of ranked)if(!first.has(row.pair.name))first.set(row.pair.name,row);
+ const second=[...first.values()].map(row=>ranked.find(r=>r.pair.name===row.pair.name&&r.long!==row.long)).filter(Boolean);
+ return [...first.values(),...second].map(row=>row.pair);
 }
 
 /** Shared sampling makes training comparisons fair, including a finite bonus-time tail.
@@ -718,7 +805,7 @@ export function projectFutureGangAscension(member,retained){
  * Authorization uses fixed territory, purchases and crew size. A bounded expected-territory scenario ranks already-qualified power plans. Resource ETAs are estimates. */
 export function forecastGangCrewTraining({members,gang,training,tasks,assignments={},fixedTasks={},evaluate,names=null,
  recoveryUntil={},recoveryTasks={},committedTraining=[],mixedTraining=false,repeatAscensions=false,trainingOptions=null,allowJointTraining=false,activeTraining=[],growthFirst=false,prioritizeWeakTraining=false,compareTrainingOnly=false,referenceTraining=[],developmentCycles=false,wantedPreparation=false,recruitmentSprint=false,equipmentDevelopment=null,horizonSeconds=900,windows=null,bonusSeconds=0,goals=[],otherCashRate=0,ascensions=null,waitWindows=[],ascensionEligible=null,warfare=null,
- maxPlanningMs=Infinity,maxSimulations=60,valuationOffset=0,now=Date.now,retainBaseline=false}={}){
+ maxPlanningMs=Infinity,maxSimulations=60,valuationOffset=0,now=Date.now,retainBaseline=false,ignoreRespectLoss=false}={}){
  const started=now(),crewNames=Object.keys(members||{}),forecasts={},waitingForecasts={},waitChecks={};
  const diagnostics={model:'whole-crew',simulations:0,evaluations:0,timeLimited:false,simulationLimited:false,baselineReady:false};
  const candidates=(names||crewNames).filter(name=>crewNames.includes(name)&&!fixedTasks?.[name]);
@@ -753,7 +840,8 @@ export function forecastGangCrewTraining({members,gang,training,tasks,assignment
  };
  const rivalAt=seconds=>Math.max(...(warfare?.rivals?.length?warfare.rivals:[{power:warfare?.rivalPower??0,rate:0}]).map(r=>r.power+r.rate*seconds));
  const expired=()=>Number.isFinite(maxPlanningMs)&&now()-started>=Math.max(0,maxPlanningMs);
- const longer=growthFirst&&!ascensions&&windows===null?[600,900].filter(t=>t<=horizonSeconds/2):[];
+ const longWindows=bonusSeconds>0?[... [600,900].map(t=>Math.max(2,gangWallSeconds(t,bonusSeconds))),600,900]:[600,900];
+ const longer=growthFirst&&!ascensions&&windows===null?longWindows.filter(t=>t<=horizonSeconds/2):[];
  const timeline=gangDevelopmentTimeline(horizonSeconds,windows===null&&longer.length?[...gangDevelopmentTimeline(horizonSeconds,null,bonusSeconds).durations,...longer]:windows,bonusSeconds);
  const waits=[...new Set((Array.isArray(waitWindows)?waitWindows:[]).filter(seconds=>Number.isFinite(seconds)&&seconds>=20&&seconds<=120&&seconds<horizonSeconds))].sort((a,b)=>a-b);
  const choices=[...new Set((Array.isArray(trainingOptions)?trainingOptions.filter(t=>['Train Combat','Train Hacking','Train Charisma'].includes(t)):[training.name]).filter(t=>tasks[t]))];
@@ -770,7 +858,7 @@ export function forecastGangCrewTraining({members,gang,training,tasks,assignment
  cursor=pairs.length?(cursor%pairs.length+pairs.length)%pairs.length:0;
  const times=[...new Set([...timeline.times,...pairs.flatMap(pair=>[pair.wait,pair.wait+pair.seconds,...(pair.mixed?[pair.seconds/3,pair.seconds*2/3]:[])]),...committedTraining.flatMap(p=>[p.window,...(p.trainingSchedule||[]).map(r=>r.until)]),...[...active,...referenceTraining,...(equipmentDevelopment?.training||[])].flatMap(p=>[p.window,...(p.trainingSchedule||[]).map(r=>r.until)]).filter(t=>Number.isFinite(t)&&t>0&&t<horizonSeconds),...pairs.filter(p=>p.repeatAt).flatMap(p=>[p.repeatAt,p.repeatAt+p.seconds,...(p.mixed?[p.repeatAt+p.seconds/3,p.repeatAt+p.seconds*2/3]:[])]),...Object.values(recoveryUntil).filter(t=>Number.isFinite(t)&&t>0&&t<horizonSeconds),
   ...[bonusSeconds/24].filter(t=>t>0&&t<horizonSeconds)])].filter(t=>Number.isFinite(t)&&t>=0&&t<=horizonSeconds).sort((a,b)=>a-b);
- const targets=goals.filter(g=>Number.isFinite(g.amount)&&g.amount>0&&['money','respect'].includes(g.resource));
+ const targets=goals.filter(g=>!(ignoreRespectLoss&&ascensions&&g.gangRespect)&&Number.isFinite(g.amount)&&g.amount>0&&['money','respect'].includes(g.resource));
  const groups=[...new Set(targets.map(goal=>goal.group||goal.name))].map(group=>targets.filter(g=>(g.group||g.name)===group).map(g=>g.name));
  const catalogue=Object.keys(tasks).filter(name=>!name.startsWith('Train ')&&name!=='Territory Warfare');
  if(!catalogue.includes(training.name))catalogue.push(training.name);
@@ -790,7 +878,7 @@ export function forecastGangCrewTraining({members,gang,training,tasks,assignment
   const memberTotals=Object.fromEntries(crewNames.map(n=>[n,0]));
   const earned={money:0,respect:0},eta={},cumulative=[];
   let power=powerEnabled?warfare.power:0,powerReady=powerEnabled&&gangWarfareReadyDelay(power,0,warfare)===0?0:null,lastPowerRate=0;
-  let lastNormalRates={money:0,respect:0},lastBonusRates=lastNormalRates,warfareMemberGameSeconds=0;
+  let lastNormalRates={money:0,respect:0},lastBonusRates=lastNormalRates,warfareMemberGameSeconds=0,recoveryStats=null;
   const experience=Object.fromEntries(statKeys.map(k=>[k,0]));
   const rate=(member,task,fraction=1)=>{
    diagnostics.evaluations++;
@@ -828,11 +916,11 @@ export function forecastGangCrewTraining({members,gang,training,tasks,assignment
     return phaseTasks[key];
    };
    const maxDefense=Math.max(...crewNames.map(n=>crew[n].def));
-   const pulse=Object.fromEntries(locks.map(n=>{
+   const pulse=selectGangTraineePulses(Object.fromEntries(locks.map(n=>{
     const taskName=fixedTasks[n]||trainingFor(n);
     return [n,warfare?.traineePulses===true&&!fixedTasks[n]&&!ascensions?.[n]&&!(at<(recoveryUntil[n]||0))&&!(preWanted&&n===wantedPrepMember&&at<wait)&&
-     gangTraineePulse(crew[n],tasks[taskName],warfare,Math.max(0,horizonSeconds-at),Math.max(0,bonusSeconds-at*24),projectGangMember)];
-   }));
+     gangTraineePulse(crew[n],tasks[taskName],{...warfare,pulseRiskGameSeconds:horizonSeconds+Math.min(bonusSeconds,horizonSeconds*24)},Math.max(0,horizonSeconds-at),Math.max(0,bonusSeconds-at*24),projectGangMember)];
+   })),crew,warfare);
    const powerLocks=locks.filter(n=>!pulse[n]);
    const fractions=Object.fromEntries(crewNames.map(n=>{
     const eligible=!!duty&&!powerLocks.includes(n)&&gangWarfareMemberEligible(crew[n],maxDefense,warfare.clashChance);
@@ -890,7 +978,8 @@ export function forecastGangCrewTraining({members,gang,training,tasks,assignment
    state.wantedLevel=projectGangWanted(state.wantedLevel,average.wanted,justice,seconds,at<bonusSeconds/24?5:2);
    state.respectGainRate=average.respect/5;
    if(!Number.isFinite(state.respect)||!Number.isFinite(state.wantedLevel))return null;
-   total+=average.value*seconds;lastNormalRates=normalRates;lastBonusRates=bonusRates;at=end;crew=next;cumulative.push({at,total,power});
+   total+=average.value*seconds;lastNormalRates=normalRates;lastBonusRates=bonusRates;at=end;crew=next;cumulative.push({at,total,power,gangMoney:Math.max(0,earned.money-otherCashRate*at)});
+   if(reset&&end===wait+delay)recoveryStats=Object.fromEntries(statKeys.map(k=>[k,crew[name][k]]));
   }
   for(const goal of targets)if(eta[goal.name]===undefined){
    const remaining=goalAmount(goal)-earned[goal.resource],wallRate=goal.resource==='money'?otherCashRate:0;
@@ -902,7 +991,8 @@ export function forecastGangCrewTraining({members,gang,training,tasks,assignment
    const elapsed=gangGameSeconds(horizonSeconds,bonusSeconds),crossing=gangWarfareReadyDelay(power,lastPowerRate,warfare,elapsed);
    powerReady=Number.isFinite(crossing)?gangWallSeconds(elapsed+crossing,bonusSeconds):Infinity;
   }
-  return {trainingSchedules:schedules,total,money:earned.money,respectEarned:earned.respect,memberTotals,eta,cumulative,power,powerReady,lastPowerRate,warfareMemberGameSeconds,experience,wantedLevel:state.wantedLevel,respect:state.respect,respectLoss,futureRespectLoss,ascensionCount,multipliers:projectedReset?.multipliers};
+  const stats=crewNames.reduce((sum,n)=>sum+statKeys.reduce((v,k)=>v+crew[n][k],0),0);
+  return {stats,recoveryStats,trainingSchedules:schedules,total,money:earned.money,respectEarned:earned.respect,memberTotals,eta,cumulative,power,powerReady,lastPowerRate,warfareMemberGameSeconds,experience,wantedLevel:state.wantedLevel,respect:state.respect,respectLoss,futureRespectLoss,ascensionCount,multipliers:projectedReset?.multipliers};
  };
  // Require a material crew-wide gain, scaled to the candidate's baseline production.
  const validBatch=batch=>Array.isArray(batch)&&new Set(batch.map(p=>p?.name)).size===batch.length&&batch.every(p=>p&&crewNames.includes(p.name)&&Number.isFinite(p.window)&&p.window>0&&p.window<=900&&choices.includes(p.trainingTask)&&(!p.trainingSchedule||gangTrainingScheduleTask({mixedTraining:true,startedAt:0,until:p.window*1000,trainingSchedule:p.trainingSchedule},0)!==null));
@@ -910,13 +1000,16 @@ export function forecastGangCrewTraining({members,gang,training,tasks,assignment
  const baseline=simulate(null,0,0,training.name,equipmentDevelopment?.training||[]);if(!baseline)return result();if(retainBaseline)baselineTrajectory=baseline;diagnostics.baselineReady=true;diagnostics.baselineWarfareMemberGameSeconds=baseline.warfareMemberGameSeconds;diagnostics.baselineExperience=baseline.experience;
  for(const name of candidates)forecasts[name]={train:false,window:0,baseline:baseline.total,production:baseline.total,gain:0,
   power:baseline.power,powerReady:baseline.powerReady,total:baseline.total,cumulative:baseline.cumulative,baselineMilestones:baseline.eta,baselineWanted:baseline.wantedLevel,baselinePower:powerEnabled?baseline.power:null,baselineWarfareReadySeconds:powerEnabled?baseline.powerReady:null,reason:'Continue productive work',model:'whole-crew'};
- const powerBenefit=(after,reference=baseline)=>gangPowerBenefit(after,reference,warfare,horizonSeconds);
+ const powerBenefit=(after,reference=baseline)=>gangPowerBenefit(after,reference,equipmentDevelopment?{...warfare,incomeFunding:null}:warfare,horizonSeconds,bonusSeconds);
  const powerBetter=(after,reference=baseline)=>powerBenefit(after,reference).powerObjective===true;
  const scenarioCache=new WeakMap();
  const scenario=after=>{if(!after||typeof after!=='object')return null;if(!scenarioCache.has(after))scenarioCache.set(after,gangTerritoryProjection(warfare,after.cumulative,bonusSeconds));return scenarioCache.get(after);};
- diagnostics.powerFocus=warfare?.powerFocus===true;diagnostics.territoryBaseline=warfare?.powerFocus?scenario(baseline):null;
+ diagnostics.powerFocus=warfare?.powerFocus===true;diagnostics.statPriority=warfare?.statPriority===true;diagnostics.territoryBaseline=warfare?.powerFocus?scenario(baseline):null;
  const safetyFor=(after,reference=baseline)=>{
-  const goalsSafe=groups.every(names=>{const a=Math.max(...names.map(n=>reference.eta[n])),b=Math.max(...names.map(n=>after.eta[n]));return !Number.isFinite(a)||b<=a+2;});
+  const goalsSafe=groups.every(names=>{const a=Math.max(...names.map(n=>reference.eta[n])),b=Math.max(...names.map(n=>after.eta[n]));
+   const augmentation=names.every(n=>targets.find(g=>g.name===n)?.group==='augmentation');
+   const delay=augmentation&&a>120&&!equipmentDevelopment?gangIncomeDelayAllowance(after,reference,warfare?.incomeFunding,horizonSeconds):2;
+   return !Number.isFinite(a)||b<=a+delay;});
   let warfareSafe=true,maxChanceDrop=0,readinessDelay=0;
   if(powerEnabled){
    const chance=(power,at)=>power>0?power/(power+rivalAt(gangGameSeconds(at,bonusSeconds))):0;
@@ -927,7 +1020,7 @@ export function forecastGangCrewTraining({members,gang,training,tasks,assignment
    readinessDelay=Number.isFinite(reference.powerReady)?Math.max(0,after.powerReady-reference.powerReady):0;
    const allowedDelay=gangWallSeconds(20,Math.max(0,bonusSeconds-(Number.isFinite(reference.powerReady)?reference.powerReady:0)*24));
    warfareSafe=maxChanceDrop<=(warfare.maxChanceDrop??.01)&&
-    (!Number.isFinite(reference.powerReady)||reference.powerReady>horizonSeconds||readinessDelay<=allowedDelay+1e-9);
+    (!Number.isFinite(reference.powerReady)||reference.powerReady>horizonSeconds||readinessDelay<=(warfare.preparation?.active?2:allowedDelay)+1e-9);
   }
   const safe=goalsSafe&&warfareSafe;
   return {safe,goalsSafe,warfareSafe,maxChanceDrop,readinessDelay};
@@ -988,7 +1081,11 @@ export function forecastGangCrewTraining({members,gang,training,tasks,assignment
  const sprintSaved=x=>sprintGoal&&etaOf(x)<=horizonSeconds?Math.max(0,etaOf(baseline)-etaOf(x)):0;
  const sprintBetter=x=>sprintGoal&&sprintSaved(x)>=Math.max(2,Number.isFinite(etaOf(baseline))?etaOf(baseline)*.02:2);
  const betterDevelopment=(a,b)=>{
-  if(warfare?.powerPriority===true){
+  if(warfare?.preparation?.active===true){
+   const av=powerBetter(a),bv=powerBetter(b);if(av!==bv)return av;
+   if(av&&bv){const order=gangPreparationComparison({...a,...powerBenefit(a)},{...b,...powerBenefit(b)});if(order)return order<0;}
+  }
+  if(warfare?.powerPriority===true&&warfare?.preparation?.active!==true){
    const av=powerBetter(a),bv=powerBetter(b);
    if(av!==bv)return av;
    if(av&&bv){const ap=a.power??a.projectedPower,bp=b.power??b.projectedPower;if(Number.isFinite(ap)&&Number.isFinite(bp)&&Math.abs(ap-bp)>Math.max(.001,Math.max(0,bp-warfare.power)*.01))return ap>bp;}
@@ -1017,7 +1114,11 @@ export function forecastGangCrewTraining({members,gang,training,tasks,assignment
  const leader=Math.max(0,...Object.values(baseline.memberTotals).filter(Number.isFinite));
  const weakPairs=weak&&baseline.memberTotals[weak]<leader*.25?pairs.filter(p=>p.name===weak&&!p.wait&&!p.mixed&&!p.preTraining&&!p.preWanted&&p.trainingTask===training.name).slice(0,3):[];
  diagnostics.weakTrainingPriority=weakPairs.length?weak:null;
- const ordered=[...weakPairs,...rotated.filter(p=>!weakPairs.includes(p))];
+ const powerPairs=growthFirst&&!ascensions&&warfare?.powerFocus===true&&warfare?.powerPriority===true
+  ?gangPowerTrainingPriority(pairs,members,tasks,assignments,baseline.memberTotals,horizonSeconds,bonusSeconds):[];
+ diagnostics.powerTrainingPriority=powerPairs.map(p=>({name:p.name,seconds:p.seconds,task:p.trainingTask}));
+ const priority=powerPairs.length?powerPairs:weakPairs;
+ const ordered=[...priority,...rotated.filter(p=>!priority.includes(p))];
  const limit=Math.min(120,Math.max(0,Number.isFinite(maxSimulations)?Math.floor(maxSimulations):60));
  const jointAllowed=allowJointTraining&&!ascensions&&crewNames.length>=3,candidateTrials=new Map();
  const activeGroup=active.length>=2&&(growthFirst||active.length===2);
@@ -1038,7 +1139,10 @@ export function forecastGangCrewTraining({members,gang,training,tasks,assignment
   if(jointAllowed&&!activeGroup&&(diagnostics.simulations-1>=Math.max(1,limit-jointReserve)||Number.isFinite(maxPlanningMs)&&now()-started>=maxPlanningMs*.65))break;
   if(diagnostics.simulations-1>=limit){diagnostics.simulationLimited=true;break;}
   if(expired()){diagnostics.timeLimited=true;break;}
-  const after=simulate(name,seconds,wait,trainingTask,[],false,preTraining,null,preWanted,mixed,repeatAt,sequence);cursor=(pairs.findIndex(pair=>pair.name===name&&pair.seconds===seconds&&pair.wait===wait&&pair.trainingTask===trainingTask&&pair.preTraining===preTraining&&pair.preWanted===preWanted&&!!pair.mixed===!!mixed&&pair.repeatAt===repeatAt)+1)%pairs.length;
+  const after=simulate(name,seconds,wait,trainingTask,[],false,preTraining,null,preWanted,mixed,repeatAt,sequence);
+  // Priority comparisons must not repeatedly reset the rotating exploration cursor.
+  const pairIndex=pairs.findIndex(pair=>pair.name===name&&pair.seconds===seconds&&pair.wait===wait&&pair.trainingTask===trainingTask&&pair.preTraining===preTraining&&pair.preWanted===preWanted&&!!pair.mixed===!!mixed&&pair.repeatAt===repeatAt);
+  if(!priority.includes(pairs[pairIndex]))cursor=(pairIndex+1)%pairs.length;
   if(!after)continue;
   const markWait=()=>{if(wait>0)waitChecks[name]=(waitChecks[name]||0)+1;};
   if(after.ineligible){markWait();continue;}
@@ -1087,7 +1191,7 @@ export function forecastGangCrewTraining({members,gang,training,tasks,assignment
    diagnostics.twoCycleComparisons=(diagnostics.twoCycleComparisons||0)+1;
    if([one,later].some(other=>!safetyFor(after,other).safe||after.total<=other.total+Math.max(1e-9,baseline.memberTotals[name]*.05)&&!powerBetter(after,other)))continue;
   }
-  if(jointAllowed&&!wait&&(!candidateTrials.has(name)||(developmentObjective?betterDevelopment(after,candidateTrials.get(name)):after.total>candidateTrials.get(name).production)))candidateTrials.set(name,{name,window:seconds,mixedTraining:!!mixed||!!sequence,trainingSchedule:after.trainingSchedules[name],trainingTask:after.trainingSchedules[name]?.[0]?.task||trainingTask,production:after.total,total:after.total,power:after.power,powerReady:after.powerReady,cumulative:after.cumulative,trainingMilestones:after.eta});
+  if(jointAllowed&&!wait&&(!candidateTrials.has(name)||(developmentObjective?betterDevelopment(after,candidateTrials.get(name)):after.total>candidateTrials.get(name).production)))candidateTrials.set(name,{name,stats:after.stats,window:seconds,mixedTraining:!!mixed||!!sequence,trainingSchedule:after.trainingSchedules[name],trainingTask:after.trainingSchedules[name]?.[0]?.task||trainingTask,production:after.total,total:after.total,power:after.power,powerReady:after.powerReady,cumulative:after.cumulative,trainingMilestones:after.eta});
   const destination=wait>0?waitingForecasts:forecasts;
   const before=destination[name]||{...forecasts[name],train:false,window:0,gain:0},gain=after.total-baseline.total;
   const {safe,goalsSafe,warfareSafe,maxChanceDrop,readinessDelay}=safetyFor(after);
@@ -1098,7 +1202,7 @@ export function forecastGangCrewTraining({members,gang,training,tasks,assignment
    const paid=after.cumulative.find((point,i)=>point.at>=wait+seconds&&point.total>baseline.cumulative[i].total);
    if(!paid&&!sprintBetter(after)&&!powerBetter(after))continue;
    selectedTrajectories.set((wait>0?'wait:':'now:')+name,after);
-   destination[name]={...before,...powerBenefit(after),territoryProjection:scenario(after),...sprintData(after),train:true,trainingAlternativeBlocked:false,window:seconds,mixedTraining:!!mixed||!!sequence,trainingSchedule:after.trainingSchedules[name],waitSeconds:wait,trainingTask:after.trainingSchedules[name]?.[0]?.task||trainingTask,preTrainingSeconds:preTraining?wait:0,preWantedSeconds:preWanted?wait:0,preparationMember:preWanted?wantedPrepMember:null,respectLoss:after.respectLoss,ascensionCount:after.ascensionCount,futureRespectLoss:after.futureRespectLoss,secondAscensionSeconds:repeatAt??null,projectedMultipliers:after.multipliers,production:after.total,gain,milestoneBlocked:false,warfareBlocked:false,
+   destination[name]={...before,recoveryStats:after.recoveryStats,...powerBenefit(after),territoryProjection:scenario(after),...sprintData(after),train:true,trainingAlternativeBlocked:false,window:seconds,mixedTraining:!!mixed||!!sequence,trainingSchedule:after.trainingSchedules[name],waitSeconds:wait,trainingTask:after.trainingSchedules[name]?.[0]?.task||trainingTask,preTrainingSeconds:preTraining?wait:0,preWantedSeconds:preWanted?wait:0,preparationMember:preWanted?wantedPrepMember:null,respectLoss:after.respectLoss,ascensionCount:after.ascensionCount,futureRespectLoss:after.futureRespectLoss,secondAscensionSeconds:repeatAt??null,projectedMultipliers:after.multipliers,production:after.total,gain,milestoneBlocked:false,warfareBlocked:false,
     power:after.power,powerReady:after.powerReady,total:after.total,cumulative:after.cumulative,projectedPower:powerEnabled?after.power:null,warfareReadySeconds:powerEnabled?after.powerReady:null,warfareReadinessDelay:readinessDelay,maxWarfareChanceDrop:maxChanceDrop,
     trainingMilestones:after.eta,trainingWanted:after.wantedLevel,paybackSeconds:paid?.at??powerBenefit(after).powerPaybackSeconds??null,reason:powerBetter(after)?'Verified power payback advances warfare development':'Whole-crew development gains exceed continued work'};
   }
@@ -1162,19 +1266,19 @@ export function forecastGangCrewAscensions(options){
    projectFutureGangAscension(options.members[name],options.ascensions[name].member);
   if(canCompare&&!result.waitChecks[name]){deferred.push({name,reason:'Wait comparison incomplete'});continue;}
   // A material advantage is required to defer an otherwise worthwhile immediate reset.
-  if(waiting?.train&&(!forecast.train||(waiting.powerObjective||forecast.powerObjective?(waiting.powerSecondsSaved||0)>(forecast.powerSecondsSaved||0)+2||(waiting.powerGain||0)>(forecast.powerGain||0)*1.05&&(waiting.powerSecondsSaved||0)>=(forecast.powerSecondsSaved||0):waiting.gain>forecast.gain*1.05))){
+  if(waiting?.train&&(!forecast.train||(waiting.powerPreparation||forecast.powerPreparation?gangPreparationComparison(waiting,forecast)<0:waiting.powerObjective||forecast.powerObjective?(waiting.powerSecondsSaved||0)>(forecast.powerSecondsSaved||0)+2||(waiting.powerGain||0)>(forecast.powerGain||0)*1.05&&(waiting.powerSecondsSaved||0)>=(forecast.powerSecondsSaved||0):waiting.gain>forecast.gain*1.05))){
    deferred.push({name,reason:waiting.preWantedSeconds?'Wanted reduction before ascension produces more crew value':waiting.preTrainingSeconds?'Training before ascension produces more crew value':'Working before ascension produces more crew value',preWantedSeconds:waiting.preWantedSeconds||0,preparationMember:waiting.preparationMember,preTrainingSeconds:waiting.preTrainingSeconds||0,production:waiting.production,baseline:waiting.baseline,waitSeconds:waiting.waitSeconds,trainingSeconds:waiting.window,trainingTask:waiting.trainingTask,
     immediateGain:forecast.gain,waitingGain:waiting.gain,paybackSeconds:waiting.paybackSeconds,
     projectedMultipliers:waiting.projectedMultipliers,respectLoss:waiting.respectLoss,ascensionMilestones:waiting.trainingMilestones});continue;
   }
   if(!forecast.train)continue;
   const {baselineMilestones,trainingMilestones}=forecast;
-  plans.push({name,mixedTraining:forecast.mixedTraining,trainingSchedule:forecast.trainingSchedule,ascensionCount:forecast.ascensionCount,futureRespectLoss:forecast.futureRespectLoss,secondAscensionSeconds:forecast.secondAscensionSeconds,trainingTask:forecast.trainingTask,trainingSeconds:forecast.window,paybackSeconds:forecast.incrementalPaybackSeconds??forecast.paybackSeconds,horizonSeconds:options.horizonSeconds??900,
+  plans.push({name,ignoreRespectLoss:options.ignoreRespectLoss===true,recoveryStats:forecast.recoveryStats,model:'whole-crew',economicReview:options.economicReview===true,mixedTraining:forecast.mixedTraining,trainingSchedule:forecast.trainingSchedule,ascensionCount:forecast.ascensionCount,futureRespectLoss:forecast.futureRespectLoss,secondAscensionSeconds:forecast.secondAscensionSeconds,trainingTask:forecast.trainingTask,trainingSeconds:forecast.window,paybackSeconds:forecast.incrementalPaybackSeconds??forecast.paybackSeconds,horizonSeconds:options.horizonSeconds??900,
    netGain:forecast.incrementalGain??forecast.gain,baseline:forecast.baseline,opportunityBaseline:forecast.opportunityBaseline,production:forecast.production,baselineMilestones,ascensionMilestones:trainingMilestones,
-   baselineWanted:forecast.baselineWanted,ascensionWanted:forecast.trainingWanted,powerPriority:forecast.powerPriority,powerObjective:forecast.powerObjective,powerSecondsSaved:forecast.powerSecondsSaved,powerGain:forecast.powerGain,powerPaybackSeconds:forecast.powerPaybackSeconds,territoryProjection:forecast.territoryProjection,baselinePower:forecast.baselinePower,projectedPower:forecast.projectedPower,
+   statPriority:forecast.statPriority,statGain:forecast.statGain,baselineWanted:forecast.baselineWanted,ascensionWanted:forecast.trainingWanted,incomeDeprioritized:forecast.incomeDeprioritized,powerPriority:forecast.powerPriority,powerPreparation:forecast.powerPreparation,powerFoundation:forecast.powerFoundation,readinessExtrapolated:forecast.readinessExtrapolated,powerObjective:forecast.powerObjective,powerSecondsSaved:forecast.powerSecondsSaved,powerGain:forecast.powerGain,powerPaybackSeconds:forecast.powerPaybackSeconds,territoryProjection:forecast.territoryProjection,baselinePower:forecast.baselinePower,projectedPower:forecast.projectedPower,
    warfareReadySeconds:forecast.warfareReadySeconds,warfareReadinessDelay:forecast.warfareReadinessDelay,maxWarfareChanceDrop:forecast.maxWarfareChanceDrop});
  }
- plans.sort((a,b)=>Number(b.powerObjective===true)-Number(a.powerObjective===true)||(a.powerPriority&&b.powerPriority?(b.powerGain||0)-(a.powerGain||0):0)||(b.powerSecondsSaved||0)-(a.powerSecondsSaved||0)||a.paybackSeconds-b.paybackSeconds||b.netGain-a.netGain||a.name.localeCompare(b.name));
+ plans.sort((a,b)=>Number(b.powerObjective===true)-Number(a.powerObjective===true)||(a.powerPreparation&&b.powerPreparation?gangPreparationComparison(a,b):0)||(a.powerPriority&&b.powerPriority&&!a.powerPreparation&&!b.powerPreparation?(b.powerGain||0)-(a.powerGain||0):0)||(b.powerSecondsSaved||0)-(a.powerSecondsSaved||0)||a.paybackSeconds-b.paybackSeconds||b.netGain-a.netGain||a.name.localeCompare(b.name));
  return {...result,plans,deferred};
 }
 
@@ -1185,10 +1289,11 @@ export function restoreGangWantedPreparation(saved,reset,names,lastReset={},now=
  return {...p};
 }
 
-/** Balanced mode serializes recovery; power mode relies on the committed crew forecast. */
+/** Concurrent screening relies on a later committed crew forecast and retains a productive member. */
 export function gangAscensionAvailability({name,members,values,lastReset={},episodes={},recoveries={},now=Date.now(),maximumMs=200000,allowConcurrent=false}){
  for(const [other,member]of Object.entries(members)){
   if(allowConcurrent&&other===name&&(now-(lastReset[name]??0)<2000||recoveries[name]?.until>now))return {allowed:false,reason:'Candidate recovery in progress'};
+  if(allowConcurrent&&other===name&&episodes[name]?.until>now)return {allowed:false,reason:'Candidate training burst in progress'};
   if(allowConcurrent)continue;
   if(recoveries[other]?.until>now&&recoveries[other].resetAt===lastReset[other])return {allowed:false,reason:'Ascension recovery in progress',member:other};
   if(episodes[other]?.until>now)return {allowed:false,reason:'Training burst in progress',member:other};
@@ -1214,7 +1319,7 @@ export function restoreGangTrainingBursts(saved,reset,names,now=Date.now()) {
 /** One optional trainee, or a jointly verified pair; completed bursts must return to work before retraining.
  * Recovery training is exempt so newly recruited/ascended members can regain useful skills. */
 export function planGangTrainingBursts(rows,previous={},now=Date.now(),jointPlan=null,policy={}) {
- if(policy.growthFirst===true)return planGangGrowthTraining(rows,previous,now,jointPlan);
+ if(policy.growthFirst===true)return planGangGrowthTraining(rows,previous,now,jointPlan,policy);
  const episodes={},plans={},reasons={};
  const productive=rows.filter(row=>!row.mandatory&&row.value>0).length;
  for(const row of rows){
@@ -1268,7 +1373,7 @@ export function planGangTrainingBursts(rows,previous={},now=Date.now(),jointPlan
 }
 
 /** Fresh crew forecasts replace the fixed work cooldown; unchanged active deadlines remain bounded. */
-export function planGangGrowthTraining(rows,previous={},now=Date.now(),jointPlan=null){
+export function planGangGrowthTraining(rows,previous={},now=Date.now(),jointPlan=null,policy={}){
  const episodes={},plans={},reasons={};
  for(const row of rows){
   const old=previous[row.name];
@@ -1285,7 +1390,7 @@ export function planGangGrowthTraining(rows,previous={},now=Date.now(),jointPlan
   })?proposed:null;
  const assign=(p,jointId)=>{
   const row=rows.find(r=>r.name===p.name),old=episodes[p.name];
-  if(!old||old.until<=now)episodes[p.name]={resetAt:row.resetAt,startedAt:now,until:now+p.window*1000,workUntil:now+p.window*1000,task:p.trainingTask,growthFirst:true,...(p.mixedTraining?{mixedTraining:true,trainingSchedule:p.trainingSchedule}:{}),...(jointId?{jointId}:{})};
+  if(!old||old.until<=now)episodes[p.name]={resetAt:row.resetAt,startedAt:now,until:now+p.window*1000,workUntil:now+p.window*1000,task:p.trainingTask,growthFirst:true,...(policy.preparation?{preparation:true}:{}),...((jointId?jointPlan?.incomeDeprioritized:row.forecast?.incomeDeprioritized)?{incomeDependent:true}:{}),...(p.mixedTraining?{mixedTraining:true,trainingSchedule:p.trainingSchedule}:{}),...(jointId?{jointId}:{})};
   plans[p.name]=true;reasons[p.name]=jointId?'Verified group growth training':'Verified growth training';
  };
  if(group){
@@ -1297,7 +1402,7 @@ export function planGangGrowthTraining(rows,previous={},now=Date.now(),jointPlan
  for(const row of running){episodes[row.name].until=now;episodes[row.name].workUntil=now;}
  const ranked=rows.filter(row=>!row.mandatory&&row.forecast?.train&&Number.isFinite(row.forecast.gain)&&(row.forecast.gain>0||Number.isFinite(row.forecast.recruitmentSecondsSaved)&&row.forecast.recruitmentSecondsSaved>0||row.forecast.powerObjective===true&&row.forecast.powerPaybackSeconds>0)&&!row.forecast.milestoneBlocked&&!row.forecast.warfareBlocked&&
   permitted({name:row.name,window:row.forecast.window,trainingTask:row.forecast.trainingTask})&&rows.some(other=>other.name!==row.name&&!other.mandatory&&other.value>0))
-  .sort((a,b)=>Number(b.forecast.powerObjective===true)-Number(a.forecast.powerObjective===true)||(a.forecast.powerPriority&&b.forecast.powerPriority?(b.forecast.powerGain||0)-(a.forecast.powerGain||0):0)||(a.forecast.powerObjective&&b.forecast.powerObjective?(a.forecast.warfareReadySeconds??Infinity)-(b.forecast.warfareReadySeconds??Infinity):0)||(a.forecast.recruitmentETA??Infinity)-(b.forecast.recruitmentETA??Infinity)||b.forecast.gain/Math.max(1,b.forecast.window)-a.forecast.gain/Math.max(1,a.forecast.window)||a.name.localeCompare(b.name));
+  .sort((a,b)=>Number(b.forecast.powerObjective===true)-Number(a.forecast.powerObjective===true)||(a.forecast.powerPreparation&&b.forecast.powerPreparation?gangPreparationComparison(a.forecast,b.forecast):0)||(a.forecast.powerPriority&&b.forecast.powerPriority&&!a.forecast.powerPreparation&&!b.forecast.powerPreparation?(b.forecast.powerGain||0)-(a.forecast.powerGain||0):0)||(a.forecast.powerObjective&&b.forecast.powerObjective?(a.forecast.warfareReadySeconds??Infinity)-(b.forecast.warfareReadySeconds??Infinity):0)||(a.forecast.recruitmentETA??Infinity)-(b.forecast.recruitmentETA??Infinity)||b.forecast.gain/Math.max(1,b.forecast.window)-a.forecast.gain/Math.max(1,a.forecast.window)||a.name.localeCompare(b.name));
  if(ranked.length){
   const row=ranked[0],old=previous[row.name];
   if(old&&old.resetAt===row.resetAt&&old.until>now&&old.task===row.forecast.trainingTask&&old.until-now<=row.forecast.window*1000+1)episodes[row.name]={...old};
@@ -1311,16 +1416,20 @@ export function planGangGrowthTraining(rows,previous={},now=Date.now(),jointPlan
 }
 
 /** Distinguish protected-work deferrals and already-applied assignments from native rejection. */
-export function applyGangWorkOrders(ns,orders,allowed,owner) {
- const failed=[];let assigned=0;
+export function applyGangWorkOrders(ns,orders,allowed,owner,validatePulse=null) {
+ const failed=[],skippedPulses=[];let assigned=0;
+ if(orders.filter(o=>o.trainingPulse&&o.pulseQuote).length>1)return {deferred:true,assigned,failed,reason:'optional-pulse-slot'};
+ if(!orders.length&&!allowed(ns,owner))return {deferred:true,assigned,failed};
  for(const order of orders){
   if(!allowed(ns,owner))return {deferred:true,assigned,failed};
-  if(order.trainingPulse){const gang=ns.gang.getGangInformation();if(gang.territoryWarfareEngaged||gang.territoryClashChance!==0)return {deferred:true,assigned,failed};}
+  if(order.trainingPulse){const gang=ns.gang.getGangInformation();
+   if(order.pulseQuote||gang.territoryWarfareEngaged||gang.territoryClashChance!==0){const proof=typeof validatePulse==='function'?validatePulse(ns,order,owner):null;if(proof?.valid!==true){if(order.pulseQuote){skippedPulses.push({name:order.name,reason:proof?.reason||'pulse-proof-required'});continue;}return {deferred:true,assigned,failed,reason:proof?.reason||'pulse-proof-required'};}}
+  }
   if(ns.gang.getMemberInformation(order.name).task===order.task){assigned++;continue;}
   if(ns.gang.setMemberTask(order.name,order.task)||ns.gang.getMemberInformation(order.name).task===order.task)assigned++;
   else failed.push(order);
  }
- return {deferred:false,assigned,failed};
+ return {deferred:false,assigned,failed,...(skippedPulses.length?{skippedPulses}:{})};
 }
 
 /** Allocate a whole batch; the recruitment exception has one shared cap, not a cap per item. */
@@ -1354,7 +1463,6 @@ export function gangTerritorySample(previous,gangs,faction,at,bonusMs=0){
   const valid=Number.isFinite(expected)&&elapsed>=expected*.5&&elapsed<=expected*1.5;
   if(!valid)powerHistory={};
   for(const [name,g]of rows){
-   if(name===faction)continue;
    const before=previous?.gangs?.[name];
    if(valid&&before&&before.territory>0&&g.territory>0&&Math.abs(before.territory-g.territory)<=.001){
     const delta=g.power-before.power;
@@ -1366,6 +1474,51 @@ export function gangTerritorySample(previous,gangs,faction,at,bonusMs=0){
   tickAt=at;tickBonusMs=bonusMs;
  }
  return {signature,faction,at,gangs:Object.fromEntries(rows.map(([name,g])=>[name,{power:g.power,territory:g.territory}])),changed,tickAt,tickBonusMs,powerHistory};
+}
+/** Match one pre-update task/crew snapshot to one clean power update. No planner authorization. */
+export function gangPulseObservation(pulse,gang,snapshot,at=Date.now()){
+ const row={at,faction:gang?.faction,state:'no-pulse',observed:null,predicted:null,expectedMembers:[],actualMembers:[]};
+ if(!snapshot?.changed||snapshot.at!==at||!Number.isFinite(at)||snapshot.faction!==gang?.faction)return {...row,state:'unverified-update'};
+ if(!pulse)return row;
+ if(pulse.faction!==gang.faction||!Number.isFinite(pulse.at)||pulse.at>=at||at-pulse.at>30000||![pulse.power,pulse.predicted,gang.power].every(Number.isFinite)||pulse.predicted<0)return {...row,state:'unmatched-pulse'};
+ const expected=pulse.expectedMembers,actual=pulse.members;
+ if(!Array.isArray(expected)||!Array.isArray(actual)||expected.some(n=>typeof n!=='string')||actual.some(n=>typeof n!=='string'))return {...row,state:'unverified-assignments'};
+ const observed=gang.power-pulse.power;
+ const state=pulse.skippedPulses?.length?'guard-declined':expected.length!==new Set(expected).size||actual.length!==new Set(actual).size||expected.length!==actual.length||expected.some(n=>!actual.includes(n))?'assignment-mismatch':
+  !expected.length?'no-eligible-members':gang.territory!==pulse.territory||observed<0?'clash-confounded':observed===0&&pulse.predicted>0?'power-unchanged':'power-increased';
+ return {...row,state,observed,predicted:pulse.predicted,leadMs:at-pulse.at,expectedMembers:expected.slice(0,12),actualMembers:actual.slice(0,12),...(pulse.skippedPulses?.length?{skippedPulses:pulse.skippedPulses.slice(0,1)}:{})};
+}
+export function gangPulseCalibration(previous,pulse,gang,snapshot,at=Date.now()){
+ const history=Array.isArray(previous)?previous.filter(r=>r&&Number.isFinite(r.at)&&r.at<=at&&at-r.at<=300000&&Number.isFinite(r.ratio)&&r.ratio>=0).slice(-7):[];
+ if(!gang||!Number.isFinite(at)||!pulse||!snapshot?.changed||!Number.isFinite(pulse.at)||!Number.isFinite(snapshot.tickAt)||snapshot.tickAt!==snapshot.at||pulse.at>=snapshot.tickAt||
+  at<snapshot.tickAt||at-snapshot.tickAt>45000||snapshot.tickAt-pulse.at>30000||pulse.faction!==gang?.faction||snapshot.faction!==gang.faction||
+  ![pulse.power,pulse.territory,pulse.predicted,gang.power,gang.territory].every(Number.isFinite)||pulse.predicted<=0||pulse.power<0||gang.power<pulse.power||pulse.territory!==gang.territory||
+  snapshot.gangs?.[gang.faction]?.power!==gang.power||!Array.isArray(snapshot.powerHistory?.[gang.faction])||!snapshot.powerHistory[gang.faction].length||history.some(r=>r.at===snapshot.tickAt))return history;
+ const observed=gang.power-pulse.power,last=snapshot.powerHistory[gang.faction].at(-1);
+ if(Math.abs(observed-last)>Math.max(1e-9,Math.abs(last)*1e-9))return history;
+ return [...history,{at:snapshot.tickAt,predicted:pulse.predicted,observed,ratio:observed/pulse.predicted,members:pulse.members}].slice(-8);
+}
+/** Observed fixed-territory ETA, independent of authorization and training forecasts.
+ * Range is recent rate variability, not a statistical confidence interval. */
+export function gangObservedReadiness(gang,snapshot,threshold=.75,bonusMs=0,now=Date.now(),modeledPowerPerTick=null){
+ const unavailable=reason=>({state:'sampling',reason,samples:0,etaSeconds:null,rangeSeconds:null,modelRatio:null});
+ const w=gangWarfareContext(gang,snapshot,threshold,now);
+ if(!w.active||!Number.isFinite(bonusMs)||bonusMs<0||!Number.isFinite(snapshot?.tickAt)||snapshot.tickAt>now||now-snapshot.tickAt>45000)
+  return unavailable('Fresh confirmed territory updates required');
+ const own=snapshot.gangs?.[gang.faction];
+ if(!own||own.power!==gang.power||own.territory!==gang.territory)return unavailable('Gang snapshot changed');
+ const history=(snapshot.powerHistory?.[gang.faction]||[]).slice(-8);
+ if(history.length<3||history.some(v=>!Number.isFinite(v)||v<0)||w.rivals.some(r=>r.samples<3))return unavailable('Three clean updates per active gang required');
+ const sorted=[...history].sort((a,b)=>a-b),median=sorted[Math.floor(sorted.length/2)];
+ const seconds=(gain,rateKey)=>{
+  const seconds=gangWarfareReadyDelay(gang.power,gain/20,{...w,rivals:w.rivals.map(r=>({...r,rate:r[rateKey]}))});
+  return Number.isFinite(seconds)?gangWallSeconds(seconds,bonusMs/1000):null;
+ };
+ const etaSeconds=seconds(median,'rate'),optimistic=seconds(sorted.at(-1),'lowRate'),conservative=seconds(sorted[0],'highRate');
+ const modelRatio=Number.isFinite(modeledPowerPerTick)&&modeledPowerPerTick>0?median/modeledPowerPerTick:null;
+ return {state:etaSeconds===0?'ready':etaSeconds===null?'not-closing':'projected',samples:Math.min(history.length,...w.rivals.map(r=>r.samples)),
+  etaSeconds,rangeSeconds:{optimistic,conservative},observedPowerPerTick:median,modeledPowerPerTick:Number.isFinite(modeledPowerPerTick)&&modeledPowerPerTick>=0?modeledPowerPerTick:null,modelRatio,
+  reason:'Recent fixed-territory rates; training, clashes and future territory can change the ETA'};
 }
 export function gangTerritoryDeadline(at,bonusMs=0,periodMs=20000){
  if(!Number.isFinite(at)||!Number.isFinite(periodMs)||periodMs<=0)return null;
@@ -1405,7 +1558,7 @@ export function planMarginalGangEquipment({members,equipment,evaluate,horizon=90
  const bundleExpired=()=>expired()||typeof purchaseGuard==='function'&&Number.isFinite(maxPlanningMs)&&now()-started>=maxPlanningMs*.85;
  const crew=Object.fromEntries(Object.entries(members).map(([name,m])=>[name,{...m,upgrades:[...m.upgrades],augmentations:[...m.augmentations]}]));
  const remaining={...budgets},orders=[],limit=Math.min(32,Math.max(0,Math.floor(maxPurchases)));
- let respectRate=recruitment.respectRate||0,firstOpportunity=null;
+ let respectRate=recruitment.respectRate||0,firstOpportunity=null,fundingOpportunity=null;
  const diagnostics={phase:'before-purchases',evaluations:0,returnForecasts:0,cheapFastTracked:0,cheapEligibilityRejected:0,deferredForecasts:0,evaluationsByMember:{},valuationPasses:0,skippedEvaluations:0,timeLimited:false,maxPlanningMs:Number.isFinite(maxPlanningMs)?maxPlanningMs:null,missing:0,owned:0,ineligible:0,qualified:0,budgetBlocked:0,cheapQualified:0,cheapPlanned:0,bundleEvaluations:0,bundleEvaluationsByMember:{},bundleQualified:0,bundleSearchLimited:false,purchaseChecks:0,purchaseBlocked:0,purchaseReadiness:[],rejected:[],budgets:{...budgets}};
  let nextPurchaseCursor=typeof purchaseCursor==='string'?purchaseCursor:null;
  const crewNames=Object.keys(crew);
@@ -1498,7 +1651,7 @@ export function planMarginalGangEquipment({members,equipment,evaluate,horizon=90
    diagnostics.rejected=candidates.filter(c=>!qualified.has(JSON.stringify([c.member,c.equipmentName])))
     .sort((a,b)=>a.cost-b.cost).slice(0,12).map(c=>({member:c.member,equipmentName:c.equipmentName,cost:c.cost,
      reason:!(c.cost>0)||!Number.isFinite(c.cost)?'invalid-price':!(c.moneyGain>0||c.objectiveGain>0||c.respectGain>0)?'no-projected-gain':'below-return-threshold'}));
-   firstOpportunity=ranked.find(affordable)||ranked[0]||null;
+   firstOpportunity=ranked.find(affordable)||ranked[0]||null;fundingOpportunity=ranked[0]||cheap[0]||null;
   }
   const pairs=[];
   if(!hasAffordableCheap&&limit-orders.length>=2&&!bundleExpired()&&diagnostics.bundleEvaluations<bundleLimit){
@@ -1538,7 +1691,7 @@ export function planMarginalGangEquipment({members,equipment,evaluate,horizon=90
   const alternatives=[...powerFirst,...cheap,...rankGangEquipment([...ranked,...rankedPairs],horizon,context())
    .filter(c=>c.items||!cheapKeys.has(JSON.stringify([c.member,c.equipmentName])))];
   const selected=choose(alternatives);
-  if(pass===0&&(selected||typeof purchaseGuard==='function'))firstOpportunity=selected||null;
+  if(pass===0&&(selected||typeof purchaseGuard==='function')){firstOpportunity=selected||null;if(selected)fundingOpportunity=selected;}
   if(expired())diagnostics.timeLimited=true;
   if(!selected)break;
   const items=selected.items||[equipment.find(e=>e.name===selected.equipmentName)];
@@ -1559,7 +1712,7 @@ export function planMarginalGangEquipment({members,equipment,evaluate,horizon=90
   if(expired()){diagnostics.timeLimited=true;break;}
   candidates=crewAware?collectCandidates(crewNames):candidates.filter(c=>c.member!==selected.member).concat(collectCandidates([selected.member]));
  }
- return {orders,firstOpportunity,diagnostics:{...diagnostics,nextPurchaseCursor,nextValuationOffset:valuationCursor,nextValuationItems:Object.fromEntries(itemCursors),planningMs:now()-started,planned:orders.length,plannedCost:orders.reduce((sum,o)=>sum+o.cost,0)}};
+ return {orders,firstOpportunity,fundingOpportunity,diagnostics:{...diagnostics,nextPurchaseCursor,nextValuationOffset:valuationCursor,nextValuationItems:Object.fromEntries(itemCursors),planningMs:now()-started,planned:orders.length,plannedCost:orders.reduce((sum,o)=>sum+o.cost,0)}};
 }
 
 /** Deterministic whole-crew allocation; a stronger member may free another from wanted reduction. */

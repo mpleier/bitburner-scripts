@@ -1,5 +1,7 @@
 # Rival attrition warfare
 
+The default `--training-first true` policy blocks early attrition while preparing for at least 75% win chance against every active rival. It requests off for an inherited active attrition lease, while existing residual clash probability still decays normally. Use `--training-first false` to restore optional attrition under the guards below; `--disable-attrition` remains an independent opt-out.
+
 ## Mechanics and projection
 
 The official game source applies rival power loss of 1/1.01 on player victories and player power loss of 1/1.008 on defeats. Disabling warfare reduces clash probability by only 0.01 per territory update; it does not remove risk immediately. The ordinary expected-territory projection now includes rival loss from player wins.

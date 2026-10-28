@@ -1,3 +1,4 @@
+import {rewardSummaryFile,darknetRewardProductivity} from './darknet-reward-policy.js';
 import {darknetContractDisposition} from './darknet-contract-policy.js';
 import { stormRequestFile, stormResultFile, stormReadiness, surveyFile } from './darknet-storm-policy.js';
 /** One shot on the server holding the seed; no expensive API added to low-RAM scouts. */
@@ -61,6 +62,14 @@ export async function main(ns) {
       }
     }
     if(ns.ps('home').some(p=>/contractor|contract-solver/i.test(p.filename)))return;
+    // An anchor transaction may start while scouts acknowledge the storm hold.
+    const anchorFile='tasks/dnet-anchor-request.json';
+    if(ns.fileExists(anchorFile,'home')){
+      if(!(await ns.scp(anchorFile,host,'home')))return;
+      const anchor=JSON.parse(ns.read(anchorFile));
+      if(!anchor||!Number.isFinite(anchor.expiresAt)||typeof anchor.phase!=='string')return;
+      if(anchor.expiresAt>Date.now()&&!['done','blocked'].includes(anchor.phase))return;
+    }
     if(fresh.some(r=>r.contracts>0)){
       for(const file of ['tasks/contracts-status.json','tasks/contract-validation.json'])if(!(await ns.scp(file,host,'home')))return;
       const disposition=darknetContractDisposition(fresh,JSON.parse(ns.read('tasks/contracts-status.json')),JSON.parse(ns.read('tasks/contract-validation.json')),ns.getResetInfo(),Date.now());
@@ -75,6 +84,15 @@ export async function main(ns) {
     if (Date.now() - request.at > 30000 || request.reset !== ns.getResetInfo().lastNodeReset) return;
     // Income/cache evidence may change while scouts finish their current work.
     if(!Number.isFinite(request.income)||request.income<0||(()=>{const current=ns.getMoneySources().sinceInstall.darknet,tolerance=request.incomeTolerance===undefined?0:request.incomeTolerance;return !Number.isFinite(current)||!Number.isFinite(tolerance)||tolerance<0||current<request.income||current-request.income>tolerance;})()||!Number.isFinite(request.lastCacheAt)||fresh.some(r=>!Number.isFinite(r.lastCacheAt)||r.lastCacheAt>request.lastCacheAt))return;
+    // Re-read current home evidence after the hold; the manager's snapshot may be incomplete.
+    if(request.rewardGuard!==true||!(await ns.scp(rewardSummaryFile,host,'home')))return;
+    const commitReset=ns.getResetInfo();
+    const rewards=darknetRewardProductivity(JSON.parse(ns.read(rewardSummaryFile)),commitReset,Date.now());
+    if(!rewards.known||rewards.productive){outcome.reason=rewards.reason;return;}
+    // The final evidence copy yields: expire the dispatch again before committing.
+    if(Date.now()-request.at>30000||request.reset!==commitReset.lastNodeReset)return;
+    const commitIncome=ns.getMoneySources().sinceInstall.darknet;
+    if(!Number.isFinite(commitIncome)||commitIncome<request.income||commitIncome-request.income>(request.incomeTolerance??0))return;
     const result = ns.dnet.unleashStormSeed();
     outcome = { success: result?.success === true, reason: result?.message || String(result?.code || 'Webstorm triggered') };
     ns.print(`StormSeed: ${result.success ? 'webstorm triggered; scouts will rebuild exploration' : result.message || result.code}`);

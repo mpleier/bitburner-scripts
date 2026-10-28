@@ -25,7 +25,7 @@ test('native rejection remains distinct from a safety deferral',()=>{
 function controller(stamina){
  const source=readFileSync(new URL('../bladeburner.js',import.meta.url),'utf8'),start=source.indexOf('    const bestActionType = nextBlackOp == bestActionName'),end=source.indexOf('\n}',start),f=api(stamina),messages=[],writes=[];
  const ns={pid:7,args:[],bladeburner:f.b,isRunning:()=>true,singularity:{getCurrentWork:()=>null,getOwnedAugmentations:()=>[]},write:(file,text)=>writes.push(JSON.parse(text))};
- const context={supportReplacementStartAllowed,supportReplacement:null,blackOpHospitalCost,blackOpBonusComparison,blackOpRiskStartAllowed,blackOpRisk:{adaptive:false},startBladeburnerPlannedAction,bladeburnerStaminaChance,bladeburnerWorkAllowed,bbMutationGuard:'true',
+ const context={mainLoop:{},supportReplacementStartAllowed,supportReplacement:null,blackOpHospitalCost,blackOpBonusComparison,blackOpRiskStartAllowed,blackOpRisk:{adaptive:false},startBladeburnerPlannedAction,bladeburnerStaminaChance,bladeburnerWorkAllowed,bbMutationGuard:'true',
  nextBlackOp:null,bestActionName:'Retirement',contractNames:['Retirement'],operationNames:[],blackOpsRanks:{},blackOpMetadata:{},bladeburnerDifficulty:{Retirement:{base:1,factor:1}},
  farmSurplus:false,stockReserve:20,surplusGuardPid:0,ownsSurplus:false,teamPlan:{},options:{'success-threshold':.99,'team-cap':0,'ignore-busy-status':false},levelPlans:{Retirement:{level:2}},
  lastStartDeferral:null,lastAssignedTask:'Retirement',lastAssignedCount:8,actionProgress:{progress:5},ownsRecruitment:false,currentTaskEndTime:12345,

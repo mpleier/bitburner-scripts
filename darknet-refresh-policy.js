@@ -1,6 +1,6 @@
 /** Observational refresh receipts; income is net change, not causal proof of a storm benefit. */
-export function beginDarknetRefresh(previous, {id,at,reset,augReset,context,hosts}) {
- return {...previous,active:{id,requestedAt:at,reset,augReset,context,hosts:hosts.map(r=>[r.host,r.pid]).slice(0,256)}};
+export function beginDarknetRefresh(previous, {id,at,reset,augReset,context,hosts,forecast=null}) {
+ return {...previous,active:{id,requestedAt:at,reset,augReset,context,forecast,hosts:hosts.map(r=>[r.host,r.pid]).slice(0,256)}};
 }
 export function observeDarknetRefresh(previous, input) {
  const {at,reset,augReset,context,income,lastCacheAt,reports,receipt}=input;
@@ -31,12 +31,22 @@ if(active.baselineAt===undefined){active.baselineAt=at;active.baselineIncome=inc
  }
  if(at-active.recoveredAt<600000)return state;
  const gain=income-active.windowIncome,windowMs=at-active.recoveredAt;
- state.samples=[...samples,{reset,augReset,context,at,complete:true,recoveryMs:active.recoveryMs,windowMs,gain}].slice(-8);delete state.active;
+ state.samples=[...samples,{reset,augReset,context,at,complete:true,recoveryMs:active.recoveryMs,windowMs,gain,forecast:active.forecast,prediction:compareDarknetForecast(active.forecast,{recoveryMs:active.recoveryMs,windowMs,gain})}].slice(-8);delete state.active;
  return state;
 }
 export function darknetRefreshEvidence(history,{reset,augReset,context},now=Date.now()) {
  if(typeof context!=='string'||!context)return {ready:false,samples:0};
  const rows=(Array.isArray(history?.samples)?history.samples:[]).filter(s=>s&&s.reset===reset&&s.augReset===augReset&&s.context===context&&Number.isFinite(s.at)&&s.at<=now&&now-s.at<=21600000).slice(-3);
+ const predictions=(Array.isArray(history?.samples)?history.samples:[]).filter(s=>s&&s.reset===reset&&s.augReset===augReset&&s.context===context&&Number.isFinite(s.at)&&s.at<=now&&now-s.at<=21600000&&s.prediction?.comparable===true).slice(-3);
+ const optimistic=predictions.filter(s=>s.prediction.optimistic===true).length,suspended=optimistic>=2;
  const ready=rows.length===3&&rows.every(s=>s.complete===true&&[s.recoveryMs,s.windowMs,s.gain].every(Number.isFinite)&&s.recoveryMs>=30000&&s.recoveryMs<=1800000&&s.windowMs>=600000&&s.windowMs<=690000&&s.gain>=0);
- return ready?{ready:true,measuredRebuild:true,samples:3,rebuildMs:Math.max(...rows.map(s=>s.recoveryMs))*1.25,netRate:Math.min(...rows.map(s=>s.gain/((s.windowMs+s.recoveryMs)/1000)))}:{ready:false,samples:rows.length,measuredRebuild:rows.length>0&&rows.every(s=>s.complete===true&&Number.isFinite(s.recoveryMs)&&s.recoveryMs>=30000&&s.recoveryMs<=1800000),rebuildMs:rows.length?Math.max(...rows.map(s=>s.recoveryMs))*1.25:undefined};
+ return ready?{ready:!suspended,suspended,optimisticForecasts:optimistic,measuredReturns:true,measuredRebuild:true,samples:3,rebuildMs:Math.max(...rows.map(s=>s.recoveryMs))*1.25,netRate:Math.min(...rows.map(s=>s.gain/((s.windowMs+s.recoveryMs)/1000)))}:{ready:false,suspended,optimisticForecasts:optimistic,samples:rows.length,measuredRebuild:rows.length>0&&rows.every(s=>s.complete===true&&Number.isFinite(s.recoveryMs)&&s.recoveryMs>=30000&&s.recoveryMs<=1800000),rebuildMs:rows.length?Math.max(...rows.map(s=>s.recoveryMs))*1.25:undefined};
+}
+
+/** Compare the same net-return units; a ten-minute observation is not a realized thirty-minute profit. */
+export function compareDarknetForecast(forecast,actual){
+ if(!forecast||!actual||![forecast.netRate,forecast.rebuildMs,actual.recoveryMs,actual.windowMs,actual.gain].every(Number.isFinite)||forecast.netRate<=0||forecast.rebuildMs<30000||actual.recoveryMs<30000||actual.windowMs<600000||actual.windowMs>690000||actual.gain<0)return {comparable:false};
+ const observedNetRate=actual.gain/((actual.windowMs+actual.recoveryMs)/1000);
+ return {comparable:true,predictedNetRate:forecast.netRate,observedNetRate,rateError:observedNetRate-forecast.netRate,predictedRebuildMs:forecast.rebuildMs,actualRecoveryMs:actual.recoveryMs,
+  optimistic:observedNetRate<forecast.netRate*.8||actual.recoveryMs>forecast.rebuildMs*1.25};
 }

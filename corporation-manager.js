@@ -1,9 +1,13 @@
+import {quoteCorporationAdvertisingCandidate,planCorporationAdvertisingGroups,executeCorporationAdvertisingGroup,refreshCorporationAdvertisingRecovery} from './corporation-advert-bundle-policy.js';
+import {corporationDevelopmentDelay,corporationAdvertisingDelay,planCorporationDelayedReturns} from './corporation-delayed-return-policy.js';
+import {captureCorporationCalibration,observeCorporationCalibration,calibrateCorporationGrowth} from './corporation-calibration-policy.js';
+import {corporationGrowthPhase,corporationFundingGoal,corporationFundingDiagnostics,corporationHashMilestone} from './corporation-priority-policy.js';
 import {hashSpendingDecision,spendHashesWithPolicy} from './hash-spending-policy.js';
 import {readNodeRoutePlan} from './node-route-policy.js';
 import {registerAutomation,automationHeartbeat,maintenanceRequested} from './runtime-policy.js';
 import {achievementActionAllowed} from './achievement-policy.js';
 import { claimSpending } from './spending-policy.js';
-import { observeCorporationGrowth,scoreCorporationGrowth,treasuryPolicy, recoveryJobCounts, priorSaleMultiplier, partySpendPerEmployee, materialSalePrice, outputBacklog, boostPurchaseBudget, productPriceStep, researchAffordable, salesPotential, formulaSalePrice, inferProductMarkup, supportAdvertLimit, clearCorporationBuyRates, optimizedOfficeJobs, corporationDevelopmentCity, executeCorporationGrowth, usefulUpkeepResearch, productReplacementReady, corporationAdvertBenefit, corporationResearchGoal, corporationCoreFunding, corporationScienceFactor } from './corporation-policy.js';
+import { officeOnlyResearchJobs,corporationProductBaseline,observeCorporationUpkeep,corporationUpkeepResearchValues,planCorporationResearchBundles,executeCorporationResearchBundle,corporationResearchRate,corporationResearchDecision,corporationGrowthBudget,corporationOfficeUpkeepNeed,allocateCorporationUpkeep,corporationDevelopmentExpansion,observeCorporationGrowth,scoreCorporationGrowth,treasuryPolicy, recoveryJobCounts, priorSaleMultiplier, partySpendPerEmployee, materialSalePrice, outputBacklog, boostPurchaseBudget, productPriceStep, researchAffordable, salesPotential, formulaSalePrice, inferProductMarkup, supportAdvertLimit, clearCorporationBuyRates, optimizedOfficeJobs, corporationDevelopmentCity, executeCorporationGrowth, productReplacementReady, corporationAdvertBenefit, corporationResearchGoal, corporationCoreFunding, corporationScienceFactor } from './corporation-policy.js';
 import { researchParents, extraResearch, productInvestment, investmentDecision, rescueShareIssue, shareSale, shareBuyback, recipeInputPlan, corporationDividendRate, corporationLiquidityTarget, estimateShareProceeds } from './corporation-lifecycle.js';
 import { getNsDataThroughFile } from './helpers.js';
 import { isScriptPaused } from './automation-control.js';
@@ -18,10 +22,12 @@ export async function main(ns) {
     if (isScriptPaused(ns, ns.getScriptName())) return;
     if (ns.ps("home").some(process => process.filename === ns.getScriptName() && process.pid !== ns.pid)) return;
   const options = typeof ns.flags === 'function' ? ns.flags([
-    ['development-speed',true], ['min-ownership', 0.5], ['expand-all-industries', false], ['manage-shares', true], ['bribe-factions', true],
-  ]) : { 'development-speed':true, 'min-ownership': 0.5, 'expand-all-industries': false, 'manage-shares': true, 'bribe-factions': true };
+    ['development-speed',true], ['investment-min-ownership',0.1], ['min-ownership', 0.5], ['expand-all-industries', false], ['manage-shares', true], ['bribe-factions', true],
+  ]) : { 'development-speed':true, 'investment-min-ownership':0.1, 'min-ownership': 0.5, 'expand-all-industries': false, 'manage-shares': true, 'bribe-factions': true };
   const minOwnership = Number(options['min-ownership']);
   if (!(minOwnership > 0 && minOwnership <= 1)) { ns.tprint('min-ownership must be greater than zero and at most one.'); return; }
+  const investmentMinOwnership=Number(options['investment-min-ownership']??0.1);
+  if(!(investmentMinOwnership>0&&investmentMinOwnership<=1)){ns.tprint('investment-min-ownership must be greater than zero and at most one.');return;}
   const c = ns.corporation;
   const cities = ["Sector-12", "Aevum", "Volhaven", "Chongqing", "New Tokyo", "Ishima"];
   const name = "Apex Holdings";
@@ -36,7 +42,8 @@ export async function main(ns) {
   const officeJobs = ["Operations", "Engineer", "Business", "Management", "Research & Development", "Intern"];
   let recovering = false;
   let upkeepBudget = 0;
-  let growthBank = null;
+  let upkeepAllocations = new Map();
+  let growthBank = null,growthGoal=null,hashMilestone=null,growthPriority=!!options['development-speed'],growthPhase=null;
   const constants = (() => { try { return c.getConstants(); } catch { return {}; } })();
   const cycleSeconds = Number(constants.secondsPerMarketCycle) || 10;
   const teaCostPerEmployee = Number(constants.teaCostPerEmployee) || 500000;
@@ -185,8 +192,18 @@ export async function main(ns) {
 
   const expand = (division, city) => {
     const d = safe(`Read division ${division}`, () => c.getDivision(division));
-    if (d && !d.cities.includes(city) && funds() > reserve + CITY_EXPAND_BUFFER)
-      capitalPurchase(`Expand ${division} to ${city}`,Number(constants.officeInitialCost)||4e9,()=>c.expandCity(division,city),1/(Number(constants.officeInitialCost)||4e9),1);
+    if (!d || d.cities.includes(city) || !hasUnlock('Warehouse API')) return;
+    // Finish existing sites before committing another office-only expansion.
+    if(d.cities.some(location=>safe('Expansion prerequisite warehouse',()=>c.hasWarehouse(division,location))!==true))return;
+    const officeCost=Number(constants.officeInitialCost)||4e9,warehouseCost=Number(constants.warehouseInitialCost)||5e9;
+    const packageCost=officeCost+warehouseCost+20e6;
+    if(funds()>reserve+packageCost)capitalPurchase(`Expand ${division} to ${city}`,packageCost,()=>{
+      const current=c.getDivision(division);
+      if(current.cities.includes(city))return false;
+      c.expandCity(division,city);
+      if(!c.hasWarehouse(division,city))c.purchaseWarehouse(division,city);
+      return true;
+    },1/packageCost,1);
   };
   const createDivision = (industry, division) => {
     if (hasDivision(division)) return true;
@@ -203,19 +220,21 @@ export async function main(ns) {
   const buyUnlock = (unlock) => {
     if (hasUnlock(unlock)) return;
     const cost = safe(`Get ${unlock} cost`, () => c.getUnlockCost(unlock));
-    if (Number.isFinite(cost) && funds() > cost + reserve)
+    if (Number.isFinite(cost) && cost > 0)
       capitalPurchase(`Buy ${unlock}`,cost,()=>c.purchaseUnlock(unlock),1/cost,2);
   };
-  const growthPlans=new Map();let growthDecisions=[];const marketRows=new Map();let growthMarket=null;
+  const growthPlans=new Map();let growthDecisions=[];let advertisingRecovery=new Map();const marketRows=new Map();let growthMarket=null;
+  const calibrationScope=JSON.stringify([resetInfo.lastNodeReset,resetInfo.lastAugReset,corp()?.name]),calibrationFile='tasks/corporation-upgrade-calibration.json';let calibrationState=null;
+  try{calibrationState=JSON.parse(ns.read(calibrationFile));}catch{}
   try{const m=JSON.parse(ns.read('tasks/corporation-growth-market.json'));if(m.scope===JSON.stringify([resetInfo.lastNodeReset,corp()?.name])&&Number.isFinite(m.at)&&m.at<=Date.now()&&Date.now()-m.at<=120000)growthMarket=m;}catch{}
   const capitalPurchase = (label,cost,fn,score=1/Math.max(1,cost),priority=0,commit=0,market=null) => {
     if(recovering||!Number.isFinite(cost)||cost<=0)return false;
-    const plan={label,cost,score,priority,commit,market,run:()=>{if(!canManage()||funds()<=reserve+cost)return false;return attempt(label,fn);}};
+    const plan={label,cost,score,priority,commit,market,...(market?.exclusive?{exclusive:market.exclusive}:{}),run:()=>{if(!canManage()||funds()<=reserve+cost)return false;return attempt(label,fn);}};
     // Foundation unlocks/first core divisions must exist before this pass can assign work.
     if(priority>=2){const result=executeCorporationGrowth([plan],growthBank,funds,()=>reserve,canManage);growthBank=result.remaining;growthDecisions.push(...result.decisions);return result.decisions.some(d=>d.state==='purchased');}
     growthPlans.set(label,plan);return false;
   };
-  const advertQueue=new Set();
+  const advertQueue=new Set(),advertisingCandidates=new Map();
   const hireAdVert=division=>advertQueue.add(division);
   const buyAdVert = (division) => {
     const d=safe('Read advertising division',()=>c.getDivision(division));
@@ -225,9 +244,28 @@ export async function main(ns) {
     const cash = funds();
     if (!Number.isFinite(adCost) || adCost > cash * ADVERT_SPEND_FRACTION || cash <= adCost + reserve)
       return;
-    const benefit=corporationAdvertBenefit(d,safe('Advert industry',()=>c.getIndustryData(d.industry))||{},safe('Advert analytics',()=>c.getUpgradeLevel('Wilson Analytics'))||0);
+    const industry=safe('Advert industry',()=>c.getIndustryData(d.industry))||{},wilsonLevel=safe('Advert analytics',()=>c.getUpgradeLevel('Wilson Analytics'));
+    const benefit=corporationAdvertBenefit(d,industry,wilsonLevel||0);
     if(benefit<=0&&!goals?.finance)return;
-    capitalPurchase(`Hire AdVert (${division})`,adCost,()=>c.hireAdVert(division),Math.max(.001,benefit)/adCost,0,0,{kind:'sales',division});
+    let delayMs=3*cycleSeconds*1000;
+    if(d.makesProducts){
+      const products=(d.products||[]).map(name=>safe('Read advertising product readiness',()=>c.getProduct(division,d.cities[0],name))).filter(Boolean),pending=products.find(p=>p.developmentProgress<100);
+      const metric=productMetrics[division],needsProduct=!products.some(p=>p.developmentProgress>=100),city=needsProduct&&pending&&((metric?.name===pending.name?metric.city:null)||pending.creationCity);
+      const office=city?safe('Read advertising development productivity',()=>c.getOffice(division,city)):null;
+      const pendingMs=pending?corporationDevelopmentDelay(office,pending.developmentProgress,cycleSeconds):null;
+      delayMs=corporationAdvertisingDelay(products,pendingMs,cycleSeconds);
+    }
+    capitalPurchase(`Hire AdVert (${division})`,adCost,()=>{
+      const before=c.getDivision(division).numAdVerts,price=c.getHireAdVertCost(division);
+      if(Number.isSafeInteger(d.numAdVerts)&&before!==d.numAdVerts||!Number.isFinite(price)||price<=0||price>adCost||funds()<=reserve+price)return false;
+      c.hireAdVert(division);const live=c.getDivision(division).numAdVerts;
+      if(Number.isSafeInteger(d.numAdVerts)&&!(live>d.numAdVerts))return false;
+      if(live>d.numAdVerts)advertisingRecovery.delete(division);return true;
+    },Math.max(.001,benefit)/adCost,0,0,{kind:'sales',division,exclusive:['advert:'+division],delay:{kind:'advertising',ms:delayMs}});
+    if(advertisingRecovery.size||Date.now()-lastUpgrade<30000)return;
+    const level=wilsonLevel,wilsonCost=safe('Quote bundled Wilson cost',()=>c.getUpgradeLevelCost('Wilson Analytics'));
+    const quote=quoteCorporationAdvertisingCandidate({division:d,industry,level,wilsonCost,advertCost:adCost,benefit:corporationAdvertBenefit});
+    if(quote&&wilsonCost<=cash*.35&&quote.cost<=cash*ADVERT_SPEND_FRACTION&&cash>reserve+quote.cost)advertisingCandidates.set(division,quote);
   };
 
   // ---- IPO / dividends --------------------------------------------------
@@ -255,7 +293,7 @@ export async function main(ns) {
     if (!info?.public) return;
     const wallet = Number(ns.getPlayer().money) || 0;
     const playerReserve = Math.max(0, Number(ns.read('reserve.txt')) || 0);
-    const rate = options['development-speed'] || recovering || Number(info.revenue) <= Number(info.expenses) ? 0 :
+    const rate = growthPriority || recovering || Number(info.revenue) <= Number(info.expenses) ? 0 :
       Math.min(DIVIDEND_MAX, Math.max(dividendRateFor(funds()), (wallet < playerReserve + 1e9 || playerCashBottleneck()) && funds() > reserve * 5 ? 0.2 : 0));
     const actualRate = Number.isFinite(info.dividendRate) ? info.dividendRate : lastDividendRate;
     if (rate === actualRate) { lastDividendRate = rate; return; }
@@ -264,7 +302,8 @@ export async function main(ns) {
   };
 
   // ---- Hash spends ------------------------------------------------------
-  const spendHashes = () => {
+  const cSafeHashCost=action=>{try{return ns.hacknet.hashCost(action);}catch{return Infinity;}};
+  const spendHashes = async () => {
     if(!achievementActionAllowed(ns,"hashSpending"))return null;
     if (!SELL_HASHES_FOR_CORP || !hasHacknetServers()) return null;
 
@@ -272,9 +311,23 @@ export async function main(ns) {
     try { available = Number(ns.hacknet.numHashes()) || 0; }
     catch { return null; }
 
-    for (let n = 0; n < HASH_SPEND_PLAN.length; n++) {
-      const idx = (hashSpendIndex + n) % HASH_SPEND_PLAN.length;
-      const target = HASH_SPEND_PLAN[idx];
+    const research=divisions().flatMap(name=>{
+      const d=safe('Read hash research division',()=>c.getDivision(name));if(!d)return [];
+      const lab=safe('Read hash laboratory',()=>c.hasResearched(name,'Hi-Tech R&D Laboratory'))===true,ta2=safe('Read hash pricing',()=>c.hasResearched(name,'Market-TA.II'))===true;
+      if(ta2)return [];
+      const next=lab?'Market-TA.II':'Hi-Tech R&D Laboratory',first=lab&&safe('Read hash prerequisite',()=>c.hasResearched(name,'Market-TA.I'))!==true?safe('Quote hash prerequisite',()=>c.getResearchCost(name,'Market-TA.I')):0;
+      const cost=first+safe('Quote hash research',()=>c.getResearchCost(name,next)),context=researchContext(name,d),points=d.researchPoints;
+      const before=corporationResearchDecision({name:next,cost,points,context}),after=corporationResearchDecision({name:next,cost,points:points+1000,context});
+      return !before.ready&&after.ready?[{division:name,name:next,cost:after.target,points}]:[];
+    });
+    const liveFunding=growthGoal?{...growthGoal,cashGap:Math.max(0,growthGoal.cost-Math.max(0,funds()-reserve))}:null;
+    hashMilestone=corporationHashMilestone(liveFunding,research,{funds:funds(),reserve,fundCost:cSafeHashCost('Sell for Corporation Funds'),researchCost:cSafeHashCost('Exchange for Corporation Research')});
+    await ns.write('tasks/corporation-hash-goal.json',JSON.stringify({schemaVersion:1,at:Date.now(),ownerPid:ns.pid,nodeReset:resetInfo.lastNodeReset,augReset:resetInfo.lastAugReset,priority:growthPriority,milestone:hashMilestone}),'w');
+    if(!canManage())return null;
+    const targets=hashMilestone?[hashMilestone.action,...HASH_SPEND_PLAN.filter(a=>a!==hashMilestone.action)]:HASH_SPEND_PLAN;
+    for (let n = 0; n < targets.length; n++) {
+      const idx = hashMilestone?n:(hashSpendIndex + n) % targets.length;
+      const target = targets[idx];
 
       let cost = 0;
       try { cost = Number(ns.hacknet.hashCost(target)); }
@@ -283,9 +336,9 @@ export async function main(ns) {
       if (available < cost) continue;
 
       const corp=c.getCorporation();
-      const useful=target==='Sell for Corporation Funds'?corp.funds<Math.max(1e9,Number(corp.expenses||0)*60):corp.divisions.some(name=>{
-        const d=c.getDivision(name),next=['Hi-Tech R&D Laboratory','Market-TA.I','Market-TA.II'].find(r=>!c.hasResearched(name,r));
-        return next&&c.getResearchCost(name,next)>d.researchPoints&&c.getResearchCost(name,next)<=d.researchPoints+1000;
+      const useful=target==='Sell for Corporation Funds'?corp.funds<Math.max(1e9,Number(corp.expenses||0)*60)||(hashMilestone?.action===target&&growthGoal?.cost>corp.funds-reserve&&growthGoal.cost-(corp.funds-reserve)<=1e9):research.some(r=>{
+        const points=c.getDivision(r.division).researchPoints;
+        return !c.hasResearched(r.division,r.name)&&points<r.cost&&r.cost<=points+1000;
       });
       if (attempt(`Spend hashes on ${target}`, () => spendHashesWithPolicy(ns,target,undefined,1,{ownerPid:ns.pid,script:'corporation-manager.js',corporationUseful:useful},hashSpendingDecision).success)) {
         hashSpendIndex = (idx + 1) % HASH_SPEND_PLAN.length;
@@ -423,19 +476,57 @@ export async function main(ns) {
   // ---- Per-city office management ---------------------------------------
   const inCity = (division, city) =>
     safe(`Read division ${division}`, () => c.getDivision(division))?.cities?.includes(city) === true;
+  let researchCycle=0;
+  const researchContexts=new Map(),researchSamples=new Map(),researchDecisions={},upkeepHistory=new Map(),upkeepPaid=new Map();
+  const recordUpkeep=(division,kind,cost)=>{const paid=upkeepPaid.get(division)||{tea:0,party:0};paid[kind]+=cost;upkeepPaid.set(division,paid);};
+  const researchStateFile='tasks/corporation-research-state.json';
+  try{const saved=JSON.parse(ns.read(researchStateFile));if(saved.nodeReset===resetInfo.lastNodeReset&&saved.corporation===corp()?.name){for(const [division,sample]of Object.entries(saved.divisions||{}))researchSamples.set(division,sample);for(const [division,samples]of Object.entries(saved.upkeep||{}))upkeepHistory.set(division,samples);}}catch{}
+  const researchContext=(division,d)=>{
+    if(researchContexts.has(division))return researchContexts.get(division);
+    const rate=corporationResearchRate(researchSamples.get(division),d.researchPoints);
+    const industry=safe('Read research quality factors',()=>c.getIndustryData(d.industry));
+    const factor=industry?.scienceFactor,qualityRows=[];
+    const operationalCities=(d.cities||[]).filter(city=>safe('Research warehouse availability',()=>c.hasWarehouse(division,city))===true);
+    if(!d.makesProducts)for(const city of operationalCities){
+      const office=safe('Read research quality office',()=>c.getOffice(division,city));
+      const ai=safe('Read research quality AI',()=>c.getMaterial(division,city,'AI Cores'));
+      const inputs=Object.keys(industry?.requiredMaterials||{}).map(name=>safe('Read research input quality',()=>c.getMaterial(division,city,name))?.quality);
+      if(!office||!ai||inputs.some(v=>!Number.isFinite(v)))continue;
+      qualityRows.push({engineering:Number(office.employeeProductionByJob?.Engineer),aiStored:ai.stored,aiFactor:industry?.aiCoreFactor??0,inputQuality:inputs.length?inputs.reduce((sum,n)=>sum+n,0)/inputs.length:1});
+    }
+    const sales=Object.values(growthMarket?.locations||{}).filter(r=>r.division===division&&r.ready&&Number.isFinite(r.sellThrough));
+    const sellThrough=sales.length?Math.min(...sales.map(r=>r.sellThrough)):null;
+    const products=(d.products||[]).map(name=>safe('Read research product capacity',()=>c.getProduct(division,d.cities[0],name))).filter(Boolean);
+    const autoTea=safe('Read automatic tea research',()=>c.hasResearched(division,'AutoBrew'))===true,autoParty=safe('Read automatic party research',()=>c.hasResearched(division,'AutoPartyManager'))===true;
+    const upkeepOffices=(d.cities||[]).map(city=>({office:{...safe('Read upkeep research office',()=>c.getOffice(division,city)),autoTea,autoParty},fundedBudget:upkeepAllocations.get(division+'/'+city)||0}));
+    const upkeepValues=corporationUpkeepResearchValues(upkeepOffices,{samples:upkeepHistory.get(division),revenue:d.lastCycleRevenue,expenses:d.lastCycleExpenses,cycleSeconds});
+    const context={upkeepValues,valid:options['development-speed']&&Number.isFinite(factor)&&(d.makesProducts||qualityRows.length===operationalCities.length&&qualityRows.length>0),rate,scienceFactor:factor,products:d.makesProducts,qualityRows,
+      salesReady:sales.length===operationalCities.length&&sales.length>0,sellThrough,backlog:sales.some(r=>r.backlog),pricingGap:sales.length?Math.max(0,1-sellThrough):null,
+      matureProducts:products.filter(p=>p.developmentProgress>=100).length,maxProducts:d.maxProducts,canFundProduct:productInvestment(funds(),reserve,growthBank)>=10e6};
+    researchContexts.set(division,context);return context;
+  };
   const staffingGoals=new Map();
   const runOffice = (division, city, production, productDivision = false) => {
     if (!hasUnlock("Office API")) return;
     let office = safe(`Read office ${division}/${city}`, () => c.getOffice(division, city));
     if (!office) return;
     const divisionInfo=safe('Read office development role',()=>c.getDivision(division));
+    if(!productDivision&&safe('Research-only warehouse',()=>c.hasWarehouse(division,city))===false){
+      const counts=officeOnlyResearchJobs(office);
+      if(counts&&!officeJobs.every((job,i)=>Number(office.employeeJobs?.[job]??-1)===counts[i])){
+        for(const job of officeJobs)attempt('Clear idle office '+job,()=>c.setJobAssignment(division,city,job,0));
+        for(let i=0;i<officeJobs.length;i++)if(counts[i])attempt('Assign idle office '+officeJobs[i],()=>c.setJobAssignment(division,city,officeJobs[i],counts[i]));
+      }
+      return;
+    }
     let researchGoal=staffingGoals.get(division);
     if(!researchGoal){
       const laboratory=safe('Read staffing laboratory',()=>c.hasResearched(division,'Hi-Tech R&D Laboratory'))===true,ta1=safe('Read staffing TA.I',()=>c.hasResearched(division,'Market-TA.I'))===true,ta2=hasTA2(division);
-      researchGoal=corporationResearchGoal({laboratory,ta1,ta2,points:divisionInfo?.researchPoints,laboratoryCost:laboratory?0:safe('Staffing lab cost',()=>c.getResearchCost(division,'Hi-Tech R&D Laboratory')),ta1Cost:ta1?0:safe('Staffing TA.I cost',()=>c.getResearchCost(division,'Market-TA.I')),ta2Cost:ta2?0:safe('Staffing TA.II cost',()=>c.getResearchCost(division,'Market-TA.II'))},productDivision);
+      researchGoal=corporationResearchGoal({laboratory,ta1,ta2,points:divisionInfo?.researchPoints,laboratoryCost:laboratory?0:safe('Staffing lab cost',()=>c.getResearchCost(division,'Hi-Tech R&D Laboratory')),ta1Cost:ta1?0:safe('Staffing TA.I cost',()=>c.getResearchCost(division,'Market-TA.I')),ta2Cost:ta2?0:safe('Staffing TA.II cost',()=>c.getResearchCost(division,'Market-TA.II'))},productDivision,researchContext(division,divisionInfo));
       staffingGoals.set(division,researchGoal);
     }
-    const rawPending=productDivision&&divisionInfo?.products?.map(p=>safe('Read developing product',()=>c.getProduct(division,city,p))).find(p=>p?.developmentProgress<100);
+    const officeProducts=productDivision?(divisionInfo?.products||[]).map(p=>safe('Read developing product',()=>c.getProduct(division,city,p))).filter(Boolean):[];
+    const rawPending=officeProducts.find(p=>p.developmentProgress<100);
     const offices=(productDivision?divisionInfo?.cities||[]:[]).filter(location=>safe('Development storage',()=>c.hasWarehouse(division,location))).map(location=>({...safe('Read development office',()=>c.getOffice(division,location)),city:location}));
     const pendingCity=rawPending&&productMetrics[division]?.name===rawPending.name?productMetrics[division]?.city:null;
     const pending=rawPending&&pendingCity?{...rawPending,creationCity:pendingCity}:null;
@@ -445,6 +536,12 @@ export async function main(ns) {
       ? (funds() > 1e15 ? 120 : funds() > 1e14 ? 100 : funds() > 1e13 ? 80 : funds() > 1e12 ? 60 : 30)
       : (funds() > 1e13 ? 60 : funds() > 5e12 ? 45 : funds() > 1e12 ? 30 : funds() > 1e11 ? 20 : funds() > 1e10 ? 15 : funds() > 1e9 ? 9 : 3);
       if(productDivision&&!developing)target=Math.max(9,Math.floor(target/2));
+      if(developing&&city===developmentCity&&options['development-speed']&&!recovering&&office.size>=target&&!outputBacklog(officeProducts.filter(p=>p.developmentProgress>=100))){
+        const metric=productMetrics[division],progress=Number(rawPending?.developmentProgress),elapsed=metric?.name===rawPending?.name&&metric?.startedAt?Math.max(0,Date.now()-metric.startedAt):0;
+        const remainingMs=rawPending&&progress>0&&progress<100&&elapsed>0?Math.min(3600000,elapsed*(100-progress)/progress):null;
+        const expansion=corporationDevelopmentExpansion({size:office.size,cost:safe('Quote development increment',()=>c.getOfficeSizeUpgradeCost(division,city,3)),free:Math.max(0,funds()-reserve),profitPerSecond:Math.max(0,(Number(divisionInfo.lastCycleRevenue)-Number(divisionInfo.lastCycleExpenses))),remainingMs});
+        if(expansion.ready)target=office.size+3;
+      }
       let achievements;try{achievements=JSON.parse(ns.read('tasks/achievement-goals.json'));}catch{}
       if(achievements?.expiresAt>Date.now()&&achievements.finance&&!achievements.owned?.includes('CORPORATION_EMPLOYEE_3000'))target=Math.max(target,500);
       if (office.size < target) {
@@ -470,14 +567,16 @@ export async function main(ns) {
     if (employees > 0) {
       const recoveryGap = Number(office.employeeJobs?.Intern) > 0 ? 2 : 5;
       const needsRecovery = office.avgEnergy < (office.maxEnergy ?? 100) - recoveryGap || office.avgMorale < (office.maxMorale ?? 100) - recoveryGap;
-      const cannotFundUpkeep = recovering || upkeepBudget < employees * teaCostPerEmployee;
+      let officeUpkeep=Math.min(upkeepBudget,upkeepAllocations.get(division+'/'+city)||0);
+      const upkeepNeed=corporationOfficeUpkeepNeed(office,teaCostPerEmployee);
+      const cannotFundUpkeep = recovering || officeUpkeep < upkeepNeed.total;
       let materialQuality;
       if(!productDivision&&hasUnlock('Warehouse API')&&safe('Staffing quality warehouse',()=>c.hasWarehouse(division,city))){
         const industry=safe('Read quality factors',()=>c.getIndustryData(divisionInfo.industry));
         const inputQualities=Object.keys(industry?.requiredMaterials||{}).map(material=>Number(safe('Read input quality',()=>c.getMaterial(division,city,material))?.quality)).filter(Number.isFinite);
         materialQuality={points:Number(divisionInfo.researchPoints)||0,researchFactor:corporationScienceFactor(industry),aiStored:Number(safe('Read quality AI cores',()=>c.getMaterial(division,city,'AI Cores'))?.stored)||0,aiFactor:Number(industry?.aiCoreFactor)||0,inputQuality:inputQualities.length?inputQualities.reduce((a,b)=>a+b,0)/inputQualities.length:1};
       }
-      const counts = optimizedOfficeJobs(office,!!production,developing,needsRecovery && cannotFundUpkeep,{...researchGoal,developmentSpeed:developing&&options['development-speed'],researchWeight:developing?Math.max(.12,researchGoal.researchWeight):researchGoal.researchWeight,materialQuality});
+      const counts = optimizedOfficeJobs(office,!!production,developing,needsRecovery && cannotFundUpkeep,{...researchGoal,researchPulse:researchCycle%5===0,developmentSpeed:developing&&options['development-speed'],researchWeight:developing?Math.max(.12,researchGoal.researchWeight):researchGoal.researchWeight,materialQuality});
       const jobs = office.employeeJobs;
       const aligned = jobs && officeJobs.every((job, i) => Number(jobs[job] ?? -1) === counts[i]);
       if (!aligned) {
@@ -486,15 +585,15 @@ export async function main(ns) {
           if (counts[i]) attempt(`Assign ${officeJobs[i]}`, () => c.setJobAssignment(division, city, officeJobs[i], counts[i]));
       }
       const teaCost = employees * teaCostPerEmployee;
-      if (!recovering && office.avgEnergy < (office.maxEnergy ?? 100) - 2 && teaCost <= upkeepBudget && funds() >= reserve + teaCost) {
+      if (!recovering && office.avgEnergy < (office.maxEnergy ?? 100) - 2 && teaCost <= officeUpkeep && funds() >= reserve) {
         const success = safe('Buy employee tea', () => c.buyTea(division, city));
-        if (success === true) upkeepBudget -= teaCost;
+        if (success === true) {upkeepBudget -= teaCost;officeUpkeep-=teaCost;reserve-=teaCost;recordUpkeep(division,'tea',teaCost);}
       }
-      const allowance = Math.max(0, Math.min(upkeepBudget, funds() - reserve));
+      const allowance = Math.max(0, Math.min(officeUpkeep, funds() - reserve + officeUpkeep));
       const partyPerEmployee = partySpendPerEmployee(office.avgMorale, office.maxMorale ?? 100, employees, allowance);
       if (!recovering && partyPerEmployee > 0) {
         const result = safe('Throw budgeted party', () => c.throwParty(division, city, partyPerEmployee));
-        if (Number(result) > 1) upkeepBudget -= partyPerEmployee * employees;
+        if (Number(result) > 1) {const paid=partyPerEmployee*employees;upkeepBudget-=paid;officeUpkeep-=paid;reserve-=paid;recordUpkeep(division,'party',paid);}
       }
     }
   };
@@ -548,7 +647,7 @@ export async function main(ns) {
   };
   const manageBoosts = (city, division = agri) => {
     clearBoostRates(division,city);
-    if(boostBudget<=0)return;
+    if(boostBudget<=0||marketRows.get(division+'/'+city)?.backlog)return;
     const wh = safe("Read warehouse", () => c.getWarehouse(division, city));
     if (!wh) return;
     const full = wh.sizeUsed / Math.max(1, wh.size) > 0.9;
@@ -582,40 +681,44 @@ export async function main(ns) {
 
   // ---- Research ---------------------------------------------------------
   const runResearch = (division, order) => {
-    const d=safe('Read research division',()=>c.getDivision(division));
-    if(!d)return;
-    const points=d.researchPoints??0;
-    if(safe('Check laboratory',()=>c.hasResearched(division,'Hi-Tech R&D Laboratory'))!==true){
-      const cost=safe('Laboratory cost',()=>c.getResearchCost(division,'Hi-Tech R&D Laboratory'));
-      if(researchAffordable(points,cost,.5))attempt('Research laboratory',()=>c.research(division,'Hi-Tech R&D Laboratory'));
-      return;
-    }
-    if(!hasTA2(division)){
-      const hasTA1=safe('Check TA.I',()=>c.hasResearched(division,'Market-TA.I'))===true;
-      const first=hasTA1?0:safe('TA.I cost',()=>c.getResearchCost(division,'Market-TA.I'));
-      const second=safe('TA.II cost',()=>c.getResearchCost(division,'Market-TA.II'));
-      if(Number.isFinite(first)&&Number.isFinite(second)&&researchAffordable(points,first+second,.5)){
-        if(!hasTA1&&!attempt('Research TA.I',()=>c.research(division,'Market-TA.I')))return;
-        if(safe('Confirm TA.I',()=>c.hasResearched(division,'Market-TA.I'))===true)attempt('Research TA.II',()=>c.research(division,'Market-TA.II'));
+    const d=safe('Read research division',()=>c.getDivision(division));if(!d)return;
+    const points=d.researchPoints??0,context=researchContext(division,d);let spent=0;
+    const decision=(name,cost)=>{const result=corporationResearchDecision({name,points,cost,context});researchDecisions[division]={name,cost,points,...result};return result.ready;};
+    const purchase=name=>{
+      const cost=safe('Requote research cost',()=>c.getResearchCost(division,name)),live=safe('Recheck research points',()=>c.getDivision(division));
+      if(!Number.isFinite(cost)||cost<0||!Number.isFinite(live?.researchPoints)||live.researchPoints<cost)return false;
+      if(!attempt('Research '+name,()=>c.research(division,name)))return false;spent+=cost;return true;
+    };
+    try{
+      if(safe('Check laboratory',()=>c.hasResearched(division,'Hi-Tech R&D Laboratory'))!==true){
+        const cost=safe('Laboratory cost',()=>c.getResearchCost(division,'Hi-Tech R&D Laboratory'));
+        if(decision('Hi-Tech R&D Laboratory',cost))purchase('Hi-Tech R&D Laboratory');return;
       }
-      return; // Preserve points toward automated pricing before optional research.
-    }
-    const upkeepOffices=(d.cities||[]).map(city=>safe('Read upkeep research value',()=>c.getOffice(division,city))).filter(Boolean);
-    for(const name of ['AutoBrew','AutoPartyManager'])if(safe('Read upkeep research',()=>c.hasResearched(division,name))!==true){
-      const cost=safe('Upkeep research cost',()=>c.getResearchCost(division,name));
-      if(usefulUpkeepResearch(name,upkeepOffices,points,cost)){attempt('Research '+name,()=>c.research(division,name));return;}
-    }
-    const available=[...order,...extraResearch,...(constants.researchNamesBase||[]),...(d.makesProducts?constants.researchNamesProductOnly||[]:[])];
-    const optionalAutomation=new Set(['AutoBrew','AutoPartyManager','HRBuddy-Recruitment','HRBuddy-Training','uPgrade: Dashboard']);
-    for(const name of new Set(available)){
-      if(optionalAutomation.has(name))continue;
-      if(safe(`Check ${name}`,()=>c.hasResearched(division,name))===true)continue;
-      const parent=researchParents[name]||'Hi-Tech R&D Laboratory';
-      if(safe(`Check research prerequisite ${parent}`,()=>c.hasResearched(division,parent))!==true)continue;
-      const cost=safe(`Get ${name} cost`,()=>c.getResearchCost(division,name));
-      if(researchAffordable(points,cost))attempt(`Research ${name}`,()=>c.research(division,name));
-      break;
-    }
+      if(!hasTA2(division)){
+        const hasTA1=safe('Check TA.I',()=>c.hasResearched(division,'Market-TA.I'))===true;
+        const first=hasTA1?0:safe('TA.I cost',()=>c.getResearchCost(division,'Market-TA.I')),second=safe('TA.II cost',()=>c.getResearchCost(division,'Market-TA.II'));
+        if(Number.isFinite(first)&&Number.isFinite(second)&&decision('Market-TA.II',first+second)){
+          if(!hasTA1&&!purchase('Market-TA.I'))return;
+          if(safe('Confirm TA.I',()=>c.hasResearched(division,'Market-TA.I'))===true)purchase('Market-TA.II');
+        }return;
+      }
+      const available=[...order,...extraResearch,...(constants.researchNamesBase||[]),...(d.makesProducts?constants.researchNamesProductOnly||[]:[])];
+      const optionalAutomation=new Set(['HRBuddy-Recruitment','HRBuddy-Training','uPgrade: Dashboard']);
+      const bundleNames=[...new Set(available)].filter(name=>!optionalAutomation.has(name));
+      const owned=bundleNames.filter(name=>safe('Read bundle research ownership',()=>c.hasResearched(division,name))===true);
+      const costs=Object.fromEntries(bundleNames.filter(name=>!owned.includes(name)).map(name=>[name,safe('Quote research package',()=>c.getResearchCost(division,name))]));
+      const bundle=planCorporationResearchBundles({names:bundleNames,owned,costs,parents:researchParents,points,context})[0];
+      if(bundle){
+        const result=executeCorporationResearchBundle({owned:name=>safe('Recheck package ownership',()=>c.hasResearched(division,name)),cost:name=>safe('Requote package research',()=>c.getResearchCost(division,name)),points:()=>safe('Recheck package balance',()=>c.getDivision(division))?.researchPoints,buy:purchase},bundle,canManage);
+        researchDecisions[division]={name:bundle.target,package:bundle.items.map(item=>item.name),cost:bundle.cost,points,...bundle.decision,...result};return;
+      }
+      for(const name of new Set(available)){
+        if(optionalAutomation.has(name)||['Drones','Automatic Drug Administration'].includes(name)||safe('Check research',()=>c.hasResearched(division,name))===true)continue;
+        const parent=researchParents[name]||'Hi-Tech R&D Laboratory';if(safe('Check research parent',()=>c.hasResearched(division,parent))!==true)continue;
+        const cost=safe('Get research cost',()=>c.getResearchCost(division,name));
+        if(decision(name,cost))purchase(name);break;
+      }
+    }finally{researchSamples.set(division,{at:Date.now(),points,spent});}
   };
   const hasTA2 = (division) => safe(`Check TA.II ${division}`, () => c.hasResearched(division, "Market-TA.II")) === true;
 
@@ -625,7 +728,7 @@ export async function main(ns) {
   const runWarehouse = (division, city) => {
     if (!hasUnlock("Warehouse API")) return;
     let has = safe("Check warehouse", () => c.hasWarehouse(division, city)) === true;
-    if (!has && funds() > reserve + WAREHOUSE_BUFFER) {
+    if (!has) {
       capitalPurchase('Purchase warehouse '+division+'/'+city,Number(constants.warehouseInitialCost)||5e9,()=>c.purchaseWarehouse(division,city),1/(Number(constants.warehouseInitialCost)||5e9),2);
       has = safe("Check warehouse after purchase", () => c.hasWarehouse(division, city)) === true;
     }
@@ -745,23 +848,32 @@ export async function main(ns) {
     }
   };
 
-  const productMetricsFile='tasks/corporation-product-metrics.json';let productMetrics={};
-  try{const saved=JSON.parse(ns.read(productMetricsFile));if(saved.nodeReset===resetInfo.lastNodeReset&&saved.corporation===corp()?.name)productMetrics=saved.divisions||{};}catch{}
+  const productMetricsFile='tasks/corporation-product-metrics.json';let productMetrics={},productHistory={};
+  try{const saved=JSON.parse(ns.read(productMetricsFile));if(saved.nodeReset===resetInfo.lastNodeReset&&saved.corporation===corp()?.name){productMetrics=saved.divisions||{};productHistory=saved.productsByDivision||{};}}catch{}
   const manageProductDevelopment=division=>{
     const d=safe('Read product cycle',()=>c.getDivision(division));if(!d?.cities?.length||recovering)return;
     const offices=d.cities.filter(city=>safe('Development warehouse',()=>c.hasWarehouse(division,city))).map(city=>({...safe('Development office',()=>c.getOffice(division,city)),city}));
     const products=(d.products||[]).map(name=>safe('Read product progress',()=>c.getProduct(division,d.cities[0],name))).filter(Boolean);
-    const pending=products.find(p=>p.developmentProgress<100),metric=productMetrics[division]||{};
+    const history=productHistory[division]||{};
+    for(const name of Object.keys(history))if(!d.products.includes(name))delete history[name];
+    const previous=productMetrics[division];
+    if(previous?.name&&d.products.includes(previous.name)&&!Object.hasOwn(history,previous.name))history[previous.name]=previous;
+    productHistory[division]=history;
+    const pending=products.find(p=>p.developmentProgress<100),metric=corporationProductBaseline(history,productMetrics[division],productMetrics[division]?.name);
+    if(metric.name)productMetrics[division]=metric;
     if(pending){
-      if(metric.name!==pending.name)productMetrics[division]={name:pending.name,startedAt:Date.now(),research:d.researchPoints,employees:offices.find(o=>o.city===pending.creationCity)?.numEmployees||0};
+      if(metric.name!==pending.name)productMetrics[division]=history[pending.name]||{name:pending.name,startedAt:Date.now(),observedOnly:true};
+      history[pending.name]=productMetrics[division];
       return;
     }
     if(metric.name&&!metric.finishedAt&&products.some(p=>p.name===metric.name)){metric.finishedAt=Date.now();metric.developmentMs=Math.max(0,metric.finishedAt-metric.startedAt);}
     const investment=productInvestment(funds(),reserve,growthBank);if(!(investment>=10e6))return;
     const prefix=division===restaurant?'Apex Dining':division+' Auto',retiring=products.length>=d.maxProducts?chooseRetirement(products,prefix):null;
-    const at=Number(metric.startedAt)||Number(division===restaurant?lastProductAt:otherProductTimes[division])||0;
-    if(products.length>=d.maxProducts&&(!retiring||products.length<2||!productReplacementReady({product:retiring,investment,at,developmentMs:metric.developmentMs||0,baselineResearch:metric.research,baselineEmployees:metric.employees,research:d.researchPoints,employees:Math.max(0,...offices.map(o=>o.numEmployees||0)),cycleSeconds})))return;
+    const baseline=corporationProductBaseline(history,metric,retiring?.name);
+    const at=Number(baseline.startedAt)||0;
+    if(products.length>=d.maxProducts&&(!retiring||products.length<2||!productReplacementReady({product:retiring,investment,at,developmentMs:baseline.developmentMs||0,baselineResearch:baseline.observedOnly?0:baseline.research,baselineEmployees:baseline.observedOnly?0:baseline.employees,research:d.researchPoints,employees:Math.max(0,...offices.map(o=>o.numEmployees||0)),cycleSeconds})))return;
     const city=corporationDevelopmentCity(offices);if(!city)return;
+    const developmentMs=corporationDevelopmentDelay(offices.find(o=>o.city===city),0,cycleSeconds);
     const escaped=prefix.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),pattern=new RegExp('^'+escaped+' (\\d+)$');
     const sequence=Math.max(0,...(d.products||[]).map(name=>Number(name.match(pattern)?.[1])||0))+1,name=prefix+' '+sequence;
     capitalPurchase('Develop '+division+'/'+name,2*investment,()=>{
@@ -770,8 +882,9 @@ export async function main(ns) {
       c.makeProduct(division,city,name,investment,investment);
       if(!c.getDivision(division).products.includes(name))return false;
       productMetrics[division]={name,city,startedAt:Date.now(),research:live.researchPoints,employees:offices.find(o=>o.city===city)?.numEmployees||0};
+      history[name]=productMetrics[division];if(retiring)delete history[retiring.name];
       if(division===restaurant)lastProductAt=Date.now();else otherProductTimes[division]=Date.now();return true;
-    },(retiring?.designInvestment>0?Math.max(.1,(investment/retiring.designInvestment)**.1-1):2)/(2*investment),products.length===0?1:0);
+    },(retiring?.designInvestment>0?Math.max(.1,(investment/retiring.designInvestment)**.1-1):2)/(2*investment),products.length===0?1:0,0,{kind:'development',division,delay:{kind:'product-development',ms:Number.isFinite(developmentMs)?developmentMs+3*cycleSeconds*1000:null}});
   };
 
   const manageShares = () => {
@@ -813,7 +926,7 @@ export async function main(ns) {
   };
   const bribeFactions = async () => {
     const info = corp();
-    if (!options['bribe-factions'] || recovering || !(Number(sf(4)) > 0 || resetInfo.currentNode === 4) ||
+    if (!options['bribe-factions'] || growthPriority || recovering || !(Number(sf(4)) > 0 || resetInfo.currentNode === 4) ||
         !(info?.valuation >= (Number(constants.bribeThreshold) || 100e12)) || Date.now() - lastBribe < 60000) return;
     lastBribe = Date.now();
     try {
@@ -848,6 +961,7 @@ export async function main(ns) {
     if (saved.nodeReset === resetInfo.lastNodeReset && saved.corporation === corp()?.name) {
       if (Number.isFinite(saved.growthBank)) growthBank = Math.max(0, saved.growthBank);
       lastExpansion = Number(saved.lastExpansion) || 0;
+      advertisingRecovery=refreshCorporationAdvertisingRecovery(saved.advertisingRecovery,divisions().map(name=>safe('Restore advertising recovery',()=>c.getDivision(name))||{name}));
     }
   } catch { /* No previous lifecycle state. */ }
   try {
@@ -874,30 +988,44 @@ export async function main(ns) {
       // START applies the previous cycle's results before the next purchases.
       // Manage once per full cycle; the first pass also handles startup mid-cycle.
       if (managedOnce && info.prevState && info.prevState !== 'START') { await c.nextUpdate(); continue; }
+      advertisingRecovery=refreshCorporationAdvertisingRecovery([...advertisingRecovery],divisions().map(name=>safe('Refresh advertising recovery',()=>c.getDivision(name))||{name}));
       const completedCycle=managedOnce;
+      if(completedCycle)researchCycle++;
+      const calibrationEvents=calibrationState?.events||[];
+      const calibrationReading=completedCycle&&Array.isArray(calibrationEvents)&&(!calibrationEvents.length||calibrationEvents.length===1&&calibrationEvents[0]?.calibrationQuote)?captureCorporationCalibration(c,info,constants):null;
+      calibrationState=observeCorporationCalibration(calibrationState,{scope:calibrationScope,at:Date.now(),snapshot:calibrationReading,events:calibrationEvents});
       managedOnce = true;
-      const treasury = treasuryPolicy(info, cycleSeconds);
+      const treasury = treasuryPolicy(info, cycleSeconds,{developmentSpeed:options['development-speed']});
       reserve = treasury.reserve;
+      const pricingReady=divisions().some(name=>{const d=safe('Read growth maturity',()=>c.getDivision(name));return d?.makesProducts&&safe('Read pricing maturity',()=>c.hasResearched(name,'Market-TA.II'))===true&&d.products?.some(p=>safe('Read mature growth product',()=>c.getProduct(name,d.cities[0],p))?.developmentProgress>=100);});
+      growthPhase=corporationGrowthPhase(info,{enabled:!!options['development-speed'],reserve,pricingReady});growthPriority=growthPhase.active;
       recovering = treasury.recovering;
-      upkeepBudget = treasury.upkeepBudget;
+      const upkeepRows=[];
+      if(hasUnlock('Office API'))for(const division of divisions()){
+        const d=safe('Read upkeep division',()=>c.getDivision(division));
+        for(const city of d?.cities||[]){const office=safe('Read upkeep office',()=>c.getOffice(division,city));if(office)upkeepRows.push({key:division+'/'+city,product:d.makesProducts,office:{...office,autoTea:safe('Read auto tea',()=>c.hasResearched(division,'AutoBrew'))===true,autoParty:safe('Read auto party',()=>c.hasResearched(division,'AutoPartyManager'))===true}});}
+      }
+      upkeepAllocations=allocateCorporationUpkeep(upkeepRows,treasury.upkeepBudget,teaCostPerEmployee);
+      upkeepBudget=[...upkeepAllocations.values()].reduce((sum,value)=>sum+value,0);
+      reserve+=upkeepBudget; // Protect allocated upkeep from capital plans until actually paid.
 
       const available = Math.max(0, funds() - reserve);
       const profit = Math.max(0, (Number(info.revenue) || 0) - (Number(info.expenses) || 0)) * cycleSeconds;
-      growthBank = Math.min(available, (growthBank === null ? available : growthBank) + profit * 0.25);
+      growthBank = corporationGrowthBudget(info,reserve,growthBank,cycleSeconds,options['development-speed']);
       inputBudget = available * 0.5;
       if (ACCEPT_INVESTMENT) {
         const offer=safe('Read investment offer',()=>c.getInvestmentOffer());
-        const stageReady=offer?.round<=2?hasDivision(agri)&&safe('Read agricultural reach',()=>c.getDivision(agri))?.cities?.length===6&&
+        const stageReady=offer?.round<=2?hasDivision(agri)&&safe('Read agricultural reach',()=>c.getDivision(agri))?.cities?.length===6&&safe('Read agricultural warehouses',()=>c.getDivision(agri).cities.every(city=>c.hasWarehouse(agri,city)))===true&&
           (offer.round===1||hasDivision(chem)||hasDivision(tobacco)):divisions().some(name=>{const d=safe('Read funding product stage',()=>c.getDivision(name));return d?.makesProducts&&d.products?.some(p=>safe('Read funding product',()=>c.getProduct(name,d.cities[0],p))?.developmentProgress>=100);});
-        financeDecision=investmentDecision(info,offer,financeHistory,minOwnership,{reserve,cycleSeconds,stageReady});
+        financeDecision=investmentDecision(info,offer,financeHistory,investmentMinOwnership,{reserve,cycleSeconds,stageReady});
         financeHistory=financeDecision.history;
-        if(financeDecision.accept&&attempt(`Accept round ${offer.round} investment`,()=>c.acceptInvestmentOffer()))financeHistory=null;
+        if(financeDecision.accept&&attempt(`Accept round ${offer.round} investment`,()=>c.acceptInvestmentOffer())){financeHistory=null;growthBank=corporationGrowthBudget({...info,funds:funds(),revenue:0,expenses:0},reserve,growthBank,cycleSeconds,options['development-speed']);}
       }
       manageDividends(); // Let share-sale policy consider the dividend rate selected for this cycle.
       manageShares();
 
-      growthPlans.clear();growthDecisions=[];marketRows.clear();staffingGoals.clear();
-      advertQueue.clear();
+      growthPlans.clear();growthDecisions=[];marketRows.clear();staffingGoals.clear();researchContexts.clear();upkeepPaid.clear();
+      advertQueue.clear();advertisingCandidates.clear();
       exportRoutes.clear(); // Reinspect persistent routes every cycle; deduplicate calls within this pass.
       storagePressure = false;
       // Preserve cash for upcoming inputs and salaries before discretionary spending.
@@ -997,42 +1125,21 @@ export async function main(ns) {
       }
       if (Date.now() - lastUpgrade >= 30_000) {
         const cash = funds();
-        const growingProducts=divisions().some(name=>{const d=safe('Read product advertising need',()=>c.getDivision(name));return d?.makesProducts&&d.products?.length&&!(d.awareness===Number.MAX_VALUE&&d.popularity===Number.MAX_VALUE);});
-        let bought = 0;
-
-        if (growingProducts) {
-          const cost = safe("Wilson cost", () => c.getUpgradeLevelCost("Wilson Analytics"));
-          if (Number.isFinite(cost) && cost <= cash * 0.35 && cash > cost + reserve) {
-            if (capitalPurchase("Level Wilson Analytics", cost, () => {c.levelUpgrade("Wilson Analytics");lastUpgrade=Date.now();},upgradeReturn("Wilson Analytics",c.getUpgradeLevel("Wilson Analytics"),cost,false),0,0,{kind:"sales"})) {
-              lastUpgrade = Date.now();
-              bought++;
-            }
-          }
-        }
-
-        if (bought === 0) {
-          const order = [
-            ...(storagePressure ? ["Smart Storage"] : []),
-            "Smart Factories", "Smart Storage",
-            "Nuoptimal Nootropic Injector Implants", "Speech Processor Implants",
-            "Neural Accelerators", "FocusWires",
-            "ABC SalesBots", "Project Insight",
-          ];
-          const ranked = [...new Set(order)].map(upgrade => {
-            const cost = safe(`Get ${upgrade} cost`, () => c.getUpgradeLevelCost(upgrade));
-            const level = safe(`Read ${upgrade} level`, () => c.getUpgradeLevel(upgrade)) || 0;
-            return { upgrade, cost, score: upgradeReturn(upgrade, level, cost, storagePressure) };
-          }).filter(item => Number.isFinite(item.cost) && item.cost > 0).sort((a, b) => b.score - a.score);
-          for (const { upgrade, cost } of ranked) {
-            const cap = storagePressure && upgrade === "Smart Storage" ? 0.35 : 0.20;
-            if (Number.isFinite(cost) && cost <= cash * cap && funds() > cost + reserve) {
-              if (capitalPurchase(`Level ${upgrade}`, cost, () => {c.levelUpgrade(upgrade);lastUpgrade=Date.now();},upgradeReturn(upgrade,c.getUpgradeLevel(upgrade),cost,storagePressure),0,0,{kind:upgrade==="Smart Storage"?"storage":upgrade==="ABC SalesBots"?"sales":upgrade==="Project Insight"?"research":"production"})) {
-                lastUpgrade = Date.now();
-                bought++;
-              }
-              if (bought >= 2) break;
-            }
-          }
+        const order = [
+          ...(storagePressure ? ["Smart Storage"] : []),
+          "Smart Factories", "Smart Storage",
+          "Nuoptimal Nootropic Injector Implants", "Speech Processor Implants",
+          "Neural Accelerators", "FocusWires", "ABC SalesBots", "Project Insight",
+        ];
+        const ranked = [...new Set(order)].map(upgrade => {
+          const cost = safe(`Get ${upgrade} cost`, () => c.getUpgradeLevelCost(upgrade));
+          const level = safe(`Read ${upgrade} level`, () => c.getUpgradeLevel(upgrade)) || 0;
+          return { upgrade, cost, score: upgradeReturn(upgrade, level, cost, storagePressure) };
+        }).filter(item => Number.isFinite(item.cost) && item.cost > 0).sort((a, b) => b.score - a.score);
+        for (const { upgrade, cost } of ranked) {
+          const cap = storagePressure && upgrade === "Smart Storage" ? 0.35 : 0.20;
+          if (cost <= cash * cap && funds() > cost + reserve)
+            capitalPurchase(`Level ${upgrade}`, cost, () => {c.levelUpgrade(upgrade);lastUpgrade=Date.now();},upgradeReturn(upgrade,c.getUpgradeLevel(upgrade),cost,storagePressure),0,0,{kind:upgrade==="Smart Storage"?"storage":upgrade==="ABC SalesBots"?"sales":upgrade==="Project Insight"?"research":"production"});
         }
       }
 
@@ -1053,17 +1160,41 @@ export async function main(ns) {
       }
       await bribeFactions();
       if(!canManage()){clearCorporationBuyRates(c);continue;}
-      let remainingBoostBudget=recovering?0:Math.min(growthBank,boostPurchaseBudget({...info,funds:funds()},reserve,upkeepBudget,cycleSeconds));
+      let remainingBoostBudget=recovering?0:Math.min(growthBank,boostPurchaseBudget({...info,funds:funds()},reserve,0,cycleSeconds,{developmentSpeed:options['development-speed']}));
       for(let index=0;index<boostLocations.length;index++){
         boostBudget=remainingBoostBudget/(boostLocations.length-index);const allowance=boostBudget;
         manageBoosts(boostLocations[index].city,boostLocations[index].division);remainingBoostBudget-=allowance-boostBudget;
       }
       if(completedCycle)growthMarket=observeCorporationGrowth(growthMarket,{scope:JSON.stringify([resetInfo.lastNodeReset,info.name]),at:Date.now(),rows:[...marketRows.values()]});
-      const rankedGrowth=scoreCorporationGrowth([...growthPlans.values()],growthMarket);
-      const growth=executeCorporationGrowth(rankedGrowth,growthBank,funds,()=>reserve,canManage);growthBank=growth.remaining;growthDecisions.push(...growth.decisions);
+      const route=readNodeRoutePlan(ns),remainingMs=route?.routes?.[route.selected]?.etaMs;
+      const delayedGrowth=planCorporationDelayedReturns(scoreCorporationGrowth([...growthPlans.values()],growthMarket),{remainingMs});
+      const pricedGrowth=calibrateCorporationGrowth(delayedGrowth,calibrationState,{scope:calibrationScope,at:Date.now()});
+      const candidates=pricedGrowth.flatMap(plan=>{
+        const q=advertisingCandidates.get(plan.market?.division);
+        return q&&plan.label==='Hire AdVert ('+q.division+')'&&plan.score>0?[{...q,aloneValue:plan.score*q.advertCost,profitPerSecond:plan.profitPerSecond,delayedReturn:plan.delayedReturn}]:[];
+      });
+      const anchor=candidates[0],groups=anchor&&!advertisingRecovery.size?planCorporationAdvertisingGroups(candidates,{level:anchor.level,wilsonCost:anchor.wilsonCost,maxCost:funds()*ADVERT_SPEND_FRACTION}):[];
+      const groupPlans=groups.map(quote=>{
+        const names=quote.advertisements.map(a=>a.division),receipt={state:'quoted'},label='Wilson + AdVerts ('+names.map(n=>JSON.stringify(n)).join(', ')+')';
+        return {label,cost:quote.cost,score:quote.score,priority:0,exclusive:['wilson-upgrade',...names.map(n=>'advert:'+n)],market:{kind:'sales',divisions:names},growthBasis:quote.basis,
+          profitPerSecond:quote.advertisements.reduce((sum,a)=>sum+(Number(a.profitPerSecond)||0),0),delayedReturn:{state:'estimated',basis:'Per-division delays already included',components:quote.advertisements.map(a=>({division:a.division,...a.delayedReturn}))},
+          advertisingBundle:quote,advertisingReceipt:receipt,run:()=>{
+            Object.assign(receipt,executeCorporationAdvertisingGroup(c,quote,{cash:funds,reserve:()=>reserve,allowed:canManage}));
+            if(receipt.wilsonPurchased)lastUpgrade=Date.now();
+            for(const a of quote.advertisements){
+              if(receipt.advertisementsPurchased.includes(a.division))advertisingRecovery.delete(a.division);
+              else if(receipt.wilsonPurchased)advertisingRecovery.set(a.division,{level:quote.level+1,adverts:a.adverts});
+            }
+            return receipt.state==='purchased';
+          }};
+      });
+      const rankedGrowth=[...pricedGrowth,...groupPlans];
+      const foundationWaits=growthDecisions.filter(d=>d.state==='budget-wait').map(d=>({label:d.label,cost:d.cost,priority:2,score:1/Math.max(1,d.cost)}));
+      growthGoal=corporationFundingGoal([...foundationWaits,...rankedGrowth],{...info,funds:funds()},reserve,growthBank,{enabled:growthPriority});
+      const growth=executeCorporationGrowth(rankedGrowth,growthBank,funds,()=>reserve,canManage,{hold:growthGoal});growthBank=growth.remaining;growthDecisions.push(...growth.decisions);
       manageHacknetServers();
 
-      const spentOn = spendHashes();
+      const spentOn = await spendHashes();
       if (spentOn) {
         const hashCount = (() => {
           try { return Number(ns.hacknet.numHashes()) || 0; }
@@ -1072,18 +1203,23 @@ export async function main(ns) {
         ns.print(`Spent hashes on "${spentOn}" (${ns.format.number(hashCount)} hashes remaining).`);
       }
 
+      calibrationState.events=growthDecisions.filter(d=>['purchased','ordered'].includes(d.state)||d.state==='rejected'&&d.cost>0).slice(0,128);
+      if(spentOn==='Exchange for Corporation Research')calibrationState.events.push({state:'changed',label:'Corporate hash research'});
+      await ns.write(calibrationFile,JSON.stringify(calibrationState),'w');
       const liveStatus = corp() || info;
+      for(const division of divisions())upkeepHistory.set(division,observeCorporationUpkeep(upkeepHistory.get(division),upkeepPaid.get(division)||{tea:0,party:0}));
+      await ns.write(researchStateFile,JSON.stringify({upkeep:Object.fromEntries(upkeepHistory),nodeReset:resetInfo.lastNodeReset,corporation:info.name,divisions:Object.fromEntries(researchSamples)}),'w');
       if(growthMarket)await ns.write('tasks/corporation-growth-market.json',JSON.stringify(growthMarket),'w');
-      await ns.write(productMetricsFile,JSON.stringify({nodeReset:resetInfo.lastNodeReset,corporation:info.name,divisions:productMetrics}),'w');
+      await ns.write(productMetricsFile,JSON.stringify({nodeReset:resetInfo.lastNodeReset,corporation:info.name,divisions:productMetrics,productsByDivision:productHistory}),'w');
       await ns.write(productStateFile,JSON.stringify({at:lastProductAt,nodeReset:resetInfo.lastNodeReset,corporation:info.name}),'w');
       await ns.write(otherProductStateFile,JSON.stringify({nodeReset:resetInfo.lastNodeReset,corporation:info.name,divisions:otherProductTimes}),'w');
       await ns.write(financeFile,JSON.stringify({at:Date.now(),pid:ns.pid,nodeReset:resetInfo.lastNodeReset,corporation:info.name,history:financeHistory,lastShareSaleAt,decision:financeDecision&&{accept:financeDecision.accept,holdIPO:financeDecision.holdIPO,reason:financeDecision.reason}}),'w');
-      await ns.write(lifecycleFile, JSON.stringify({nodeReset: resetInfo.lastNodeReset, corporation: info.name, growthBank, lastExpansion}), 'w');
+      await ns.write(lifecycleFile, JSON.stringify({nodeReset: resetInfo.lastNodeReset, corporation: info.name, growthBank, lastExpansion, advertisingRecovery:[...advertisingRecovery]}), 'w');
       await ns.write('tasks/corporation-status.json', JSON.stringify({ at: Date.now(), pid: ns.pid, nodeReset:resetInfo.lastNodeReset, augReset:resetInfo.lastAugReset, corporation: info.name,
-        growthBank, growthDecisions, productMetrics, staffingGoals:Object.fromEntries(staffingGoals), mode: recovering ? 'cash recovery' : 'growth', funds: funds(), reserve, divisions: divisions(),
+        growthBank, growthDecisions, fundingDiagnostics:corporationFundingDiagnostics([...foundationWaits,...rankedGrowth].filter(p=>!growthDecisions.some(d=>d.label===p.label&&['purchased','ordered'].includes(d.state))),liveStatus,reserve,growthBank), researchDecisions, advertisingRecovery:[...advertisingRecovery], calibration:{status:calibrationState.status,pending:calibrationState.pending?.quote?.upgrade||null,learnedUpgrades:Object.values(calibrationState.stats).filter(s=>s.length>=3).length}, productMetrics, staffingGoals:Object.fromEntries(staffingGoals), mode: recovering ? 'cash recovery' : 'growth', funds: funds(), reserve, divisions: divisions(),
         revenue: liveStatus.revenue, expenses: liveStatus.expenses, public: liveStatus.public,
         ownership: liveStatus.totalShares > 0 ? liveStatus.numShares / liveStatus.totalShares : null,
-        minOwnership, liquidityDecision, retainedProfitFraction:1-Number(liveStatus.dividendRate||0), playerCashBottleneck:playerCashBottleneck(), estimatedDividendIncome:corporationDividendRate(liveStatus,cycleSeconds), developmentSpeed:options['development-speed'], financing:financeDecision?.reason, lastShareSaleAt, dividendRate: Math.max(0, lastDividendRate), expandAllIndustries: options['expand-all-industries'],
+        minOwnership, investmentMinOwnership, growthPriority, growthPhase, growthGoal, hashMilestone, liquidityDecision, retainedProfitFraction:1-Number(liveStatus.dividendRate||0), playerCashBottleneck:playerCashBottleneck(), estimatedDividendIncome:corporationDividendRate(liveStatus,cycleSeconds), developmentSpeed:options['development-speed'], financing:financeDecision?.reason, lastShareSaleAt, dividendRate: Math.max(0, lastDividendRate), expandAllIndustries: options['expand-all-industries'],
       }), 'w');
       const now = Date.now();
       if (now - lastInvestmentCycle > 60_000) {

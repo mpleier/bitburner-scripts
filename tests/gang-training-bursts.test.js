@@ -96,9 +96,9 @@ test('executed fast loop returns an expired trainee to work without a territory 
   const gangTrainingScheduleTask=()=>null;const wantedPreparation=null,options={},trainingEpisodes={A:{until:cycle.at-1}},trainingPlans={A:true},ascensionRecoveries={};
   const maintenanceRequested=()=>false,myGangFaction='Own',myGangMembers=Array(12),updateInterval=200,territoryTickTime=20000;
   const getNsDataThroughFile=async()=>cycle,log=()=>{};
-  let lastOtherGangInfo=gangTerritorySample(null,cycle.others,'Own',cycle.at),lastLoopTime=cycle.at,
+  let preparationPhase=null,pendingPowerPulse=null,powerCalibration=[];let lastOtherGangInfo=gangTerritorySample(null,cycle.others,'Own',cycle.at),lastLoopTime=cycle.at,
    territoryNextTick=cycle.at+20000,territoryTickDetected=true,isReadyForNextTerritoryTick=false,
-   warfareFinished=false,territoryTickWaitPadding=200,lastTerritoryPower=10;
+   nextWarfareCheck=Infinity,warfareFinished=false,territoryTickWaitPadding=200,lastTerritoryPower=10;
   const onTerritoryTick=async()=>{throw Error('Unexpected territory event');};
   const optimizeGangCrime=async()=>{events.push('replan');trainingPlans.A=false;};
   const updateMemberActivities=async()=>events.push('assign');

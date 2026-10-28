@@ -166,20 +166,43 @@ export function rankBladeburnerActions(names,chances,metrics,nextBlackOp,rate) {
  return result.sort((a,b)=>a===b?0:a===nextBlackOp?-1:b===nextBlackOp?1:rate(chances[b],metrics[b])-rate(chances[a],metrics[a]));
 }
 /** Self-contained for one guarded worker instead of several workers per skill level. */
-export function spendBladeburnerSkills(api,names,weights,choose,allowed,context=null) {
- const purchased=[];
+export function spendBladeburnerSkills(api,names,weights,choose,allowed,context=null,quoteContext=null) {
+ const purchased=[],bundleCache=new Map();
  for(let purchases=0;purchases<100;purchases++) {
   if(!allowed())break;
   const points=api.getSkillPoints();if(!(points>0))break;
   const levels=Object.fromEntries(names.map(name=>[name,api.getSkillLevel(name)]));
   const costs=Object.fromEntries(names.map(name=>[name,api.getSkillUpgradeCost(name)]));
-  const name=choose(names,levels,costs,points,weights,context?context():null);if(!name)break;
-  if(!allowed()||!api.upgradeSkill(name))break;
-  purchased.push(name);
+  const ctx=quoteContext?quoteContext(api,names,context,bundleCache):context?context():null;
+  const choice=choose(names,levels,costs,points,weights,ctx);if(!choice)break;
+  const name=typeof choice==='string'?choice:choice.name,count=typeof choice==='string'?1:choice.count;
+  if(!names.includes(name)||!Number.isSafeInteger(count)||count<1||count>90||count>1&&(name!=='Overclock'||levels[name]+count>90))break;
+  const price=count===1?costs[name]:api.getSkillUpgradeCost(name,count);
+  if(!Number.isFinite(price)||price<=0||price>api.getSkillPoints()||!allowed()||!api.upgradeSkill(name,count))break;
+  for(let i=0;i<count;i++)purchased.push(name);
   // Native max stamina updates on the next engine tick, not during this synchronous batch.
   if(["Cyber's Edge","Reaper","Evasive System"].includes(name))break;
  }
  return purchased;
+}
+
+/** Read native bundle prices; unavailable APIs retain single-level selection. */
+export function bladeburnerSkillContext(api,names,context,cache=null){
+ const ctx=typeof context==='function'?context():context;
+ if(!ctx||!names.includes('Overclock')||!(ctx.throughputs?.length||ctx.throughput))return ctx;
+ try{
+  const level=api.getSkillLevel('Overclock');
+  if(!Number.isSafeInteger(level)||level<0||level>=90)return ctx;
+  const key=level+':'+api.getSkillUpgradeCost('Overclock');
+  if(cache?.has(key))return {...ctx,overclockBundles:cache.get(key)};
+  const overclockBundles=[];
+  for(let count=2;count<=90-level;count++){
+   const cost=api.getSkillUpgradeCost('Overclock',count);
+   if(Number.isFinite(cost)&&cost>0)overclockBundles.push({count,cost});
+  }
+  if(cache?.set)cache.set(key,overclockBundles);
+  return {...ctx,overclockBundles};
+ }catch{return ctx;}
 }
 
 
@@ -253,6 +276,21 @@ export function planBladeburnerLevels(api,actions,threshold,rate,allowed,recover
    }
    let best=null;
    for(const level of candidates)probe(level);
+   // Explore the rightmost level before promising native duration jumps.
+   // Every probe shares the existing hard budget and is restored in finally.
+   const durations=new Set();
+   const seeds=[...cache.values()].filter(Boolean).sort((a,b)=>b.score-a.score).slice(0,8);
+   for(const seed of seeds){
+    if(durations.has(seed.metrics.time)||cache.size>=probeLimit||!allowed())continue;
+    durations.add(seed.metrics.time);
+    let lo=1,hi=seed.level;
+    if(!(cache.get(1)?.metrics.time<seed.metrics.time))continue;
+    while(lo<hi&&cache.size<probeLimit&&allowed()){
+     const mid=lo+Math.ceil((hi-lo)/2),q=probe(mid);if(!q)break;
+     if(q.metrics.time<seed.metrics.time)lo=mid;else hi=mid-1;
+    }
+    if(lo===hi){probe(lo);if(lo<lower)probe(lo+1);}
+   }
    for(const candidate of cache.values())if(candidate&&(!best||candidate.score>best.score||candidate.score===best.score&&candidate.level<best.level))best=candidate;
    if(best){
     const result={...best,currentLevel,autoLevel,maxSafeLevel:lower,probes:cache.size};
@@ -340,7 +378,9 @@ export function planBladeburnerTeams(api,actions,threshold,rate,allowed,planner,
    const baseline=planner(api,[[name,type]],threshold,rate,allowed,recovery,forecast)[name];
    let best=baseline?{...baseline,team:0,currentTeam:previous,expectedCasualties:0}:null;
    // Bound the search and worst-case losses; never spend the Black Op squad on repeatable operations.
-   for(let team=1;team<=Math.min(3,spare,cap)&&Number.isFinite(replacementMs)&&allowed();team++) {
+   const limit=Math.min(30,spare,cap),teams=[...new Set([1,2,3,4,6,8,12,16,24,limit,previous])].filter(team=>Number.isSafeInteger(team)&&team>0&&team<=limit);
+   for(const team of teams) {
+    if(!Number.isFinite(replacementMs)||!allowed())break;
     if(api.setTeamSize(type,name,team)!==team)break;
     const candidate=planner(api,[[name,type]],threshold,rate,allowed,recovery,forecast)[name];if(!candidate)continue;
     const probability=Math.max(0,Math.min(1,candidate.chance[0]));
@@ -366,7 +406,7 @@ export function bladeburnerRecruitmentTiming(decision,rankGap,preparingTeam,rank
 }
 
 /** Native skill multipliers have diminishing marginal benefit. Bank points rather than buying unrelated skills. */
-export function nextBladeburnerProgressSkill(names,levels,costs,points,weights,context,legacy) {
+export function nextBladeburnerProgressSkill(names,levels,costs,points,weights,context,legacy,rankRate=null) {
  const rankReady=context?.target&&Number.isFinite(context.rank)&&Number.isFinite(context.requiredRank)&&context.rank>=context.requiredRank;
  const preparing=!!context?.target&&Number.isFinite(context.rank)&&context.rank>0&&Number.isFinite(context.requiredRank)&&context.requiredRank>0&&context.rank>=.9*context.requiredRank;
  const stamina=context?.stamina,difficulty=context?.metadata?.baseDifficulty;
@@ -406,8 +446,8 @@ export function nextBladeburnerProgressSkill(names,levels,costs,points,weights,c
   const quoted=Array.isArray(context?.throughputs)?context.throughputs:[context?.throughput];
   const actions=quoted.filter(a=>a&&['Contracts','Operations'].includes(a.type)&&[a.difficulty,a.gain,a.loss,a.chance].every(Number.isFinite)&&a.difficulty>0&&a.gain>0&&a.loss>=0&&a.chance>0&&a.chance<=1);
   if(actions.length&&[stats?.agility,stats?.dexterity,stamina?.[1],mults?.bladeburner_stamina_gain,context?.threshold].every(Number.isFinite)&&context.threshold>0&&context.threshold<=1&&stats.agility>0&&stats.dexterity>0&&stamina[1]>0&&mults.bladeburner_stamina_gain>0){
-   const score=(upgrade,a)=>{
-    const level=name=>(levels[name]||0)+(upgrade===name?1:0);
+   const score=(upgrade,a,count=1)=>{
+    const level=name=>(levels[name]||0)+(upgrade===name?count:0);
     const reaper=1+.02*level('Reaper'),evasive=1+.04*level('Evasive System'),cyber=1+.02*level("Cyber's Edge");
     const agility=stats.agility*reaper*evasive,dexterity=stats.dexterity*reaper*evasive;
     const oldAgility=stats.agility*(1+.02*(levels.Reaper||0))*(1+.04*(levels['Evasive System']||0));
@@ -425,14 +465,26 @@ export function nextBladeburnerProgressSkill(names,levels,costs,points,weights,c
     if(bonus)chance=Math.min(1,chance*(1+bonus/(100+bonus*(levels[upgrade]||0))));
     // A newly unlocked action competes only after reaching the safety threshold.
     if(chance<context.threshold)return 0;
+    if(typeof rankRate==='function'&&a.metrics){
+     const oldDexterity=stats.dexterity*(1+.02*(levels.Reaper||0))*(1+.04*(levels['Evasive System']||0));
+     const oldFactor=.5*(oldAgility**.04+oldDexterity**.035+oldAgility/10000+oldDexterity/10000);
+     const oldSeconds=Math.ceil(Math.max(1,a.difficulty/10*(1-.01*(levels.Overclock||0))/oldFactor));
+     const metrics={...a.metrics,time:a.metrics.time*seconds/oldSeconds,staminaCost:cost,staminaRegen:regen,hrcRegen:maximum*.01/60};
+     const value=rankRate([chance,chance],metrics);return Number.isFinite(value)?Math.max(0,value):0;
+    }
     return Math.max(0,(chance*a.gain-(1-chance)*a.loss)/(seconds+recovery));
    };
-   const bestRate=upgrade=>Math.max(0,...actions.map(a=>score(upgrade,a)));
+   const bestRate=(upgrade,count=1)=>Math.max(0,...actions.map(a=>score(upgrade,a,count)));
    const baseline=bestRate(null);let best=null,value=0;
    for(const name of names){
     if(!['Overclock','Reaper','Evasive System',"Cyber's Edge","Blade's Intuition",'Digital Observer','Tracer','Cloak','Short-Circuit'].includes(name)||name==='Overclock'&&levels[name]>=90||!Number.isFinite(levels[name])||levels[name]<0||!Number.isFinite(costs[name])||costs[name]<=0||costs[name]>points)continue;
     const gain=(bestRate(name)-baseline)/costs[name];
     if(Number.isFinite(gain)&&gain>value){best=name;value=gain;}
+   }
+   if(names.includes('Overclock')&&Number.isSafeInteger(levels.Overclock))for(const bundle of context.overclockBundles||[]){
+    if(!Number.isSafeInteger(bundle?.count)||bundle.count<2||levels.Overclock+bundle.count>90||!Number.isFinite(bundle.cost)||bundle.cost<=0||bundle.cost>points)continue;
+    const gain=(bestRate('Overclock',bundle.count)-baseline)/bundle.cost;
+    if(Number.isFinite(gain)&&gain>value){best={name:'Overclock',count:bundle.count,cost:bundle.cost};value=gain;}
    }
    // At the native duration floor, save points for a useful future upgrade.
    return best;
@@ -542,17 +594,21 @@ export function bladeburnerActionCandidates(names,counts,chances,threshold=.99) 
 }
 
 /** Non-mutating next upgrade quote using the same progression selector as the purchase worker. */
-export function bladeburnerSkillGoal(api,names,weights,choose,context=null) {
+export function bladeburnerSkillGoal(api,names,weights,choose,context=null,quoteContext=null) {
  try {
  const points=api.getSkillPoints();
  if(!Number.isFinite(points)||points<0)return {state:'unavailable'};
  const levels=Object.fromEntries(names.map(name=>[name,api.getSkillLevel(name)]));
  const costs=Object.fromEntries(names.map(name=>[name,api.getSkillUpgradeCost(name)]));
- const name=choose(names,levels,costs,Infinity,weights,context?context():null);
- if(!name)return {state:'no-useful-upgrade',points};
+ const choice=choose(names,levels,costs,Infinity,weights,quoteContext?quoteContext(api,names,context):context?context():null);
+ if(!choice)return {state:'no-useful-upgrade',points};
+ const name=typeof choice==='string'?choice:choice.name,count=typeof choice==='string'?1:choice.count;
+ if(!Number.isSafeInteger(count)||count<1||count>90||count>1&&(name!=='Overclock'||levels[name]+count>90))return {state:'unavailable'};
  if(!names.includes(name)||!Number.isFinite(costs[name])||costs[name]<=0||!Number.isFinite(levels[name])||levels[name]<0)
   return {state:'unavailable'};
- return {state:'target',name,level:levels[name],points,cost:costs[name],shortfall:Math.max(0,costs[name]-points)};
+ const cost=count===1?costs[name]:api.getSkillUpgradeCost(name,count);
+ if(!Number.isFinite(cost)||cost<=0)return {state:'unavailable'};
+ return {state:'target',name,...(count>1?{count}:{}),level:levels[name],points,cost,shortfall:Math.max(0,cost-points)};
  }catch(error){return {state:'unavailable',reason:String(error).slice(0,200)};}
 }
 

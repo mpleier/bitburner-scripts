@@ -1,4 +1,4 @@
-import {augmentationInstallSafety,resumeAugmentationAutomation,liquidateAugmentationStocks} from './augmentation-install-policy.js';
+import {augmentationInstallSafety,resumeAugmentationAutomation,liquidateAugmentationStocks,prepareAugmentationPurchases} from './augmentation-install-policy.js';
 import {ensureFactionJoinPlan} from './faction-joining.js';
 import {factionJoinAllowed,rankFactionInvites} from './faction-policy.js';
 import {achievementActionAllowed} from './achievement-policy.js';
@@ -123,8 +123,8 @@ export async function main(ns) {
         log(ns, 'INFO: Sending the --ignore-stanek argument to faction-manager.js')
         facmanArgs.push('--ignore-stanek');
     }
-    pid = ns.run(getFilePath('faction-manager.js'), 1, ...facmanArgs);
-    await waitForProcessToComplete(ns, pid, true); // Wait for the script to shut down, indicating it is done.
+    const primaryPurchases=await prepareAugmentationPurchases(ns,{script:getFilePath('faction-manager.js'),args:facmanArgs,reset:beforeReset,phase:'primary'});
+    if(!primaryPurchases.ok)return log(ns,'Installation deferred: '+primaryPurchases.reason,true,'warning');
 
     // If we are not slated to install any augmentations, ABORT
     // Get owned + purchased augmentations, then installed augmentations. Ensure there's a difference
@@ -194,8 +194,8 @@ export async function main(ns) {
     // STEP 4 REDUX: If somehow we have money left over and can afford some junk augs that weren't on our desired list, grab them too
     log(ns, 'Seeing if we can afford any other augmentations...', false, 'info');
     facmanArgs.push('--stat-desired', '_'); // Means buy any aug with any stats
-    pid = ns.run(getFilePath('faction-manager.js'), 1, ...facmanArgs);
-    await waitForProcessToComplete(ns, pid, true); // Wait for the script to shut down, indicating it is done.
+    const leftoverPurchases=await prepareAugmentationPurchases(ns,{script:getFilePath('faction-manager.js'),args:facmanArgs,reset:beforeReset,phase:'leftover'});
+    if(!leftoverPurchases.ok)return log(ns,'Installation deferred: '+leftoverPurchases.reason,true,'warning');
 
     // Clean up our temp folder - it's good to do this once in a while to reduce the save footprint
     // As well as to ensure that data written out on this bitnode don't confuse scripts in the next one.

@@ -1,3 +1,4 @@
+import {readRankHashUpgradeContext,rankHashUpgradeValue} from './bladeburner-rank-support-policy.js';
 import { achievementActionAllowed } from './achievement-policy.js';
 import { isScriptPaused } from './automation-control.js';
 import { registerAutomation, automationHeartbeat, maintenanceRequested } from './runtime-policy.js';
@@ -110,6 +111,12 @@ export function upgradeHacknet(ns,maxSpend,maxPayoffTimeSeconds=3600,options={})
  }
  const useful=candidates.filter(c=>c.payoff<=payoffLimit&&(!options['adaptive-tiers']||hacknetTierEligible(c,ns.getPlayer().money))).sort((a,b)=>a.payoff-b.payoff);
  const affordable=useful.filter(c=>c.cost<=funds);
+ // Preserve financial eligibility and wallet limits; rank value only orders eligible upgrades.
+ const rankContext=servers&&!isCashBottleneck?readRankHashUpgradeContext(ns):null;
+ if(rankContext){
+  for(const c of affordable)c.rankValue=rankHashUpgradeValue(c,rankContext);
+  affordable.sort((a,b)=>(b.rankValue?.secondsSavedPerDollar??0)-(a.rankValue?.secondsSavedPerDollar??0)||a.payoff-b.payoff);
+ }
  let best=affordable[0];
  if(!best){setStatus(ns,useful.length?'Hacknet waiting for funds or spending limit.':`No production upgrades meet the ${formatDuration(payoffLimit*1000)} payoff limit${isCashBottleneck?' (cash bottleneck)':''}.`);return options['adaptive-tiers']&&options.productionMultiplier!==0?0:useful.some(c=>c.cost<=maxSpend)?0:false;}
  // Check a bounded set: a reserved wallet can reject the best ratio while a smaller upgrade fits.
@@ -123,7 +130,7 @@ export function upgradeHacknet(ns,maxSpend,maxPayoffTimeSeconds=3600,options={})
  }
  if(!best)return 0;
  const success=best.kind==='node'?ns.hacknet.purchaseNode()>=0:best.kind==='level'?ns.hacknet.upgradeLevel(best.index,1):best.kind==='ram'?ns.hacknet.upgradeRam(best.index,1):ns.hacknet.upgradeCore(best.index,1);
- const message=success?`Purchased Hacknet ${best.kind} for ${formatMoney(best.cost)}; payoff ${formatDuration(best.payoff*1000)}`:'Hacknet purchase failed; will recheck costs and funds.';
+ const message=success?`Purchased Hacknet ${best.kind} for ${formatMoney(best.cost)}; payoff ${formatDuration(best.payoff*1000)}${best.rankValue?`; next rank exchange ~${best.rankValue.secondsSaved.toFixed(2)}s sooner (production estimate)`:""}`:'Hacknet purchase failed; will recheck costs and funds.';
  setStatus(ns,message);if(success&&options.toast)ns.toast(message,'success');
  return success?best.cost:0;
 }

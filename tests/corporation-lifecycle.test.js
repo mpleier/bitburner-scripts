@@ -43,7 +43,7 @@ test('private funding settles improving offers, blocks premature IPO and honors 
  const initial=investmentDecision(info,offer,null,.5,{now:1000,reserve:1e8});assert.equal(initial.accept,false);assert.equal(initial.holdIPO,true);
  assert.equal(investmentDecision(info,offer,initial.history,.5,{now:102000,reserve:1e8}).accept,true);
  const growing=investmentDecision(info,{...offer,funds:12e9},initial.history,.5,{now:102000,reserve:1e8});assert.equal(growing.accept,false);
- assert.equal(investmentDecision(info,offer,initial.history,.5,{now:1801000,stageReady:false}).accept,true);
+ assert.equal(investmentDecision(info,offer,initial.history,.5,{now:1801000,stageReady:false}).accept,false);
  assert.equal(investmentDecision({...info,numShares:550e6},offer,null,.5).holdIPO,false);
 });
 test('profitable corporations can fund real cash deficits while small dividend waits avoid sales',()=>{

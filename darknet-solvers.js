@@ -1,4 +1,4 @@
-import {isBlankPassword,authenticateEmptyPassword,feedbackModelId,nilFeedbackFromLogs,solveNilPassword,mastermindFeedbackFromLogs,solveMastermindPassword} from './darknet-feedback.js';
+import {feedbackTurnBudget,isBlankPassword,authenticateEmptyPassword,feedbackModelId,nilFeedbackFromLogs,solveNilPassword,mastermindFeedbackFromLogs,solveMastermindPassword} from './darknet-feedback.js';
 // darknet-solvers.js — deterministic password solvers for darknet models.
 // Mirrors the native Dark Net authentication feedback and password formats.
 import { solveAdvancedPassword } from './darknet-advanced.js';
@@ -180,7 +180,7 @@ export function isStalledScout(process, status, now = Date.now()) {
 }
 
 /** Stateful bounded solver; feedback comes from the exact attempt's Heartbleed log. */
-export async function solveFeedbackPassword(details, authenticate, readLogs, state = {}, readLabReport = null) {
+export async function solveFeedbackPassword(details, authenticate, readLogs, state = {}, readLabReport = null,readLabRadar=null) {
   if (isBlankPassword(details)) return authenticateEmptyPassword(authenticate);
   if (feedbackModelId(details) === 'NIL') return solveNilPassword(details, authenticate, readLogs, state);
   if (feedbackModelId(details) === 'DeepGreen') return solveMastermindPassword(details, authenticate, readLogs, state);
@@ -202,23 +202,29 @@ export async function solveFeedbackPassword(details, authenticate, readLogs, sta
     details.passwordFormat === 'alphanumeric' ? '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz' :
     Array.from({ length: 95 }, (_, i) => String.fromCharCode(32 + i)).join('');
   const probe = async password => {
-    const result = await authenticate(password);
-    if (result?.success) return { success: true, password: details.modelId === '(The Labyrinth)' && typeof result.data === 'string' ? result.data : password };
-    if (Number(result?.code) !== 401) return { success: false, reason: 'authentication interrupted', code: result?.code };
-    if (details.modelId === '(The Labyrinth)') return { feedback: result };
+    if(state.pendingPassword!==undefined && state.pendingPassword!==password)return {success:false,reason:'waiting for pending authentication feedback'};
+    if(state.pendingPassword===undefined) {
+      const result = await authenticate(password);
+      if (result?.success) return { success: true, password: details.modelId === '(The Labyrinth)' && typeof result.data === 'string' ? result.data : password };
+      if (Number(result?.code) !== 401) return { success: false, reason: 'authentication interrupted', code: result?.code };
+      // Maze responses describe a move directly; never replay them as log feedback.
+      if (details.modelId === '(The Labyrinth)') return { feedback: result };
+      state.pendingPassword=password;state.pendingMisses=0;
+    }
     const scraped = await readLogs();
     if (!scraped?.success) return { success: false, reason: 'Heartbleed unavailable', code: scraped?.code };
     for (const line of scraped.logs || []) {
       try {
         const record = typeof line === 'string' ? JSON.parse(line) : line;
-        if (Number(record?.code) === 401 && record.passwordAttempted === password) return { feedback: record };
+        if (Number(record?.code) === 401 && record.passwordAttempted === password) { delete state.pendingPassword;delete state.pendingMisses;return { feedback: record }; }
       } catch { /* unrelated log */ }
     }
-    return { success: false, reason: 'matching authentication feedback not found' };
+    if(++state.pendingMisses>=3)delete state.pendingPassword;
+    return { success: false, reason: 'matching authentication feedback not found; progress retained' };
   };
   if (['PHP 5.4', 'Factori-Os', 'KingOfTheHill', 'OpenWebAccessPoint', '(The Labyrinth)'].includes(details.modelId))
-    return solveAdvancedPassword(details, probe, readLogs, state, readLabReport);
-  for (let tries = 0; tries < 64; tries++) {
+    return solveAdvancedPassword(details, probe, readLogs, state, readLabReport,readLabRadar);
+  for (let tries = 0; tries < feedbackTurnBudget(details); tries++) {
     if (['AccountsManager_4.2', 'BellaCuore'].includes(details.modelId)) {
       if (length > 15 || state.low > state.high) return { success: false, reason: 'numeric range exhausted' };
       const guess = String(Math.floor(state.low + (state.high - state.low) / 2));
@@ -285,4 +291,32 @@ export function parsePasswordEntries(text) {
     if (host) entries.set(host, row.slice(separator + 1));
   }
   return entries;
+}
+
+/** Resume exact guesses; only a definitive wrong-password response advances the cursor. */
+export async function candidatePasswordTurn(details, saved, candidates, state, authenticate, reconnect=authenticate, now=Date.now(), budget=8, retryAfter=600000) {
+  const signature=JSON.stringify([details.hostname,details.modelId,details.passwordLength,details.passwordFormat,details.passwordHint,details.data,typeof saved==='string'?saved:null,candidates]);
+  if(state.signature!==signature || Number.isFinite(state.completedAt) && (now<state.completedAt || now-state.completedAt>=retryAfter)) {
+    for(const key of Object.keys(state))delete state[key];
+    Object.assign(state,{signature,cursor:0,savedRejected:false});
+  }
+  if(Number.isFinite(state.completedAt))return {success:false,reason:'cooldown'};
+  let used=0;
+  if(typeof saved==='string'&&!state.savedRejected) {
+    const result=await reconnect(saved);used++;
+    if(result?.success)return {success:true,password:saved,saved:true};
+    if(Number(result?.code)!==401)return {success:false,reason:'interrupted',code:result?.code};
+    state.savedRejected=true;
+  }
+  const limit=feedbackTurnBudget({probeBudget:budget});
+  while(state.cursor<candidates.length&&used<limit) {
+    const password=candidates[state.cursor];
+    if(password===saved){state.cursor++;continue;}
+    const result=await authenticate(password);used++;
+    if(result?.success)return {success:true,password,index:state.cursor};
+    if(Number(result?.code)!==401)return {success:false,reason:'interrupted',code:result?.code};
+    state.cursor++;
+  }
+  if(state.cursor>=candidates.length){state.completedAt=now;return {success:false,reason:'exhausted'};}
+  return {success:false,reason:'budget'};
 }

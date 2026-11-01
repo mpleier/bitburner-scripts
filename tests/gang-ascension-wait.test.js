@@ -90,9 +90,9 @@ test('search rotates immediate and delayed cases within the same bounded budget'
 });
 test('controller reports delayed alternatives but only sends immediate plans to native execution',()=>{
  const source=readFileSync(new URL('../gangs.js',import.meta.url),'utf8');
- assert.match(source,/waitWindows:\[20,60,120\],maxPlanningMs:150,maxSimulations:60/);
+ assert.match(source,/waitWindows:\[20,60,120\],maxPlanningMs:aggression.active\?200:150,maxSimulations:aggression.active\?90:60/);
  assert.match(source,/waitingForecasts:crew.waitingForecasts,trainingAlternatives:crew.trainingAlternatives,deferred:crew.deferred/);
- assert.match(source,/for\(const plan of crew.plans\)/);
+ assert.match(source,/for\(const plan of \(aggression.active\?\[\.\.\.crew.plans\]/);
  assert.doesNotMatch(source,/for\(const plan of crew.deferred\)/);
  assert.match(source,/ascensionEligible:\(m,state,reset\)=>chooseGangAscensions/);
 });

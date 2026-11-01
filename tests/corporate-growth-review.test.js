@@ -37,7 +37,7 @@ test('executed expansion requires full package funds and repairs existing sites 
  let cash=6e9,warehouses=new Set(['A']),cities=['A'],plans=[];
  const ctx={constants:{},reserve:1e8,hasUnlock:()=>true,funds:()=>cash,safe:(_s,fn)=>fn(),capitalPurchase:(...args)=>plans.push(args),c:{getDivision:()=>({cities}),hasWarehouse:(_d,city)=>warehouses.has(city),expandCity:(_d,city)=>cities.push(city),purchaseWarehouse:(_d,city)=>warehouses.add(city)}};
  vm.createContext(ctx);vm.runInContext(body+';globalThis.expandSite=expand;',ctx);
- ctx.expandSite('D','B');assert.equal(plans.length,0);
+ ctx.expandSite('D','B');assert.equal(plans.length,1);assert.equal(plans[0][2](),false);assert.deepEqual(cities,['A']);plans=[];
  cash=20e9;warehouses.clear();ctx.expandSite('D','B');assert.equal(plans.length,0);
  warehouses.add('A');ctx.expandSite('D','B');assert.equal(plans[0][1],9.02e9);assert.equal(plans[0][2](),true);assert.ok(warehouses.has('B'));assert.deepEqual(cities,['A','B']);
  assert.equal(plans[0][2](),false);

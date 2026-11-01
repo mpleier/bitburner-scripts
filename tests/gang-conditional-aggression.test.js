@@ -8,18 +8,18 @@ import {gangWarfarePowerPerTick,gangWarfareMemberEligible,warfareDecision} from 
 const now=100000;
 function input(){const members=Array.from({length:12},(_,i)=>({name:'M'+i,def:1e6,task:'Train Combat',upgrades:[],augmentations:[]}));return {w:{active:true,powerPriority:true,power:32000,territory:1/7,threshold:.75,engageThreshold:.7,rivals:[.3,.45,.6,.7,.85,1].map((x,i)=>({name:'R'+i,power:14647*x,territory:1/7,highRate:.05,samples:0}))},members,participants:members.map(m=>m.name),excluded:[],powerPerTick:80,powerFraction:1,bonusSeconds:0,calibration:{known:true,suspended:false},monitorHealth:{known:true,suspended:false}};}
 function fixture(){
- const data=input(),q={schemaVersion:1,ownerPid:7,nodeReset:1,augReset:2,faction:'Own',at:now,expiresAt:now+5000,...planGangAggression(data)},g={faction:'Own',power:data.w.power,territory:data.w.territory,territoryWarfareEngaged:true,territoryClashChance:1};
+ const data=input(),q={schemaVersion:2,ownerPid:7,nodeReset:1,augReset:2,faction:'Own',at:now,expiresAt:now+5000,...planGangAggression(data)},g={faction:'Own',power:data.w.power,territory:data.w.territory,territoryWarfareEngaged:true,territoryClashChance:1};
  const files={'tasks/gang-aggression.json':q,'tasks/gang-aggression-guard.json':{schemaVersion:1,available:true,ownerPid:5,nodeReset:1,augReset:2,at:now},'tasks/gang-attrition-observations.json':[],'tasks/gang-attrition-attempts.json':[],'tasks/gang-warfare-lease.json':{ownerPid:7,nodeReset:1,augReset:2,faction:'Own',at:now-1000,expiresAt:now+59000,conditionalAggression:true,tasks:{}}},calls=[];
  const ns={args:[7],pid:9,read:p=>typeof files[p]==='string'?files[p]:JSON.stringify(files[p]??null),write:(p,v)=>files[p]=v,isRunning:pid=>[5,7,11].includes(pid),getResetInfo:()=>({lastNodeReset:1,lastAugReset:2}),ps:()=>[{pid:7,filename:'gangs.js'},{pid:5,filename:'reliability-manager.js'}],gang:{inGang:()=>true,getGangInformation:()=>g,getAllGangInformation:()=>({Own:g,...Object.fromEntries(data.w.rivals.map(r=>[r.name,r]))}),getMemberNames:()=>data.members.map(m=>m.name),getMemberInformation:n=>data.members.find(m=>m.name===n),setTerritoryWarfare:v=>{calls.push(v);g.territoryWarfareEngaged=v;},getTaskNames:()=>['Train Combat','Territory Warfare'],setMemberTask:()=>{throw Error('No manual tasks to restore');}}};
  return {data,q,g,files,ns,calls};
 }
 const validate=(f,t=now)=>validateGangAggression(f.ns,7,t,gangAttritionCalibration,gangMonitorBackoff);
-test('strong crew may enter at 68% while the 75% preparation threshold stays intact',()=>{
- const data=input(),q=planGangAggression(data);assert.equal(q.engage,true);assert.equal(q.targetThreshold,.68);assert.equal(data.w.threshold,.75);
+test('strong crew may enter at 65% while the 75% preparation threshold stays intact',()=>{
+ const data=input(),q=planGangAggression(data);assert.equal(q.engage,true);assert.equal(q.targetThreshold,.65);assert.equal(data.w.threshold,.75);
  assert.deepEqual(q.scenarios.map(s=>s.rivalGrowthScale),[.5,1,2]);assert.ok(q.scenarios.every(s=>s.engage&&s.fight.deaths<=.02&&s.extraDeaths<=.005&&s.fight.minPower>=data.w.power*.9));
 });
 test('weak crews, low odds, missing context and explicit higher thresholds retain normal entry',()=>{
- for(const mutate of [x=>x.members.forEach(m=>m.def=100),x=>x.w.power=28000,x=>x.w.active=false,x=>x.w.engageThreshold=.8,x=>x.calibration.suspended=true,x=>x.monitorHealth.known=false,x=>x.participants=[],x=>x.powerPerTick=NaN,x=>x.members.pop()]){
+ for(const mutate of [x=>x.members.forEach(m=>m.def=100),x=>x.w.power=27000,x=>x.w.active=false,x=>x.w.engageThreshold=.8,x=>x.calibration.suspended=true,x=>x.monitorHealth.known=false,x=>x.participants=[],x=>x.powerPerTick=NaN,x=>x.members.pop()]){
   const data=input();mutate(data);assert.equal(planGangAggression(data).engage,false);
  }
  assert.equal(planGangAggression({...input(),powerPerTick:0}).engage,false);
@@ -37,7 +37,7 @@ test('native quote validation and generated guard are self-contained and accept 
  assert.deepEqual(f.calls,[]);
 });
 test('stale, foreign, malformed, and incomplete risk quotes cannot authorize lower entry',()=>{
- for(const patch of [{at:now+1},{expiresAt:now},{expiresAt:now+30000},{ownerPid:99},{nodeReset:3},{augReset:3},{faction:'Other'},{targetThreshold:.65},{engage:false},{scenarios:[]}]){
+ for(const patch of [{at:now+1},{expiresAt:now},{expiresAt:now+30000},{ownerPid:99},{nodeReset:3},{augReset:3},{faction:'Other'},{targetThreshold:.64},{engage:false},{scenarios:[]}]){
   const f=fixture();Object.assign(f.q,patch);assert.equal(validate(f).valid,false);
  }
  const f=fixture();f.q.scenarios[0].fight.deaths=.03;assert.equal(validate(f).valid,false);
@@ -99,7 +99,7 @@ test('the actual controller transaction can enable a freshly approved conditiona
   const old=ns.args;ns.args=args;try{return Function('ns','return '+code)(ns);}finally{ns.args=old;}
  },planGangAggression,gangAggressionGuardSource,async()=>members,()=>f.data.w,gangWarfarePowerPerTick,gangWarfareMemberEligible);
  await run(f.ns,f.g);assert.deepEqual(f.calls,[true]);assert.equal(f.g.territoryWarfareEngaged,true);
- const q=JSON.parse(f.files['tasks/gang-aggression.json']);assert.equal(q.engage,true);assert.equal(q.targetThreshold,.68);assert.equal(q.expiresAt,now+5000);
+ const q=JSON.parse(f.files['tasks/gang-aggression.json']);assert.equal(q.engage,true);assert.equal(q.targetThreshold,.65);assert.equal(q.expiresAt,now+5000);
 });
 test('supervisor allocation failure withdraws capability and falls back to a lightweight guard',async t=>{
  t.mock.method(Date,'now',()=>now);const f=fixture();f.ns.pid=5;
@@ -120,4 +120,19 @@ test('controller and supervisor wire independent proof validation and preserve d
  const source=readFileSync(new URL('../gangs.js',import.meta.url),'utf8'),supervisor=readFileSync(new URL('../reliability-manager.js',import.meta.url),'utf8');
  assert.match(source,/warfare-win-chance', 0.70/);assert.match(source,/aggressive-warfare', true/);assert.match(source,/expiresAt:at\+5000/);assert.match(source,/adaptiveCooldownRequired:true/);assert.match(source,/routine\|\|aggressive/);assert.match(source,/conditionalAggression:options/);
  assert.match(supervisor,/gangAggressionGuardSource\(\)/);assert.match(supervisor,/gang-aggression-guard.json/);
+});
+test('strong nine to twelve member crews can use the 65% forecast with unchanged full-tail loss budgets',()=>{
+ for(const size of [9,10,11,12]){
+  const data=input();data.members=data.members.slice(0,size);data.participants=data.members.map(m=>m.name);data.w.power=28000;
+  const q=planGangAggression(data);assert.equal(q.engage,true,'crew '+size+': '+q.reason);assert.equal(q.targetThreshold,.65);assert.equal(q.members.length,size);assert.ok(q.scenarios.every(s=>s.extraDeaths<=.005&&s.fight.deaths<=.02&&s.fight.minPower>=data.w.power*.9&&s.fight.ticks>=135));
+ }
+ const small=input();small.members=small.members.slice(0,8);small.participants=small.members.map(m=>m.name);assert.equal(planGangAggression(small).engage,false);
+ const protectedCrew=input();protectedCrew.members=protectedCrew.members.slice(0,9);protectedCrew.excluded=['M0'];protectedCrew.participants=protectedCrew.members.slice(1).map(m=>m.name);assert.equal(planGangAggression(protectedCrew).engage,false);
+});
+test('native lower-entry validation accepts exact smaller crews but rejects old proofs or newly weak fighters',()=>{
+ for(const size of [9,10,11]){
+  const f=fixture();f.data.members=f.data.members.slice(0,size);f.data.participants=f.data.members.map(m=>m.name);f.data.w.power=f.g.power=28000;Object.assign(f.q,planGangAggression(f.data));assert.equal(validate(f).valid,true,'native crew '+size);
+  f.q.schemaVersion=1;assert.equal(validate(f).valid,false);f.q.schemaVersion=2;
+  f.data.members[0].def=99;assert.equal(validate(f).valid,false);
+ }
 });

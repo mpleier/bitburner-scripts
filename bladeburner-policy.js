@@ -18,6 +18,7 @@ export function recoveryRequired(hp,stamina,previous,low,high) {
  return {health:hp<0.5||previous.health&&hp<0.9,stamina:stamina<low||previous.stamina&&stamina<high};
 }
 export function optionsError(o) {
+ if(o['farming-min-success']!==undefined&&(!Number.isFinite(o['farming-min-success'])||o['farming-min-success']<.9||o['farming-min-success']>1))return 'farming-min-success must be between 0.9 and 1';
  if(o['black-op-min-success']!==undefined&&(!Number.isFinite(o['black-op-min-success'])||o['black-op-min-success']<.9||o['black-op-min-success']>1))return 'black-op-min-success must be between 0.9 and 1';
  if(o['growth-horizon-seconds']!==undefined&&(!Number.isFinite(o['growth-horizon-seconds'])||o['growth-horizon-seconds']<30||o['growth-horizon-seconds']>900))return 'growth-horizon-seconds must be between 30 and 900';
  if(o['stealth-retirement-reserve']!==undefined&&(!Number.isSafeInteger(o['stealth-retirement-reserve'])||o['stealth-retirement-reserve']<0||o['stealth-retirement-reserve']>1000000))return 'stealth-retirement-reserve must be an integer between 0 and 1000000';
@@ -31,6 +32,12 @@ export function optionsError(o) {
  return null;
 }
 
+/** Start preparing a squad early enough to finish recruitment before the rank gate. */
+export function bladeburnerTeamPreparationWindow(rankEtaMs,recruitmentBudgetMinutes,minimumMs=120000){
+ if(!Number.isFinite(rankEtaMs)||rankEtaMs<0||!Number.isFinite(minimumMs)||minimumMs<0)return false;
+ const budgetMs=Number.isFinite(recruitmentBudgetMinutes)?Math.max(0,recruitmentBudgetMinutes)*60000:0;
+ return rankEtaMs<=Math.max(minimumMs,budgetMs);
+}
 /** Operation/BlackOp bonus is (assigned+1)^0.05; size against the conservative lower bound. */
 export function requiredBladeburnerTeam(chance,threshold,cap=30){
  if(!Array.isArray(chance)||chance.length<2||!chance.every(Number.isFinite)||!Number.isFinite(threshold)||threshold<0||threshold>1||!Number.isInteger(cap)||cap<0)return null;

@@ -1,3 +1,4 @@
+import {bladeburnerFarmStartAllowed,farmingDamage} from '../bladeburner-farming-policy.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
@@ -68,8 +69,8 @@ test('native support quote prices clone crime chance and validates current incom
 });
 test('actual generated recruitment transaction rejects changed replacement quotes',()=>{
  const source=readFileSync(new URL('../bladeburner.js',import.meta.url),'utf8'),literal=source.match(/const startResult = await getNsDataThroughFile\(ns, (`[^`]+`)/)[1];
- const names=['supportReplacementStartAllowed','blackOpRiskStartAllowed','blackOpBonusComparison','blackOpHospitalCost','startBladeburnerPlannedAction','bladeburnerStaminaChance','bladeburnerWorkAllowed','bbMutationGuard'];
- const expression=Function(...names,'return '+literal)(supportReplacementStartAllowed,blackOpRiskStartAllowed,blackOpBonusComparison,blackOpHospitalCost,startBladeburnerPlannedAction,bladeburnerStaminaChance,bladeburnerWorkAllowed,'true');
+ const names=['bladeburnerFarmStartAllowed','farmingDamage','supportReplacementStartAllowed','blackOpRiskStartAllowed','blackOpBonusComparison','blackOpHospitalCost','startBladeburnerPlannedAction','bladeburnerStaminaChance','bladeburnerWorkAllowed','bbMutationGuard'];
+ const expression=Function(...names,'return '+literal)(bladeburnerFarmStartAllowed,farmingDamage,supportReplacementStartAllowed,blackOpRiskStartAllowed,blackOpBonusComparison,blackOpHospitalCost,startBladeburnerPlannedAction,bladeburnerStaminaChance,bladeburnerWorkAllowed,'true');
  let total=3,starts=0;const q={...planSupportReplacement(economy()),at:Date.now(),ownerPid:7,nodeReset:1,augReset:2,target:'Typhoon'};
  const ns={args:['General','Recruitment',0,.99,4,7,'null',false,'{}',-1,0,'null',JSON.stringify(q)],isRunning:()=>true,read:()=>JSON.stringify({selected:'bladeburner',nodeReset:1,augReset:2,at:Date.now(),ownerPid:7}),getResetInfo:()=>({lastNodeReset:1,lastAugReset:2}),sleeve:{getNumSleeves:()=>2,getTask:()=>({type:'SUPPORT'})},singularity:{getCurrentWork:()=>null},bladeburner:{getTeamSize:()=>total,getRank:()=>0,getActionCountRemaining:()=>1,getActionEstimatedSuccessChance:()=>[.5,.5],startAction:()=>{starts++;return true;}}};
  assert.equal(Function('ns','return '+expression)(ns).success,true);assert.equal(starts,1);total=4;assert.equal(Function('ns','return '+expression)(ns).reason,'support-replacement-changed');assert.equal(starts,1);

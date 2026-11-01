@@ -5,6 +5,7 @@ import {readFileSync} from 'node:fs';
 import {classifyHgwEvent,readHgwTiming} from '../hgw-diagnostics-policy.js';
 import {collectHgwTelemetry} from '../hgw-telemetry-policy.js';
 import {renderCommandJob,validateCommand} from '../remote-api-command.js';
+import {reportHgwEvent,hackingLoopShouldStop} from '../Remote/hgw-telemetry.js';
 const reset={lastAugReset:1,lastNodeReset:2},now=100000;
 const event=(extra={})=>({at:now-1,owner:7,pid:9,tool:'hack',target:'phantasy',description:'batch',deadline:now-288,lateMs:287,toleranceMs:250,legSpacingMs:2600,startLateMs:0,unavoidableMs:0,error:null,...extra});
 function fixture(data={}){
@@ -41,9 +42,9 @@ test('generated timing command executes without mutation APIs and rejects arbitr
 });
 test('standalone workers keep minor fallback toasts quiet while retaining native errors',async()=>{
  for(const name of ['hack','grow','weak']){
-  const source=readFileSync(new URL('../Remote/'+name+'-target.js',import.meta.url),'utf8'),tool=name==='weak'?'weaken':name;
+  const source=readFileSync(new URL('../Remote/'+name+'-target.js',import.meta.url),'utf8').replace(/^\uFEFF?import[^\n]*\n/,''),tool=name==='weak'?'weaken':name;
   for(const [late,error,expected]of [[287,false,0],[1301,false,1],[0,true,1]]){
-   let at=1000,toasts=0,lastToast='';const ctx=vm.createContext({Date:{now:()=>at},Number,JSON,Math,ns:{args:tool==='weaken'?['x',1000,1000,'batch',false,false,0,JSON.stringify({legSpacingMs:2600,toleranceMs:250})]:['x',1000,1000,'batch',false,false,false,0,JSON.stringify({legSpacingMs:2600,toleranceMs:250})],print(){},toast(message){toasts++;lastToast=message;},['get'+tool[0].toUpperCase()+tool.slice(1)+'Time']:()=>1000,[tool]:async()=>{at=2000+late;if(error)throw Error('native');return 1;}}});
+   let at=1000,toasts=0,lastToast='';const ctx=vm.createContext({Date:{now:()=>at},Number,JSON,Math,reportHgwEvent,hackingLoopShouldStop,ns:{args:tool==='weaken'?['x',1000,1000,'batch',false,false,0,JSON.stringify({legSpacingMs:2600,toleranceMs:250})]:['x',1000,1000,'batch',false,false,false,0,JSON.stringify({legSpacingMs:2600,toleranceMs:250})],print(){},toast(message){toasts++;lastToast=message;},['get'+tool[0].toUpperCase()+tool.slice(1)+'Time']:()=>1000,[tool]:async()=>{at=2000+late;if(error)throw Error('native');return 1;}}});
    vm.runInContext(source.replace('export async function main','async function main')+';result=main(ns);',ctx);try{await ctx.result;}catch(e){assert.equal(error,true);}assert.equal(toasts,expected,name);if(error)assert.match(lastToast,/Operation error/);
   }
  }

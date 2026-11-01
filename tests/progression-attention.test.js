@@ -1,11 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import vm from 'node:vm';
 import {readFileSync} from 'node:fs';
 import {sleeveCombatCrime,sleeveCombatWorker,sleeveDevelopmentActive} from '../sleeve-development-policy.js';
 import {adaptiveHgwTiming,restoreHgwTiming} from '../progression-improvements-policy.js';
 import {collectHgwTelemetry} from '../hgw-telemetry-policy.js';
 import {progressionSpeed} from '../progression-speed-policy.js';
+import {reportHgwEvent} from '../Remote/hgw-telemetry.js';
 const sleeve=(extra={})=>({shock:30,sync:100,skills:{strength:100,defense:100,dexterity:100,agility:100,intelligence:0},mults:{crime_success:1},...extra});
 const crimes={Train:{time:1000,difficulty:1,strength_success_weight:1,strength_exp:10},Risky:{time:1000,difficulty:100,strength_success_weight:1,strength_exp:100}};
 test('combat crime scoring includes failed-crime quarter XP and transferred shock/sync',()=>{
@@ -50,21 +50,20 @@ test('spacing-aware pacing recovers gradually despite minor deadline misses; sil
  assert.equal(s.multiplier,3.2);
  s=pacing(s,800000,800,130,800,50);assert.equal(s.multiplier,3.2);
 });
-test('all native HGW reporters preserve raw lateness and count conservative half-spacing risks',()=>{
- for(const file of ['Remote/hack-target.js','Remote/grow-target.js','Remote/weak-target.js']) {
-  const source=readFileSync(new URL('../'+file,import.meta.url),'utf8');
-  assert.match(source,/legSpacingMs:Number.isFinite\(meta\?\.legSpacingMs\)/);
-  const report=vm.runInNewContext(source.slice(source.indexOf('function report('))+';report');
-  let queue='NULL PORT DATA';
-  const ns={getPortHandle:()=>({peek:()=>queue,read:()=>{const result=queue;queue='NULL PORT DATA';return result;},write:s=>queue=s})};
-  const event={at:1000,tool:'hack',target:'x',lateMs:1000,toleranceMs:250,legSpacingMs:4000,outcome:'effect',value:1};
-  const meta={port:20,augReset:1,nodeReset:2};
-  report(ns,meta,event,true);let data=JSON.parse(queue);
-  assert.equal(data.counts.deadlineOverruns,1);assert.equal(data.counts.spacingSamples,1);assert.equal(data.counts.spacingRisks,0);
-  report(ns,meta,{...event,lateMs:2001},true);data=JSON.parse(queue);assert.equal(data.counts.spacingRisks,1);
-  report(ns,meta,{...event,legSpacingMs:null},true);data=JSON.parse(queue);assert.equal(data.counts.spacingSamples,2);
-  report(ns,meta,{...event,lateMs:0,error:'native error'},true);data=JSON.parse(queue);assert.equal(data.counts.spacingRisks,2);
+test('the shared native HGW reporter preserves raw lateness and counts conservative half-spacing risks',()=>{
+ for(const name of ['hack','grow','weak']){
+  const worker=readFileSync(new URL('../Remote/'+name+'-target.js',import.meta.url),'utf8');
+  assert.match(worker,/legSpacingMs:Number.isFinite\(meta\?\.legSpacingMs\)/,name+' must publish leg spacing on its events');
  }
+ let queue='NULL PORT DATA';
+ const ns={getPortHandle:()=>({peek:()=>queue,read:()=>{const result=queue;queue='NULL PORT DATA';return result;},write:s=>queue=s})};
+ const event={at:1000,tool:'hack',target:'x',lateMs:1000,toleranceMs:250,legSpacingMs:4000,outcome:'effect',value:1};
+ const meta={port:20,augReset:1,nodeReset:2};
+ reportHgwEvent(ns,meta,event,true);let data=JSON.parse(queue);
+ assert.equal(data.counts.deadlineOverruns,1);assert.equal(data.counts.spacingSamples,1);assert.equal(data.counts.spacingRisks,0);
+ reportHgwEvent(ns,meta,{...event,lateMs:2001},true);data=JSON.parse(queue);assert.equal(data.counts.spacingRisks,1);
+ reportHgwEvent(ns,meta,{...event,legSpacingMs:null},true);data=JSON.parse(queue);assert.equal(data.counts.spacingSamples,2);
+ reportHgwEvent(ns,meta,{...event,lateMs:0,error:'native error'},true);data=JSON.parse(queue);assert.equal(data.counts.spacingRisks,2);
 });
 test('telemetry collector retains spacing counters and legacy history across controller reloads',()=>{
  let queue=JSON.stringify({channel:'hgw-v1',augReset:1,nodeReset:2,counts:{operations:3,spacingSamples:3,spacingRisks:1,deadlineOverruns:2}});

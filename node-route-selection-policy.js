@@ -16,7 +16,7 @@ export function nodeRouteAvailability(reset,sources,options={},state={}) {
 }
 
 /** Unknown forecasts do not win a race. Use a labelled prior until both complete ranges are usable. */
-export function chooseNodeRoute(routes,previous,{now=Date.now(),augReset,nodeReset,node=1,override='auto',adaptive=true,availability={hacking:true,bladeburner:true}}={}) {
+export function chooseNodeRoute(routes,previous,{now=Date.now(),augReset,nodeReset,node=1,override='auto',adaptive=true,availability={hacking:true,bladeburner:true},milestones={},probeState=null}={}) {
  const preference=bitNodeRoutePreference(node),available=r=>availability[r]!==false;
  const forced=override==='wd'||override==='hacking'?'hacking':override==='bb'||override==='bladeburner'?'bladeburner':!adaptive?'hacking':null;
  const base={at:now,augReset,nodeReset,routes,preference,availability,candidate:null,candidateSince:null};
@@ -39,11 +39,12 @@ export function chooseNodeRoute(routes,previous,{now=Date.now(),augReset,nodeRes
  const candidate=winner&&winner!==selected?winner:null;
  const candidateSince=candidate&&same&&previous.candidate===candidate&&Number.isFinite(previous.candidateSince)&&previous.candidateSince>=0&&previous.candidateSince<=previous.at?previous.candidateSince:now;
  if(candidate&&now-candidateSince>=120000){selected=candidate;policy='measured';}
- return {...base,selected,policy,lastComparableAt:policy==='measured'?now:holding?lastComparableAt:null,candidate:policy==='measured'&&selected===candidate?null:candidate,
+ const decision={...base,selected,policy,lastComparableAt:policy==='measured'?now:holding?lastComparableAt:null,candidate:policy==='measured'&&selected===candidate?null:candidate,
   candidateSince:candidate?candidateSince:null,
   reason:holding?'Retaining measured '+selected+' route through a brief forecast gap (up to two minutes)':policy==='measured'?'Measured completion ranges favor '+selected:
    candidate?'Confirming '+candidate+' advantage for two minutes; '+preference.reason:
    initial!==preference.selected?(availability.bladeburnerReason||'Preferred route unavailable')+'; using World Daemon':preference.reason+'; full completion comparison is not decisive'};
+ return boundedMilestoneRoute(decision,previous,{now,same,comparable,milestones,probeState});
 }
 
 export function routeContinuousXp(options={},plan=null) {
@@ -115,3 +116,42 @@ export const stopBladeburnerEntrySource = String.raw`function stopBladeburnerEnt
  if(work?.type!=='CRIME'||work.crimeType!==crime)return false;
  return ns.singularity.stopAction();
 }`;
+
+/** Milestones authorize bounded evidence collection, never a fabricated full-route ETA. */
+export function nodeRouteMilestones(routes,development){
+ const result={},entry=development?.entry,op=development?.nextBlackOp;
+ if(entry?.needsTraining&&Number.isFinite(entry.etaMs)&&entry.etaMs>0)result.bladeburner={name:'Join Bladeburner',etaMs:entry.etaMs};
+ else if(op&&Number.isFinite(op.rankEtaMs)&&Number.isFinite(op.chanceEtaMs)&&!op.staminaBlocked){const etaMs=Math.max(op.rankEtaMs,op.chanceEtaMs);if(etaMs>0)result.bladeburner={name:op.name+' readiness',etaMs};}
+ if(routes.hacking?.phase==='xp'&&routes.hacking.actionable!==true&&Number.isFinite(routes.hacking.etaMs)&&routes.hacking.etaMs>0)result.hacking={name:'Measure dedicated hacking XP',etaMs:120000};
+ return result;
+}
+export function boundedMilestoneRoute(decision,previous,{now,same,comparable,milestones,probeState}){
+ const previousProbe=probeState||(same?previous?.probe:null);
+ const cooldown=probe=>({...decision,probe:{...probe,status:'cooldown',cooldownUntil:probe.cooldownUntil||probe.until+1800000}});
+ if(previousProbe?.status==='active'){
+  const m=milestones[previousProbe.route];
+  if(!comparable&&now<previousProbe.until&&decision.availability[previousProbe.route]!==false&&m?.name===previousProbe.target)
+   return {...decision,selected:previousProbe.route,committed:previousProbe.committed??decision.selected,policy:'milestone-probe',probe:previousProbe,candidate:null,candidateSince:null,reason:'Bounded milestone probe: '+previousProbe.target+'; full completion remains unknown'};
+  return cooldown(previousProbe);
+ }
+ const inactive=previousProbe?{...decision,probe:previousProbe}:decision;
+ if(comparable||['measured','measured-hold'].includes(decision.policy)||previousProbe?.cooldownUntil>now)return inactive;
+ const alternate=decision.selected==='hacking'?'bladeburner':'hacking',m=milestones[alternate],current=decision.routes[decision.selected];
+ if(decision.availability[alternate]===false||!m||!Number.isFinite(m.etaMs)||m.etaMs<=0||m.etaMs>600000||current?.actionable===true&&current.etaMs<=1800000)return inactive;
+ const budgetMs=Math.min(300000,Math.max(120000,m.etaMs*1.5));
+ return {...decision,selected:alternate,committed:decision.selected,policy:'milestone-probe',candidate:null,candidateSince:null,probe:{status:'active',route:alternate,target:m.name,committed:decision.selected,startedAt:now,until:now+budgetMs,cooldownUntil:now+budgetMs+1800000},reason:'Bounded milestone probe: '+m.name+'; budget '+Math.round(budgetMs/1000)+'s, not a completion forecast'};
+}
+/** Route used for cash/reset gating: a temporary evidence probe must never release long-term reserves. */
+export function committedRoute(plan){
+ const route=plan?.committed;
+ return route==='hacking'||route==='bladeburner'?route:plan?.selected;
+}
+
+
+export const nodeProbeFile='tasks/node-route-probe.json';
+export function restoreNodeProbe(raw,reset,now=Date.now()){
+ try{const record=typeof raw==='string'?JSON.parse(raw):raw,p=record?.probe;
+ if(record.nodeReset!==reset.lastNodeReset||record.augReset!==reset.lastAugReset||!Number.isFinite(record.at)||record.at>now||!p||!['active','cooldown'].includes(p.status)||!['hacking','bladeburner'].includes(p.route)||typeof p.target!=='string'||!Number.isFinite(p.startedAt)||p.startedAt<reset.lastAugReset||p.startedAt>now||!Number.isFinite(p.until)||p.until<=p.startedAt||p.until-p.startedAt>300000||!Number.isFinite(p.cooldownUntil)||p.cooldownUntil<p.until||p.cooldownUntil-p.until>1800000||p.cooldownUntil<=now)return null;
+ const committed=p.committed==='hacking'||p.committed==='bladeburner'?p.committed:undefined;
+ return {...p,...(committed?{committed}:{})};}catch{return null;}
+}

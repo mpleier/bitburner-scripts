@@ -71,9 +71,9 @@ test('native sampler rotates bounded reward pulls and reads rewards while scout 
  try{
   f.set(300000);const host=f.hosts[0].host,record=recordDarknetCache(null,{success:true,augmentationName:'Aug'},{host,pid:8,at:f.clock,reset});f.remote.get(host).set(cacheRewardFile(host),JSON.stringify(record));
   await sampleDarknetObservations(f.ns,f.query);f.set(330000);await sampleDarknetObservations(f.ns,f.query);
-  assert.ok(f.selected.every(s=>s.length<=16));assert.equal(new Set(f.selected.flat()).size,20);
+  assert.ok(f.selected.every(s=>s.length<=32));assert.equal(new Set(f.selected.flat()).size,20);
   assert.equal(JSON.parse(f.files.get('tasks/dnet-cache-rewards-summary.json')).totals.augmentations,1);
-  assert.equal(JSON.parse(f.files.get('tasks/dnet-cache-rewards-summary.json')).pulls.checked,16);
+  assert.equal(JSON.parse(f.files.get('tasks/dnet-cache-rewards-summary.json')).pulls.checked,20);
  }finally{Date.now=original;}
 });
 test('native sampler rejects a reset that changes while its temporary query runs',async()=>{
@@ -86,7 +86,7 @@ test('first supervisor observation migrates existing current-run measurements wi
 });
 test('both cache openers preserve timestamps and publish native reward summaries',async()=>{
  for(const main of [cacheMain,lootMain]){
-  const store=new Map([[cacheContextFile,JSON.stringify({nodeReset:7,augReset:42})]]),stop=Error('stop'),ns={pid:9,disableLog(){},getHostname:()=> 'a',getResetInfo:()=>reset,ls:()=>['x.cache'],read:f=>store.get(f)||'',write:async(f,v)=>store.set(f,v),print(){},sleep:async()=>{throw stop;},dnet:{openCache:()=>({success:true,stockShares:5}),phishingAttack:async()=>({success:false})}};
+  const store=new Map([[cacheContextFile,JSON.stringify({nodeReset:7,augReset:42})]]),stop=Error('stop'),ns={pid:9,disableLog(){},getRunningScript:()=>({threads:1}),getHostname:()=> 'a',getResetInfo:()=>reset,ls:()=>['x.cache'],read:f=>store.get(f)||'',write:async(f,v)=>store.set(f,v),print(){},sleep:async()=>{throw stop;},dnet:{openCache:()=>({success:true,stockShares:5}),phishingAttack:async()=>({success:false})}};
   if(main===lootMain)await assert.rejects(main(ns),e=>e===stop);else await main(ns);
   assert.equal(JSON.parse(store.get(cacheRewardFile('a'))).totals.shares,5);assert.ok(JSON.parse(store.get('tasks/dnet-last-cache.json')).at>0);
  }

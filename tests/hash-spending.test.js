@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {fundHashCashGoal,hashSpendingDecision,spendHashesWithPolicy,hasBladeburnerHashWorker,collectHashSpendingStatus} from '../hash-spending-policy.js';
+import {readHashPurchaseMonitor,fundHashCashGoal,hashSpendingDecision,spendHashesWithPolicy,hasBladeburnerHashWorker,collectHashSpendingStatus} from '../hash-spending-policy.js';
 import {hashCapacityChoice} from '../hacknet-policy.js';
 import {routeHashBudget} from '../progression-improvements-policy.js';
 import {renderCommandJob} from '../remote-api-command.js';
@@ -29,6 +29,100 @@ function corporateFixture(extra={}){
  f.files['tasks/corporation-hash-goal.json']=JSON.stringify({schemaVersion:1,at:now,ownerPid:3,nodeReset:1,augReset:1,priority:true,milestone:{action:'Sell for Corporation Funds',label:'HQ office',gap:1e9,reward:1e9}});
  return f;
 }
+
+function startupFixture(extra={}){
+ const f=fixture({money:149e9,hashes:1000,...extra});f.ns.corporation={hasCorporation:()=>false};
+ f.files['reserve.txt']='2000000000';
+ f.files['tasks/spending-plan.json']=JSON.stringify({reset:1,epoch:Date.now(),expiresAt:Date.now()+60000,ownerPid:1,reserve:2e9,signals:{corporationStartup:true,corporationGrowthPriority:true,activeCategories:{corporation:true}}});
+ return f;
+}
+function cashGoalFixture(extra={}){
+ const f=startupFixture(extra),p=JSON.parse(f.files['tasks/spending-plan.json']);
+ p.signals.augmentationCashTarget={name:'Useful augmentation',cost:150e9};f.files['tasks/spending-plan.json']=JSON.stringify(p);return f;
+}
+test('corporation startup is no longer a hash cash goal',()=>{
+ const f=startupFixture(),d=hashSpendingDecision(f.ns,cash);
+ assert.equal(d.cashGoal,null);assert.equal(d.cashTarget,null);assert.equal(d.cashPurchasesNeeded,0);
+ assert.equal(fundHashCashGoal(f.ns),null);assert.equal(f.calls.length,0);
+});
+test('a probe route cannot authorize Bladeburner hash spending for the probed route',()=>{
+ const f=fixture();f.route.committed='hacking';f.files['tasks/node-route-plan.json']=JSON.stringify(f.route);
+ const d=hashSpendingDecision(f.ns,rank);assert.equal(d.allowed,false);assert.equal(d.reason,'World Daemon route selected');
+ const g=fixture();g.route.selected='hacking';g.route.committed='bladeburner';g.files['tasks/node-route-plan.json']=JSON.stringify(g.route);
+ assert.notEqual(hashSpendingDecision(g.ns,rank).reason,'World Daemon route selected');
+});
+test('augmentation cash goals and achievement restrictions retain priority',()=>{
+ const f=cashGoalFixture();
+ assert.equal(hashSpendingDecision(f.ns,cash).cashGoal.source,'augmentation');assert.equal(fundHashCashGoal(f.ns).quantity,250);
+ const g=cashGoalFixture();g.files['tasks/achievement-profile.json']=JSON.stringify({nodeReset:1,active:true,deniedActions:['hashSpending']});assert.equal(fundHashCashGoal(g.ns),null);
+});
+test('hash mutations continue during unrelated leaf reloads but pause for critical or unknown maintenance',()=>{
+ for(const scripts of [['gangs.js'],['/stockmaster.js','go.js'],['health-manager.js','infiltration-manager.js']]){
+  const f=cashGoalFixture();f.files['tasks/automation-maintenance.json']=JSON.stringify({ownerPid:1,expiresAt:Date.now()+10000,scripts});assert.equal(fundHashCashGoal(f.ns).success,true);
+ }
+ for(const scripts of [[],null,['autopilot.js'],['spend-hacknet-hashes.js'],['daemon.js'],['corporation-manager.js'],['unknown.js']]){
+  const f=cashGoalFixture();f.files['tasks/automation-maintenance.json']=JSON.stringify({ownerPid:1,expiresAt:Date.now()+10000,scripts});assert.equal(fundHashCashGoal(f.ns),null);
+ }
+});
+
+test('purchase monitor retains successes after blocked attempts, owner exits and augmentation installs',()=>{
+ const f=fixture();assert.equal(spendHashesWithPolicy(f.ns,cash,undefined,3).success,true);
+ f.files['remote-control/paused/hash-worker.txt']='true';spendHashesWithPolicy(f.ns,cash,undefined,1,{script:'hash-worker'});
+ f.processes.splice(1,1);f.ns.getResetInfo().lastAugReset=2;
+ const m=readHashPurchaseMonitor(f.ns);assert.equal(m.purchases,3);assert.equal(m.spent,12);assert.equal(m.recent.length,1);assert.equal(m.recent[0].effect.playerMoney,3e6);
+ f.ns.getResetInfo().lastNodeReset=2;assert.equal(readHashPurchaseMonitor(f.ns).purchases,0);
+});
+test('monitor bounds history but retains cumulative quantities and serializes through the API',()=>{
+ const f=fixture();for(let i=0;i<100;i++)assert.equal(spendHashesWithPolicy(f.ns,cash,undefined,2).success,true);
+ const saved=JSON.parse(f.files['tasks/hash-purchases.json']);assert.equal(saved.recent.length,64);assert.equal(saved.purchases,200);assert.equal(saved.spent,800);
+ const m=Function('return ('+readHashPurchaseMonitor.toString()+')')()(f.ns);assert.equal(m.recent.length,32);assert.equal(m.totals[cash].purchases,200);
+ const job=renderCommandJob({id:'purchases',method:'automation.hashPurchases',args:[],expiresAt:Date.now()+10000});assert.doesNotThrow(()=>new Function(job.replace('export async function','async function')));
+});
+test('failed mutations are not purchases and telemetry failures never replay successful purchases',()=>{
+ const f=fixture();f.ns.hacknet.spendHashes=()=>false;assert.equal(spendHashesWithPolicy(f.ns,cash).success,false);assert.equal(readHashPurchaseMonitor(f.ns).purchases,0);
+ const g=fixture();g.ns.write=()=>{throw Error('telemetry unavailable');};const r=spendHashesWithPolicy(g.ns,cash);assert.equal(r.success,true);assert.equal(g.calls.length,1);assert.match(r.monitorError,/telemetry/);
+});
+test('corporate sequence survives augmentation preparation, requotes and stops at the target',()=>{
+ const f=corporateFixture({hashes:2000}),action='Sell for Corporation Funds';let funds=0;
+ f.files['tasks/augmentation-reset-plan.json']=JSON.stringify({pending:true,ownerPid:1,expiresAt:Date.now()+10000});
+ const original=f.ns.hacknet.spendHashes;
+ f.ns.hacknet.hashCost=(a,n=1)=>f.state.costs[a]*n+(a===action?5*n*(n-1):0);
+ f.ns.hacknet.spendHashes=(a,t,n)=>{const ok=original(a,t,n);if(ok&&a===action){funds+=1e9;f.state.costs[action]+=10;}return ok;};
+ const publish=()=>{const gap=3e9-funds,n=Math.ceil(gap/1e9);f.files['tasks/corporation-hash-goal.json']=JSON.stringify({schemaVersion:2,at:Date.now(),ownerPid:3,nodeReset:1,augReset:1,priority:true,milestone:gap>0?{action,label:'Expand Agri',gap,reward:1e9,purchases:n,totalHashes:f.ns.hacknet.hashCost(action,n)}:null});};
+ const options={ownerPid:3,script:'corporation-manager.js',corporationUseful:true,observeCorporation:()=>({funds,research:{Agri:100}})};
+ for(let i=0;i<3;i++){publish();assert.equal(spendHashesWithPolicy(f.ns,action,undefined,1,options).success,true);}
+ publish();assert.equal(spendHashesWithPolicy(f.ns,action,undefined,1,options).success,false);
+ const m=readHashPurchaseMonitor(f.ns);assert.equal(m.purchases,3);assert.equal(m.spent,330);assert.equal(funds,3e9);assert.equal(m.recent[0].effect.corporationFunds,1e9);
+ assert.equal(hashSpendingDecision(f.ns,'Improve Gym Training',{trainingSeconds:900}).allowed,false);
+});
+test('corporate bounds cover sequence size, native prices, available hashes and per-purchase rechecks',()=>{
+ const f=corporateFixture(),action='Sell for Corporation Funds';
+ const goal={schemaVersion:2,at:Date.now(),ownerPid:3,nodeReset:1,augReset:1,priority:true,milestone:{action,label:'Expand',gap:3e9,reward:1e9,purchases:3,totalHashes:300}};
+ for(const patch of [{purchases:2},{purchases:17,gap:17e9},{totalHashes:5001}]){f.files['tasks/corporation-hash-goal.json']=JSON.stringify({...goal,milestone:{...goal.milestone,...patch}});assert.equal(hashSpendingDecision(f.ns,action,{corporationUseful:true}).allowed,false);}
+ f.files['tasks/corporation-hash-goal.json']=JSON.stringify(goal);f.state.costs[action]=2000;assert.equal(hashSpendingDecision(f.ns,action,{corporationUseful:true}).allowed,false);
+ f.state.costs[action]=100;f.state.hashes=299;assert.equal(hashSpendingDecision(f.ns,action,{corporationUseful:true}).allowed,false);
+ f.state.hashes=300;assert.equal(spendHashesWithPolicy(f.ns,action,undefined,3,{corporationUseful:true}).success,false);
+});
+
+test('corporate research is allowed during augmentation preparation while reset-sensitive upgrades remain blocked',()=>{
+ const f=corporateFixture(),action='Exchange for Corporation Research';
+ f.files['tasks/augmentation-reset-plan.json']=JSON.stringify({pending:true,ownerPid:1,expiresAt:Date.now()+10000});
+ f.files['tasks/corporation-hash-goal.json']=JSON.stringify({schemaVersion:2,at:Date.now(),ownerPid:3,nodeReset:1,augReset:1,priority:true,milestone:{action,label:'Tobacco Lab',gap:2500,reward:1000,purchases:3,totalHashes:600}});
+ assert.equal(hashSpendingDecision(f.ns,action,{corporationUseful:true}).allowed,true);
+ assert.equal(hashSpendingDecision(f.ns,'Increase Maximum Money',{target:'n00dles'}).reason,'Augmentation reset pending');
+});
+
+test('corporate milestone limits persist across renewed quotes, controller restarts and augmentation installs',()=>{
+ const f=corporateFixture(),action='Sell for Corporation Funds',key=JSON.stringify([action,'Expand',9e9]);
+ const goal={schemaVersion:2,at:Date.now(),ownerPid:3,nodeReset:1,augReset:1,priority:true,milestone:{action,label:'Expand',target:9e9,gap:1e9,reward:1e9,purchases:1,totalHashes:100}};
+ const ledger=used=>f.files['tasks/corporation-hash-budget.json']=JSON.stringify({schemaVersion:1,nodeReset:1,entries:{[key]:used}});
+ f.files['tasks/corporation-hash-goal.json']=JSON.stringify(goal);
+ for(const used of [{purchases:16,spent:1600},{purchases:1,spent:4950}]){ledger(used);assert.equal(hashSpendingDecision(f.ns,action,{corporationUseful:true}).allowed,false);}
+ ledger({purchases:15,spent:1500});assert.equal(spendHashesWithPolicy(f.ns,action,undefined,1,{corporationUseful:true}).success,true);
+ assert.equal(JSON.parse(f.files['tasks/corporation-hash-budget.json']).entries[key].purchases,16);
+ f.ns.getResetInfo().lastAugReset=2;goal.augReset=2;f.files['tasks/corporation-hash-goal.json']=JSON.stringify(goal);
+ assert.equal(hashSpendingDecision(f.ns,action,{corporationUseful:true}).allowed,false);
+});
 test('corporation milestone reserves hashes across consumers but requires a fresh native usefulness check',()=>{
  const f=corporateFixture({money:1e9,hashes:100});
  const d=hashSpendingDecision(f.ns,cash);assert.equal(d.preferred,'Sell for Corporation Funds');assert.equal(d.budget,0);assert.equal(d.allowed,false);

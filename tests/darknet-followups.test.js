@@ -25,10 +25,12 @@ test('interrupted and thrown authentication preserve the current candidate',asyn
 });
 test('saved credentials consume budget once, including empty credentials',async()=>{
  for(const saved of ['a','']) {
+  const d={...details,passwordLength:saved?1:0};
+  const list=saved?['a','b','c']:['','b','c'];
   const state={},guesses=[];const auth=async p=>{guesses.push(p);return bad();};
-  await candidatePasswordTurn(details,saved,[saved,'b','c'],state,auth,auth,100,1);
-  await candidatePasswordTurn(details,saved,[saved,'b','c'],state,auth,auth,200,1);
-  assert.deepEqual(guesses,[saved,'b']);
+  await candidatePasswordTurn(d,saved,list,state,auth,auth,100,1);
+  await candidatePasswordTurn(d,saved,list,state,auth,auth,200,1);
+  assert.deepEqual(guesses,saved?['a','b']:['']);
  }
 });
 test('candidate cooldown expires and changed puzzle or input invalidates progress',async()=>{

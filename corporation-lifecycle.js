@@ -18,7 +18,7 @@ export function acceptVentureOffer(info,offer,minOwnership=0.5) {
   (info.numShares-offer.shares)/info.totalShares>=minOwnership;
 }
 /** Allow valuation's ten-cycle average to settle; do not wait indefinitely for peaks. */
-export function investmentDecision(info,offer,previous,minOwnership=.5,{now=Date.now(),cycleSeconds=10,reserve=0,stageReady=true}={}){
+export function investmentDecision(info,offer,previous,minOwnership=.5,{now=Date.now(),cycleSeconds=10,reserve=0,stageReady=true,stageCapital=null,stageDivision=null}={}){
  if(!info.public&&(!offer||!Number.isInteger(offer.round)))return {accept:false,holdIPO:true,reason:'Investment offer unavailable',history:previous};
  const remaining=!info.public&&offer?.round>=1&&offer.round<=4&&offer.shares>0&&offer.funds>0;
  const floorBlocked=remaining&&(info.numShares-offer.shares)/info.totalShares<minOwnership;
@@ -32,8 +32,17 @@ export function investmentDecision(info,offer,previous,minOwnership=.5,{now=Date
  const emergency=Number.isFinite(info.funds)&&info.funds<=1e6||Number.isFinite(info.expenses)&&info.expenses>info.revenue&&info.funds<info.expenses*cycleSeconds*2;
  const settled=now-history.lastGrowthAt>=cycleSeconds*1000*10;
  const timeout=now-history.since>=30*60000;
- const accept=emergency||stageReady&&(timeout||settled);
- return {accept,holdIPO:true,reason:accept?emergency?'Operating capital needed':timeout?'Bounded funding wait elapsed':'Offer growth has settled':!stageReady?'Waiting for supply chain or completed products':'Waiting for improving valuation',history};
+ const profit=Math.max(0,(Number(info.revenue)||0)-(Number(info.expenses)||0));
+ const capitalBlocked=offer.round<=2&&Number.isFinite(stageCapital)&&stageCapital>Math.max(0,info.funds-reserve)+profit*1800;
+ // A missing stage division must actually be funded by the sale; Agri-only expansion keeps its prior rule.
+ const stageFunded=stageDivision&&Number.isFinite(stageCapital)&&stageCapital>0?(Number(offer.funds)||0)+Math.max(0,(Number(info.funds)||0)-Math.max(0,Number(reserve)||0))>=stageCapital:null;
+ const fallbackReady=!stageReady&&capitalBlocked&&timeout&&settled;
+ const fallback=fallbackReady&&(!stageDivision||stageFunded===true);
+ const accept=emergency||stageReady&&(timeout||settled)||fallback;
+ const reason=accept
+  ?(emergency?'Operating capital needed':fallback?'Expansion capital blocked after bounded funding wait':timeout?'Bounded funding wait elapsed':'Offer growth has settled')
+  :(fallbackReady&&stageDivision&&stageFunded!==true?'Waiting for the offer to fund the missing stage division':!stageReady?'Waiting for supply chain or completed products':'Waiting for improving valuation');
+ return {accept,holdIPO:true,capitalBlocked,stageFunded,stageCapital,reason,history};
 }
 /** Source share sales reprice by at most -0.5% per million shares. Lower-bound proceeds. */
 export function estimateShareProceeds(info,count){

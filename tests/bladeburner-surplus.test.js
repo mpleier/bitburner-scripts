@@ -1,3 +1,4 @@
+import {bladeburnerFarmStartAllowed,farmingDamage} from '../bladeburner-farming-policy.js';
 import {supportReplacementStartAllowed} from '../bladeburner-support-economics-policy.js';
 import {blackOpHospitalCost,blackOpBonusComparison,blackOpRiskStartAllowed} from '../black-op-risk-policy.js';
 import test from 'node:test';
@@ -69,7 +70,7 @@ test('surplus competes on rank rate rather than forcing a worse farming action',
 test('actual start transaction rechecks whole stock and guard liveness',()=>{
  const source=readFileSync(new URL('../bladeburner.js',import.meta.url),'utf8');
  const literal=source.match(/const startResult = await getNsDataThroughFile\(ns, (`[^`]+`)/)[1];
- const expression=Function('blackOpHospitalCost','blackOpBonusComparison','startBladeburnerPlannedAction','bladeburnerStaminaChance','bladeburnerWorkAllowed','bbMutationGuard','blackOpRiskStartAllowed','supportReplacementStartAllowed','return '+literal)(blackOpHospitalCost,blackOpBonusComparison,startBladeburnerPlannedAction,bladeburnerStaminaChance,bladeburnerWorkAllowed,'true',blackOpRiskStartAllowed,supportReplacementStartAllowed);
+ const expression=Function('bladeburnerFarmStartAllowed','farmingDamage','blackOpHospitalCost','blackOpBonusComparison','startBladeburnerPlannedAction','bladeburnerStaminaChance','bladeburnerWorkAllowed','bbMutationGuard','blackOpRiskStartAllowed','supportReplacementStartAllowed','return '+literal)(bladeburnerFarmStartAllowed,farmingDamage,blackOpHospitalCost,blackOpBonusComparison,startBladeburnerPlannedAction,bladeburnerStaminaChance,bladeburnerWorkAllowed,'true',blackOpRiskStartAllowed,supportReplacementStartAllowed);
  const state={count:20.99,live:true,starts:0};
  const ns={args:['Operations',action,0,.99,0,7,'null',false,JSON.stringify({[action]:{base:125,factor:1}}),20,8],isRunning:id=>id===7||id===8&&state.live,singularity:{getCurrentWork:()=>null,getOwnedAugmentations:()=>[]},bladeburner:{getActionCountRemaining:()=>state.count,getActionCurrentLevel:()=>1,getActionEstimatedSuccessChance:()=>[1,1],getStamina:()=>[100,100],startAction:()=>{state.starts++;return true;}}};
  const run=()=>Function('ns','return '+expression)(ns);

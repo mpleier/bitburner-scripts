@@ -22,7 +22,9 @@ for (const file of files) {
     if (result.status !== 0) {
         failed = true;
         process.stderr.write(`\nSyntax check failed: ${relative(process.cwd(), file)}\n`);
-        process.stderr.write(result.stderr || result.stdout);
+        // spawnSync can fail without producing stderr (e.g. the process could not start).
+        process.stderr.write(result.stderr || result.stdout || result.error?.message || '(no output)');
+        process.stderr.write('\n');
     }
 }
 

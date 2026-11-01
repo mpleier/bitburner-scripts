@@ -17,7 +17,7 @@ import {achievementActionAllowed} from './achievement-policy.js';
 
 import {goProgressionContext,planGoOpponents} from './go-opponent-policy.js';
 import { isScriptPaused } from './automation-control.js';
-import { analyzeGoBoard,goSettledPass,recordGoPerformance,chooseGoEngine,restoreGoEngines,goEngineConfigurations,goProfileBuckets,recordGoInterruptedTime,goBoardObservation,goHistoryMatches,goActionIntervention,goPolicyRevisions, goOpponents, goOptionsError, goCheatsEnabled, validGoPair, shuffleGoMoves, liveGoGoals, attemptGoFailure,goCheatChanceAllowed,validGoBoard,goMoveOutcome,goMoveOutcomes,goTacticalMove } from './go-policy.js';
+import { analyzeGoBoard,goSettledPass,recordGoPerformance,chooseGoEngine,restoreGoEngines,goEngineConfigurations,goProfileBuckets,recordGoInterruptedTime,goBoardObservation,goHistoryMatches,goActionIntervention,goPolicyRevisions, goOpponents, goOptionsError, goCheatsEnabled, validGoPair, shuffleGoMoves, liveGoGoals, attemptGoFailure,goCheatChanceAllowed,validGoBoard,goMoveOutcome,goMoveOutcomes,goTacticalMove,goKomi } from './go-policy.js';
 import {
     getConfiguration, instanceCount, log, getErrorInfo, getActiveSourceFiles, getNsDataThroughFile, formatTime
 } from './helpers.js'
@@ -25,8 +25,8 @@ import {
 const argsSchema = [
     ['benchmark-samples',true], // Keep up to 12 native replay samples, at most one per minute.
     ['search-mode','auto'], // auto (bounded measured trials), off, shadow, play (explicit search).
-    ['search-ms',5], // Maximum search time per sampled move, in milliseconds.
-    ['search-nodes',64], // Maximum hypothetical moves per sampled search.
+    ['search-ms',20], // Maximum search time per sampled move, in milliseconds.
+    ['search-nodes',256], // Maximum hypothetical moves per sampled search.
     ['goal','auto'], // auto, money, speed, hacking, reputation, combat, crime, hacknet
     ['allow-self-atari',false], // Permit non-capturing moves that leave the played group with only one liberty.
     ['adaptive-boards',true], // Measure bonus per minute and gradually compare board sizes unless board-size is explicit.
@@ -36,6 +36,7 @@ const argsSchema = [
     ['cheats', true], // (Now true by default - but still an option for backwards compatibility) This is only possible if you have BN14.2
     ['disable-cheats', false], // Set to true if you want to *not* use cheats for some reason.
     ['cheat-chance-threshold', 0.9], // Don't cheat if our success chance is less than this
+    ['cheat-value-aware', true], // Lower the cheat bar slightly for a very large chain capture.
     ['logtime', false], // Logs time time it takes for each player to take their move
     ['runOnce', false], // Will only play one game if enabled
     ['silent', false], // (Obsolete) This script used to automatically tail. Now if you want to do this, call with --tail like normal.
@@ -360,7 +361,9 @@ export async function main(ns) {
             searchProposal=null;
             const searchMode=goOptions['search-mode']==='auto'?(goEngine==='search-v1'?'play':'off'):goOptions['search-mode'];
             if(!results&&(!tactical||searchMode==='shadow')&&!achievement?.goStreak&&!achievement?.goFailure&&['shadow','play'].includes(searchMode)&&(searchMode==='play'||turn%8===0)){
-                const searched=searchGoMove(board,validMove,{maxNodes:goOptions['search-nodes'],maxMs:goOptions['search-ms'],history:ns.go.getMoveHistory()});
+                const adaptiveMs=Math.min(50,(Number(goOptions['search-ms'])||20)+(board.length>=13?5:0)+(searchStats.last?.bounded?5:0));
+                const adaptiveNodes=Math.min(1024,(Number(goOptions['search-nodes'])||256)+(board.length>=13?128:0));
+                const searched=searchGoMove(board,validMove,{maxNodes:adaptiveNodes,maxMs:adaptiveMs,history:ns.go.getMoveHistory(),komi:goKomi[ns.go.getOpponent()]??0,depth:goEngine==='search-v1'?3:2});
                 searchStats.attempts++;searchStats.nodes+=searched.nodes;searchStats.totalMs+=searched.elapsedMs;searchStats.last={nodes:searched.nodes,elapsedMs:searched.elapsedMs,bounded:searched.bounded,coords:searched.move?.coords||null};
                 if(searched.move){searchStats.proposals++;searchProposal={signature:board.join('/'),coords:searched.move.coords};
                     if(searchMode==='play')results=await movePiece(ns,searched.move);}
@@ -768,17 +771,15 @@ export async function main(ns) {
                     }
                 } // End of searching the enemy
 
-                if(!validGoPair(validMove,[...(move1[0]||[]),...(move2[0]||[])]))continue;
+                const mv1 = move1.pop()
+                const mv2 = move2.pop()
+                if (!mv1 || !mv2 || !validGoPair(validMove, [mv1[0], mv1[1], mv2[0], mv2[1]])) continue;
                 if (chain > highValue) {
                     highValue = chain
                     moveOptions.length = 0
-                    const mv1 = move1.pop()
-                    const mv2 = move2.pop()
                     moveOptions.push([mv1[0], mv1[1], mv2[0], mv2[1]])
                 }
                 else if (chain === highValue) {
-                    const mv1 = move1.pop()
-                    const mv2 = move2.pop()
                     moveOptions.push([mv1[0], mv1[1], mv2[0], mv2[1]])
                 }
             } // Search whole board
@@ -787,6 +788,7 @@ export async function main(ns) {
         const randomIndex = Math.floor(Math.random() * moveOptions.length)
         return moveOptions[randomIndex] ? {
             coords: moveOptions[randomIndex],
+            value: highValue,
             msg: "SnakeEyes Cheat"
         } : []
     }
@@ -1531,7 +1533,10 @@ export async function main(ns) {
         const [s1x, s1y, s2x, s2y] = attack.coords
         if (s1x === undefined) return false
         const chance = await go_cheat_getCheatSuccessChance(ns);
-        if (!goCheatChanceAllowed(chance,cheatChanceThreshold)) return false
+        const chain=Number(attack.value)||0;
+        const minChance=goOptions?.['cheat-value-aware']===false?cheatChanceThreshold:
+            Math.min(cheatChanceThreshold,Math.max(0.7,0.95-Math.max(0,chain-5)*0.02));
+        if (!goCheatChanceAllowed(chance,minChance)) return false
         try {
             let mid = performance.now()
             const results = await go_cheat_playTwoMoves(ns, s1x, s1y, s2x, s2y)

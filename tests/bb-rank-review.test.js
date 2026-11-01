@@ -34,6 +34,7 @@ test('rank-only workers ignore only explicitly unrelated maintenance',()=>{
  const ns={read:()=>JSON.stringify(r),isRunning:()=>true},actions=['Exchange for Bladeburner Rank'];
  assert.equal(rankHashMaintenanceRequired(ns,actions),false);
  assert.equal(rankHashMaintenanceRequired(ns,['Sell for Money']),true);
+ r.scripts=['gangs.js','health-manager.js'];assert.equal(rankHashMaintenanceRequired(ns,['Sell for Money']),false);
  for(const scripts of [[],null,['bladeburner.js'],['autopilot.js'],['spend-hacknet-hashes.js'],['unknown.js']]){
   r.scripts=scripts;assert.equal(rankHashMaintenanceRequired(ns,actions),true);
  }
@@ -49,6 +50,7 @@ test('rank upgrade quotes use remaining hashes and current native production',()
  const f=fixture(),context=readRankHashUpgradeContext(f.ns,f.now);
  assert.deepEqual(context,{remainingHashes:600,production:10});
  assert.deepEqual(rankHashUpgradeValue({cost:100,gain:10},context),{secondsSaved:30,secondsSavedPerDollar:.3});
+ f.status.state='checking';f.files['tasks/hash-worker-status-7.json']=JSON.stringify(f.status);assert.deepEqual(readRankHashUpgradeContext(f.ns,f.now),context);
 });
 test('rank upgrade context rejects stale, paused, mismatched and already funded evidence',()=>{
  for(const change of [f=>f.status.at-=15000,f=>f.status.augReset=0,f=>f.status.state='waiting',f=>f.status.decision.preferred='Sell for Money']){

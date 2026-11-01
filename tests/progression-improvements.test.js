@@ -24,6 +24,14 @@ test('pacing recovery requires clean windows and backoff is bounded',()=>{
  for(let i=1;i<=3;i++)s=pacing(s,580000+i*60000,800+i*100,80);
  assert.equal(s.multiplier,3.2);assert.ok(s.cycleMs>=4000);
 });
+test('isolated spacing risks below five percent still permit recovery',()=>{
+ let s=adaptiveHgwTiming(null,{at:100000,ownerPid:7,augReset:1,nodeReset:2,counts:{operations:0,deadlineOverruns:0,spacingSamples:0,spacingRisks:0},recent:[]},{now:100000,baseCycleMs:4000,targetCount:4});
+ for(let i=1;i<=4;i++){const at=100000+i*30000;s=adaptiveHgwTiming(s,{at,ownerPid:7,augReset:1,nodeReset:2,counts:{operations:100*i,deadlineOverruns:10*i,spacingSamples:100*i,spacingRisks:10*i},recent:[]},{now:at,baseCycleMs:4000,targetCount:4});}
+ assert.ok(s.multiplier>1);const before=s.multiplier;
+ let at=220000;
+ for(let i=1;i<=3;i++){at+=30000;s=adaptiveHgwTiming(s,{at,ownerPid:7,augReset:1,nodeReset:2,counts:{operations:400+i*24,deadlineOverruns:40,spacingSamples:400+i*24,spacingRisks:40+(i===3?1:0)},recent:[]},{now:at,baseCycleMs:4000,targetCount:4});}
+ assert.ok(s.multiplier<before);
+});
 test('counter resets, stale or blocked evidence, reset changes and missing telemetry remain safe',()=>{
  let s=pacing(null,100000);s=pacing(s,130000,100,20);
  const stale=adaptiveHgwTiming(s,evidence(130000,200,100),{now:180000,baseCycleMs:4000});assert.equal(stale.multiplier,1.5);

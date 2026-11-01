@@ -1,3 +1,4 @@
+import {phishingReportFile,recordPhishingAttempt} from './darknet-throughput-policy.js';
 import {cacheContextFile,cacheRewardReset,cacheRewardFile,recordDarknetCache} from './darknet-reward-policy.js';
 /**
  * Loot helper for a darknet server: opens .cache files left on this server and
@@ -12,6 +13,13 @@ export function lootResizeRequested(text, pid, now=Date.now()) {
 export async function main(ns) {
   ns.disableLog("ALL");
   const self = ns.getHostname();
+  let metrics=null,lastReport=0;
+  const threads=ns.getRunningScript()?.threads||1;
+  const publish=async(force=false)=>{
+    if(!metrics||(!force&&Date.now()-lastReport<30000))return;
+    try{await ns.write(phishingReportFile(self),JSON.stringify(metrics),'w');lastReport=Date.now();}catch(error){ns.print('Phishing report deferred: '+String(error));}
+  };
+  const record=(result,started)=>{try{metrics=recordPhishingAttempt(metrics,result,{host:self,pid:ns.pid,threads,reset:cacheRewardReset(ns.read(cacheContextFile)),started,at:Date.now()});}catch{/* No current reset context: do not publish mixed-reset counts. */}};
   while (true) {
     try {
       for (const file of ns.ls(self, ".cache")) {
@@ -27,13 +35,17 @@ export async function main(ns) {
         } catch (error) { ns.print(`${self}: could not open ${file}: ${String(error)}`); }
       }
       // Most attempts fail (code 455); only report the ones that pay out.
-      const result = await ns.dnet.phishingAttack();
+      const started=Date.now();let result;
+      try{result=await ns.dnet.phishingAttack();record(result,started);}
+      catch(error){record(null,started);await publish();throw error;}
+      await publish();
       if (result?.success) ns.print(`Phishing succeeded: ${result.message ?? "reward received"}`);
     } catch (error) {
       ns.print(`Loot helper recovered: ${String(error)}`);
       await ns.sleep(5_000);
     }
     if (lootResizeRequested(ns.read('tasks/dnet-loot-resize.json'), ns.pid)) {
+      await publish(true);
       ns.print('Phishing action complete; yielding RAM for scout reallocation.');
       return;
     }

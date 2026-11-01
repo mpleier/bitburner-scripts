@@ -10,7 +10,7 @@ import {upgradeRemoteWorker} from './remote-worker-policy.js';
 import {commandPolicyVersion} from './remote-api-command.js';
 import {boundedDiagnostics} from './diagnostics-policy.js';
 import {hackingDrainActive} from './hacking-drain-policy.js';
-import {collectHashSpendingStatus} from './hash-spending-policy.js';
+import {collectHashSpendingStatus,readHashPurchaseMonitor} from './hash-spending-policy.js';
 import {homeRamReserve,reclaimHomeRam} from './home-ram-policy.js';
 import {supervisorHandoffStatus,controllerReloadBlocked,automationReloadReady,maintenanceReloadJobs,supervisorUpdatePlan,handoffSupervisor,registerAutomation,automationHeartbeat,watchedScripts,statusFiles,runtimeHash,scriptSignature,recoveryDecision,dashboardRows} from './runtime-policy.js';
 import {isScriptPaused} from './automation-control.js';
@@ -69,15 +69,22 @@ export async function main(ns){
     if(!signatures.has(script))signatures.set(script,scriptSignature(ns,p.filename,sourceCache));
     const key=script+JSON.stringify(p.args)+':'+signatures.get(script),history=failures.get(key)||{count:0,at:now};if(now-history.at>15*60000){history.count=0;history.at=now;}
     const status=readStatus(statusFiles[script]||(script==='stats.js'?'tasks/overview-status.json':null));
-    const decision=recoveryDecision({record:read('tasks/runtime/'+p.pid+'.json'),signature:signatures.get(script),observedAt:seen.get(p.pid),now,paused:isScriptPaused(ns,p.filename),protectedWork:reloadBlocked(script),attempts:history.count,statusAt:(status?.pid===p.pid||status?.ownerPid===p.pid)?status.at:null,script});
+    const decision=recoveryDecision({record:read('tasks/runtime/'+p.pid+'.json'),signature:signatures.get(script),observedAt:seen.get(p.pid),now,paused:isScriptPaused(ns,p.filename),protectedWork:reloadBlocked(script),attempts:history.count,statusAt:(status?.pid===p.pid||status?.ownerPid===p.pid)?status.at:null,script,pid:p.pid});
     rows.push({script,pid:p.pid,decision});
     if(['reload','restart-stalled','deferred-protected-work'].includes(decision))pending.set(p.pid,{...p,key,signature:signatures.get(script),history});
-    if(['paused','healthy','starting','recovery-limit'].includes(decision))pending.delete(p.pid);
+    if(['paused','healthy','starting','busy-native','recovery-limit'].includes(decision))pending.delete(p.pid);
    }
    for(const [pid,job]of pending){if(!processes.some(p=>p.pid===pid)&&!job.stopped)pending.delete(pid);}
-   const workPending=maintenanceReloadJobs(ns,[...pending.values()].filter(job=>!drainProtected||job.filename.replace(/^\//,'')!=='daemon.js'),homeRamReserve(ns),protectedWork);
+   const orderedPending=[...pending].sort((a,b)=>Number(b[1].filename==='infiltration-manager.js')-Number(a[1].filename==='infiltration-manager.js'));
+   // Advertise only the controller this pass can actually restart, not every
+   // queued update. Consumers can then distinguish unrelated maintenance.
+   const nextReload=orderedPending.find(([,job])=>!reloadBlocked(job.filename)&&
+    (!drainProtected||job.filename.replace(/^\//,'')!=='daemon.js')&&
+    !(job.stopped&&ns.ps('home').some(p=>p.filename===job.filename&&(job.filename!=='spend-hacknet-hashes.js'||JSON.stringify(p.args)===JSON.stringify(job.args))))&&
+    !(activityRecord(ns)&&job.filename!=='stats.js')&&!isScriptPaused(ns,job.filename)&&automationReloadReady(ns,job,homeRamReserve(ns)))?.[1];
+   const workPending=maintenanceReloadJobs(ns,nextReload?[nextReload]:[],homeRamReserve(ns),protectedWork);
    if(workPending.length)ns.write('tasks/automation-maintenance.json',JSON.stringify({ownerPid:ns.pid,expiresAt:now+30000,scripts:workPending.map(p=>p.filename)}),'w');else ns.rm('tasks/automation-maintenance.json');
-   for(const [pid,job]of [...pending].sort((a,b)=>Number(b[1].filename==='infiltration-manager.js')-Number(a[1].filename==='infiltration-manager.js'))){
+   for(const [pid,job]of orderedPending){
     if(reloadBlocked(job.filename))continue;
     if(drainProtected&&job.filename.replace(/^\//,'')==='daemon.js')continue;
     if(job.stopped&&ns.ps('home').some(p=>p.filename===job.filename&&(job.filename!=='spend-hacknet-hashes.js'||JSON.stringify(p.args)===JSON.stringify(job.args)))){pending.delete(pid);continue;}
@@ -98,7 +105,7 @@ export async function main(ns){
     const files=names.filter(name=>/\.(js|ns|script)$/.test(name)||name==='darknet-candidates.txt').filter(name=>!name.split('/').some(part=>['Temp','temp','tasks','remote-control','node_modules'].includes(part))).map(filename=>{const content=ns.read(filename);return {filename,length:content.length,hash:runtimeHash(content)};});
     fileAudit={at:now,host:'home',files,allNames:names};
    }
-   const dashboard={darknetRewards:(r=>r&&{totals:r.totals,omitted:r.omitted,pulls:r.pulls})(read('tasks/dnet-cache-rewards-summary.json')),darknetRefresh:(r=>r&&{at:r.at,active:!!r.active,samples:r.samples?.length,last:r.samples?.at(-1)})(read('tasks/dnet-refresh-observations.json')),gangSafety,hackingProcesses:readHackingProcessBudget(ns,now),backgroundJobs:readBackgroundHealth(ns,now),cloud:currentCloudPurchase(read('tasks/cloud-purchase-status.json'),reset,now),diagnostics:{at:now,detailAt:diagnosticState.detailAt,nextDetailAt:diagnosticState.detailAt+60000,trackedProcesses:diagnosticState.trackedProcesses,omittedProcesses:diagnosticState.omittedProcesses,warnings:diagnosticState.warnings},workerUpgrade,hackingDrain:drainStatus,drainProtected,supervisorUpdate:selfUpdate,homeRamReclaim:(r=>r?.at<=now&&now-r.at<30000&&livePids.has(r.ownerPid)?r:null)(read('tasks/home-ram-reclaim.json')),hashSpending:collectHashSpendingStatus(ns,now),hgw:read('tasks/hgw-misfires.json'),logs,fileAudit,nodeRoute:read('tasks/node-route-plan.json'),overview:read('tasks/overview-status.json'),at:now,ownerPid:ns.pid,node:reset.currentNode,recovery:rows,pending:[...pending.values()].map(p=>p.filename),managers:dashboardRows(ns.ps('home'),readStatus,now),achievements:readStatus('tasks/achievement-status.json')&&{known:readStatus('tasks/achievement-status.json').known,unlocked:readStatus('tasks/achievement-status.json').unlocked?.length},contracts:{...read('tasks/contracts-status.json'),results:(r=>Number.isFinite(r?.at)&&r.at>=reset.lastAugReset&&r.at<=now?r:null)(read('tasks/contracts-results.json'))},validation:read('tasks/contract-validation.json'),speed:read('tasks/progression-speed.json'),budgets:read('tasks/spending-plan.json'),backup:read('tasks/reset-backup-status.json')};
+   const dashboard={darknetRewards:(r=>r&&{totals:r.totals,omitted:r.omitted,pulls:r.pulls})(read('tasks/dnet-cache-rewards-summary.json')),darknetRefresh:(r=>r&&{at:r.at,active:!!r.active,samples:r.samples?.length,last:r.samples?.at(-1)})(read('tasks/dnet-refresh-observations.json')),gangSafety,hackingProcesses:readHackingProcessBudget(ns,now),backgroundJobs:readBackgroundHealth(ns,now),cloud:currentCloudPurchase(read('tasks/cloud-purchase-status.json'),reset,now),diagnostics:{at:now,detailAt:diagnosticState.detailAt,nextDetailAt:diagnosticState.detailAt+60000,trackedProcesses:diagnosticState.trackedProcesses,omittedProcesses:diagnosticState.omittedProcesses,warnings:diagnosticState.warnings},workerUpgrade,hackingDrain:drainStatus,drainProtected,supervisorUpdate:selfUpdate,homeRamReclaim:(r=>r?.at<=now&&now-r.at<30000&&livePids.has(r.ownerPid)?r:null)(read('tasks/home-ram-reclaim.json')),hashSpending:collectHashSpendingStatus(ns,now),hashPurchases:readHashPurchaseMonitor(ns,now),hgw:read('tasks/hgw-misfires.json'),logs,fileAudit,nodeRoute:read('tasks/node-route-plan.json'),overview:read('tasks/overview-status.json'),at:now,ownerPid:ns.pid,node:reset.currentNode,recovery:rows,pending:[...pending.values()].map(p=>p.filename),managers:dashboardRows(ns.ps('home'),readStatus,now),achievements:readStatus('tasks/achievement-status.json')&&{known:readStatus('tasks/achievement-status.json').known,unlocked:readStatus('tasks/achievement-status.json').unlocked?.length},contracts:{...read('tasks/contracts-status.json'),results:(r=>Number.isFinite(r?.at)&&r.at>=reset.lastAugReset&&r.at<=now?r:null)(read('tasks/contracts-results.json'))},validation:read('tasks/contract-validation.json'),speed:read('tasks/progression-speed.json'),budgets:read('tasks/spending-plan.json'),backup:read('tasks/reset-backup-status.json')};
    dashboard.hgwTimeline=readHgwTimeline(ns,reset,now);
    ns.rm('tasks/reliability-error.json');
    if(diagnosticState.detailDue)ns.write('tasks/dashboard.json',JSON.stringify(dashboard),'w');

@@ -21,8 +21,15 @@ export async function runCompletionHook(ns, nodeReset, script, args, launch, wai
     let saved;
     try { saved = JSON.parse(ns.read(completionHookFile)); } catch { }
     if (saved?.nodeReset === nodeReset) {
-        if (saved.pid && ns.isRunning(saved.pid)) await wait(saved.pid);
-        return true;
+        const matching=(!saved.script||saved.script===script)&&(!saved.args||JSON.stringify(saved.args)===JSON.stringify(args));
+        if(matching&&saved.status==='completed')return true;
+        if(matching&&saved.status==='started'&&saved.pid&&ns.isRunning(saved.pid)){
+            await wait(saved.pid);
+            await ns.write(completionHookFile,JSON.stringify({...saved,script,args,status:'completed',at:Date.now()}),'w');
+            return true;
+        }
+        await ns.write(completionHookFile,JSON.stringify({...saved,status:'uncertain',reason:matching?'Interrupted completion hook; inspect its effects before resolving this receipt':'Completion hook configuration changed; resolve the previous receipt first',at:Date.now()}),'w');
+        return false;
     }
     await ns.write(completionHookFile, JSON.stringify({ nodeReset, script, args, status: 'claimed', at: Date.now() }), 'w');
     let pid;

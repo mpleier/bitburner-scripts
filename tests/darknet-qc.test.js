@@ -89,7 +89,7 @@ test('Mastermind rejects contradictory uniform feedback',async()=>{
   const result=await solveFeedbackPassword(p.details,p.auth,p.readLogs,{});assert.equal(result.success,false);assert.match(result.reason,/contradictory/);assert.equal(p.guesses.length,0);
 });
 
-async function runBlankWorker(kind,saved,details) {
+async function runBlankWorker(kind,saved,details,expectedGuesses=['','']) {
   const files=new Map(saved===undefined?[]:[['darknet-passwords.txt',`target=${saved}\n`]]),guesses=[],printed=[];
   let sleeps=0;const stop=new Error('end scout fixture');
   const script=kind==='manager'?'darknet-manager.js':'darknet-node.js';
@@ -100,9 +100,10 @@ async function runBlankWorker(kind,saved,details) {
     print:line=>printed.push(String(line)),scp:async()=>true,ps:()=>[],getServerMaxRam:()=>16,getServerUsedRam:()=>16,getScriptRam:()=>0,
     sleep:async()=>{if(++sleeps>=2){if(kind==='scout')throw stop;files.set('remote-control/paused/'+script+'.txt','true');}},
     dnet:{probe:()=>['target'],getServerDetails:host=>host==='target'?{...details,blockedRam:0,hasSession:false,requiredCharismaSkill:1e9}:{depth:0,difficulty:0},
+      getServerRequiredCharismaLevel:()=>1e9,
       authenticate:async(host,password)=>{guesses.push(password);return {success:true,code:200};},getStasisLinkedServers:()=>[],getStasisLinkLimit:()=>0}};
   if(kind==='manager')await manager(ns);else await assert.rejects(scout(ns),error=>error===stop);
-  assert.deepEqual(guesses,['','']);
+  assert.deepEqual(guesses,expectedGuesses);
   assert.equal(printed.some(line=>/TypeError|ReferenceError/.test(line)),false,printed.join('\n'));
   return files;
 }
@@ -112,7 +113,7 @@ test('home manager and remote scout discover, save and reuse blank passwords',as
     const store=kind==='manager'?credentialBundle:'tasks/credentials-report-origin.json';
     assert.equal(decodeCredentials(files.get(store)).get('target').password,'');
     assert.equal(files.has('darknet-passwords-target.txt'),false);
-    await runBlankWorker(kind,'',{modelId:'unknown',passwordLength:4,passwordFormat:'numeric'});
+    await runBlankWorker(kind,'',{modelId:'unknown',passwordLength:4,passwordFormat:'numeric'},[]);
   }
 });
 test('both deployment lists include the feedback dependency',()=>{

@@ -68,7 +68,7 @@ export async function main(ns) {
     return 0;
   };
   const PAY_DIVIDENDS = true;
-  const IPO_VALUATION = 1e12;
+  const IPO_VALUATION = 1e10; // Reachable after city expansion; the old 1e12 gate was effectively permanent.
   const ACCEPT_INVESTMENT = true;
   let lastDividendRate = -1,financeDecision=null,financeHistory=null,lastShareSaleAt=0,liquidityDecision=null;
   const financeFile='tasks/corporation-finance.json';
@@ -197,7 +197,8 @@ export async function main(ns) {
     if(d.cities.some(location=>safe('Expansion prerequisite warehouse',()=>c.hasWarehouse(division,location))!==true))return;
     const officeCost=Number(constants.officeInitialCost)||4e9,warehouseCost=Number(constants.warehouseInitialCost)||5e9;
     const packageCost=officeCost+warehouseCost+20e6;
-    if(funds()>reserve+packageCost)capitalPurchase(`Expand ${division} to ${city}`,packageCost,()=>{
+    capitalPurchase(`Expand ${division} to ${city}`,packageCost,()=>{
+      if(funds()<=reserve+packageCost)return false;
       const current=c.getDivision(division);
       if(current.cities.includes(city))return false;
       c.expandCity(division,city);
@@ -235,7 +236,8 @@ export async function main(ns) {
     growthPlans.set(label,plan);return false;
   };
   const advertQueue=new Set(),advertisingCandidates=new Map();
-  const hireAdVert=division=>advertQueue.add(division);
+  const expansionFundingActive=()=>!!growthGoal&&/^(Expand |Unlock Warehouse API)/.test(growthGoal.label);
+  const hireAdVert=division=>{if(expansionFundingActive())return;advertQueue.add(division);};
   const buyAdVert = (division) => {
     const d=safe('Read advertising division',()=>c.getDivision(division));
     let goals;try{goals=JSON.parse(ns.read('tasks/achievement-goals.json'));}catch{}
@@ -302,10 +304,35 @@ export async function main(ns) {
   };
 
   // ---- Hash spends ------------------------------------------------------
-  const cSafeHashCost=action=>{try{return ns.hacknet.hashCost(action);}catch{return Infinity;}};
+  const cSafeHashCost=(action,quantity=1)=>{try{return ns.hacknet.hashCost(action,quantity);}catch{return Infinity;}};
+  const quoteCorporateHashes=(funding,research=[],limit=5000,maxPurchases=16)=>{
+    const wallet=Math.max(0,ns.getPlayer().money-Math.max(0,Number(ns.read('reserve.txt'))||0));
+    let saved;try{saved=JSON.parse(ns.read('tasks/corporation-hash-budget.json'));}catch{}
+    const entries=saved?.schemaVersion===1&&saved.nodeReset===resetInfo.lastNodeReset?saved.entries||{}:{};
+    return corporationHashMilestone(funding,research,{funds:funds(),reserve,quote:cSafeHashCost,maxPurchases,
+      maxHashes:Math.min(limit,Math.max(0,ns.hacknet.numHashes()),wallet*.05/250000),
+      remainingBudget:key=>{const used=entries[key];if(!used&&Object.keys(entries).length>=128)return null;return {purchases:maxPurchases-(used?.purchases||0),hashes:limit-(used?.spent||0)};}});
+  };
+  // Hashing should first break the one-city expansion deadlock; research can wait a cycle.
+  const firstExpansionFunding=()=>{
+    if(!hasUnlock('Warehouse API')){
+      const cost=Number(safe('Quote Warehouse API funding',()=>c.getUnlockCost('Warehouse API')));
+      const cashGap=Math.max(0,cost-Math.max(0,funds()-reserve));
+      return Number.isFinite(cost)&&cost>0&&cashGap>0?{label:'Unlock Warehouse API for expansion',cost,cashGap,priority:3}:null;
+    }
+    const officeCost=Number(constants.officeInitialCost)||4e9,warehouseCost=Number(constants.warehouseInitialCost)||5e9;
+    const packageCost=officeCost+warehouseCost+20e6;
+    for(const division of divisions()){
+      const d=safe('Read expansion funding division',()=>c.getDivision(division));
+      if(!d||d.cities?.length!==1||d.cities.some(city=>safe('Read expansion funding warehouse',()=>c.hasWarehouse(division,city))!==true))continue;
+      const cashGap=Math.max(0,packageCost-Math.max(0,funds()-reserve));
+      if(cashGap>0)return {label:'Expand '+division+' to a second city',cost:packageCost,cashGap,priority:3};
+    }
+    return null;
+  };
   const spendHashes = async () => {
     if(!achievementActionAllowed(ns,"hashSpending"))return null;
-    if (!SELL_HASHES_FOR_CORP || !hasHacknetServers()) return null;
+    if (!SELL_HASHES_FOR_CORP) return null;
 
     let available = 0;
     try { available = Number(ns.hacknet.numHashes()) || 0; }
@@ -317,12 +344,27 @@ export async function main(ns) {
       if(ta2)return [];
       const next=lab?'Market-TA.II':'Hi-Tech R&D Laboratory',first=lab&&safe('Read hash prerequisite',()=>c.hasResearched(name,'Market-TA.I'))!==true?safe('Quote hash prerequisite',()=>c.getResearchCost(name,'Market-TA.I')):0;
       const cost=first+safe('Quote hash research',()=>c.getResearchCost(name,next)),context=researchContext(name,d),points=d.researchPoints;
-      const before=corporationResearchDecision({name:next,cost,points,context}),after=corporationResearchDecision({name:next,cost,points:points+1000,context});
-      return !before.ready&&after.ready?[{division:name,name:next,cost:after.target,points}]:[];
+      const before=corporationResearchDecision({name:next,cost,points,context});
+      if(before.ready)return [];
+      for(let purchases=1;purchases<=16;purchases++){
+        const after=corporationResearchDecision({name:next,cost,points:points+1000*purchases,context});
+        if(after.ready)return [{division:name,name:next,cost:Math.max(cost,after.target),points}];
+      }
+      return [];
     });
-    const liveFunding=growthGoal?{...growthGoal,cashGap:Math.max(0,growthGoal.cost-Math.max(0,funds()-reserve))}:null;
-    hashMilestone=corporationHashMilestone(liveFunding,research,{funds:funds(),reserve,fundCost:cSafeHashCost('Sell for Corporation Funds'),researchCost:cSafeHashCost('Exchange for Corporation Research')});
-    await ns.write('tasks/corporation-hash-goal.json',JSON.stringify({schemaVersion:1,at:Date.now(),ownerPid:ns.pid,nodeReset:resetInfo.lastNodeReset,augReset:resetInfo.lastAugReset,priority:growthPriority,milestone:hashMilestone}),'w');
+    const expansionFunding=firstExpansionFunding();
+    let liveFunding=growthGoal?{...growthGoal,cashGap:Math.max(0,growthGoal.cost-Math.max(0,funds()-reserve))}:expansionFunding;
+    // Expansion packages exceed one bounded 5,000-hash quote. Fund one receipt at a time;
+    // the next corporation cycle re-quotes the remaining gap.
+    if(liveFunding&&/^(Expand |Unlock Warehouse API)/.test(liveFunding.label))liveFunding={...liveFunding,cashGap:Math.min(liveFunding.cashGap,1e9),staged:true};
+    hashMilestone=quoteCorporateHashes(liveFunding,!growthGoal&&expansionFunding?[]:research,liveFunding?.staged?20000:5000,liveFunding?.staged?32:16);
+    // If the current hash balance is below the next receipt, still publish the target so
+    // other consumers reserve hashes instead of spending the corporation's ramp.
+    if(!hashMilestone&&liveFunding?.staged){
+      const cost=Number(cSafeHashCost('Sell for Corporation Funds',1));
+      if(Number.isFinite(cost)&&cost>0)hashMilestone={action:'Sell for Corporation Funds',label:liveFunding.label,gap:1e9,reward:1e9,purchases:1,totalHashes:cost,target:liveFunding.cost,staged:true};
+    }
+    await ns.write('tasks/corporation-hash-goal.json',JSON.stringify({schemaVersion:2,at:Date.now(),ownerPid:ns.pid,nodeReset:resetInfo.lastNodeReset,augReset:resetInfo.lastAugReset,priority:growthPriority,milestone:hashMilestone}),'w');
     if(!canManage())return null;
     const targets=hashMilestone?[hashMilestone.action,...HASH_SPEND_PLAN.filter(a=>a!==hashMilestone.action)]:HASH_SPEND_PLAN;
     for (let n = 0; n < targets.length; n++) {
@@ -336,11 +378,15 @@ export async function main(ns) {
       if (available < cost) continue;
 
       const corp=c.getCorporation();
-      const useful=target==='Sell for Corporation Funds'?corp.funds<Math.max(1e9,Number(corp.expenses||0)*60)||(hashMilestone?.action===target&&growthGoal?.cost>corp.funds-reserve&&growthGoal.cost-(corp.funds-reserve)<=1e9):research.some(r=>{
+      const useful=target==='Sell for Corporation Funds'?corp.funds<Math.max(1e9,Number(corp.expenses||0)*60)||
+        (hashMilestone?.action===target&&(growthGoal?.cost>corp.funds-reserve||Number.isFinite(hashMilestone?.target)&&hashMilestone.target>corp.funds-reserve)):research.some(r=>{
         const points=c.getDivision(r.division).researchPoints;
-        return !c.hasResearched(r.division,r.name)&&points<r.cost&&r.cost<=points+1000;
+        return hashMilestone?.action===target&&hashMilestone.division===r.division&&!c.hasResearched(r.division,r.name)&&points<r.cost;
       });
-      if (attempt(`Spend hashes on ${target}`, () => spendHashesWithPolicy(ns,target,undefined,1,{ownerPid:ns.pid,script:'corporation-manager.js',corporationUseful:useful},hashSpendingDecision).success)) {
+      const observeCorporation=()=>({funds:funds(),research:Object.fromEntries(divisions().map(name=>[name,c.getDivision(name).researchPoints]))});
+      const beforeFunds=funds();
+      if (attempt(`Spend hashes on ${target}`, () => spendHashesWithPolicy(ns,target,undefined,1,{ownerPid:ns.pid,script:'corporation-manager.js',corporationUseful:useful,observeCorporation},hashSpendingDecision).success)) {
+        if(target==='Sell for Corporation Funds')growthBank=Math.min(Math.max(0,funds()-reserve),Math.max(growthBank+Math.max(0,funds()-beforeFunds),growthGoal?.cost||0));
         hashSpendIndex = (idx + 1) % HASH_SPEND_PLAN.length;
         return target;
       }
@@ -742,14 +788,15 @@ export async function main(ns) {
     const backlog = outputBacklog(outputs);
     const mature=outputs.filter(o=>o&&(o.developmentProgress===undefined||o.developmentProgress>=100));
     const known=mature.length>0&&mature.every(o=>[o.productionAmount,o.actualSellAmount,o.stored].every(v=>Number.isFinite(v)&&v>=0));
-    const sellThrough=known?Math.min(1,...mature.map(o=>o.productionAmount>0?o.actualSellAmount/o.productionAmount:o.stored>0&&o.actualSellAmount===0?0:1)):null;
+    // Zero production with stock on hand is a stalled/backlogged warehouse, not perfect sell-through.
+    const sellThrough=known?Math.min(1,...mature.map(o=>o.productionAmount>0?o.actualSellAmount/o.productionAmount:o.stored>0?0:1)):null;
     const revenue=divisionData?.lastCycleRevenue,expenses=divisionData?.lastCycleExpenses;
     if(wh&&[revenue,expenses].every(Number.isFinite))marketRows.set(division+'/'+city,{key:division+'/'+city,division,city,
       profitPerSecond:(revenue-expenses)/Math.max(1,divisionData.cities.length),expectedCities:divisionData.cities.length,
       outputs:known&&mature.length===outputs.length?mature.map(o=>({name:o.name,sold:o.actualSellAmount,produced:o.productionAmount})):null,
       sellThrough,backlog:known&&backlog,pressure:wh.sizeUsed/Math.max(1,wh.size)});
     let used = wh ? wh.sizeUsed / Math.max(1, wh.size) : 0;
-    if (used > 0.8) storagePressure = true;
+    if (used > 0.8 && !backlog) storagePressure = true;
     for (let level = 0; level < 5 && used > 0.7 && !backlog; level++) {
       const cost = safe("Get warehouse upgrade cost", () => c.getUpgradeWarehouseCost(division, city));
       if (!Number.isFinite(cost) || funds() <= cost + reserve) break;
@@ -804,7 +851,7 @@ export async function main(ns) {
   // so a city can exist without a warehouse. Skip those.
   const sellMaterials = (division, materials) => {
     const d = safe(`Read division ${division}`, () => c.getDivision(division));
-    if (!d || d.makesProducts) return;
+    if (!d) return;
     const ta2 = hasTA2(division);
     for (const city of d.cities ?? []) {
       if (!safe(`Check ${division}/${city} warehouse`, () => c.hasWarehouse(division, city))) continue;
@@ -867,6 +914,7 @@ export async function main(ns) {
       return;
     }
     if(metric.name&&!metric.finishedAt&&products.some(p=>p.name===metric.name)){metric.finishedAt=Date.now();metric.developmentMs=Math.max(0,metric.finishedAt-metric.startedAt);}
+    if(expansionFundingActive())return;
     const investment=productInvestment(funds(),reserve,growthBank);if(!(investment>=10e6))return;
     const prefix=division===restaurant?'Apex Dining':division+' Auto',retiring=products.length>=d.maxProducts?chooseRetirement(products,prefix):null;
     const baseline=corporationProductBaseline(history,metric,retiring?.name);
@@ -1017,7 +1065,25 @@ export async function main(ns) {
         const offer=safe('Read investment offer',()=>c.getInvestmentOffer());
         const stageReady=offer?.round<=2?hasDivision(agri)&&safe('Read agricultural reach',()=>c.getDivision(agri))?.cities?.length===6&&safe('Read agricultural warehouses',()=>c.getDivision(agri).cities.every(city=>c.hasWarehouse(agri,city)))===true&&
           (offer.round===1||hasDivision(chem)||hasDivision(tobacco)):divisions().some(name=>{const d=safe('Read funding product stage',()=>c.getDivision(name));return d?.makesProducts&&d.products?.some(p=>safe('Read funding product',()=>c.getProduct(name,d.cities[0],p))?.developmentProgress>=100);});
-        financeDecision=investmentDecision(info,offer,financeHistory,investmentMinOwnership,{reserve,cycleSeconds,stageReady});
+        let stageCapital=null,stageDivision=null;
+        const officeCost=Number(constants.officeInitialCost)||4e9,warehouseCost=Number(constants.warehouseInitialCost)||5e9;
+        if(offer?.round<=2&&hasDivision(agri)){
+          const reach=safe('Read expansion funding prerequisites',()=>c.getDivision(agri));
+          if(reach&&Array.isArray(reach.cities)){
+            stageCapital=cities.filter(city=>!reach.cities.includes(city)).length*(officeCost+warehouseCost+20e6)+reach.cities.filter(city=>safe('Check funding warehouse',()=>c.hasWarehouse(agri,city))!==true).length*warehouseCost;
+          }
+        }
+        // Round two also requires a supply-chain division. The startup sequence creates Chemical
+        // to supply Agriculture, so price its starting cost plus one working office and warehouse.
+        if(offer?.round===2&&!hasDivision(chem)&&!hasDivision(tobacco)){
+          const chemicalCost=Number(safe('Read Chemical startup cost',()=>c.getIndustryData('Chemical'))?.startingCost);
+          if(Number.isFinite(chemicalCost)&&chemicalCost>0){
+            stageCapital=(Number.isFinite(stageCapital)?stageCapital:0)+chemicalCost+officeCost+warehouseCost;
+            stageDivision='Chemical';
+          }
+        }
+        financeDecision=investmentDecision(info,offer,financeHistory,investmentMinOwnership,{reserve,cycleSeconds,stageReady,stageCapital,stageDivision});
+        financeDecision.stageDivision=stageDivision;
         financeHistory=financeDecision.history;
         if(financeDecision.accept&&attempt(`Accept round ${offer.round} investment`,()=>c.acceptInvestmentOffer())){financeHistory=null;growthBank=corporationGrowthBudget({...info,funds:funds(),revenue:0,expenses:0},reserve,growthBank,cycleSeconds,options['development-speed']);}
       }
@@ -1121,7 +1187,10 @@ export async function main(ns) {
           sellProducts(division);
           manageProductDevelopment(division);
           hireAdVert(division);
-        } else sellMaterials(division, industry.producedMaterials || []);
+        }
+        // Product industries can also produce materials (AI Cores, Hardware, Drugs, Robots,
+        // Real Estate). Unsold output fills the warehouse and throttles product production.
+        sellMaterials(division, industry.producedMaterials || []);
       }
       if (Date.now() - lastUpgrade >= 30_000) {
         const cash = funds();
@@ -1191,6 +1260,7 @@ export async function main(ns) {
       const rankedGrowth=[...pricedGrowth,...groupPlans];
       const foundationWaits=growthDecisions.filter(d=>d.state==='budget-wait').map(d=>({label:d.label,cost:d.cost,priority:2,score:1/Math.max(1,d.cost)}));
       growthGoal=corporationFundingGoal([...foundationWaits,...rankedGrowth],{...info,funds:funds()},reserve,growthBank,{enabled:growthPriority});
+      if(growthGoal&&quoteCorporateHashes(growthGoal))growthGoal={...growthGoal,protect:true,amount:Math.min(growthBank,Math.max(0,funds()-reserve),growthGoal.cost),hashFunded:true};
       const growth=executeCorporationGrowth(rankedGrowth,growthBank,funds,()=>reserve,canManage,{hold:growthGoal});growthBank=growth.remaining;growthDecisions.push(...growth.decisions);
       manageHacknetServers();
 
@@ -1213,7 +1283,7 @@ export async function main(ns) {
       await ns.write(productMetricsFile,JSON.stringify({nodeReset:resetInfo.lastNodeReset,corporation:info.name,divisions:productMetrics,productsByDivision:productHistory}),'w');
       await ns.write(productStateFile,JSON.stringify({at:lastProductAt,nodeReset:resetInfo.lastNodeReset,corporation:info.name}),'w');
       await ns.write(otherProductStateFile,JSON.stringify({nodeReset:resetInfo.lastNodeReset,corporation:info.name,divisions:otherProductTimes}),'w');
-      await ns.write(financeFile,JSON.stringify({at:Date.now(),pid:ns.pid,nodeReset:resetInfo.lastNodeReset,corporation:info.name,history:financeHistory,lastShareSaleAt,decision:financeDecision&&{accept:financeDecision.accept,holdIPO:financeDecision.holdIPO,reason:financeDecision.reason}}),'w');
+      await ns.write(financeFile,JSON.stringify({at:Date.now(),pid:ns.pid,nodeReset:resetInfo.lastNodeReset,corporation:info.name,history:financeHistory,lastShareSaleAt,decision:financeDecision&&{accept:financeDecision.accept,holdIPO:financeDecision.holdIPO,reason:financeDecision.reason,capitalBlocked:financeDecision.capitalBlocked,stageFunded:financeDecision.stageFunded,stageCapital:financeDecision.stageCapital,stageDivision:financeDecision.stageDivision}}),'w');
       await ns.write(lifecycleFile, JSON.stringify({nodeReset: resetInfo.lastNodeReset, corporation: info.name, growthBank, lastExpansion, advertisingRecovery:[...advertisingRecovery]}), 'w');
       await ns.write('tasks/corporation-status.json', JSON.stringify({ at: Date.now(), pid: ns.pid, nodeReset:resetInfo.lastNodeReset, augReset:resetInfo.lastAugReset, corporation: info.name,
         growthBank, growthDecisions, fundingDiagnostics:corporationFundingDiagnostics([...foundationWaits,...rankedGrowth].filter(p=>!growthDecisions.some(d=>d.label===p.label&&['purchased','ordered'].includes(d.state))),liveStatus,reserve,growthBank), researchDecisions, advertisingRecovery:[...advertisingRecovery], calibration:{status:calibrationState.status,pending:calibrationState.pending?.quote?.upgrade||null,learnedUpgrades:Object.values(calibrationState.stats).filter(s=>s.length>=3).length}, productMetrics, staffingGoals:Object.fromEntries(staffingGoals), mode: recovering ? 'cash recovery' : 'growth', funds: funds(), reserve, divisions: divisions(),

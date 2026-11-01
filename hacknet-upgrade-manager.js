@@ -8,7 +8,7 @@ import { getConfiguration, disableLogs, formatDuration, formatMoney, tryGetBitNo
 
 const argsSchema = [
     ['adaptive-tiers', false], // Single-worker equivalent of the former four spending tiers.
-    ['max-payoff-time', '1h'], // Controls how far to upgrade hacknets. Can be a number of seconds, or an expression of minutes/hours (e.g. '123m', '4h')
+    ['max-payoff-time', '4h'], // Controls how far to upgrade hacknets. Can be a number of seconds, or an expression of minutes/hours (e.g. '123m', '4h')
     ['time', null], // alias for max-payoff-time
     ['c', false], // Set to true to run continuously, otherwise, it runs once
     ['continuous', false],
@@ -91,7 +91,13 @@ function setStatus(ns, logMessage) {
 export function upgradeHacknet(ns,maxSpend,maxPayoffTimeSeconds=3600,options={}) {
  if(isScriptPaused(ns,ns.getScriptName())||maintenanceRequested(ns)||!achievementActionAllowed(ns,'hacknetExpense'))return 0;
  const count=ns.hacknet.numNodes(),servers=hacknetServerMode(ns.getResetInfo(),count?ns.hacknet.getNodeStats(0):null);
- const multiplier=ns.getPlayer().mults.hacknet_node_money*(options.productionMultiplier??1),hashValue=servers?250000:1;
+ const multiplier=ns.getPlayer().mults.hacknet_node_money*(options.productionMultiplier??1);
+ let hashValue=1;
+ if(servers){
+  // Convert hashes/second to dollars/second using the live Sell-for-Money
+  // price. The old hardcoded 250k/hash is only correct while the hash cost is 4.
+  try{const hashCost=ns.hacknet.hashCost('Sell for Money');hashValue=Number.isFinite(hashCost)&&hashCost>0?1e6/hashCost:250000;}catch{hashValue=250000;}
+ }
  const reserve=Math.max(0,Number(options.reserve??ns.read('reserve.txt'))||0),funds=Math.min(maxSpend,ns.getPlayer().money-reserve);
  const candidates=[];
  const add=(candidate,gain)=>{if(Number.isFinite(candidate.cost)&&candidate.cost>0&&Number.isFinite(gain)&&gain>0){candidate.payoff=candidate.cost/(gain*hashValue);candidate.gain=gain;candidates.push(candidate);}};

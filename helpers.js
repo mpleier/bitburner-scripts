@@ -720,7 +720,10 @@ export async function getStocksValue(ns) {
     if (askPrices == null) return 0; // No TIX API Access
     const bidPrices = await stockGetAll('getBidPrice');
     const positions = await stockGetAll('getPosition');
+    // Any failed leg leaves us unable to value the portfolio; report no stocks rather than throwing.
+    if (bidPrices == null || positions == null) return 0;
     return stockSymbols.map(sym => ({ sym, pos: positions[sym], ask: askPrices[sym], bid: bidPrices[sym] }))
+        .filter(stk => Array.isArray(stk.pos) && stk.pos.length >= 4 && Number.isFinite(stk.bid) && Number.isFinite(stk.ask))
         .reduce((total, stk) => total + (stk.pos[0] * stk.bid) /* Long Value */ + stk.pos[2] * (stk.pos[3] * 2 - stk.ask) /* Short Value */
             // Subtract commission only if we have one or more shares (this is money we won't get when we sell our position)
             // If for some crazy reason we have shares both in the short and long position, we'll have to pay the commission twice (two separate sales)

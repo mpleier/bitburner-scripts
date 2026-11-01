@@ -1,11 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import vm from 'node:vm';
-import {readFileSync} from 'node:fs';
 import {collectHackingIncome} from '../hacking-income-policy.js';
 import {collectHgwTelemetry} from '../hgw-telemetry-policy.js';
 import {hackingProcessInventory} from '../hacking-process-policy.js';
 import {hashSpendingDecision,spendHashesWithPolicy} from '../hash-spending-policy.js';
+import {reportHgwEvent} from '../Remote/hgw-telemetry.js';
 const reset={lastNodeReset:1,lastAugReset:2};
 function fixture(){
  const files={},player={skills:{hacking:500},mults:{hacking_money:1}},server={moneyMax:1e9,minDifficulty:2};
@@ -102,9 +101,8 @@ test('income samples invalidate on player, server, owner, allocation, gaps, risk
 test('all worker reporters preserve owner income; collector merges without double counting',()=>{
  let queue='NULL PORT DATA';const files={};
  const ns={read:f=>files[f]||'',write:(f,s)=>files[f]=s,print(){},toast(){},getPortHandle:()=>({peek:()=>queue,read:()=>{const q=queue;queue='NULL PORT DATA';return q;},write:s=>queue=s})};
- for(const [i,file]of ['Remote/hack-target.js','Remote/grow-target.js','Remote/weak-target.js'].entries()){
-  const source=readFileSync(new URL('../'+file,import.meta.url),'utf8'),report=vm.runInNewContext(source.slice(source.indexOf('function report('))+';report');
-  report(ns,{port:20,augReset:2,nodeReset:1},{owner:7,at:1000+i,tool:i?'grow':'hack',target:'target',value:100,lateMs:0,toleranceMs:100,outcome:'effect'},true);
+ for(const [i]of ['Remote/hack-target.js','Remote/grow-target.js','Remote/weak-target.js'].entries()){
+  reportHgwEvent(ns,{port:20,augReset:2,nodeReset:1},{owner:7,at:1000+i,tool:i?'grow':'hack',target:'target',value:100,lateMs:0,toleranceMs:100,outcome:'effect'},true);
  }
  collectHgwTelemetry(ns,reset,7,2000);collectHgwTelemetry(ns,reset,7,8000);
  const income=JSON.parse(files['tasks/hgw-misfires.json']).income['[7,"target"]'];assert.equal(income.money,100);assert.equal(income.completions,1);
@@ -157,9 +155,8 @@ test('upgrade comparisons wait for retuning and require unchanged player context
  f.player.skills.hacking++;assert.equal(f.sample(371000).targets.target.upgradeComparison,undefined);
 });
 test('grow/weaken timing risks invalidate owner income while never crediting growth as cash',()=>{
- let queue='NULL PORT DATA';const source=readFileSync(new URL('../Remote/grow-target.js',import.meta.url),'utf8');
- const report=vm.runInNewContext(source.slice(source.indexOf('function report('))+';report');
+ let queue='NULL PORT DATA';
  const ns={getPortHandle:()=>({peek:()=>queue,read:()=>{const q=queue;queue='NULL PORT DATA';return q;},write:s=>queue=s})};
- report(ns,{port:20,augReset:2,nodeReset:1},{owner:7,at:1000,tool:'grow',target:'target',value:999,lateMs:101,toleranceMs:100},true);
+ reportHgwEvent(ns,{port:20,augReset:2,nodeReset:1},{owner:7,at:1000,tool:'grow',target:'target',value:999,lateMs:101,toleranceMs:100},true);
  const income=JSON.parse(queue).income['[7,"target"]'];assert.equal(income.money,0);assert.equal(income.completions,0);assert.equal(income.risks,1);
 });

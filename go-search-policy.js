@@ -16,8 +16,10 @@ export function simulateGoMove(board,x,y,color='X',forbidden=new Set()) {
  const next=b.map(r=>r.join(''));if(forbidden.has(next.join('/')))return null;
  return {board:next,captured,liberties:own.liberties.size};
 }
-/** Area score plus a small liberty/atari heuristic, always from Black's perspective. */
-export function evaluateGoPosition(board) {
+/** Area score plus a small liberty/atari heuristic, always from Black's perspective.
+ *  `komi` is White's compensation, so a positive komi lowers Black's effective score. */
+export function evaluateGoPosition(board,komi=0) {
+ const penalty=Number.isFinite(komi)?komi:0;
  const n=board.length,seen=new Set();let score=0;
  for(let x=0;x<n;x++)for(let y=0;y<n;y++){
   const key=x*n+y;if(seen.has(key)||board[x][y]==='#')continue;
@@ -29,13 +31,13 @@ export function evaluateGoPosition(board) {
   }else{const g=group(board,x,y),sign=board[x][y]==='X'?1:-1;for(const [i,j]of g.stones)seen.add(i*n+j);
    score+=sign*(g.stones.length+.15*Math.min(6,g.liberties.size)-(g.liberties.size===1?2*g.stones.length:0));}
  }
- return score;
+ return score-penalty;
 }
 /** Bounded two-ply challenger. It neither calls native APIs nor mutates live state. */
-export function searchGoMove(board,valid,{maxNodes=64,maxMs=5,history=[],clock=()=>performance.now()}={}) {
+export function searchGoMove(board,valid,{maxNodes=64,maxMs=5,history=[],komi=0,depth=2,clock=()=>performance.now()}={}) {
  const began=clock(),limit=Math.max(1,Math.min(1024,Math.floor(maxNodes)||64)),deadline=began+Math.max(1,Math.min(50,maxMs||5));
  let nodes=0,stopped=false;const seen=new Set(history.filter(validGoBoard).map(b=>b.join('/')));
- const result=(move=null)=>({move,nodes,elapsedMs:Math.max(0,clock()-began),bounded:stopped,model:'two-ply heuristic search'});
+ const result=(move=null)=>({move,nodes,elapsedMs:Math.max(0,clock()-began),bounded:stopped,model:(depth>=3?'three-ply':'two-ply')+' heuristic search'});
  if(!validGoBoard(board))return result();
  seen.add(board.join('/'));
  const simulate=(b,x,y,color,forbidden)=>{if(nodes>=limit||clock()>=deadline){stopped=true;return null;}nodes++;return simulateGoMove(b,x,y,color,forbidden);};
@@ -48,14 +50,27 @@ export function searchGoMove(board,valid,{maxNodes=64,maxMs=5,history=[],clock=(
   }
   return moves.sort((a,b)=>b.weight-a.weight||a.x-b.x||a.y-b.y);
  };
+ // Order roots by immediate tactical value before spending the bounded search
+ // budget. Captures and safe saves must not be crowded out by proximity alone.
+ const roots=candidates(board,'X',valid).slice(0,24);
+ for(const root of roots){const probe=simulateGoMove(board,root.x,root.y,'X',seen);root.priority=probe?root.weight+probe.captured*4+(probe.liberties>=2?1:-3):-Infinity;}
+ roots.sort((a,b)=>b.priority-a.priority||b.weight-a.weight||a.x-b.x||a.y-b.y);
  let best=null,bestScore=-Infinity,evaluated=0;
- for(const root of candidates(board,'X',valid).slice(0,6)){
+ for(const root of roots.slice(0,10)){
   const first=simulate(board,root.x,root.y,'X',seen);if(stopped)break;if(!first||first.liberties<2&&!first.captured)continue;
   const forbidden=new Set(seen);forbidden.add(first.board.join('/'));
-  let worst=evaluateGoPosition(first.board),replies=0;
+  let worst=evaluateGoPosition(first.board,komi),replies=0;
   for(const reply of candidates(first.board,'O')){
    const second=simulate(first.board,reply.x,reply.y,'O',forbidden);if(stopped)break;if(!second)continue;
-   worst=Math.min(worst,evaluateGoPosition(second.board));if(++replies>=4)break;
+   let value=evaluateGoPosition(second.board,komi);
+   if(depth>=3){
+    const forbidden2=new Set(forbidden);forbidden2.add(second.board.join('/'));
+    for(const third of candidates(second.board,'X').slice(0,3)){
+     const thirdMove=simulate(second.board,third.x,third.y,'X',forbidden2);if(stopped)break;
+     if(thirdMove)value=Math.max(value,evaluateGoPosition(thirdMove.board,komi));
+    }
+   }
+   worst=Math.min(worst,value);if(++replies>=6)break;
   }
   if(stopped)break;evaluated++;
   if(worst>bestScore){bestScore=worst;best={coords:[root.x,root.y],msg:'Bounded search proposal',score:worst};}

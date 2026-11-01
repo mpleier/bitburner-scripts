@@ -4,6 +4,38 @@ export const stormResultFile = 'tasks/dnet-storm-result.json';
 export const surveyPrefix = 'tasks/dnet-survey-';
 export const surveyFile = host => `${surveyPrefix}${encodeURIComponent(host)}.json`;
 
+/** Diagnostics only: these details never relax StormSeed's readiness checks. */
+export function stormBlockerDetails(host,report,now=Date.now()){
+ const reasons=[];
+ if(!report)reasons.push('missing survey');
+ else{
+  if(report.live!==true)reasons.push('scout offline');
+  if(!Number.isFinite(report.at)||report.at>now||now-report.at>90000)reasons.push('stale or invalid survey');
+  if(report.busy!==false){
+   const work=(Array.isArray(report.workReasons)?report.workReasons:[]).filter(r=>['cracking','cache collection','anchor/stasis','migration','maintenance hold','priority RAM handoff','RAM recovery','maze navigation'].includes(r));
+   reasons.push(...(work.length?work:['exploration or active work']));
+  }
+  if(report.blockedRam!==0)reasons.push(Number.isFinite(report.blockedRam)?`blocked RAM ${report.blockedRam} GB`:'blocked RAM unknown');
+  if(report.caches!==0)reasons.push(Number.isInteger(report.caches)?`${report.caches} caches`:'cache count unknown');
+  if(report.contracts!==0)reasons.push(Number.isInteger(report.contracts)?`${report.contracts} contracts`:'contract count unknown');
+  if(!Array.isArray(report.neighbours))reasons.push('neighbor survey incomplete');
+ }
+ return {host,reasons:[...new Set(reasons)],reportAgeMs:Number.isFinite(report?.at)&&report.at<=now?now-report.at:null};
+}
+export function stormBlockerCategories(reasons){
+ return [...new Set((reasons||[]).map(reason=>/^blocked RAM\b/.test(reason)?'blocked RAM':/^(?:-?\d+ caches|cache count unknown)$/.test(reason)?'caches':/^(?:-?\d+ contracts|contract count unknown)$/.test(reason)?'contracts':reason))];
+}
+export function observeStormBlocker(previous,current,now){
+ if(!current)return null;
+ const continuous=previous?.host===current.host&&Number.isFinite(previous.since)&&previous.since<=now&&Number.isFinite(previous.observedAt)&&previous.observedAt<=now&&now-previous.observedAt<=90000;
+ const oldCategories=continuous?stormBlockerCategories(previous.reasons):[];
+ const categorySince=Object.fromEntries(stormBlockerCategories(current.reasons).map(category=>{
+  const prior=previous?.categorySince?.[category]??previous?.since;
+  return [category,oldCategories.includes(category)&&Number.isFinite(prior)&&prior<=now?prior:now];
+ }));
+ return {...current,categorySince,since:Math.min(now,...Object.values(categorySince)),observedAt:now};
+}
+
 /** Fresh idle scouts are mandatory; stalled mode can explicitly include native-confirmed locked frontiers. */
 export function stormReadiness(reports, roots, now = Date.now(), options = {}) {
   const byHost = new Map(reports.map(report => [report.host, report]));
@@ -16,9 +48,9 @@ export function stormReadiness(reports, roots, now = Date.now(), options = {}) {
     const report = byHost.get(host);
     if (options.stalled === true && options.frontier?.includes(host) && !report) { frontier.push(host); continue; }
     if (!report || report.version !== 1 || !Number.isFinite(report.at) || report.at > now || now - report.at > 90000 || report.live !== true)
-      return { ready: false, reason: `Missing fresh scout survey: ${host}` };
+      return { ready: false, reason: `Missing fresh scout survey: ${host}`,blocker:stormBlockerDetails(host,report,now) };
     if (report.busy !== false || report.blockedRam !== 0 || report.caches !== 0 || !Number.isInteger(report.contracts) || report.contracts < 0 || (report.contracts > 0 && (options.stalled !== true || !Array.isArray(report.contractFiles) || report.contractFiles.length !== report.contracts || report.contractFiles.some(f=>typeof f!=='string'||!f.endsWith('.cct')))) || !Array.isArray(report.neighbours))
-      return { ready: false, reason: `Work or rewards remain: ${host}` };
+      return { ready: false, reason: `Work or rewards remain: ${host}`,blocker:stormBlockerDetails(host,report,now) };
     progress.push([host,report.pid,report.solverProgress??null]);
     rows.push([host, [...report.neighbours].sort(), report.seed === true]);
     if(report.contracts)unresolved.push([host,[...report.contractFiles].sort()]);

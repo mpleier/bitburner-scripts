@@ -26,6 +26,16 @@ test('hash investment includes current RAM load, native conversion cost and full
  const f=fixture(true),q=f.quote('level');near(q.gainPerSecond,.5*1e6/4);near(q.delaySeconds,4/5.5);assert.equal(q.cashBatchSize,1e6);assert.equal(q.mode,'hash');near(f.quote('cores').gainPerSecond,5/6*1e6/4);
  f.ns.hacknet.hashCost=()=>8;near(f.quote('level').gainPerSecond,.5*1e6/8);
 });
+test('persisted checking and purchased worker states still prove a live cash-priority worker',()=>{
+ for(const state of ['checking','purchased','spending']){
+  const f=fixture(true),s=JSON.parse(f.files['tasks/hash-worker-status-9.json']);
+  f.files['tasks/hash-worker-status-9.json']=JSON.stringify({...s,state});
+  assert.ok(f.quote('level'),'state '+state+' should qualify');
+ }
+ const f=fixture(true),s=JSON.parse(f.files['tasks/hash-worker-status-9.json']);
+ f.files['tasks/hash-worker-status-9.json']=JSON.stringify({...s,state:'blocked'});
+ assert.equal(f.quote('level'),null);
+});
 test('hash RAM, new-node and cache purchases cannot quote speculative cash growth',()=>{
  const f=fixture(true);for(const kind of ['ram','node','cache'])assert.equal(f.quote(kind),null);
 });

@@ -1,3 +1,4 @@
+import {hackingLoopShouldStop} from './hgw-telemetry.js';
 /** Uses the same scheduling arguments as hack-target.js. */
 export async function main(ns) {
  const [target='',start=0,duration=0,description='',stock=false,silent=false,loop=false,owner=0,timingMeta='']=ns.args;
@@ -15,14 +16,4 @@ export async function main(ns) {
   lastCompleted=Date.now();
   if(loop)await ns.sleep(Math.max(1,4*duration-(Date.now()-began)));
  }while(loop);
-}
-
-function hackingLoopShouldStop(ns,owner,target,tool,lastCompleted,meta) {
- if(!owner||typeof ns.read!=='function')return false;
- let plan;try{plan=JSON.parse(ns.read('tasks/hgw-drain-'+owner+'.json'));}catch{return false;}
- if(plan?.ownerPid!==owner||plan.nodeReset!==meta?.nodeReset||plan.augReset!==meta?.augReset)return false;
- const entry=plan.targets?.[target];if(!entry||!Number.isFinite(entry.stageAt))return false;
- if(tool==='hack')return ['attack','grow','weaken','complete'].includes(entry.stage);
- if(tool==='grow')return ['grow','weaken','complete'].includes(entry.stage)&&lastCompleted>entry.stageAt;
- return tool==='weaken'&&['weaken','complete'].includes(entry.stage)&&lastCompleted>entry.stageAt;
 }

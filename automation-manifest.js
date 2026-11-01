@@ -6,13 +6,14 @@ export const statusFiles=Object.fromEntries(moduleManifest.filter(m=>m.statusFil
 export const automaticManagerScripts=moduleManifest.filter(m=>m.launchOrder).sort((a,b)=>a.launchOrder-b.launchOrder).map(m=>m.script);
 
 /** Shared with actual autopilot startup. No API calls or mutations. */
-export function priorityManagerPlan({homeRam=0,sourceFiles={},node=1,options={},bladeburnerRank=1,corporationReady=false,corporationKnown=true,corporationRunning=false},manifest=moduleManifest){
+export function priorityManagerPlan({homeRam=0,sourceFiles={},node=1,options={},bladeburnerRank=1,corporationReady=false,corporationKnown=true,corporationRunning=false,route=null,simulacrum=false},manifest=moduleManifest){
  const enabled=name=>{
   switch(name){
    case 'remote-api-agent.js':case 'reliability-manager.js':return true;
    case 'grafting-manager.js':return homeRam>=64&&!!sourceFiles[10]&&!!sourceFiles[4];
    case 'spend-hacknet-hashes.js':return homeRam>=64&&!!sourceFiles[9];
-   case 'bladeburner.js':return homeRam>=64&&!options['disable-bladeburner']&&!!(sourceFiles[6]||sourceFiles[7])&&bladeburnerRank!==0;
+   // Without The Blade's Simulacrum, Bladeburner actions steal the focus needed for faction work.
+   case 'bladeburner.js':return homeRam>=64&&!options['disable-bladeburner']&&!!(sourceFiles[6]||sourceFiles[7])&&bladeburnerRank!==0&&!(route==='hacking'&&!simulacrum);
    case 'sleeve.js':return 10 in sourceFiles;
    case 'sleeve-expansion.js':return node===10;
    case 'corporation-manager.js':return corporationReady||!corporationKnown&&corporationRunning;

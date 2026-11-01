@@ -7,10 +7,11 @@ export function materialSalePrice(item, data) {
  return `MP+${quality / markup}`;
 }
 export function outputBacklog(items) {
- return items.some(item => Number(item?.stored) > 0 && Number.isFinite(Number(item.actualSellAmount)) &&
-  (Number(item.productionAmount) > 0 ?
-    Number(item.stored) > Number(item.productionAmount) * 20 && Number(item.actualSellAmount) < Number(item.productionAmount) * 0.8 :
-    Number(item.actualSellAmount) === 0));
+ return items.some(item=>{
+  const stored=Number(item?.stored),produced=Number(item?.productionAmount),sold=Number(item?.actualSellAmount);
+  if(![stored,produced,sold].every(Number.isFinite)||stored<=0||produced<0||sold<0)return false;
+  return produced>0?stored>produced*20&&sold<produced*.8:sold<stored/30;
+ });
 }
 export function boostPurchaseBudget(info, reserve, upkeep = 0, cycleSeconds = 10, {developmentSpeed=false}={}) {
  const cash = Math.max(0, Number(info.funds) || 0);
@@ -56,20 +57,22 @@ export function partySpendPerEmployee(morale, target, employees, budget) {
 export function productPriceStep(item,state={},cycleSeconds=10){
  const current=Math.max(1,Number(state.multiplier)||priorSaleMultiplier(item?.desiredSellPrice));
  const produced=Number(item?.productionAmount),sold=Number(item?.actualSellAmount),stored=Number(item?.stored);
- if(!(produced>0)||!Number.isFinite(sold)||!(stored>=0))return {...state,multiplier:current};
+ if(![produced,sold,stored].every(Number.isFinite)||produced<0||sold<0||stored<0||produced===0&&stored===0)return {...state,multiplier:current};
  const rating=Number(item.effectiveRating??item.rating)||0;
  const changed=state.rating>0&&Math.abs(rating/state.rating-1)>.25;
  let low=changed?1:Math.max(1,Number(state.low)||1),high=changed?null:state.high;
  // Inventory is in units; production and actual sales are units per second.
- const clearing=sold>=produced*.98&&stored<=produced*cycleSeconds*.2;
- const blocked=sold<produced*.9||stored>produced*cycleSeconds*2;
+ const stalled=produced===0&&stored>0;
+ const drainTarget=stored/(Math.max(1,cycleSeconds)*3);
+ const clearing=!stalled&&sold>=produced*.98&&stored<=produced*cycleSeconds*.2;
+ const blocked=stalled?sold<drainTarget:sold<produced*.9||stored>produced*cycleSeconds*2;
  if(clearing){low=current;if(high&&high<=low)high=null;}
  else if(blocked){high=current;if(low>=high)low=1;}
  else return {...state,multiplier:current,rating};
  let multiplier=blocked&&current<=1?1:high?Math.sqrt(low*high):Math.min(1e6,current*2);
  // A large inventory needs sales above production. Invert the native square markup penalty
  // using observed sell-through; keep the production-cost floor while draining over three cycles.
- if(blocked&&stored>produced*cycleSeconds*2&&sold<produced*.9&&current>1){
+ if(blocked&&stored>produced*cycleSeconds*2&&(stalled||sold<produced*.9)&&current>1){
   const target=produced+stored/(cycleSeconds*3);
   const recovery=1+(current-1)*(sold>0?Math.sqrt(sold/target):.25);
   multiplier=Math.min(multiplier,recovery);

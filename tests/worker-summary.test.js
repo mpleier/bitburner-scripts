@@ -5,6 +5,7 @@ import {currentCloudPurchase} from '../cloud-status-policy.js';
 import {commandPolicyVersion} from '../remote-api-command-policy.js';
 import {collectControllerDiagnostics} from '../diagnostic-cadence-policy.js';
 import test from 'node:test';
+import {readHashPurchaseMonitor} from '../hash-spending-policy.js';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import {readFileSync} from 'node:fs';
@@ -66,17 +67,28 @@ test('serialized generated status uses a valid summary and keeps detailed querie
  assert.equal(result.state,'completed');assert.equal(result.result.dashboard.schemaVersion,1);assert.ok(!f.reads.includes('tasks/dashboard.json'));
 });
 
-async function supervise({script='gangs.js',protectedWork=true,activity=false,failRuns=0,loops=2,free=512,onSleep=()=>{},diagnosticBound=boundedDiagnostics}={}){
+async function supervise({script='gangs.js',protectedWork=true,activity=false,failRuns=0,loops=2,free=512,onSleep=()=>{},diagnosticBound=boundedDiagnostics,extraProcesses=[]}={}){
  const text=readFileSync(new URL('../reliability-manager.js',import.meta.url),'utf8').replace(/^import .*\r?\n/gm,'');
- let now=300000,pass=0,pid=8;const files=new Map(),calls=[],writes=[];let processes=[{pid,filename:script,threads:2,args:['original']}];
+ let now=300000,pass=0,pid=Math.max(8,...extraProcesses.map(p=>p.pid));const files=new Map(),calls=[],writes=[];let processes=[{pid:8,filename:script,threads:2,args:['original']},...extraProcesses];
  files.set('tasks/runtime/8.json',JSON.stringify({pid:8,signature:'old',startedAt:1,at:now}));
+ for(const p of extraProcesses)files.set('tasks/runtime/'+p.pid+'.json',JSON.stringify({pid:p.pid,signature:'old',startedAt:1,at:now}));
  const stop=Error('test complete');
  const ns={pid:7,args:[],disableLog(){},getScriptName:()=> 'reliability-manager.js',getResetInfo:()=>reset,atExit(){},read:f=>files.get(f)||'',write:(f,s)=>{writes.push({file:f,at:now});files.set(f,s);},rm:f=>files.delete(f),ps:()=>processes,getScriptRam:()=>10,getRunningScript:()=>({ramUsage:10,threads:2}),getServerMaxRam:()=>512,getServerUsedRam:()=>512-free,getScriptLogs:()=>[],ls:()=>[],isRunning:p=>processes.some(x=>x.pid===p),print(){},kill:p=>{calls.push(['kill',p]);processes=processes.filter(x=>x.pid!==p);return true;},run:(name,threads,...args)=>{calls.push(['run',name,threads,...args]);if(failRuns-->0)return 0;pid++;processes.push({pid,filename:name,threads,args});files.set('tasks/runtime/'+pid+'.json',JSON.stringify({pid,signature:runtime.scriptSignature(ns,name),startedAt:now,at:now}));return pid;},sleep:async()=>{pass++;onSleep({setFree:n=>free=n});now+=10000;if(pass>=loops)throw stop;}};
- const context={readHgwTimeline,readHackingProcessBudget,readBackgroundHealth,currentCloudPurchase,collectControllerDiagnostics,...runtime,Date:{now:()=>now},upgradeRemoteWorker:()=>({state:'test'}),commandPolicyVersion:20,boundedDiagnostics:diagnosticBound,hackingDrainActive:()=>false,collectHashSpendingStatus:()=>[],homeRamReserve:()=>8,reclaimHomeRam:()=>true,isScriptPaused:()=>false,activityRecord:()=>activity?{ownerPid:99}:null,getNsDataThroughFile:async()=>protectedWork,autopilotSourceFiles:()=>({4:3}),ns};
+ const context={readHgwTimeline,readHackingProcessBudget,readBackgroundHealth,currentCloudPurchase,collectControllerDiagnostics,...runtime,Date:{now:()=>now},upgradeRemoteWorker:()=>({state:'test'}),commandPolicyVersion:20,boundedDiagnostics:diagnosticBound,hackingDrainActive:()=>false,collectHashSpendingStatus:()=>[],readHashPurchaseMonitor,homeRamReserve:()=>8,reclaimHomeRam:()=>true,isScriptPaused:()=>false,activityRecord:()=>activity?{ownerPid:99}:null,getNsDataThroughFile:async()=>protectedWork,autopilotSourceFiles:()=>({4:3}),ns};
  vm.runInNewContext(text.replace('export async function','async function')+';globalThis.run=main;',context);await assert.rejects(context.run(ns),e=>e===stop);return {files,calls,writes};
 }
 test('executed supervisor reloads gangs during graft protection without global maintenance',async()=>{
  const r=await supervise();assert.deepEqual(r.calls,[['kill',8],['run','gangs.js',2,'original']]);assert.equal(r.files.has('tasks/automation-maintenance.json'),false);assert.ok(r.files.has('tasks/dashboard-summary.json'));
+});
+
+test('maintenance names only the actual restart rather than the entire pending queue',async()=>{
+ const extraProcesses=[{pid:9,filename:'gangs.js',threads:1,args:[]}];
+ const first=await supervise({script:'autopilot.js',protectedWork:false,loops:1,extraProcesses});
+ assert.deepEqual(JSON.parse(first.files.get('tasks/automation-maintenance.json')).scripts,['autopilot.js']);
+ const next=await supervise({script:'autopilot.js',protectedWork:false,loops:2,extraProcesses});
+ assert.deepEqual(JSON.parse(next.files.get('tasks/automation-maintenance.json')).scripts,['gangs.js']);
+ const stats=await supervise({script:'stats.js',protectedWork:false,loops:1,extraProcesses});
+ assert.equal(stats.files.has('tasks/automation-maintenance.json'),false);
 });
 test('executed supervisor blocks player controllers and all independent reloads under activity locks',async()=>{
  for(const options of [{script:'autopilot.js'},{script:'gangs.js',activity:true}])assert.equal((await supervise(options)).calls.length,0);

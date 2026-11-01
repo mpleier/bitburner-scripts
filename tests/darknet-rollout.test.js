@@ -18,3 +18,28 @@ test('failed upgrade copy leaves running scout untouched',async()=>{
  const ns={ls:()=>['a'],read:()=>JSON.stringify({version:3,host:'a',pid:1,revision:'old'}),ps:()=>[{filename:'darknet-node.js',pid:1}],scp:async()=>false,kill:()=>assert.fail('must not kill'),exec:()=>assert.fail('must not start')};
  assert.equal(await refreshDarknetScouts(ns,['darknet-node.js'],'new'),0);
 });
+
+test('rollout defers until in-flight stasis and cache helpers have finished',async()=>{
+ const events=[];let helper=true,killed=false;
+ const ns={ls:()=>['a'],read:()=>JSON.stringify({version:3,host:'a',pid:1,revision:'old'}),
+  ps:()=>[...(killed?[]:[{filename:'darknet-node.js',pid:1}]),...(helper?[{filename:'darknet-stasis.js',pid:2}]:[])],
+  write:()=>assert.fail('must not ask loot to yield while a helper is active'),
+  scp:async(f)=>{events.push(Array.isArray(f)?'code':'request');return true;},
+  kill:()=>{killed=true;events.push('kill');return true;},exec:()=>{events.push('start');return 3;},print:()=>{}};
+ assert.equal(await refreshDarknetScouts(ns,['darknet-node.js'],'new'),0);
+ assert.deepEqual(events,[]); // no copy, kill or launch while the helper is running
+ helper=false;
+ await refreshDarknetScouts(ns,['darknet-node.js'],'new');
+ assert.ok(events.includes('kill')&&events.includes('start'));
+});
+
+ test('rollout waits for phishing completion before copying code or killing its scout',async()=>{
+ const events=[],pending=new Set();let loot=true,scout=true;
+ const ns={ls:()=>['r'],read:()=>JSON.stringify({version:3,host:'a',pid:1,revision:'old'}),ps:()=>[...(scout?[{filename:'darknet-node.js',pid:1}]:[]),...(loot?[{filename:'darknet-loot.js',pid:2}]:[])],
+ write:async(f,v)=>{const request=JSON.parse(v);assert.equal(request.pid,2);assert.equal(request.purpose,'rollout');assert.ok(request.expiresAt>request.at);events.push('yield');},
+ scp:async f=>{events.push(Array.isArray(f)?'code':'request');return true;},kill:p=>{assert.equal(p,1);scout=false;events.push('kill');},exec:()=>{events.push('start');return 3;},print:()=>{}};
+ assert.equal(await refreshDarknetScouts(ns,['darknet-node.js','darknet-loot.js'],'new',pending),0);
+ assert.deepEqual(events,['yield','request']);assert.equal(scout,true);
+ loot=false;await refreshDarknetScouts(ns,['darknet-node.js','darknet-loot.js'],'new',pending);
+ assert.ok(events.indexOf('code')>events.indexOf('request'));assert.ok(events.includes('kill'));assert.ok(events.includes('start'));
+ });

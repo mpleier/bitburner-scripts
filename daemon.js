@@ -28,6 +28,7 @@ import {
     tryGetBitNodeMultipliers_Custom, getActiveSourceFiles_Custom,
     getFnRunViaNsExec, tail, autoRetry, getErrorInfo
 } from './helpers.js'
+import {relativeWorkerDependencies} from './worker-dependency-policy.js';
 
 // daemon.js has histocially been the central orchestrator of almost every script in the game.
 // Only recently has it been "indentured" to an even higher-level orchestrator: autopilot.js
@@ -467,6 +468,13 @@ export async function main(ns) {
             },
             // Check if any new servers can be backdoored. If there are many, this can eat up a lot of RAM, so make this the last script scheduled at startup.
             { interval: 33000, name: "/Tasks/backdoor-all-servers.js", backdoorUnlocks: true, shouldRun: () => 4 in dictSourceFiles && playerHackSkill() > 10 }, // Don't do this until we reach hack level 10. If we backdoor too early, it's very slow and eats up RAM for a long time,
+            // After a Dark Net cache is recovered from the labyrinth, request one augmentation install.
+            // The trigger script guards against re-installing for the same cache receipt.
+            { interval: 30000, name: "install-after-darknet-cache.js", minRamReq: 8,
+                shouldRun: () => ns.ls('home', 'tasks/dnet-cache-rewards-').length > 0 },
+            // Finish the current BitNode through w0r1d_d43m0n as soon as it is hackable.
+            { interval: 29000, name: "auto-destroy-world-daemon.js", minRamReq: 8,
+                shouldRun: () => 4 in dictSourceFiles },
         ];
         periodicScripts.forEach(tool => tool.ignoreReservedRam = true);
         if (verbose) // In verbose mode, have periodic sripts persist their logs.
@@ -511,6 +519,9 @@ export async function main(ns) {
             maxTargets = 2 + Math.round(networkStats.totalMaxRam / (500 * 1024));
             log(ns, `Defaulting --initial-max-targets to ${maxTargets} since total ram available is ${formatRam(networkStats.totalMaxRam)}`);
         }
+        // XP-only mode has no income target to protect; keep a small multi-target pool available so
+        // recovered pacing can use idle hosts without an explicit flag.
+        if (xpOnly) maxTargets = Math.max(maxTargets, 4);
 
         await ns.write('tasks/daemon-readiness.json',JSON.stringify({pid:ns.pid,state:'ready',augReset:resetInfo.lastAugReset,nodeReset:resetInfo.lastNodeReset,at:Date.now()}),'w');
         // Start the main targetting loop
@@ -1633,7 +1644,9 @@ export async function main(ns) {
         const start = Date.now();
         const scheduledTasks = [];
         if (!snapshot) return;
-        const processCycles=hackingProcessBudget?.ready?Math.max(0,Math.floor((hackingProcessBudget.limit-hackingProcessBudget.used)/(hackOnly?1:4))):0;
+        // A batch has four legs, plus a second grow when one hack thread already steals everything.
+        const legsPerBatch=hackOnly?1:currentTarget.percentageStolenPerHackThread()>=1?5:4;
+        const processCycles=hackingProcessBudget?.ready?Math.max(0,Math.floor((hackingProcessBudget.limit-hackingProcessBudget.used)/legsPerBatch)):0;
         const maxCycles = Math.min(snapshot.optimalPacedCycles, snapshot.maxCompleteCycles,processCycles);
         if(!maxCycles)return false; // Capacity pressure is ordinary backpressure, not an incomplete batch.
         if (maxCycles === 0)
@@ -1899,10 +1912,18 @@ export async function main(ns) {
             // If running on a non-daemon host, do a script copy check before running
             if (targetServer.name != daemonHost && !(await tool.existsOnHost(targetServer))) {
                 let missing_scripts = [tool.name];
-                if (!(await doesFileExist(ns, getFilePath('helpers.js'), targetServer.name)))
-                    missing_scripts.push(getFilePath('helpers.js')); // Some tools require helpers.js. Best to copy it around.
+                const addDependency = async dependency => {
+                    if (missing_scripts.includes(dependency) || !ns.read(dependency)) return;
+                    // Refresh dependencies whenever their tool is redeployed so module edits reach hosts too.
+                    missing_scripts.push(dependency);
+                };
+                // Copy relative imports transitively so workers sharing modules can run remotely.
+                for (const dependency of relativeWorkerDependencies(tool.name, file => ns.read(file)))
+                    await addDependency(getFilePath(dependency));
+                await addDependency(getFilePath('helpers.js')); // Some tools require helpers.js. Best to copy it around.
                 if (tool.name.includes("/Tasks/contractor.js")) // HACK: When home RAM is low and we're running this tool on another sever, copy its dependencies
-                    missing_scripts.push(getFilePath('/Tasks/contractor.js.solver.js'), getFilePath('/Tasks/run-with-delay.js'),getFilePath('contract-policy.js'),getFilePath('runtime-policy.js'),getFilePath('bitnode-fallbacks.js'))
+                    for (const dependency of [getFilePath('/Tasks/contractor.js.solver.js'), getFilePath('/Tasks/run-with-delay.js'),getFilePath('contract-policy.js'),getFilePath('runtime-policy.js'),getFilePath('bitnode-fallbacks.js')])
+                        await addDependency(dependency);
                 if (verbose)
                     log(ns, `Copying ${tool.name} and ${missing_scripts.length - 1} dependencies from ${daemonHost} to ${targetServer.name} so that it can be executed remotely.`);
                 const copied=await getNsDataThroughFile(ns, `ns.scp(ns.args.slice(2), ns.args[0], ns.args[1])`, '/Temp/copy-scripts.txt', [targetServer.name, daemonHost, ...missing_scripts]);
@@ -2072,7 +2093,7 @@ export async function main(ns) {
             // Immediately map any new targets to the next largest available host.
             for (let target of targetsByExp)
                 if (!(target.name in jobHostMappings))
-                    jobHostMappings[target.name] = jobHosts.filter(h => !(h.name in Object.values(jobHostMappings)))[0];
+                    jobHostMappings[target.name] = jobHosts.find(h => !Object.values(jobHostMappings).some(mapped => mapped?.name === h.name));
             if (verbose) {
                 log(ns, `INFO: Hack XP targetting order: ${targetsByExp.map(h => `${h.name} (${formatNumber(h.getExpPerSecond())})`).join(',')}`);
                 log(ns, `INFO: Hack XP host (RAM) order: ${jobHosts.map(h => `${h.name} (${formatRam(h.totalRam())})`).join(',')}`);
@@ -2099,7 +2120,7 @@ export async function main(ns) {
             // By defaults we match the host with the highest ram to the target with the largest exp-potential
             // but in looping-mode, targets are "locked" to a host once started.
             let selectedTarget = targetsByExp[i];
-            let selectedHost = loopingMode ? jobHostMappings[i] : jobHosts[i];
+            let selectedHost = loopingMode ? jobHostMappings[selectedTarget.name] : jobHosts[i];
             // If we aren't already configured for singleServerMode, switch to single-server mode if running out of hosts with high ram
             singleServerMode = singleServerMode || (i >= (jobHosts.length - 1 - singleServerLimit) || jobHosts[i + 1].totalRam() < 1000);
             // We can disable singleServerMode if this is the last target, since we don't need to reserve room for other targets

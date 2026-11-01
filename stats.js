@@ -1,3 +1,5 @@
+import {overviewHackingPhase,overviewResetMatches,positionOverviewTooltip,overviewRoutePresentation,overviewCompletionHookNotice} from './overview-safety-policy.js';
+import {bitNodeTooltip,renderBitNodeTooltip} from './bitnode-overview-policy.js';
 import {readNodeRoutePlan} from './node-route-policy.js';
 import {homeRamReserve} from './home-ram-policy.js';
 import {runtimeScripts,registerAutomation,automationHeartbeat} from './runtime-policy.js';
@@ -18,10 +20,12 @@ export function autocomplete(data, args) {
     return [];
 }
 
-let doc, hook0, hook1;
+let doc, hook0, hook1, hudGrid=null, hudTableRow=null;
+let hudReadFailures=[];
 let serverCache = null, serverCacheAt = 0;
 let playerInBladeburner = false, nodeMap = {}
 let progressCache=null, progressCacheAt=0, etaSamples=[], etaStatusAt=0;
+let darknetHud=null, darknetHudAt=0;
 
 /** @param {NS} ns **/
 export async function main(ns) {
@@ -37,7 +41,8 @@ export async function main(ns) {
     playerInBladeburner = false;
     nodeMap = {};
     serverCache = null;serverCacheAt = 0;
-    progressCache=null; progressCacheAt=0; etaSamples=[]; etaStatusAt=0;
+    progressCache=null; progressCacheAt=0; etaSamples=[]; etaStatusAt=0; hudReadFailures=[];
+    darknetHud=null; darknetHudAt=0;
     registerAutomation(ns);
     try { doc = eval('document'); }
     catch { ns.tprint('Overview display needs the in-game interface.');return; }
@@ -64,7 +69,9 @@ export async function main(ns) {
                 const paddedValue = formattedValue == null ? null : ' ' + formattedValue?.trim();
                 updateHudElement(header, show, paddedValue, toolTip)
             }
+            for(const nodes of Object.values(nodeMap))if(nodes[1].style.visibility==='visible')positionOverviewTooltip(nodes[2],nodes[1],doc);
         } catch (err) {
+            try{const stale=[['HUD Data',true,'Updating','Live readings are temporarily unavailable. Retrying; old values are hidden.']];prepareHudElements(stale);updateHudElement(...stale[0]);}catch{}
             // Might run out of ram from time to time, since we use it dynamically
             log(ns, `WARNING: stats.js Caught (and suppressed) an unexpected error in the main loop. Update Skipped:\n` +
                 (typeof err === 'string' ? err : (err.stack || err.message || JSON.stringify(err)).slice(0,2048)), false, 'warning');
@@ -86,24 +93,39 @@ function prepareHudElements(hudData) {
         const tooltip = doc.createElement("span");
         p.appendChild(tooltip);
         tooltip.textContent = toolTip;
-        tooltip.className = "tooltiptext";
+        tooltip.className = "tooltiptext bb-stats-tooltip"+(id.startsWith("BitNode-")?" bb-bitnode-tooltip":"");
+        const showTip=()=>{doc.body?.appendChild(tooltip);tooltip.style.visibility='visible';positionOverviewTooltip(p,tooltip,doc);};
+        const hideTip=event=>{if(!tooltip.contains?.(event?.relatedTarget))tooltip.style.visibility='hidden';};
+        p.addEventListener?.('pointerenter',showTip);p.addEventListener?.('pointerleave',hideTip);
+        p.addEventListener?.('focusin',showTip);p.addEventListener?.('focusout',hideTip);
+        tooltip.addEventListener?.('pointerleave',event=>{if(!p.contains(event.relatedTarget))tooltip.style.visibility='hidden';});
         nodeMap[id] = [text, tooltip, p]
         return p;
     }
 
+    if(!hudGrid){
+        hudGrid=doc.createElement('div');hudGrid.className='bb-stats-grid';hudGrid.dataset.bbStats='true';
+        const nativeRow=hook0.closest?.('tr');
+        if(nativeRow){
+            hudTableRow=doc.createElement('tr');hudTableRow.dataset.bbStats='true';
+            const cell=doc.createElement('td');cell.colSpan=2;cell.appendChild(hudGrid);hudTableRow.appendChild(cell);
+            nativeRow.insertAdjacentElement('afterend',hudTableRow);
+        }else hook0.appendChild(hudGrid);
+    }
     const currentRows = new Set();
     for (const [header, _, value, toolTip] of hudData) {
         const id = makeID(header);
         currentRows.add(id + '-title');
         currentRows.add(id + '-value');
-        if (!nodeMap[id + '-title'])
-            hook0.appendChild(newline(id + "-title", header.padEnd(9, " "), toolTip));
-        if (!nodeMap[id + '-value'])
-            hook1.appendChild(newline(id + "-value", value, toolTip));
+        if (!nodeMap[id + '-title']){
+            const item=doc.createElement('div');item.className='bb-stats-item';
+            item.appendChild(newline(id+'-title',header,toolTip));
+            item.appendChild(newline(id+'-value',value,toolTip));hudGrid.appendChild(item);
+        }
     }
     // A disappearing optional row must not leave an old value visible.
     for (const [id, nodes] of Object.entries(nodeMap))
-        if (!currentRows.has(id)) nodes[2].classList.add("hidden");
+        if (!currentRows.has(id)){nodes[2].classList.add("hidden");nodes[1].style.visibility="hidden";}
 }
 
 function makeID(header) {
@@ -116,8 +138,9 @@ function makeID(header) {
  * @param {string} value - The value to display in the second column of the custom HUD row
  * @param {string} toolTip - The tooltip to display if the user hovers over this HUD row with their cursor. */
 function cleanupHudElements() {
-    for(const nodes of Object.values(nodeMap))try{nodes[2].remove();}catch{}
-    nodeMap = {};
+    for(const nodes of Object.values(nodeMap))try{nodes[1].remove();nodes[2].remove();}catch{}
+    if(hudTableRow)hudTableRow.remove();else if(hudGrid)hudGrid.remove();
+    hudGrid=null;hudTableRow=null;nodeMap = {};
 }
 
 function updateHudElement(header, visible, value, toolTip) {
@@ -125,6 +148,7 @@ function updateHudElement(header, visible, value, toolTip) {
         valId = id + "-value",
         titleId = id + "-title",
         maybeUpdate = (id, index, value) => {
+            if(header==='BitNode'&&index===1){renderBitNodeTooltip(nodeMap[id][index],value,doc);return;}
             if (nodeMap[id][index].textContent != value)
                 nodeMap[id][index].textContent = value
         }
@@ -138,6 +162,7 @@ function updateHudElement(header, visible, value, toolTip) {
         const warning=header==='Attention'||header==='Automation'&&String(value).trim()==='0 active'||header==='Corp Profit'&&String(value).includes('-');
         nodeMap[valId][2].style.color=warning?'#ffb74d':'';
     } else {
+        nodeMap[titleId][1].style.visibility='hidden';nodeMap[valId][1].style.visibility='hidden';
         nodeMap[titleId][2].classList.add("hidden")
         nodeMap[valId][2].classList.add("hidden")
     }
@@ -154,17 +179,28 @@ function updateHudElement(header, visible, value, toolTip) {
  * @typedef {[header, show, formattedValue, toolTip]} HudRowConfig The configuration for a custom row displayed in the HUD
  * @returns {Promise<HudRowConfig[]>} **/
 async function getHudData(ns, bitNode, dictSourceFiles, options, resetInfo) {
+    hudReadFailures = []; // Report only reads that failed during this refresh, not historic ones.
     const hudData = (/**@returns {HudRowConfig[]}*/() => [])();
 
     const progress=await getOverviewProgress(ns,4 in dictSourceFiles||bitNode===4);
     let currentBB=null;
-    if(!options['hide-automation'])hudData.push(...getAutomationHudData(ns,progress?.workType));
+    if(!options['hide-automation'])hudData.push(...getAutomationHudData(ns,progress?.workType,progress?{lastNodeReset:progress.lastNodeReset,lastAugReset:progress.lastAugReset}:resetInfo));
+    hudData.push(await getDarknetHudData(ns,resetInfo));
 
     // Show what bitNode we're currently playing in
     {
         const val = ["BitNode", true, `${bitNode}.${1 + (dictSourceFiles[bitNode] || 0)}`,
-            `Detected as being one more than your current owned SF level (${dictSourceFiles[bitNode] || 0}) in the current bitnode (${bitNode}).`]
+            bitNodeTooltip(bitNode,dictSourceFiles[bitNode]||0,progress?.nodeMultipliers)]
         hudData.push(val)
+    }
+
+    // Show how long the current BitNode has existed (time since the previous one was destroyed)
+    {
+        const lastNodeReset = Number(resetInfo.lastNodeReset)
+        if (Number.isFinite(lastNodeReset) && lastNodeReset > 0) {
+            hudData.push(["BN Age", true, formatDuration(Math.max(0, Date.now() - lastNodeReset)),
+                "Time since the last BitNode was destroyed. This is the age of the current BitNode."])
+        } else hudData.push(["BN Age", false])
     }
 
     // Show Hashes
@@ -199,7 +235,7 @@ async function getHudData(ns, bitNode, dictSourceFiles, options, resetInfo) {
         const val = ["Stock"]
         // Show Stocks (only if stockmaster.js isn't already doing the same)
         if (!options['hide-stocks'] && !doc.getElementById("stock-display-1")) {
-            let stkPortfolio=0;try{stkPortfolio=await getStocksValue(ns);}catch{}
+            let stkPortfolio=0;try{stkPortfolio=await getStocksValue(ns);}catch{hudReadFailures.push('Stocks');}
             // Also, don't bother showing a section for stock if we aren't holding anything
             if (stkPortfolio > 0) val.push(true, formatMoney(stkPortfolio))
             else val.push(false)
@@ -271,8 +307,8 @@ async function getHudData(ns, bitNode, dictSourceFiles, options, resetInfo) {
     {
         const val = ["Kills"]
         if (options['show-peoplekilled']) {
-            const playerInfo = await getNsDataThroughFile(ns, 'ns.getPlayer()');
-            const numPeopleKilled = playerInfo.numPeopleKilled;
+            const playerInfo = await optionalHudRead(ns,'ns.getPlayer()','/Temp/overview-player.txt',[],null);
+            const numPeopleKilled = playerInfo?.numPeopleKilled??0;
             val.push(true, formatSixSigFigs(numPeopleKilled), "Count of successful Homicides. Note: The most kills you need is 30 for 'Speakers for the Dead'");
         } else val.push(false)
         hudData.push(val)
@@ -316,6 +352,7 @@ async function getHudData(ns, bitNode, dictSourceFiles, options, resetInfo) {
         const val2 = ["Home RAM"]
         const val3 = ["All RAM"]
         if (!options['hide-RAM-utilization']) {
+           try{
             const servers = await getAllServersInfo(ns);
             const hnServers = servers.filter(s => s.hostname.startsWith("hacknet-server-") || s.hostname.startsWith("hacknet-node-"));
             const nRooted = servers.filter(s => s.hasAdminRights).length;
@@ -347,6 +384,7 @@ async function getHudData(ns, bitNode, dictSourceFiles, options, resetInfo) {
             hudData.push(['RAM Hold',true,formatRam(homeRamReserve(ns)),'Home RAM kept available for automation and temporary helpers. Override upward with home-ram-reserve.txt (GB).']);
             // Add Total Network RAM and Utilization
             val3.push(true, statText, toolTip);
+           }catch{hudReadFailures.push('Server/RAM');for(const row of [val1,val2,val3]){row.length=1;row.push(true,'Unavailable','Server and RAM readings are temporarily unavailable. Retrying.');}}
         } else {
             val1.push(false)
             val2.push(false)
@@ -358,7 +396,7 @@ async function getHudData(ns, bitNode, dictSourceFiles, options, resetInfo) {
     // Show current share power
     {
         const val = ["Share Pwr"]
-        const sharePower = await getNsDataThroughFile(ns, 'ns.getSharePower()');
+        const sharePower = await optionalHudRead(ns,'ns.getSharePower()','/Temp/overview-share.txt',[],1);
         // Bitburner bug: Trace amounts of share power sometimes left over after we stop sharing
         if (sharePower > 1.0001) {
             val.push(true, formatNumberShort(sharePower, 3, 2),
@@ -378,28 +416,26 @@ async function getHudData(ns, bitNode, dictSourceFiles, options, resetInfo) {
     if(routePlan) {
         const label=route=>route==='hacking'?'WD':'BB';
         const describe=(name,r)=>!r?name+': unavailable':name+': '+(Number.isFinite(r.etaMs)?formatDuration(r.etaMs):'Unknown')+' — '+r.reason;
-        const details=[routePlan.reason,routePlan.redPill?.reason||'',describe('WD',routePlan.routes?.hacking),describe('BB',routePlan.routes?.bladeburner),...(routePlan.assumptions||[])].join('\n');
-        hudData.push(['Node Route',true,routePlan.selected?label(routePlan.selected):routePlan.candidate?'Comparing '+label(routePlan.candidate):'Parallel',details]);
+        const presentation=overviewRoutePresentation(routePlan,formatDuration);
+        const details=[presentation.note,routePlan.reason,routePlan.redPill?.reason||'',describe('WD',routePlan.routes?.hacking),describe('BB',routePlan.routes?.bladeburner),...(routePlan.assumptions||[])].join('\n');
+        hudData.push(['Node Route',true,presentation.label,details]);
         const selected=routePlan.routes?.[routePlan.selected];
-        if(selected&&Number.isFinite(selected.etaMs))eta={text:selected.phase==='backdoor'?'Backdoor WD':label(routePlan.selected)+' ~'+formatDuration(selected.etaMs),etaMs:selected.etaMs,tooltip:details};
+        if(presentation.probe)eta={text:label(routePlan.selected)+' probe',etaMs:null,tooltip:details};
+        else if(presentation.confidence==='provisional')eta={text:label(routePlan.selected)+' provisional',etaMs:null,tooltip:details+'\nProvisional rate estimate only: '+formatDuration(selected.etaMs)+'. Required route evidence is still missing; this is not an actionable completion forecast.'};
+        else if(presentation.confidence==='actionable')eta={text:selected.phase==='backdoor'?'Backdoor WD':label(routePlan.selected)+' ~'+formatDuration(selected.etaMs),etaMs:selected.etaMs,tooltip:details};
         else if(routePlan.selected) {
             // A selected route with unknown timing must show its own blocker, never the other route's state.
             let phase='waiting';
             if(routePlan.selected==='hacking') {
-                const first=selected?.stages?.[0];
-                if(routePlan.redPill?.stage==='install')phase='install TRP';
-                else if(routePlan.redPill?.stage==='buy')phase='buy Red Pill';
-                else if(routePlan.redPill?.stage==='favor-reset')phase='unlock donations';
-                else if(first?.name?.startsWith('Join Daedalus'))phase='Daedalus';
-                else if(first?.name?.startsWith('Install'))phase='install TRP';
-                else if(first?.name==='Buy The Red Pill')phase=first.cashMs===0&&first.repMs!==0?'Red Pill rep':first.repMs===0&&first.cashMs!==0?'Red Pill cash':'Red Pill';
-                else if(progress?.hasRedPill)phase='sample XP';
+                phase=overviewHackingPhase(selected?.stages?.[0],routePlan.redPill?.stage,progress?.hasRedPill);
             }else if(selected?.next)phase='prepare BlackOps';
             eta={text:label(routePlan.selected)+': '+phase,etaMs:null,tooltip:details};
         }
     }
     hudData.push(['Node ETA',true,eta.text,eta.tooltip+'\nXP observations use a rolling five-minute window (minimum 60 seconds); unknown prerequisites are shown as blockers.']);
     if(Date.now()-etaStatusAt>=5000){etaStatusAt=Date.now();await ns.write('tasks/overview-status.json',JSON.stringify({at:etaStatusAt,pid:ns.pid,nodeEta:eta,routePlan,rates:{xp:rates.xp,rank:rates.rank,windowMs:rates.windowMs,sampling:rates.sampling},hasRedPill:progress?.hasRedPill,wdHack:progress?.wdHack}),'w');}
+    const unavailable=[...new Set(hudReadFailures)];
+    hudData.push(['HUD Data',unavailable.length>0,'Partial',unavailable.join(', ')+' readings unavailable. Other values are still updating.']);
     return hudData
 }
 
@@ -421,8 +457,8 @@ async function getGangInfo(ns) {
 async function getAllServersInfo(ns) {
     const now=Date.now();
     if(serverCache&&now-serverCacheAt<5000)return serverCache;
-    const serverNames = await getNsDataThroughFile(ns, 'scanAllServers(ns)');
-    serverCache=await getNsDataThroughFile(ns, 'ns.args.map(ns.getServer)', '/Temp/getServers.txt', serverNames);serverCacheAt=now;
+    const serverNames = await getNsDataThroughFile(ns,'scanAllServers(ns)',null,[],false,1,0,true);
+    serverCache=await getNsDataThroughFile(ns, 'ns.args.map(ns.getServer)', '/Temp/getServers.txt',serverNames,false,1,0,true);serverCacheAt=now;
     return serverCache;
 }
 
@@ -437,16 +473,26 @@ function addCSS(doc) {
 }
 const css = (rootStyle) => `<style id="statsCSS">
     .MuiTooltip-popper { z-index: 10001 } /* Sadly, not parented by its owners, so must be updated with MuiCollapse-root's parent */
+    .bb-stats-grid { color:#00ff00;font-family:monospace;font-size:14px;line-height:1.4;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:2px 18px;width:min(500px,calc(100vw - 48px)); }
+    .bb-stats-item { display:flex;justify-content:space-between;align-items:baseline;gap:6px;min-width:0; }
+    .bb-stats-item:has(.bb-stats-row.hidden) { display:none; }
+    .bb-stats-item .bb-stats-row:first-child { color:inherit; }
+    .bb-stats-item .bb-stats-row:last-child { text-align:right;overflow-wrap:anywhere;min-width:0; }
     .bb-stats-row  { margin: 0; position: relative; }
     .bb-stats-row.hidden { display: none; }
-    .bb-stats-row:hover .tooltiptext { visibility: visible; opacity: 0.85; }
-    .bb-stats-row .tooltiptext {
-        visibility: hidden; position: absolute; z-index: 1;
+    .bb-stats-row:hover .tooltiptext { visibility: visible; opacity: 1; }
+    .bb-stats-tooltip {
+        visibility: hidden; position: fixed; z-index: 10002;box-sizing:border-box;
         right: 20px; top: 19px; padding: 2px 10px;
-        text-align: left; white-space: pre-wrap; width: max-content; max-width: min(460px, 75vw); overflow-wrap: anywhere;
+        text-align: left; white-space: pre-wrap; width: max-content; min-width:min(240px,60vw); max-width: min(460px, 75vw); overflow-wrap:break-word; max-height:65vh; overflow-y:auto;
         border-radius: 6px; border: ${rootStyle?.border || "inherit"};
-        background-color: ${rootStyle?.backgroundColor || "#900C"};
+        background-color: #000; color: #00ff00; opacity: 1;font-family:monospace;font-size:14px;line-height:1.4;
     }
+    .bb-stats-tooltip.bb-bitnode-tooltip { width:min(680px,75vw);max-width:75vw; }
+    .bb-tooltip-summary,.bb-tooltip-footer { display:block;white-space:pre-wrap; }
+    .bb-tooltip-summary { margin-bottom:8px; }
+    .bb-tooltip-footer { margin-top:8px; }
+    .bb-tooltip-columns { display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px 24px;white-space:normal; }
 </style>`;
 
 /** Formats milliseconds into a compact human-readable duration for the HUD.
@@ -508,24 +554,77 @@ export function sampleNodeEtaRates(history,sample){
 
 async function getOverviewProgress(ns,canReadWork){
  const now=Date.now();if(progressCacheAt&&now-progressCacheAt<5000)return progressCache;
- const expression=`(() => {const p=ns.getPlayer(),r=ns.getResetInfo();const owned=r.ownedAugs;const names=typeof owned?.keys==='function'?[...owned.keys()]:Object.keys(owned||{});let wdHack=null;try{if(ns.serverExists('w0r1d_d43m0n'))wdHack=ns.getServerRequiredHackingLevel('w0r1d_d43m0n');}catch{}let hackMult=p.mults.hacking;try{hackMult*=ns.getBitNodeMultipliers().HackingLevelMultiplier;}catch{const base=32*Math.log(p.exp.hacking+534.6)-200;if(base>0)hackMult=(p.skills.hacking+.5)/base;}let workType=null;if(ns.args[0])try{workType=ns.singularity.getCurrentWork()?.type||null;}catch{}return {lastAugReset:r.lastAugReset,lastNodeReset:r.lastNodeReset,hasRedPill:names.includes('The Red Pill'),installedAugs:names.length,wdHack,hacking:p.skills.hacking,hackingExp:p.exp.hacking,hackMult,workType};})()`;
+ const expression=`(() => {const p=ns.getPlayer(),r=ns.getResetInfo();const owned=r.ownedAugs;const names=typeof owned?.keys==='function'?[...owned.keys()]:Object.keys(owned||{});let wdHack=null;try{if(ns.serverExists('w0r1d_d43m0n'))wdHack=ns.getServerRequiredHackingLevel('w0r1d_d43m0n');}catch{}let nodeMultipliers=null,hackMult=p.mults.hacking;try{nodeMultipliers=ns.getBitNodeMultipliers();hackMult*=nodeMultipliers.HackingLevelMultiplier;}catch{const base=32*Math.log(p.exp.hacking+534.6)-200;if(base>0)hackMult=(p.skills.hacking+.5)/base;}let workType=null;if(ns.args[0])try{workType=ns.singularity.getCurrentWork()?.type||null;}catch{}return {nodeMultipliers,lastAugReset:r.lastAugReset,lastNodeReset:r.lastNodeReset,hasRedPill:names.includes('The Red Pill'),installedAugs:names.length,wdHack,hacking:p.skills.hacking,hackingExp:p.exp.hacking,hackMult,workType};})()`;
  progressCache=await optionalHudRead(ns,expression,'/Temp/overview-progress.txt',[canReadWork],null);if(progressCache)progressCache.at=now;progressCacheAt=now;return progressCache;
+}
+
+/** Dark Net progress is file-backed and changes slowly; refresh it separately. */
+async function getDarknetHudData(ns,reset){
+ const now=Date.now();
+ if(typeof ns.ls!=='function'||typeof ns.ps!=='function')return ['Dark Web',false,'','Dark Net progress is unavailable in this interface.'];
+ if(darknetHud&&darknetHud.nodeReset===reset.lastNodeReset&&darknetHud.augReset===reset.lastAugReset&&now-darknetHudAt<10000)return darknetHud.row;
+ const manager=ns.ps('home').some(p=>p.filename.replace(/^\//,'')==='darknet-manager.js');
+ const hosts=new Set(),rooted=new Set(),labyrinths=new Map();
+ let pending=0;
+ for(const file of ns.ls('home','tasks/dnet-survey-')){
+  if(!file.endsWith('.json'))continue;
+  try{
+   const report=JSON.parse(ns.read(file));
+   if(!report?.host)continue;
+   // Old survey files are historical, not current Dark Net progress.
+   if(!Number.isFinite(report.at)||report.at>now+5000||now-report.at>600000)continue;
+   hosts.add(report.host);
+   if(report.rooted===true)rooted.add(report.host);
+   pending+=Math.max(0,Number(report.caches)||0);
+   if(report.modelId==='(The Labyrinth)')labyrinths.set(report.host,report.rooted===true||Number(report.caches)>0);
+  }catch{}
+ }
+ let opened=0,cash=0;
+ for(const file of ns.ls('home','tasks/dnet-cache-rewards-')){
+  if(!file.endsWith('.json')||file.includes('summary'))continue;
+  try{
+   const receipt=JSON.parse(ns.read(file));
+   if(receipt?.nodeReset!==reset.lastNodeReset||receipt?.augReset!==reset.lastAugReset)continue;
+   opened+=Math.max(0,Number(receipt?.opened)||0);
+   cash+=Math.max(0,Number(receipt?.totals?.money)||0);
+  }catch{}
+ }
+ let storm='';try{const result=JSON.parse(ns.read('tasks/dnet-storm-result.json'));storm=String(result?.reason||result?.status||'').slice(0,80);}catch{}
+ let value;
+ if(opened&&pending)value=opened+'c '+pending+'p';
+ else if(opened)value=opened+' caches';
+ else if(pending)value=pending+' pending';
+ else if(hosts.size)value=rooted.size+'/'+hosts.size;
+ else value=manager?'scouting':'no data';
+ const solved=[...labyrinths.values()].filter(Boolean).length;
+ const tooltip=['Dark Net progress',
+  'Live hosts: '+hosts.size,
+  'Rooted: '+rooted.size,
+  'Pending caches: '+pending,
+  'Caches opened: '+opened,
+  ...(cash?['Cache cash: '+formatMoney(cash,3,2)]:[]),
+  ...(labyrinths.size?['Labyrinths: '+solved+'/'+labyrinths.size+' solved']:[]),
+  ...(storm?['StormSeed: '+storm]:[]),
+  ...(manager?'Manager:\u00a0running':'Manager:\u00a0not\u00a0running')].join('\n');
+ const row=['Dark Web',manager||hosts.size>0||opened>0,value,tooltip];
+ darknetHud={nodeReset:reset.lastNodeReset,augReset:reset.lastAugReset,row};darknetHudAt=now;
+ return row;
 }
 
 
 async function optionalHudRead(ns,expression,file,args,fallback) {
     try{
-        const value=await getNsDataThroughFile(ns,expression,file,args);
+        const value=await getNsDataThroughFile(ns,expression,file,args,false,1,0,true);
         if(Array.isArray(fallback)&&(!Array.isArray(value)||fallback.some((_,i)=>!Number.isFinite(value[i]))))return fallback;
         return value ?? fallback;
-    }catch{return fallback;}
+    }catch{hudReadFailures.push(file?.includes('bladeburner')?'Bladeburner':file?.includes('progress')?'Progress':file?.includes('share')?'Share power':file?.includes('income')?'Script income':'Optional data');return fallback;}
 }
 
 /** Read local manager records only while their owner is alive and the record is fresh. */
-function getAutomationHudData(ns,workType=null) {
+function getAutomationHudData(ns,workType=null,reset=null) {
     const now=Date.now(),processes=ns.ps('home'),active=processes.filter(p=>runtimeScripts.includes(p.filename.replace(/^\//,'')));
     const read=file=>{try{return JSON.parse(ns.read(file));}catch{return null;}};
-    const live=(file,script)=>{const record=read(file),owner=record?.pid??record?.ownerPid;return owner&&processes.some(p=>p.pid===owner&&p.filename.replace(/^\//,'')===script)&&Number.isFinite(record.at)&&record.at>0&&record.at<=now+5000&&now-record.at<120000?record:null;};
+    const live=(file,script)=>{const record=read(file),owner=record?.pid??record?.ownerPid;return owner&&processes.some(p=>p.pid===owner&&p.filename.replace(/^\//,'')===script)&&Number.isFinite(record.at)&&record.at>0&&record.at<=now+5000&&now-record.at<120000&&overviewResetMatches(record,reset)?record:null;};
     const detail=active.map(p=>p.filename.replace(/\.js$/,'')).join('\n')||'No automation managers are running.';
     const lock=read('tasks/activity-lock.json'),priority=lock?.expiresAt>now&&processes.some(p=>p.pid===lock.ownerPid)?lock.kind:(workType==='GRAFTING'?'Grafting':workType==='CREATE_PROGRAM'?'Creating program':null);
     const maintenance=read('tasks/automation-maintenance.json');
@@ -547,6 +646,8 @@ function getAutomationHudData(ns,workType=null) {
     rows.push(['Sleeves',active.some(p=>p.filename.replace(/^\//,'')==='sleeve.js'),sleeves?sleeveList.length+' managed':'Waiting',sleeveList.map(s=>'#'+s.index+' '+(s.task||'Idle')+' · Shock '+Number(s.shock).toFixed(1)+' · Sync '+Number(s.sync).toFixed(1)+'%').join('\n')||'Waiting for fresh sleeve data.']);
     rows.push(['IPvGO',active.some(p=>p.filename.replace(/^\//,'')==='go.js'),go?go.state==='recovering'?'Recovering':'Turn '+(go.turn??0):'Waiting',go?(go.opponent||go.selected?.name||'Selecting opponent')+' · '+(go.boardSize||'?')+'×'+(go.boardSize||'?')+(go.error?'\n'+go.error:''):'Waiting for fresh IPvGO data.']);
     const alerts=[];
+    const completionHold=overviewCompletionHookNotice(read('tasks/bitnode-completion-hook.json'),reset,processes);
+    if(completionHold)alerts.push(completionHold);
     if(corp?.mode==='cash recovery')alerts.push('Corporation is recovering cash');
     if(go?.state==='recovering')alerts.push('IPvGO: '+(go.error||'recovering'));
     if(sleeves?.state==='recovering')alerts.push('Sleeves: '+(sleeves.error||'recovering'));

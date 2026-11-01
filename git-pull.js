@@ -1,4 +1,7 @@
 let options;
+/** Live game state that shares a name with repository content must never be replaced by an update. */
+export const liveStatePaths = new Set(['reserve.txt', 'home-ram-reserve.txt', 'darknet-passwords.txt']);
+export function replaceableUpdatePath(path) { return !liveStatePaths.has(String(path).replace(/^\/+/, '')); }
 const argsSchema = [
     ['github', 'mpleier'],
     ['repository', 'bitburner-scripts'],
@@ -34,7 +37,11 @@ export async function main(ns) {
     catch (error) { ns.tprint('ERROR: Cannot pin update to a commit: ' + String(error) + '. No files changed. Retry later or pass a full commit SHA with --branch.'); return; }
     ns.print('Updating from commit ' + revision);
     const baseUrl = `raw.githubusercontent.com/${options.github}/${options.repository}/${revision}/`;
-    const filesToDownload = [...new Set(options['new-file'].concat(options.download.length > 0 ? options.download : await repositoryListing(ns, revision)).map(trimSlash))];
+    const listed = options.download.length > 0 ? options.download : await repositoryListing(ns, revision);
+    const requested = [...new Set(options['new-file'].concat(listed).map(trimSlash))];
+    const filesToDownload = requested.filter(replaceableUpdatePath);
+    const keptLive = requested.filter(path => !replaceableUpdatePath(path));
+    if (keptLive.length) ns.print('INFO: Keeping live state files instead of downloading repository copies: ' + keptLive.join(', '));
     const safePath = path => typeof path === 'string' && path.length > 0 &&
         !path.split('/').some(part => !part || part === '.' || part === '..') && !/[\\:?#[\]\x00-\x1f]/.test(path);
     if ((options.subfolder && !safePath(options.subfolder)) || filesToDownload.some(path => !safePath(path))) {
@@ -143,9 +150,10 @@ async function repositoryListing(ns, revision, folder = '') {
         if (folder !== '') throw error; // Propagate the error if this was a recursive call.
         ns.tprint(`WARNING: Failed to get a repository listing (GitHub API request limit of 60 reached?): ${listUrl}` +
             `\nResponse Contents (if available): ${JSON.stringify(response ?? '(N/A)')}\nError: ${String(error)}`);
-        // Fallback, assume the user already has a copy of all files in the repo, and use it as a directory listing
-        return ns.ls('home').filter(name => options.extension.some(ext => name.endsWith(ext)) &&
-            !name.endsWith('.config.txt')&&!options['omit-folder'].some(dir => trimSlash(name).startsWith(trimSlash(dir)+'/')));
+        // Fallback, assume the user already has a copy of all files in the repo, and use it as a directory listing.
+        // Local .txt state and reports are not repository files; enqueueing them would 404 and abort the update.
+        return ns.ls('home').filter(name => (name === 'darknet-candidates.txt' || name.endsWith('/darknet-candidates.txt') || options.extension.some(ext => ext !== '.txt' && name.endsWith(ext))) &&
+            !name.endsWith('.config.txt') && replaceableUpdatePath(name) && !options['omit-folder'].some(dir => trimSlash(name).startsWith(trimSlash(dir)+'/')));
     }
 }
 /** Resolve once; every listing and download must use this same immutable commit. */

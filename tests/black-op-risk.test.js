@@ -1,3 +1,4 @@
+import {bladeburnerFarmStartAllowed,farmingDamage} from '../bladeburner-farming-policy.js';
 import {supportReplacementStartAllowed} from '../bladeburner-support-economics-policy.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -59,7 +60,7 @@ test('adaptive tickets reject stale or changed native state and permit improved 
 });
 function nativeStart(f,patch={},clock=now){
  const ticket=f.decide(),source=readFileSync(new URL('../bladeburner.js',import.meta.url),'utf8'),literal=source.match(/const startResult = await getNsDataThroughFile\(ns, (`[^`]+`)/)[1];
- const expression=Function('blackOpHospitalCost','blackOpBonusComparison','bladeburnerStaminaChance','blackOpRiskStartAllowed','startBladeburnerPlannedAction','bbMutationGuard','bladeburnerWorkAllowed','supportReplacementStartAllowed','return '+literal)(blackOpHospitalCost,blackOpBonusComparison,bladeburnerStaminaChance,blackOpRiskStartAllowed,startBladeburnerPlannedAction,'true',bladeburnerWorkAllowed,supportReplacementStartAllowed);
+ const expression=Function('bladeburnerFarmStartAllowed','farmingDamage','blackOpHospitalCost','blackOpBonusComparison','bladeburnerStaminaChance','blackOpRiskStartAllowed','startBladeburnerPlannedAction','bbMutationGuard','bladeburnerWorkAllowed','supportReplacementStartAllowed','return '+literal)(bladeburnerFarmStartAllowed,farmingDamage,blackOpHospitalCost,blackOpBonusComparison,bladeburnerStaminaChance,blackOpRiskStartAllowed,startBladeburnerPlannedAction,'true',bladeburnerWorkAllowed,supportReplacementStartAllowed);
  const q={...f.q,...patch};let starts=0;
  const b={getCurrentAction:()=>null,getCity:()=>q.city,getRank:()=>q.rank,getTeamSize:type=>type?q.team:q.totalTeam,getActionTime:(type,name)=>type==='Black Operations'?q.time:name==='Recruitment'?q.recruit.time:q.hrcTime,getActionRankLoss:()=>q.loss,getStamina:()=>q.stamina,getBonusTime:()=>q.bonusMs,getActionEstimatedSuccessChance:()=>[q.p,q.p],startAction:()=>{starts++;return true;}};
  const ns={args:['Black Operations',target,1000,ticket.threshold,0,7,'null',false,JSON.stringify({[target]:{base:1,factor:1}}),-1,0,JSON.stringify(ticket)],bladeburner:b,getPlayer:()=>({hp:q.hp,money:q.money}),getResetInfo:()=>({lastNodeReset:q.nodeReset,lastAugReset:q.augReset}),sleeve:{getNumSleeves:()=>q.supporting,getTask:()=>({type:'SUPPORT'})},isRunning:()=>true,singularity:{getCurrentWork:()=>null,getOwnedAugmentations:()=>[]}};
@@ -75,7 +76,7 @@ test('official HP metadata covers all Black Ops and risk quote stays within a 32
  const defs=JSON.parse(readFileSync(new URL('../scripts/api-surface.json',import.meta.url),'utf8')),ram=estimateRam(apiReferences('risk.js',blackOpRiskQuoteSource).references,defs);assert.deepEqual(ram.unknown,[]);assert.equal(ram.ram,31.1);
 });
 test('production preserves regular thresholds, post-stamina native guards and protected Black Ops',()=>{
- const s=readFileSync(new URL('../bladeburner.js',import.meta.url),'utf8');assert.match(s,/const actionThreshold=bestActionName===nextBlackOp&&blackOpRisk.adaptive\?blackOpRisk.threshold:options\['success-threshold'\]/);assert.match(s,/ns.args\[0\]==="Black Operations"&&ns.args\[11\]!=="null"/);assert.ok(s.indexOf('if(isBlackOp(observedAction))')<s.indexOf('blackOpRiskQuoteSource,\'/Temp/'));assert.match(s,/observedAction\?\.name!=='Recruitment'/);
+ const s=readFileSync(new URL('../bladeburner.js',import.meta.url),'utf8');assert.match(s,/const actionThreshold=bestActionName===nextBlackOp&&blackOpRisk.adaptive\?blackOpRisk.threshold:farmTicket\?farmTicket.threshold:options\['success-threshold'\]/);assert.match(s,/ns.args\[0\]==="Black Operations"&&ns.args\[11\]!=="null"/);assert.ok(s.indexOf('if(isBlackOp(observedAction))')<s.indexOf('blackOpRiskQuoteSource,\'/Temp/'));assert.match(s,/observedAction\?\.name!=='Recruitment'/);
 });
 test('adaptive floor option rejects unsupported or malformed probabilities',()=>{
  for(const value of [.89,1.01,NaN,'0.95'])assert.match(optionsError({'black-op-min-success':value}),/black-op-min-success/);

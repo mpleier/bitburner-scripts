@@ -11,16 +11,21 @@ export async function main(ns) {
  if(kind==='undocumented'){ns.exploit();return;}
  if(kind==='bypass'){ns.bypass(globalThis['doc'+'ument']);return;}
  if(kind==='prototype'){
-  const original=Object.getOwnPropertyDescriptor(Number.prototype,'toExponential');
+  const descriptor=Object.getOwnPropertyDescriptor(Number.prototype,'toExponential');
+  // Overlapping puzzle runs chain hooks; restore the descriptor beneath every our-hook layer.
+  const original=descriptor?.value?.__puzzleRestore||descriptor;
   const hook=function(...args){return Number(this)===55?'5.50e+1':original.value.apply(this,args);};
+  hook.__puzzleRestore=original;
   Object.defineProperty(Number.prototype,'toExponential',{...original,value:hook});
-  ns.atExit(()=>{if(Number.prototype.toExponential===hook)Object.defineProperty(Number.prototype,'toExponential',original);});
+  ns.atExit(()=>{if(Number.prototype.toExponential===hook&&original)Object.defineProperty(Number.prototype,'toExponential',original);});
   await ns.sleep(16*60000);return;
  }
  if(kind==='time'){
-  const original=Object.getOwnPropertyDescriptor(globalThis,'setTimeout'),native=globalThis.setTimeout;
+  const descriptor=Object.getOwnPropertyDescriptor(globalThis,'setTimeout');
+  const original=descriptor?.value?.__puzzleRestore||descriptor,native=original?.value??globalThis.setTimeout;
   const hook=function(fn,delay,...args){const probe=typeof fn==='function'&&delay===15000&&Function.prototype.toString.call(fn).includes('TimeCompression');return native.call(globalThis,fn,probe?100:delay,...args);};
-  Object.defineProperty(globalThis,'setTimeout',{configurable:true,writable:true,value:hook});
+  hook.__puzzleRestore=original;
+  Object.defineProperty(globalThis,'setTimeout',{...(original??{configurable:true,writable:true}),value:hook});
   ns.atExit(()=>{if(globalThis.setTimeout===hook){if(original)Object.defineProperty(globalThis,'setTimeout',original);else delete globalThis.setTimeout;}});
   await ns.sleep(45000);return;
  }

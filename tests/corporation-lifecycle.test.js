@@ -46,6 +46,16 @@ test('private funding settles improving offers, blocks premature IPO and honors 
  assert.equal(investmentDecision(info,offer,initial.history,.5,{now:1801000,stageReady:false}).accept,false);
  assert.equal(investmentDecision({...info,numShares:550e6},offer,null,.5).holdIPO,false);
 });
+test('bounded round-two funding also requires the offer to close the stage gap',()=>{
+ const info={public:false,funds:1e9,numShares:900e6,totalShares:1e9,revenue:1e6,expenses:0},offer={round:2,funds:10e9,shares:100e6};
+ const previous=funds=>({round:2,since:0,peak:funds,growthAnchor:funds,lastGrowthAt:0});
+ const options={now:2000000,reserve:0,cycleSeconds:10,stageReady:false,stageCapital:79e9,stageDivision:'Chemical'};
+ const small=investmentDecision(info,offer,previous(offer.funds),.5,options);
+ assert.equal(small.capitalBlocked,true);assert.equal(small.stageFunded,false);assert.equal(small.accept,false);
+ assert.match(small.reason,/fund the missing stage division/);
+ const funded=investmentDecision(info,{...offer,funds:78e9},previous(78e9),.5,options);
+ assert.equal(funded.stageFunded,true);assert.equal(funded.accept,true);
+});
 test('profitable corporations can fund real cash deficits while small dividend waits avoid sales',()=>{
  const info={public:true,sharePrice:100,numShares:900e6,totalShares:1e9,revenue:10e6,expenses:0,dividendRate:.2,tributeModifier:.15};
  assert.equal(shareSale(info,0,0,.5,1e6),0);

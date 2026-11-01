@@ -198,7 +198,7 @@ test('pause arriving during the hold wait is checked before native execution',as
 });
 test('actual scout hold yields between passes and expires without cancelling a running operation',async()=>{
  const source=readFileSync(new URL('../darknet-node.js',import.meta.url),'utf8');
- const block=source.slice(source.indexOf("      if(ns.fileExists(stormRequestFile,'home'))try{"),source.indexOf('      await survey(true);'));
+ const block=source.slice(source.indexOf("      if(ns.fileExists(stormRequestFile,'home'))try{"),source.indexOf('      await survey(false);'));
  const run=Function('ns','survey','heartbeat','stormRequestFile','return (async()=>{const self="seed",cacheFile="darknet-cache.js",stasisFile="darknet-stasis.js",migrateFile="darknet-migrate.js";let explored=0;for(let i=0;i<1;i++){'+block+';explored++;}return explored;})()');
  const events=[],request={id:'hold',at:Date.now()},ns={fileExists:()=>true,scp:async()=>true,read:()=>JSON.stringify(request),ps:()=>[],sleep:async n=>events.push(n)};
  assert.equal(await run(ns,async(busy,id)=>events.push([busy,id]),async()=>{},'request'),0);assert.deepEqual(events,[[false,'hold'],1000]);

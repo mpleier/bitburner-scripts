@@ -64,7 +64,7 @@ export function graftScore(stats, entropyFactor = 1) {
 
 /** Conservative cash estimate: do not assume skill/speed gains translate directly to income. */
 export function graftEconomics({ stats, cost, duration, entropy = 0, immune = false, congruity = false,
-  hackingIncome = 0, rates = {}, focusImmune = false, maxPayback = 4 * 3600_000 }) {
+  hackingIncome = 0, rates = {}, interruptedSources = null, bladeburnerContinues = false, focusImmune = false, maxPayback = 4 * 3600_000 }) {
   const factor = congruity ? 1 / (0.98 ** Math.max(0, entropy)) : immune ? 1 : 0.98;
   const benefit = graftScore(stats, factor);
   const seconds = duration / 1000 / (focusImmune ? 1 : 0.8);
@@ -72,7 +72,7 @@ export function graftEconomics({ stats, cost, duration, entropy = 0, immune = fa
   let incrementalIncome = Math.max(0, hackingIncome) * (multiplier('hacking_money') - 1);
   for (const [source, key] of Object.entries({ hacknet: 'hacknet_node_money', crime: 'crime_money', work: 'work_money', darknet: 'dnet_money' }))
     incrementalIncome += Math.max(0, Number(rates[source]) || 0) * (multiplier(key) - 1);
-  const lostIncome = seconds * ['work', 'infiltration', 'crime', 'bladeburner'].reduce((sum, key) => sum + Math.max(0, Number(rates[key]) || 0), 0);
+  const lostIncome = seconds * (interruptedSources??['work', 'infiltration', 'crime', ...(bladeburnerContinues?[]:['bladeburner'])]).reduce((sum, key) => sum + Math.max(0, Number(rates[key]) || 0), 0);
   const payback = incrementalIncome > 0 ? (seconds + (cost + lostIncome) / incrementalIncome) * 1000 : Infinity;
   return { benefit, incrementalIncome, lostIncome, duration: seconds * 1000, payback,
     eligible: benefit > 0.1 && Number.isFinite(payback) && payback <= maxPayback };
@@ -93,7 +93,7 @@ export function studyCommand(action) {
 /** Credit only observable XP work or native stamina-recovery work, never an invented cash rate.
  * Half of the modeled time saving is credited. Unknown action/chance improvements remain unpriced. */
 export function graftProgressionValue({stats={},factor=1,duration,cost,lostIncome=0,maxPayback=14400000,
- route,reset,cash,incomeLossPerSecond=0,now=Date.now()}={}) {
+ route,reset,cash,incomeLossPerSecond=0,continuesDuringGraft=false,now=Date.now()}={}) {
  const no=reason=>({eligible:false,reason,payback:null,netSavedMs:0});
  if(!route||!reset||route.nodeReset!==reset.lastNodeReset||route.augReset!==reset.lastAugReset||
   !Number.isFinite(route.at)||route.at>now||now-route.at>45000)return no('Fresh route evidence unavailable');
@@ -111,20 +111,21 @@ export function graftProgressionValue({stats={},factor=1,duration,cost,lostIncom
  const mult=key=>{
   const value=stats[key]??1;return Number.isFinite(value)&&value>0?value*factor:NaN;
  };
+ const usefulRemaining=continuesDuringGraft?Math.max(0,remaining-duration):remaining;
  let saved=0,basis;
  if(route.selected==='hacking'){
   if(forecast.phase!=='xp'||!Number.isFinite(forecast.xpRate)||forecast.xpRate<=0)return no('Dedicated hacking XP forecast unavailable');
   if(!['hacking','hacking_chance','hacking_speed','hacking_grow'].every(key=>mult(key)>=1))return no('Entropy would weaken hacking capability');
   const xp=mult('hacking_exp');
   if(!(xp>1))return no('No priced XP improvement');
-  saved=remaining*(1-1/xp)*.5;basis='measured-xp-half-credit';
+  saved=usefulRemaining*(1-1/xp)*.5;basis='measured-xp-half-credit';
  }else if(route.selected==='bladeburner'){
   if(!['hacking','strength','defense','dexterity','agility','charisma','bladeburner_success_chance','bladeburner_max_stamina','bladeburner_analysis'].every(key=>mult(key)>=1))return no('Entropy would weaken known Bladeburner capability');
   const regen=forecast.staminaRecovery?.regen,hrc=forecast.staminaRecovery?.hrc,gain=mult('bladeburner_stamina_gain');
   if(forecast.recoveryModel!=='amortized-native'||![regen,hrc,forecast.recoveryMs].every(Number.isFinite)||regen<=0||hrc<0||forecast.recoveryMs<=0||!(gain>1))return no('No priced native stamina recovery improvement');
-  saved=Math.min(remaining,forecast.recoveryMs)*(1-(regen+hrc)/(regen*gain+hrc))*.5;basis='native-stamina-half-credit';
+  saved=Math.min(usefulRemaining,forecast.recoveryMs*(usefulRemaining/remaining))*(1-(regen+hrc)/(regen*gain+hrc))*.5;basis='native-stamina-half-credit';
  }else return no('Unknown progression route');
- const cashRebuildMs=(cost+lostIncome)/rate*1000,overhead=duration+cashRebuildMs;
+ const cashRebuildMs=(cost+lostIncome)/rate*1000,overhead=(continuesDuringGraft?0:duration)+cashRebuildMs;
  const payback=saved>0?overhead/(saved/remaining):Infinity,netSavedMs=saved-overhead;
  return {eligible:Number.isFinite(payback)&&payback<=Math.min(maxPayback,remaining*.75)&&netSavedMs>=Math.max(60000,remaining*.05),
   reason:'Discounted route saving after graft time and cash replacement',basis,payback:Number.isFinite(payback)?payback:null,

@@ -9,7 +9,7 @@ test('resize requires a fresh request for this worker',()=>{
 });
 test('loot finishes phishing before honoring a resize request',async()=>{
  let complete=false,read=false;
- const ns={pid:42,disableLog(){},getHostname:()=> 'a',ls:()=>[],print(){},
+ const ns={pid:42,disableLog(){},getRunningScript:()=>({threads:1}),getHostname:()=> 'a',ls:()=>[],print(){},
   dnet:{async phishingAttack(){await Promise.resolve();complete=true;return {success:true};}},
   read(){assert.equal(complete,true);read=true;const at=Date.now();return JSON.stringify({pid:42,at,expiresAt:at+45000});},
   sleep(){assert.fail('should yield to the scout after completed action');}};

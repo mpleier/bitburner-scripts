@@ -253,10 +253,11 @@ test('divisibility solvers confirm a complete factor product without scanning un
   }
 });
 
-test('infiltration combat cleanup converts the void API result into a readable receipt', async () => {
+test('infiltration leaves an active Bladeburner action untouched', async () => {
   const source=await readFile(new URL('../infiltration-manager.js',import.meta.url),'utf8');
-  assert.match(source,/stopBladeburnerAction\(\), "stopped"/);
-  assert.match(source,/if \(combat === 'blackop-active'\)/);
+  assert.match(source,/bladeburnerBusy/);
+  assert.match(source,/bladeburner-active/);
+  assert.doesNotMatch(source,/stopBladeburnerAction/);
 });
 
 

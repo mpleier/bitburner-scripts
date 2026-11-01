@@ -28,9 +28,9 @@ test('sleeve expansion does nothing outside BN10', () => {
 });
 
 function graftFixture(work = null) {
-  const started = [], traveled = [];
+  const started = [], traveled = [], augReset=Date.now()-3600_000;
   return { started, traveled, ns: {
-    getResetInfo: () => ({ currentNode: 10, ownedSF: new Map([[4, 1]]), lastAugReset: Date.now() - 3600_000 }),
+    getResetInfo: () => ({ currentNode: 10, ownedSF: new Map([[4, 1]]), lastAugReset: augReset }),
     getTotalScriptIncome: () => [1e6, 0], getMoneySources: () => ({ sinceInstall: {} }),
     ps: () => [], read: () => '10000000', getPlayer: () => ({ money: 100e6, city: 'Sector-12' }),
     singularity: {
@@ -95,7 +95,7 @@ test('grafting waits while casino or ascend is running', () => {
 });
 test('grafting honors a live transition owner but ignores stale locks', () => {
   const f = graftFixture(); f.ns.ps = () => [{ filename: 'autopilot.js', pid: 42 }];
-  let ownerPid = 42; f.ns.read = file => file.endsWith('.json') ? JSON.stringify({ ownerPid, expiresAt: Date.now() + 60000 }) : '10000000';
+  let ownerPid = 42; f.ns.read = file => file==='spending-standalone.txt'?'true':file==='tasks/augmentation-choice-offer.json'?JSON.stringify({schemaVersion:1,at:Date.now(),ownerPid:42,augReset:f.ns.getResetInfo().lastAugReset,horizonMs:14400000,cashRate:1e6,channels:{hacking_money:1}}):file.endsWith('.json') ? JSON.stringify({ ownerPid, expiresAt: Date.now() + 60000 }) : '10000000';
   assert.equal(graftTick(f.ns).status, 'busy'); ownerPid = 99;
   assert.equal(graftTick(f.ns).status, 'started');
 });
@@ -139,3 +139,4 @@ test('Congruity pays back through entropy removal instead of an arbitrary priori
   assert.equal(graftEconomics({ ...input, entropy: 0 }).eligible, false);
   assert.equal(graftEconomics({ ...input, entropy: 7 }).eligible, true);
 });
+

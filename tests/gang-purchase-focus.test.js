@@ -1,3 +1,4 @@
+import {gangEarlyFundingAnchor as earlyFundingAnchor} from '../gang-stat-policy.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
@@ -68,7 +69,7 @@ test('executed controller chooses faster joint readiness even when linear utilit
  const source=readFileSync(new URL('../gangs.js',import.meta.url),'utf8').replaceAll('\r\n','\n');
  const begin=source.indexOf('async function optimizeGangCrime('),end=source.indexOf('async function fixWantedGainRate(',begin);
  let applied=null;
- const ctx={Date,Math,Object,Number,JSON,gangPurchaseFocus,gangPurchasePlanTiming,gangObjectiveValue,gangObjectiveWeight,gangTaskTotals,planGangWantedCrew,betterGangPlan,nextWantedDowngrade,largestWantedDowngrade,improveGangPlan,
+ const ctx={growthHorizon:{bonusSeconds:0},lastOtherGangInfo:null,gangRivalsSnapshot:null,gangWarfareThreshold:()=>.7,territoryTickDetected:false,territoryTickWaitPadding:200,updateInterval:200,postTickRestoreMs:0,territoryTickTime:20000,gangWarfareContext:()=>({}),gangWarfareWorkFractions:()=>({}),memberRecoveryProtected:()=>false,gangMoneyAllowed:g=>g?.territory>.9,gangEarlyFundingAnchor:earlyFundingAnchor,incomeFunding:{known:false},options:{manualTasks:{}},Date,Math,Object,Number,JSON,gangPurchaseFocus,gangPurchasePlanTiming,gangObjectiveValue,gangObjectiveWeight,gangTaskTotals,planGangWantedCrew,betterGangPlan,nextWantedDowngrade,largestWantedDowngrade,improveGangPlan,
   myGangMembers:['M'],allTaskNames:table.map(t=>t.name),assignedTasks:{M:'Money'},purchaseGoal:contextInput.goal,purchaseFocusQuote:initial,purchaseFocusContext:{...contextInput,rates:undefined},growthFocus:initial.focus,
   wantedPenaltyThreshold:.01,isHackGang:false,strWantedReduction:'Vigilante Justice',memberNeedsTraining:()=>false,memberProtectedTask:()=>null,
   getGangInfoDict:async()=>({M:{name:'M',task:'Money'}}),gangWantedTolerance:()=>0,updateGrowthFocus:async()=>initial.focus,

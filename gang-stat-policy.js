@@ -1,3 +1,4 @@
+import {gangFundingETA} from './gang-funding-diagnostics-policy.js';
 const trainingNames=['Train Combat','Train Hacking','Train Charisma'];
 /** Skill priority can defer the development shopping list, but never an unmet cash reserve. */
 export function gangStatPriorityAllowed({preparation,funding,members,options={},now=Date.now()}){
@@ -108,3 +109,32 @@ export function gangStatSupportCrew(rates,gang,protectedNames=[],wantedTolerance
  }
  return best?{...best,recovering,target}:null;
 }
+
+/** Compare one optional worker against actual assignments and a reviewed cash-only gap. */
+export function gangEarlyFundingAnchor(rates,funding,protectedNames=[],now=Date.now(),assignments={},timing={}){
+ const q=funding?.early;
+ if(!funding?.known||q?.reviewed!==true||![funding.at,funding.expiresAt,q.cash,q.target,funding.externalCashRate,now].every(Number.isFinite)||funding.at>now||now-funding.at>30000||funding.expiresAt<=now||Math.min(q.cash,q.target,funding.externalCashRate)<0)return null;
+ const gap=q.target-q.cash;if(gap<=0||q.blocker==='shared-budget')return null;
+ const entries=Object.entries(rates||{});if(entries.length<4)return null;
+ const current={};
+ for(const [name,rows]of entries){const r=rows.find(r=>r.name===assignments[name]);if(!r||!['money','respect','wanted'].every(k=>Number.isFinite(r[k]))||r.money<0||r.respect<0)return null;current[name]=r;}
+ const totalRespect=Object.values(current).reduce((n,r)=>n+r.respect,0);
+ const fractions=n=>timing.fractions?.[n]??{normal:1,bonus:1};
+ const income=kind=>entries.reduce((sum,[n])=>sum+current[n].money*5*fractions(n)[kind],0);
+ const normal=income('normal'),bonus=income('bonus'),pool=timing.bonusSeconds??0;
+ const before=gangFundingETA(gap,normal,bonus,funding.externalCashRate,pool);if(before<=120)return null;
+ const blocked=new Set(protectedNames),choices=[];
+ for(const [name,rows]of entries){
+  if(blocked.has(name))continue;
+  const base=current[name];
+  for(const r of rows){
+   const loss=Math.max(0,base.respect-r.respect),gain=(r.money-base.money)*5,statLoss=Math.max(0,(base.stats||0)-(r.stats||0));
+   if(typeof r.name!=='string'||r.name.startsWith('Train ')||r.name==='Territory Warfare'||!['money','respect','wanted'].every(k=>Number.isFinite(r[k]))||r.respect<0||gain<=0||r.wanted>Math.min(0,base.wanted)||loss>totalRespect*.25)continue;
+   const f=fractions(name),after=gangFundingETA(gap,normal+gain*f.normal,bonus+gain*f.bonus,funding.externalCashRate,pool),saved=before-after;
+   if(after>900||saved<Math.max(20,Number.isFinite(before)?before*.05:20))continue;
+   choices.push({name,task:r.name,gap,incomeGain:gain,beforeSeconds:Number.isFinite(before)?before:null,afterSeconds:after,respectLoss:loss,statLoss,score:(Number.isFinite(before)?Math.min(900,saved):900-after)/(1+loss+statLoss)});
+  }
+ }
+ return choices.sort((a,b)=>b.score-a.score||a.name.localeCompare(b.name)||a.task.localeCompare(b.task))[0]??null;
+}
+

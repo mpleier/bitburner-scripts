@@ -1,3 +1,4 @@
+import {yieldDarknetLoot,clearLootYield} from './darknet-throughput-policy.js';
 export const anchorRequestFile='tasks/dnet-anchor-request.json',anchorReceiptFile='tasks/dnet-anchor-receipt.json';
 export const anchorComparisonFile='tasks/dnet-anchor-comparison.json';
 export const anchorIdentity=r=>JSON.stringify([r.host,r.modelId,r.depth,r.passwordLength,r.passwordFormat,r.data]);
@@ -111,7 +112,6 @@ export async function serviceDarknetAnchor(ns){
  let old;try{old=JSON.parse(ns.read(anchorReceiptFile));}catch{}
  if(old?.id===r.id&&old.phase===r.phase)return true;
  const ram=ns.getScriptRam('darknet-stasis.js',self);if(!(ram>0))return false;
- if(ns.getServerMaxRam(self)-ns.getServerUsedRam(self)<ram)for(const p of ns.ps(self))if(p.filename==='darknet-loot.js')ns.kill(p.pid);
- if(ns.getServerMaxRam(self)-ns.getServerUsedRam(self)>=ram)ns.exec('darknet-stasis.js',self,1,r.id,r.phase);
+ if(await yieldDarknetLoot(ns,ram,'anchor')){if(ns.exec('darknet-stasis.js',self,1,r.id,r.phase))await clearLootYield(ns,'anchor');}
  return true;
 }

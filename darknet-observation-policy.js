@@ -24,7 +24,7 @@ export async function sampleDarknetObservations(ns,readNative){
  const dispatch=history.lastDispatch;
  const priorRewards=read('tasks/dnet-cache-rewards-summary.json');
  const hosts=[...new Set(reports.filter(r=>r.live).map(r=>r.host))].sort(),cursor=Number.isSafeInteger(priorRewards?.cursor)&&priorRewards.cursor>=0?priorRewards.cursor:0;
- const selected=Array.from({length:Math.min(16,hosts.length)},(_,i)=>hosts[(cursor+i)%hosts.length]);
+ const selected=Array.from({length:Math.min(32,hosts.length)},(_,i)=>hosts[(cursor+i)%hosts.length]);
  let native=null;
  if(history.active||selected.length){
   native=await readNative(ns,`(async()=>{

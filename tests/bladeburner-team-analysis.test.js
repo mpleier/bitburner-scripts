@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
-import {bladeburnerDevelopmentAction,prepareBladeburnerTeam,requiredBladeburnerTeam,bladeburnerStaminaChance} from '../bladeburner-policy.js';
+import {bladeburnerDevelopmentAction,prepareBladeburnerTeam,requiredBladeburnerTeam,bladeburnerStaminaChance,bladeburnerTeamPreparationWindow} from '../bladeburner-policy.js';
 
 const blocked={rank:5000,requiredRank:5000,chance:[.8,1],remainingMs:0,trainingEnabled:false};
 test('analysis survives training count and time limits but respects global disable and rank gates',()=>{
@@ -17,6 +17,14 @@ function teamApi({available=10,previous=3,stamina=[100,100],base=.9}={}){
  const api={getTeamSize:type=>type?state.assigned:available,setTeamSize:(_t,_n,n)=>{state.changes++;state.assigned=n;return n;},getStamina:()=>state.stamina,getActionEstimatedSuccessChance:()=>{const p=Math.min(1,base*(state.assigned+1)**.05);return [p,p];}};
  return {state,api};
 }
+test('team preparation starts within the recruitment budget instead of only the last two minutes',()=>{
+ assert.equal(bladeburnerTeamPreparationWindow(120000,10),true);
+ assert.equal(bladeburnerTeamPreparationWindow(300000,10),true);
+ assert.equal(bladeburnerTeamPreparationWindow(600001,10),false);
+ assert.equal(bladeburnerTeamPreparationWindow(120000,1),true);
+ assert.equal(bladeburnerTeamPreparationWindow(120001,1),false);
+ assert.equal(bladeburnerTeamPreparationWindow(null,10),false);
+});
 test('team probes use projected chances and choose the smallest verified squad',()=>{
  const {state,api}=teamApi();const calls=[];
  const forecast=(chance,stamina,difficulty)=>{calls.push({chance,stamina,difficulty});return bladeburnerStaminaChance(chance,stamina,difficulty);};
@@ -62,6 +70,10 @@ test('actual team worker executes native stamina API and serializes the forecast
  assert.ok(source.includes('requiredBladeburnerTeam.toString()}),(${bladeburnerStaminaChance.toString()}),ns.args[4]'));
  assert.ok(source.includes("trainingEnabled:trainingMilestone.eligible"));
  assert.ok(source.includes("teamPlan.state==='needs-stamina'"));
+ assert.ok(source.includes("team-trial-size"));
+ assert.ok(source.includes('Bounded rank-grind team trial'));
+ assert.ok(source.includes('!teamTrial)recruitmentDecision'));
+ assert.ok(source.includes("teamPlan.trial&&bestActionType==='Operations'?0"));
 });
 
 test('small post-cost penalties increase the verified team requirement instead of reusing raw sizing',()=>{

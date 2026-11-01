@@ -763,6 +763,7 @@ QC: all 750 tests passed; all 182 JavaScript files passed syntax checks; whitesp
 
 ### Automatic StormSeed recycling
 
+- Automatic dispatch is **disabled by default**; run `darknet-manager.js --enable-auto-stormseed` after measured stagnation to opt in. A webstorm is destructive and grants no immediate reward, so the seed is not treated as a routine reset button.
 - Scouts publish fresh surveys of neighbours, blocked RAM, caches, contracts and the native `STORM_SEED.exe` program. Busy or missing scouts block recycling, including unsolved labyrinth/frontier hosts.
 - The manager requires the entire reachable network to be surveyed, rewards exhausted, and topology unchanged for five minutes. State survives manager restarts and is scoped to the BitNode reset; dispatch attempts have a conservative 30 minute cooldown.
 - A separate helper runs on the seed holder, keeping the native StormSeed API cost out of low-RAM scouts. It rechecks current rewards/processes and cancels expired requests, maintenance, or failed checks. Missing access/API errors are caught.

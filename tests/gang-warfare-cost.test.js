@@ -91,7 +91,7 @@ test('active duty requires known warfare XP task and valid fractions',()=>{
 });
 test('controller planners and attrition receive confirmed phase, padding and measured restore time',()=>{
  const source=readFileSync(new URL('../gangs.js',import.meta.url),'utf8');
- assert.equal((source.match(/detected:territoryTickDetected,paddingMs:territoryTickWaitPadding,intervalMs:updateInterval,restoreMs:postTickRestoreMs,periodMs:territoryTickTime/g)||[]).length,8);
+ assert.equal((source.match(/detected:territoryTickDetected,paddingMs:territoryTickWaitPadding,intervalMs:updateInterval,restoreMs:postTickRestoreMs,periodMs:territoryTickTime/g)||[]).length,9);
 });
 
 function developmentFixture(){

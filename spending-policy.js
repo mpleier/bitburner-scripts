@@ -1,13 +1,15 @@
+import {gangPowerBudgetPriority} from './gang-growth-speed-policy.js';
 import {gangCorporationCapital} from './gang-safety-policy.js';
 import {augmentationSavingsTarget} from './progression-improvements-policy.js';
 /** One-minute player-cash allowances. Corporation funds and stock capital remain separate. */
 export function spendingPlan({money,reserve=0,homeRam=0,node=1,epoch=Date.now(),ownerPid,reset,signals={}}) {
  const weights = node===10 ? {home:20,servers:5,hacknet:5,gang:5,sleeves:10,graft:15,soa:10,sleeveExpansion:28,corporation:2} :
-  {home:homeRam<128?50:35,servers:15,hacknet:10,gang:5,sleeves:5,graft:15,soa:13,sleeveExpansion:0,corporation:2};
+  {home:homeRam<128?50:35,servers:15,hacknet:20,gang:5,sleeves:5,graft:15,soa:13,sleeveExpansion:0,corporation:2};
  weights.training=signals.route==='bladeburner'?2:0;
  const reasons=[];
  if(Number.isFinite(signals.gangEquipmentPayback)&&signals.gangEquipmentPayback>0&&signals.gangEquipmentPayback<=900){weights.gang*=signals.gangEquipmentPayback<=300?8:4;reasons.push(signals.gangEquipmentPayback<=300?'Prioritize gang equipment repaying within five minutes':'Profitable gang upgrades repay within fifteen minutes');}
  else if(Number.isFinite(signals.gangRecruitmentSecondsSaved)&&signals.gangRecruitmentSecondsSaved>=20){weights.gang*=3;reasons.push('Fund gang equipment that advances recruitment');}
+ if(gangPowerBudgetPriority(signals.gangCapitalQuote,signals.gangCapitalHorizon)){weights.gang*=4;reasons.push('Fund gang equipment with verified power payback within fifteen minutes');}
  if(signals.gangStalled){weights.gang*=2;reasons.push('Gang equipment priority: territory is not advancing');}
  if(signals.sleeveShockHigh){weights.sleeves*=0.5;reasons.push('Hold sleeve augmentation spending while shock recovers');}
  if(signals.sleeveExpansionNeeded&&node===10){weights.sleeveExpansion*=1.5;reasons.push('Sleeve expansion priority');}
@@ -22,18 +24,19 @@ export function spendingPlan({money,reserve=0,homeRam=0,node=1,epoch=Date.now(),
  const total=Object.values(weights).reduce((a,b)=>a+b,0),free=Math.max(0,money-reserve);
  const gangCapital=gangCorporationCapital(signals,free);
  if(collect){gangCapital.protectedGangCash=Math.max(gangCapital.protectedGangCash,Math.min(free,gear.remainingCost));gangCapital.reason='Protect cash for the all-equipment gang goal';}
- const corporationPriority=signals.corporationGrowthPriority===true&&signals.corporationStartup===true&&signals.activeCategories?.corporation!==false&&money>=300000;
- // Keep essential manager capacity funded while accumulating the startup threshold.
- const needsRam=homeRam<128||Number.isFinite(signals.essentialHomeRam?.target)&&signals.essentialHomeRam.target>homeRam;
- const startup=corporationPriority?Math.min(150e9,free*(needsRam ? .5 : 1)):signals.corporationStartup&&signals.activeCategories?.corporation!==false&&free>=150e9?Math.min(150e9,free-gangCapital.protectedGangCash):0;
- if(corporationPriority){gangCapital.protectedGangCash=0;gangCapital.priority='corporation-startup';gangCapital.reason='Corporation startup savings take priority over optional gang equipment';reasons.push(gangCapital.reason);}
+ // Corporation creation is opportunistic: it competes at its normal low weight and is only
+ // set aside once the full self-fund cost is already affordable, so other progression keeps moving.
+ const startup=signals.corporationStartup&&signals.activeCategories?.corporation!==false&&free>=150e9?Math.min(150e9,free-gangCapital.protectedGangCash):0;
  if(gangCapital.protectedGangCash)reasons.push(gangCapital.reason);
- if(startup)reasons.push('Reserve an allowance for corporation creation');
- const allowances=Object.fromEntries(Object.entries(weights).map(([k,v])=>[k,(free-startup)*v/total]));allowances.corporation+=startup;
+ if(startup)reasons.push('Set aside the fully affordable corporation creation cost');
+ else if(signals.corporationStartup&&signals.activeCategories?.corporation!==false&&money>=300000)reasons.push('Corporation startup is low priority until its full cost is affordable');
+ const recoveryCash=weights.gang>0&&Number.isFinite(signals.gangRecoveryCash)?Math.min(Math.max(0,signals.gangRecoveryCash),Math.max(0,free-startup)):0;
+ const allowances=Object.fromEntries(Object.entries(weights).map(([k,v])=>[k,(free-startup-recoveryCash)*v/total]));allowances.corporation+=startup;allowances.gang+=recoveryCash;
+ if(recoveryCash)reasons.push('Earmark funded gang ascension equipment recovery');
  if(gangCapital.protectedGangCash&&weights.gang>0){const shift=Math.min(Math.max(0,gangCapital.protectedGangCash-allowances.gang),Math.max(0,allowances.corporation));allowances.gang+=shift;allowances.corporation-=shift;}
  if(signals.bottleneck==='cash'&&node!==9){
-  allowances.hacknet=Math.min(allowances.hacknet,free*.02);
-  reasons.push('Limit Hacknet reinvestment to 2% of unreserved cash while augmentations need money');
+  allowances.hacknet=Math.min(allowances.hacknet,free*.05);
+  reasons.push('Limit Hacknet reinvestment to 5% of unreserved cash while augmentations need money');
  }
 
  const essentialRam=Number.isFinite(signals.essentialHomeRam?.target)&&signals.essentialHomeRam.target>homeRam&&signals.essentialHomeRam.target<=2**30;
@@ -41,7 +44,7 @@ export function spendingPlan({money,reserve=0,homeRam=0,node=1,epoch=Date.now(),
   const saving=signals.augmentationCashTarget;
   if(homeRam>=128&&!essentialRam)allowances.home=Math.min(allowances.home,free*.02);
   allowances.servers=Math.min(allowances.servers,free*.02);
-  allowances.hacknet=Math.min(allowances.hacknet,free*(saving?.cost>0?.02:.05));
+  allowances.hacknet=Math.min(allowances.hacknet,free*(saving?.cost>0?(signals.route==='hacking'?.05:.02):(signals.route==='hacking'?.10:.05)));
   reasons.push(saving?'Save cash toward '+saving.name+' ('+saving.cost+')':'Limit infrastructure reinvestment while Bladeburner is the selected route');
  }
  if(essentialRam){
@@ -69,7 +72,7 @@ export function spendingPlan({money,reserve=0,homeRam=0,node=1,epoch=Date.now(),
   }
   allowances.home+=shift;reasons.push('Enabled manager capacity target: '+capacity.target+' GB');
  }
- return {gangCapital,corporationStartupReserve:corporationPriority?startup:0,epoch,ownerPid,reset,homeRam,expiresAt:epoch+60000,reserve,reasons,signals,allowances};
+ return {managed:true,gangCapital,corporationStartupReserve:startup,epoch,ownerPid,reset,homeRam,expiresAt:epoch+60000,reserve,reasons,signals,allowances};
 }
 /** Self-contained for generated purchase workers. Native ns.write updates text synchronously.
  * Claim immediately before a synchronous purchase. Failed attempts conservatively consume allowance. */
@@ -77,9 +80,24 @@ export function claimSpending(ns,category,cost,investment=null) {
  if(!Number.isFinite(cost)||cost<0)return false;
  try{const p=JSON.parse(ns.read('tasks/achievement-profile.json'));if(p.active&&p.nodeReset===ns.getResetInfo().lastNodeReset&&p.deniedActions?.includes('cashSpending'))return false;}catch{}
  if(ns.getPlayer().money<cost+Math.max(0,Number(ns.read('reserve.txt'))||0))return false;
- let plan;try{plan=JSON.parse(ns.read('tasks/spending-plan.json'));}catch{return true;}
- if(!plan||!Number.isFinite(plan.expiresAt)||!plan.allowances||plan.expiresAt<=Date.now()||!ns.ps('home').some(p=>p.pid===plan.ownerPid))return true;
- const reset=ns.getResetInfo();if(plan.reset!==reset.lastAugReset)return true;
+ let plan;try{plan=JSON.parse(ns.read('tasks/spending-plan.json'));}catch{}
+ let reset;try{reset=ns.getResetInfo();}catch{}
+ const fallback=()=>{
+  if(cost===0)return true;
+  let supervised=plan?.managed===true;try{supervised ||= ns.ps('home').some(p=>p.filename?.replace(/^\//,'')==='autopilot.js');}catch{}
+  if(!supervised||ns.read('spending-standalone.txt').trim()==='true')return true;
+  // Only minimal home RAM bootstrap may spend while a managed budget is unavailable.
+  if(category!=='home'||!reset)return false;
+  let ram;try{ram=ns.getServerMaxRam('home');}catch{return false;}if(!(ram<128))return false;
+  const now=Date.now(),free=Math.max(0,ns.getPlayer().money-Math.max(0,Number(ns.read('reserve.txt'))||0));
+  let old;try{old=JSON.parse(ns.read('tasks/spending-bootstrap-usage.json'));}catch{}
+  const same=old?.augReset===reset.lastAugReset&&old.nodeReset===reset.lastNodeReset&&Number.isFinite(old.at)&&old.at<=now&&now-old.at<60000&&Number.isFinite(old.limit)&&old.limit>=0&&Number.isFinite(old.spent)&&old.spent>=0;
+  const limit=same?Math.min(old.limit,free*.5+old.spent):free*.5,spent=same?old.spent:0;
+  if(cost>limit-spent)return false;
+  ns.write('tasks/spending-bootstrap-usage.json',JSON.stringify({nodeReset:reset.lastNodeReset,augReset:reset.lastAugReset,at:same?old.at:now,limit,spent:spent+cost}),'w');return true;
+ };
+ if(!plan||!Number.isFinite(plan.expiresAt)||!plan.allowances||plan.expiresAt<=Date.now()||!ns.ps('home').some(p=>p.pid===plan.ownerPid))return fallback();
+ if(!reset||plan.reset!==reset.lastAugReset)return fallback();
  // Keep this guard self-contained: claimSpending is serialized into native purchase workers.
  const goal=plan.signals?.augmentationCashTarget;
  let saving=typeof goal?.name==='string'&&goal.name&&Number.isFinite(goal.cost)&&goal.cost>0&&Number.isFinite(plan.epoch)&&plan.epoch<=Date.now()&&plan.expiresAt<=Date.now()+120000&&ns.ps('home').some(p=>p.pid===plan.ownerPid&&p.filename?.replace(/^\//,'')==='autopilot.js')?goal.cost:0;
@@ -213,14 +231,16 @@ export function adaptiveBudgetSignals(ns,corporationStartup=false){
   Number.isFinite(development.at)&&development.at<=now&&now-development.at<30000&&ns.isRunning(development.pid)?
   {metadata:development.metadata,player:ns.getPlayer(),effective:development.effective}:null;
  const economics=incomeFresh&&speedFresh?{cashRate:observation.cashRate,recoveryMs:speed.recoveryMs,rebuildMs:speed.resetEconomics?.rebuildMs,
-  remainingMs:route&&route.augReset===reset.lastAugReset&&route.nodeReset===nodeReset&&route.at<=now&&now-route.at<45000&&ns.isRunning(route.ownerPid)?route?.routes?.[route.selected]?.etaMs:null,combat}:null;
- const validRoute=!!route&&route.augReset===ns.getResetInfo().lastAugReset&&route?.nodeReset===nodeReset&&route?.at<=now&&now-route.at<45000&&ns.isRunning(route.ownerPid)?route.selected:null;
+  remainingMs:route&&route.augReset===reset.lastAugReset&&route.nodeReset===nodeReset&&route.at<=now&&now-route.at<45000&&ns.isRunning(route.ownerPid)?route?.routes?.[route.committed==='hacking'||route.committed==='bladeburner'?route.committed:route.selected]?.etaMs:null,combat}:null;
+ const validRoute=!!route&&route.augReset===ns.getResetInfo().lastAugReset&&route?.nodeReset===nodeReset&&route?.at<=now&&now-route.at<45000&&ns.isRunning(route.ownerPid)?route.committed==='hacking'||route.committed==='bladeburner'?route.committed:route.selected:null;
  const collection=read('tasks/gang-equipment-priority.json');
  const gangEquipmentPriority=collection?.schemaVersion===1&&collection.enabled===true&&collection.nodeReset===nodeReset&&collection.augReset===reset.lastAugReset&&
   Number.isFinite(collection.at)&&collection.at<=now&&now-collection.at<=30000&&Number.isSafeInteger(collection.remainingCount)&&collection.remainingCount>0&&Number.isFinite(collection.remainingCost)&&collection.remainingCost>0&&
   ns.ps('home').some(p=>p.pid===collection.ownerPid&&p.filename?.replace(/^\//,'')==='gangs.js')?{remainingCount:collection.remainingCount,remainingCost:collection.remainingCost}:null;
  const capitalGrowth=fresh(growth)&&growth.schemaVersion===2&&growth.nodeReset===nodeReset&&growth.augReset===reset.lastAugReset&&growth.at>now-30000&&ns.ps('home').some(p=>p.pid===growth.pid&&p.filename?.replace(/^\//,'')==='gangs.js');
- return {gangEquipmentPriority,gangCapitalQuote:capitalGrowth?growth.equipmentOpportunity:null,gangCapitalHorizon:capitalGrowth?growth.horizon?.seconds:null,route:validRoute,essentialHomeRam,fullHomeRam,augmentationCashTarget:augmentationCashReserve(ns,true)||augmentationSavingsTarget(snapshot,ns.getResetInfo(),snapshot?ns.getPlayer().money:0,validRoute,now,economics),augmentationFunding,gangEquipmentPayback:fresh(growth)&&growth.schemaVersion===2&&growth.nodeReset===nodeReset&&growth.augReset===ns.getResetInfo().lastAugReset&&growth.equipmentOpportunity?.reason==='production'?growth.equipmentOpportunity.cashPaybackSeconds:null,gangRecruitmentSecondsSaved:fresh(growth)&&growth.schemaVersion===2&&growth.nodeReset===nodeReset&&growth.augReset===ns.getResetInfo().lastAugReset&&growth.equipmentOpportunity?.reason==='recruitment'?growth.equipmentOpportunity.recruitSecondsSaved:null,gangStalled,sleeveShockHigh:items.length>0&&items.reduce((sum,s)=>sum+(Number(s.shock)||0),0)/items.length>25,sleeveExpansionNeeded:items.length>0&&(items.length<8||items.some(s=>s.memory<100)),corporationStartup};
+ const recoveryHold=read('tasks/gang-ascension-reserve.json');
+ const gangRecoveryCash=recoveryHold?.nodeReset===nodeReset&&recoveryHold.augReset===reset.lastAugReset&&recoveryHold.at<=now&&now-recoveryHold.at<=30000&&recoveryHold.expiresAt>now&&ns.ps('home').some(p=>p.pid===recoveryHold.ownerPid&&p.filename?.replace(/^\//,'')==='gangs.js')?recoveryHold.cost:0;
+ return {gangRecoveryCash,gangEquipmentPriority,gangCapitalQuote:capitalGrowth?growth.equipmentOpportunity:null,gangCapitalHorizon:capitalGrowth?growth.horizon?.seconds:null,route:validRoute,essentialHomeRam,fullHomeRam,augmentationCashTarget:augmentationCashReserve(ns,true)||augmentationSavingsTarget(snapshot,ns.getResetInfo(),snapshot?ns.getPlayer().money:0,validRoute,now,economics),augmentationFunding,gangEquipmentPayback:fresh(growth)&&growth.schemaVersion===2&&growth.nodeReset===nodeReset&&growth.augReset===ns.getResetInfo().lastAugReset&&growth.equipmentOpportunity?.reason==='production'?growth.equipmentOpportunity.cashPaybackSeconds:null,gangRecruitmentSecondsSaved:fresh(growth)&&growth.schemaVersion===2&&growth.nodeReset===nodeReset&&growth.augReset===ns.getResetInfo().lastAugReset&&growth.equipmentOpportunity?.reason==='recruitment'?growth.equipmentOpportunity.recruitSecondsSaved:null,gangStalled,sleeveShockHigh:items.length>0&&items.reduce((sum,s)=>sum+(Number(s.shock)||0),0)/items.length>25,sleeveExpansionNeeded:items.length>0&&(items.length<8||items.some(s=>s.memory<100)),corporationStartup};
 }
 
 /** Self-contained for stock workers. waitGoalOnly returns metadata for the budget planner.

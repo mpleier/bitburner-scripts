@@ -85,7 +85,7 @@ test('executed gang polling confirms a rival tick once and forwards its native t
  const build=Function('getNsDataThroughFile','gangTerritorySample','gangTerritoryDeadline','gangTerritoryTiming','previous','cycle','events','gangPulseCalibration','gangPreparationPhase','gangPulseObservation',`
  const gangWarfareThreshold=()=>.75,gangTrainingFirst=()=>true,resetInfo={lastNodeReset:1,lastAugReset:2};let nextWarfareCheck=Infinity;
   const wantedPreparation=null,options={},trainingEpisodes={},trainingPlans={},ascensionRecoveries={};
-  const maintenanceRequested=()=>false,myGangFaction='Own',myGangMembers=Array(12),updateInterval=200,territoryTickTime=20000;
+  const postTickRestoreMs=0;const maintenanceRequested=()=>false,myGangFaction='Own',myGangMembers=Array(12),updateInterval=200,territoryTickTime=20000;
   let preparationPhase=null,pendingPowerPulse=null,powerCalibration=[];let lastOtherGangInfo=previous,lastLoopTime=cycle.at-200,territoryNextTick=cycle.at,territoryTickDetected=true,
    isReadyForNextTerritoryTick=true,warfareFinished=false,territoryTickWaitPadding=200,lastTerritoryPower=10;
   const onTerritoryTick=async(ns,info,tick)=>events.push(tick);

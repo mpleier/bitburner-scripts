@@ -1,3 +1,4 @@
+import {freshAugmentationOffer,compareGraftInstall,graftChannelGain} from './graft-install-policy.js';
 import {readNodeRoutePlan} from './node-route-policy.js';
 import {graftResetBlocked} from './progression-improvements-policy.js';
 import {registerAutomation,automationHeartbeat,maintenanceRequested} from './runtime-policy.js';
@@ -19,7 +20,10 @@ export function graftTick(ns, fraction = 0.25, maxPayback = 4 * 3600_000) {
   if (transitionActive(transition, ns.ps('home'))) return { status: 'busy' };
   const work = ns.singularity.getCurrentWork();
   if (['GRAFTING', 'CREATE_PROGRAM'].includes(work?.type)) return { status: 'busy' };
+  let bladeburnerRunning=false;
   try {
+    const action=ns.bladeburner.inBladeburner()?ns.bladeburner.getCurrentAction():null;
+    bladeburnerRunning=!!action?.type&&!/idle/i.test(action.type);
     if (ns.bladeburner.inBladeburner() && /black/i.test(ns.bladeburner.getCurrentAction()?.type || '')) return { status: 'busy' };
   } catch { /* Bladeburner may not be unlocked. */ }
   const player = ns.getPlayer();
@@ -42,6 +46,14 @@ export function graftTick(ns, fraction = 0.25, maxPayback = 4 * 3600_000) {
   } catch { /* Missing income evidence means no speculative graft purchases. */ }
   const route=readNodeRoutePlan(ns);
   let cash;try{cash=JSON.parse(ns.read('tasks/speed-observation.json'));}catch{}
+  let offer;try{offer=JSON.parse(ns.read('tasks/augmentation-choice-offer.json'));}catch{}
+  const managed=ns.ps('home').some(p=>p.filename==='autopilot.js');
+  const comparable=freshAugmentationOffer(offer,reset,ns.ps('home'));
+  if(managed&&!comparable)return {status:'waiting',reason:'Waiting for a fresh graft/install comparison'};
+  if(comparable&&offer.protectedMilestone)return {status:'reset-pending',reason:'Preserving a verified or explicitly configured install'};
+  const bladeburnerContinues=installed.has("The Blade's Simulacrum");
+  const interruptedSources=[...(['FACTION','COMPANY'].includes(work?.type)?['work']:work?.type==='CRIME'?['crime']:[]),...(bladeburnerRunning&&!bladeburnerContinues?['bladeburner']:[])];
+  const continuesDuringGraft=route?.selected==='hacking'||route?.selected==='bladeburner'&&bladeburnerContinues;
   const candidates = [];
   for (const name of ns.grafting.getGraftableAugmentations()) {
     if (owned.has(name) || !ns.singularity.getAugmentationPrereq(name).every(required => installed.has(required))) continue;
@@ -51,22 +63,27 @@ export function graftTick(ns, fraction = 0.25, maxPayback = 4 * 3600_000) {
     const stats=ns.singularity.getAugmentationStats(name);
     const economics = graftEconomics({ stats, cost:cost+travel, duration,
       entropy: player.entropy, immune: installed.has('Congruity Implant'), congruity: name === 'Congruity Implant',
-      focusImmune: installed.has('Neuroreceptor Management Implant'), hackingIncome, rates, maxPayback });
+      interruptedSources, bladeburnerContinues, focusImmune: installed.has('Neuroreceptor Management Implant'), hackingIncome, rates, maxPayback });
     const factor=name==='Congruity Implant'?1/(.98**Math.max(0,Number(player.entropy)||0)):installed.has('Congruity Implant')?1:.98;
     const progression=graftProgressionValue({stats,factor,duration:economics.duration,cost:cost+travel,
-      lostIncome:economics.lostIncome,incomeLossPerSecond:Math.max(0,-economics.incrementalIncome),maxPayback,route,reset,cash});
+      lostIncome:economics.lostIncome,incomeLossPerSecond:Math.max(0,-economics.incrementalIncome),maxPayback,route,reset,cash,continuesDuringGraft});
     const remaining=route?.routes?.[route.selected]?.lowerMs;
     const cashEligible=economics.eligible&&(!Number.isFinite(remaining)||economics.payback<remaining*.75);
     if(!cashEligible&&!progression.eligible)continue;
+    const quote={channelSignature:JSON.stringify(offer?.channels),gain:graftChannelGain(stats,offer?.channels,factor),cost:cost+travel+economics.lostIncome,
+      delayMs:continuesDuringGraft?economics.duration:0,downtimeMs:continuesDuringGraft?0:economics.duration};
+    const comparison=comparable?compareGraftInstall(offer,quote):null;
+    if(comparable&&comparison.winner!=='graft')continue;
     const basis=progression.eligible&&(!cashEligible||progression.payback<economics.payback)?'progression':'cash';
-    candidates.push({name,cost,...economics,eligible:true,basis,progression,cashPayback:economics.payback,
+    candidates.push({name,cost,...economics,quote,comparison,normalAlternative:comparable?{inInstallBasket:offer.basket?.includes(name)===true,basketCost:offer.install?.cost}:null,eligible:true,basis,progression,cashPayback:economics.payback,
       payback:basis==='progression'?progression.payback:economics.payback});
   }
-  const choice = candidates.sort((a, b) => a.payback - b.payback || b.benefit - a.benefit || a.cost - b.cost)[0];
+  const graftWork=c=>c.comparison?.options?.find(o=>o.name==='graft')?.work??0;
+  const choice = candidates.sort((a, b) => graftWork(b)-graftWork(a)||a.payback - b.payback || b.benefit - a.benefit || a.cost - b.cost)[0];
   if (!choice) return {status:'waiting',route:route?.selected??null,reason:'No affordable graft has a measured cash or progression repayment within limits'};
   try{plan=JSON.parse(ns.read('tasks/augmentation-reset-plan.json'));}catch{plan=null;}
   if(graftResetBlocked(plan,ns.getResetInfo(),ns.ps('home')))return {status:'reset-pending'};
-  if(!claimSpending(ns,'graft',choice.cost+travel))return {status:'waiting-for-budget'};
+  if(!claimSpending(ns,'graft',choice.cost+travel))return {...choice,status:'waiting-for-budget'};
   if (player.city !== 'New Tokyo' && !ns.singularity.travelToCity('New Tokyo')) return { status: 'travel-failed' };
   // Recheck work after travel to avoid replacing a graft started by another script.
   if (activityBusy(ns) || ns.singularity.getCurrentWork()?.type === 'GRAFTING') return { status: 'busy' };
@@ -89,6 +106,10 @@ export async function main(ns) {
  automationHeartbeat(ns);
     try {
       const result = graftTick(ns, Number(options['budget-fraction']), maxPayback);
+      if(result.quote){
+        const reset=ns.getResetInfo();
+        await ns.write('tasks/graft-install-proposal.json',JSON.stringify({at:Date.now(),ownerPid:ns.pid,nodeReset:reset.lastNodeReset,augReset:reset.lastAugReset,name:result.name,quote:result.quote}),'w');
+      }
       await ns.write('tasks/grafting-status.json', JSON.stringify({ at: Date.now(), pid: ns.pid, maxPaybackHours: maxPayback / 3600_000, ...result }), 'w');
       if (result.status === 'unavailable') { ns.print('Grafting requires Grafting and Singularity access.'); return; }
       if (result.status === 'started') ns.print(`Grafting ${result.name}: estimated ${result.basis||'cash'} repayment ${(result.payback / 3600_000).toFixed(2)}h including graft time and cash opportunity cost.`);
@@ -96,3 +117,4 @@ export async function main(ns) {
     await ns.sleep(60_000);
   }
 }
+

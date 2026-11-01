@@ -185,7 +185,7 @@ export function sleeveBladeburnerSupport(sleeves,actualTasks,plan) {
 
 /** Opening milestones take precedence over paid training and optional reputation work. */
 export function sleeveStartupPlan({sleeves=[],tasks=[],crimes={},money=0,casinoPending=true,
-  gangAvailable=false,inGang=false,karma=0,intelligence=0,previousWorkers=[],enabled=true,nodeMultiplier=1}) {
+  gangAvailable=false,inGang=false,karma=0,intelligence=0,previousWorkers=[],enabled=true,nodeMultiplier=1,externalKarmaPerSecond=0,recoveryRates=[]}) {
   const assignments={},result={stage:'normal',urgent:false,assignments,workers:[]};
   if(!enabled)return result;
   const rate=(s,objective)=>{
@@ -202,31 +202,33 @@ export function sleeveStartupPlan({sleeves=[],tasks=[],crimes={},money=0,casinoP
     const full=sleeves.map(s=>rate(s,'karma'));
     const rates=sleeves.map((s,i)=>full[i]*Math.max(0,Math.min(100,Number(s.sync)||0))/100);
     const remaining=Math.max(0,54000+karma);
+    const external=Number.isFinite(externalKarmaPerSecond)?Math.max(0,externalKarmaPerSecond):0;
+    const recoveryRate=(s,i)=>Number.isFinite(recoveryRates[i])&&recoveryRates[i]>0?recoveryRates[i]:.0015*(1+.75*Math.pow(Math.max(0,Number(s.skills?.intelligence)||0),.8)/600);
     // Very weak, shocked sleeves lose most training XP. Recover them while a productive
     // worker keeps karma moving, unless the gang milestone is already close.
     const conditioning=new Set(sleeves.map((s,i)=>{
       const name=bestSleeveCrime(s,crimes,'karma',nodeMultiplier),stats=crimes[name];
       const int=Math.max(0,Number(s.skills?.intelligence)||0);
-      const recoverySeconds=Math.max(0,Number(s.shock)||0)/(.0015*(1+.75*Math.pow(int,.8)/600));
-      const total=rates.reduce((sum,r)=>sum+r,0);
+      const recoverySeconds=Math.max(0,Number(s.shock)||0)/recoveryRate(s,i);
+      const total=external+rates.reduce((sum,r)=>sum+r,0);
       return s.shock>25&&sleeveCrimeChance(s,stats,nodeMultiplier)<.1&&
         total>0&&remaining/total>recoverySeconds?i:null;
     }).filter(i=>i!==null));
     // Keep the best currently available worker when every sleeve needs conditioning.
-    if(conditioning.size===sleeves.length&&sleeves.length)
+    if(external===0&&conditioning.size===sleeves.length&&sleeves.length)
       conditioning.delete(rates.indexOf(Math.max(...rates)));
     result.conditioning=[...conditioning];
     // Enumerate at most 256 subsets for the native maximum of eight sleeves.
     // Cost = gang ETA plus mean extra recovery time caused by postponing recovery.
     const evaluate=workers=>{
-      const total=workers.reduce((sum,i)=>sum+rates[i],0);
+      const total=external+workers.reduce((sum,i)=>sum+rates[i],0);
       if(workers.some(i=>conditioning.has(i)))return {workers,eta:Infinity,score:Infinity};
       if(!(total>0))return {workers,eta:Infinity,score:Infinity};
       const eta=remaining/total;
       const debt=workers.reduce((sum,i)=>{
         const s=sleeves[i],int=Math.max(0,Number(s.skills?.intelligence)||0);
         const bonus=1+.75*Math.pow(int,.8)/600;
-        const shock=Math.max(0,Number(s.shock)||0),passive=.0005*bonus,recovery=.0015*bonus;
+        const shock=Math.max(0,Number(s.shock)||0),passive=recoveryRate(s,i)/3,recovery=recoveryRate(s,i);
         return sum+(Math.max(0,shock-passive*eta)-Math.max(0,shock-recovery*eta))/recovery;
       },0)/Math.max(1,sleeves.length);
       return {workers,eta,score:eta+debt};
@@ -240,7 +242,7 @@ export function sleeveStartupPlan({sleeves=[],tasks=[],crimes={},money=0,casinoP
     const prior=evaluate([...new Set([...mandatory,...previousWorkers.filter(i=>Number.isInteger(i)&&i>=0&&i<sleeves.length)])]);
     if(Number.isFinite(prior.score)&&prior.score<=best.score*1.02)best=prior;
     let workers=best.workers;
-    if(!workers.length&&sleeves.length){
+    if(!workers.length&&sleeves.length&&external===0){
       const index=full.indexOf(Math.max(...full));workers=[index];
     }
     result.workers=workers;result.etaSeconds=Number.isFinite(best.eta)?best.eta:null;
@@ -252,7 +254,7 @@ export function sleeveStartupPlan({sleeves=[],tasks=[],crimes={},money=0,casinoP
       const int=Math.max(0,Number(sleeve.skills?.intelligence)||intelligence||0);
       const syncPerSecond=.001*(1+.5*Math.pow(int,.8)/600);
       const syncSeconds=(100-sync)/syncPerSecond;
-      const other=workers.reduce((sum,j)=>sum+(j===i?0:rates[j]),0);
+      const other=external+workers.reduce((sum,j)=>sum+(j===i?0:rates[j]),0);
       const current=other+rates[i];
       const leftAfterSync=Math.max(0,remaining-other*syncSeconds);
       const after=other+full[i];

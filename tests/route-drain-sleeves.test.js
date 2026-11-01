@@ -84,9 +84,15 @@ test('native worker implementations finish their current operation before stoppi
   await main(ns);assert.equal(calls,1,tool);
  }
 });
-test('copied worker guards stay identical to the tested policy without remote imports',()=>{
+test('worker loop guards come from one shared module identical to the tested policy',()=>{
  const helper=hackingLoopShouldStop.toString().replace(/\r\n/g,'\n');
- for(const name of ['hack','grow','weak','manualhack']){const source=readFileSync(new URL('../Remote/'+name+'-target.js',import.meta.url),'utf8').replace(/\r\n/g,'\n');assert.ok(source.includes(helper));}
+ const shared=readFileSync(new URL('../Remote/hgw-telemetry.js',import.meta.url),'utf8').replace(/\r\n/g,'\n');
+ assert.ok(shared.includes(helper),'shared worker guard must stay identical to the policy copy');
+ for(const name of ['hack','grow','weak','manualhack']){
+  const source=readFileSync(new URL('../Remote/'+name+'-target.js',import.meta.url),'utf8').replace(/\r\n/g,'\n');
+  assert.match(source,/from '\.\/hgw-telemetry\.js'/);
+  assert.ok(!source.includes('function hackingLoopShouldStop'),name+' must not keep a private copy');
+ }
 });
 
 const sleeve=(shock=1)=>({shock,sync:100,skills:{strength:100,defense:100,dexterity:100,agility:100,intelligence:0},exp:{strength:1e6},mults:{strength:1,strength_exp:1,crime_success:1}});
@@ -124,7 +130,7 @@ test('active drain ownership protects daemon reloads until all recovery phases f
  const record={at:1000,ownerPid:7,nodeReset:1,augReset:2,targets:{n:{stage:'grow'}}},processes=[{pid:7,filename:'daemon.js'}];
  assert.equal(hackingDrainActive(record,reset,processes,2000),true);
  for(const patch of [{augReset:3},{ownerPid:8},{targets:{}},{targets:{n:{stage:'clearing'}}}])assert.equal(hackingDrainActive({...record,...patch},reset,processes,2000),false);
- const source=readFileSync(new URL('../reliability-manager.js',import.meta.url),'utf8');assert.ok(source.includes('protectedWork:reloadBlocked(script)'));assert.equal(controllerReloadBlocked('daemon.js',{drainProtected:true}),true);assert.ok(source.includes('filter(job=>!drainProtected'));
+ const source=readFileSync(new URL('../reliability-manager.js',import.meta.url),'utf8');assert.ok(source.includes('protectedWork:reloadBlocked(script)'));assert.equal(controllerReloadBlocked('daemon.js',{drainProtected:true}),true);assert.ok(source.includes('(!drainProtected||job.filename'));
 });
 
 test('recovery waits for one crime completion rather than waiting forever for zero residual cycles',()=>{

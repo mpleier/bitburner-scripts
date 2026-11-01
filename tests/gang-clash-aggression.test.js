@@ -75,3 +75,15 @@ test('controller allows bounded attrition under training-first while retaining p
  assert.match(s,/allowTrainingFirst:true,participants/);assert.match(s,/gangWarfareMemberEligible\(m,maxDefense,1\)/);
  assert.match(s,/if\(lease.state==='active'\)/);assert.match(s,/activeLease&&!options\['disable-attrition'\]/);
 });
+test('early monitored attrition accepts strong nine-to-eleven-member exposure sets',()=>{
+ for(const size of [9,10,11]){
+  const f=input();f.members=f.members.slice(0,size);f.participants=f.members.map(m=>m.name);const q=planGangAttrition(f);assert.equal(q.engage,true,'crew '+size);assert.ok(q.scenarios.every(s=>s.extraDeaths<=.005&&s.fight.deaths<=.02));
+ }
+ const f=input();f.members=f.members.slice(0,9);f.participants=f.members.slice(1).map(m=>m.name);assert.equal(planGangAttrition(f).engage,false);
+});
+test('native bounded-attempt gate accepts exact strong smaller crews and rejects a missing exposure proof',()=>{
+ for(const size of [9,10,11]){
+  const f=native();f.list.splice(size);f.q.signature=gangAttritionSignature(f.list);f.q.participants=f.list.map(m=>m.name);assert.equal(startGangAttrition(f.ns,f.q,()=>true),true,'native crew '+size);assert.deepEqual(f.calls,[true]);
+  const missing=native();missing.list.splice(size);missing.q.signature=gangAttritionSignature(missing.list);delete missing.q.participants;assert.equal(startGangAttrition(missing.ns,missing.q,()=>true),false);assert.equal(missing.calls.length,0);
+ }
+});

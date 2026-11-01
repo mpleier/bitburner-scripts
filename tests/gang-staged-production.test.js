@@ -1,3 +1,4 @@
+import {gangEarlyFundingAnchor as earlyFundingAnchor} from '../gang-stat-policy.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
@@ -73,7 +74,7 @@ test('executed controller applies the first stage then switches when fresh cash 
  const table=[task('Money',20,0),task('Respect',0,20),task('Train Combat',0,0),task('Vigilante Justice',0,0,-1)];
  async function run(money,assignment){
   const c=input({money,rates:{M:table},assignments:{M:assignment}}),q=gangPurchaseFocus(c);let applied=null;
-  const ctx={Date,Math,Object,Number,JSON,gangPurchaseFocus,gangPurchasePlanTiming,gangObjectiveValue,gangObjectiveWeight,gangTaskTotals,planGangWantedCrew,betterGangPlan,nextWantedDowngrade,largestWantedDowngrade,improveGangPlan,
+  const ctx={growthHorizon:{bonusSeconds:0},lastOtherGangInfo:null,gangRivalsSnapshot:null,gangWarfareThreshold:()=>.7,territoryTickDetected:false,territoryTickWaitPadding:200,updateInterval:200,postTickRestoreMs:0,territoryTickTime:20000,gangWarfareContext:()=>({}),gangWarfareWorkFractions:()=>({}),memberRecoveryProtected:()=>false,gangMoneyAllowed:g=>g?.territory>.9,gangEarlyFundingAnchor:earlyFundingAnchor,incomeFunding:{known:false},options:{manualTasks:{}},Date,Math,Object,Number,JSON,gangPurchaseFocus,gangPurchasePlanTiming,gangObjectiveValue,gangObjectiveWeight,gangTaskTotals,planGangWantedCrew,betterGangPlan,nextWantedDowngrade,largestWantedDowngrade,improveGangPlan,
    myGangMembers:['M'],allTaskNames:table.map(t=>t.name),assignedTasks:{M:assignment},purchaseGoal:c.goal,purchaseFocusQuote:q,purchaseFocusContext:c,growthFocus:q.focus,
    wantedPenaltyThreshold:.01,isHackGang:false,strWantedReduction:'Vigilante Justice',memberNeedsTraining:()=>false,memberProtectedTask:()=>null,
    getGangInfoDict:async()=>({M:{name:'M',task:assignment}}),gangWantedTolerance:()=>0,updateGrowthFocus:async()=>q.focus,

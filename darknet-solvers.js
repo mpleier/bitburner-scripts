@@ -301,17 +301,22 @@ export async function candidatePasswordTurn(details, saved, candidates, state, a
     Object.assign(state,{signature,cursor:0,savedRejected:false});
   }
   if(Number.isFinite(state.completedAt))return {success:false,reason:'cooldown'};
+  const expectedLength=Number.isInteger(details.passwordLength)?details.passwordLength:null;
+  const matchesLength=password=>expectedLength===null||String(password).length===expectedLength;
   let used=0;
   if(typeof saved==='string'&&!state.savedRejected) {
-    const result=await reconnect(saved);used++;
-    if(result?.success)return {success:true,password:saved,saved:true};
-    if(Number(result?.code)!==401)return {success:false,reason:'interrupted',code:result?.code};
-    state.savedRejected=true;
+    if(!matchesLength(saved))state.savedRejected=true;
+    else {
+      const result=await reconnect(saved);used++;
+      if(result?.success)return {success:true,password:saved,saved:true};
+      if(Number(result?.code)!==401)return {success:false,reason:'interrupted',code:result?.code};
+      state.savedRejected=true;
+    }
   }
   const limit=feedbackTurnBudget({probeBudget:budget});
   while(state.cursor<candidates.length&&used<limit) {
     const password=candidates[state.cursor];
-    if(password===saved){state.cursor++;continue;}
+    if(password===saved||!matchesLength(password)){state.cursor++;continue;}
     const result=await authenticate(password);used++;
     if(result?.success)return {success:true,password,index:state.cursor};
     if(Number(result?.code)!==401)return {success:false,reason:'interrupted',code:result?.code};

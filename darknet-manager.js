@@ -1,5 +1,8 @@
+import {coordinateCharismaGoal,charismaTrainingFile} from './darknet-charisma-policy.js';
+import {ramRecoveryFile,ramRecoveryModel,scheduleRamRecovery} from './darknet-ram-policy.js';
+import {readDarknetReports,prioritizeDarknetTargets,darknetDeploymentFile,readDarknetDeployment,createAttemptBudget} from './darknet-throughput-policy.js';
 import {createDarknetCredentials} from './darknet-credentials.js';
-import {refreshDarknetScouts} from './darknet-rollout.js';
+import {refreshDarknetScouts,prepareDarknetRollout} from './darknet-rollout.js';
 import {cacheContextFile,rewardSummaryFile,darknetRewardProductivity} from './darknet-reward-policy.js';
 import {coordinateDarknetAnchors} from './darknet-anchor-policy.js';
 import {coordinateDarknetDevelopment} from './darknet-development-policy.js';
@@ -7,8 +10,8 @@ import {darknetObservationFile,darknetCapabilityContext} from './darknet-observa
 import {beginDarknetRefresh,darknetRefreshEvidence} from './darknet-refresh-policy.js';
 import {darknetContractDisposition} from './darknet-contract-policy.js';
 import { darknetEconomics, recurringPlayerIncome } from './darknet-economics-policy.js';
-import { surveyPrefix, stormRequestFile, stormStateFile, stormResultFile, applyStormReceipt, planStorm } from './darknet-storm-policy.js';
-import {registerAutomation,automationHeartbeat,maintenanceRequested} from './runtime-policy.js';
+import { surveyPrefix, stormRequestFile, stormStateFile, stormResultFile, applyStormReceipt, planStorm,observeStormBlocker } from './darknet-storm-policy.js';
+import {registerAutomation,automationHeartbeat,beginAutomationAction,endAutomationAction,maintenanceRequested} from './runtime-policy.js';
 import { isScriptPaused } from './automation-control.js';
 /** Darknet coordinator. Tries supplied exact-match candidates on discovered servers. */
 import { candidatePasswordTurn, isBlankPassword, solveFeedbackPassword, supportsFeedbackModel, modelCandidates, isStalledScout, dictionaryWords } from './darknet-solvers.js';
@@ -16,6 +19,9 @@ import { frontierFile } from './darknet-migration-policy.js';
 export async function main(ns) {
  registerAutomation(ns);
     if (isScriptPaused(ns, ns.getScriptName())) return;
+  // A webstorm deletes/moves most of the network and grants no immediate reward.
+  // Keep it opt-in until there is measured stagnation, rather than treating a seed as a reset button.
+  const autoStormSeed=(ns.args||[]).includes('--enable-auto-stormseed')||(ns.args||[]).includes('--auto-stormseed');
   const cacheReset=ns.getResetInfo();await ns.write(cacheContextFile,JSON.stringify({nodeReset:cacheReset.lastNodeReset,augReset:cacheReset.lastAugReset}),'w');
   const credentials = createDarknetCredentials(ns);
   const candidateFile = "darknet-candidates.txt";
@@ -27,7 +33,8 @@ export async function main(ns) {
   const lootFile = "darknet-loot.js";
   const stasisFile = "darknet-stasis.js";
   const cacheFile = "darknet-cache.js";
-  const codeFiles = [nodeFile, lootFile, stasisFile, cacheFile, "darknet-solvers.js", "darknet-credentials.js", "darknet-feedback.js", "darknet-advanced.js", "darknet-labyrinth-policy.js", "darknet-anchor-policy.js", "darknet-development-policy.js", "darknet-dictionaries.js", "darknet-promote.js", "darknet-stock-policy.js", "darknet-migrate.js", "darknet-migration-policy.js", "darknet-storm-policy.js", "darknet-storm.js", "darknet-contract-policy.js", "darknet-reward-policy.js", "tasks/dnet-cache-context.json"];
+  const watcherFile = "darknet-cache-watch.js";
+  const codeFiles = [nodeFile, lootFile, stasisFile, cacheFile, watcherFile, "darknet-solvers.js", "darknet-throughput-policy.js", "darknet-charisma-policy.js", "darknet-ram-policy.js", "darknet-ram.js", "darknet-credentials.js", "darknet-feedback.js", "darknet-advanced.js", "darknet-labyrinth-policy.js", "darknet-navigator-policy.js", "darknet-maze.js", "darknet-anchor-policy.js", "darknet-development-policy.js", "darknet-dictionaries.js", "darknet-promote.js", "darknet-stock-policy.js", "darknet-migrate.js", "darknet-migration-policy.js", "darknet-storm-policy.js", "darknet-storm.js", "darknet-contract-policy.js", "darknet-reward-policy.js", "tasks/dnet-cache-context.json"];
   // Every ns call is logged by default (scp, probe, getServerMaxRam...), which
   // buried the useful lines. Keep only what this script prints itself.
   ns.disableLog("ALL");
@@ -86,7 +93,6 @@ export async function main(ns) {
     const clue = typeof details.data === "string" ? details.data.trim() : "";
     // "Type the numbers to prove you are human": the clue is the password with
     // other characters mixed in, so the password is the clue's digits alone.
-    // Tried first, even if the length differs, since it is a single guess.
     const digitsOf = (text) => String(text ?? "").replace(/\D+/g, "");
     const wantsDigits = details.passwordFormat === "numeric" || /number|digit/i.test(String(details.passwordHint ?? ""));
     const derived = wantsDigits ? [digitsOf(details.data), digitsOf(details.passwordHint)].filter((x) => x.length > 0) : [];
@@ -94,13 +100,14 @@ export async function main(ns) {
     const counted = details.passwordFormat === "numeric" && details.passwordLength >= 1 && details.passwordLength <= 3
       ? Array.from({ length: 10 ** details.passwordLength }, (_, n) => String(n).padStart(details.passwordLength, "0"))
       : [];
-    return [...new Set([...modelCandidates(details), ...derived, ...(clue && matches(clue) ? [clue] : []), ...words.filter(matches), ...counted])];
+    return [...new Set([...modelCandidates(details).filter(matches), ...derived.filter(matches), ...(clue && matches(clue) ? [clue] : []), ...words.filter(matches), ...counted])];
   };
 
-  const reportedHints = new Map();
+  const reportedHints = new Map(),managerCharismaBlocked=new Map();
   // Cache complete attempt inputs so failed saved credentials are not retried every poll.
   const attemptedInputs = new Map();
   const heartbleedAt = new Map();
+  let targetTurn=0;let takeAttempt=()=>true;
   const nilProgress = new Map();
 
   const ensureDarknetUnlock = () => {
@@ -118,24 +125,44 @@ export async function main(ns) {
   const TIMED_OUT = 408;
   const RETRY_AFTER_MS = 10 * 60_000;
 
+  const nativeCall=async(host,kind,action)=>{
+    let expectedMs;try{const details=ns.dnet.getServerDetails(host),threads=ns.getRunningScript()?.threads||1,player=ns.getPlayer();expectedMs=kind==='darknet-heartbleed'?ns.formulas.dnet.getHeartbleedTime(details,threads,player):ns.formulas.dnet.getAuthenticateTime(details,threads,player);}catch{}
+    beginAutomationAction(ns,kind,expectedMs);
+    try{return await action();}finally{endAutomationAction(ns);}
+  };
   const tryPassword = async (host, password) => {
+    try {
+      const length = ns.dnet.getServerDetails(host)?.passwordLength;
+      if (Number.isInteger(length) && String(password).length !== length)
+        return {success:false,code:AUTH_FAILURE,message:'Candidate length mismatch'};
+    } catch { }
     let result;
     for (let tries = 0; tries < 3; tries++) {
-      automationHeartbeat(ns);
-      try { result = await ns.dnet.authenticate(host, password); }
-      finally { automationHeartbeat(ns); }
+      if(!takeAttempt())return result||{success:false,code:408,message:"Target turn budget reached"};
+      result=await nativeCall(host,'darknet-authenticate',()=>ns.dnet.authenticate(host,password));
       if (result.success || Number(result.code) !== TIMED_OUT) break;
     }
     return result;
   };
 
   const trySavedPassword = async (host, password, info) => {
+    if (Number.isInteger(info.passwordLength) && String(password).length !== info.passwordLength)
+      return {success:false,code:AUTH_FAILURE,message:'Candidate length mismatch'};
     // Native reconnect has no authentication delay. Stationary/story servers retain the normal path.
     if (info.isStationary === false && password.length <= 100) {
       try { if (ns.dnet.connectToSession(host, password).success) return { success: true, code: 200 }; }
       catch { /* Old API or missing access: authenticate normally. */ }
     }
     return tryPassword(host, password);
+  };
+  // A labyrinth is a story server, not a normal password puzzle. Once the maze
+  // has been completed it has root access (and usually a reward cache), so stop
+  // skipping it and let the normal saved-credential path attach/deploy.
+  const labyrinthSolved = (host, details) => {
+    if (details.modelId !== '(The Labyrinth)') return false;
+    if (details.hasSession) return true;
+    try { if (ns.hasRootAccess(host)) return true; } catch { }
+    try { return ns.ls(host, '.cache').length > 0; } catch { return false; }
   };
 
   const authenticate = async (host, details, saved, candidates) => {
@@ -155,9 +182,21 @@ export async function main(ns) {
         note(`${host}:nil`, `${host}: ${details.modelId} solving needs ${details.requiredCharismaSkill} Charisma for Heartbleed.`);
         return false;
       }
+      if(details.modelId==='(The Labyrinth)'){
+        if(!labyrinthSolved(host,details)){note(host+':maze',host+': waiting for an adjacent Dark Net navigator.');return false;}
+        if(typeof saved==='string'&&saved){
+          const result=await trySavedPassword(host,saved,details);
+          if(result.success){nilProgress.delete(host);note(host+':maze',host+': solved; attached with saved credentials.');return true;}
+        }
+        // Root access is the durable result of finishing the maze. Treat it as
+        // authorization to deploy the watcher/scout even if the session lapsed.
+        try{if(ns.hasRootAccess(host)){note(host+':maze',host+': solved with root access; deploying without re-authentication.');return true;}}catch{}
+        note(host+':maze',host+': maze solved, but no usable saved credential yet.');
+        return false;
+      }
       const solution = await solveFeedbackPassword({ ...details, hostname: host, probeBudget: 8 },
         password => tryPassword(host, password),
-        () => ns.dnet.heartbleed(host, { peek: true, logsToCapture: 20 }), progress);
+        () => nativeCall(host,'darknet-heartbleed',()=>ns.dnet.heartbleed(host, { peek: true, logsToCapture: 20 })), progress);
       if (!solution.success) {
         note(`${host}:nil`, `${host}: ${details.modelId} waiting: ${solution.reason}${solution.code ? ` (${solution.code})` : ""}.`);
         return false;
@@ -181,14 +220,10 @@ export async function main(ns) {
     return false;
   };
 
-  const manageStorm = async () => {
-    const reports = [];
-    for (const file of ns.ls('home', surveyPrefix)) {
-      try {
-        const report = JSON.parse(ns.read(file));
-        report.live = Number.isInteger(report.pid) && ns.ps(report.host).some(p => p.pid === report.pid && p.filename === nodeFile);
-        reports.push(report);
-      } catch { /* invalid or deleted hosts cannot authorize a storm */ }
+  const manageStorm = async (reports) => {
+    if (!autoStormSeed) {
+      note('storm-status', 'StormSeed: automatic dispatch disabled (enable with --enable-auto-stormseed after measured stagnation).');
+      return;
     }
     let state = {};
     try { state = JSON.parse(ns.read(stormStateFile) || '{}'); } catch { }
@@ -220,7 +255,10 @@ export async function main(ns) {
       if(!decision.state.contracts.allow){decision.launch=false;decision.reason=decision.state.contracts.reason;}
     }
     if(decision.launch&&!decision.state.economics.allow){decision.launch=false;decision.reason=decision.state.economics.reason;}
-    note('storm-status', `StormSeed: ${decision.reason}.`);
+    decision.state.blocker=observeStormBlocker(state.reset===reset&&state.blocker?.since>=currentReset.lastAugReset?state.blocker:null,decision.blocker,now);
+    const blocker=decision.state.blocker;
+    const detail=blocker?' ['+blocker.reasons.join(', ')+'; observed '+Math.floor((now-blocker.since)/30000)*30+'s'+(blocker.reportAgeMs===null?'':'; survey '+Math.floor(blocker.reportAgeMs/1000)+'s old')+']':'';
+    note('storm-status', `StormSeed: ${decision.reason}${detail}.`);
     if (decision.launch && !maintenanceRequested(ns) && !isScriptPaused(ns, ns.getScriptName())) {
       const host = decision.seedHost, helper = 'darknet-storm.js';
       if (ns.ps(host).some(p => p.filename === helper)) return;
@@ -252,21 +290,21 @@ export async function main(ns) {
     try {
       ensureDarknetUnlock();
       const passwords = await credentials.refresh();
+      const snapshot=await readDarknetReports(ns);
+      for(const n of snapshot.navigators){const moves=Number.isSafeInteger(n.moves)?n.moves:0,position=Array.isArray(n.coords)?n.coords.join(','):'unknown';const t=n.timing,a=t?.actions?.move,radar=t?.actions?.radar;const speed=a?.count>0&&Number.isFinite(a.ms)?'; '+(a.ms/a.count/1000).toFixed(2)+'s/move, '+(n.threads||1)+' threads, '+((radar?.ms||0)/1000).toFixed(1)+'s radar, '+((t.coordinationMs||0)/1000).toFixed(1)+'s coordination':'';note('navigator:'+n.target,'Maze '+n.target+' on '+n.host+': '+n.phase+'; '+moves+' moves; position '+position+speed+'.');}
       if(!maintenanceRequested(ns)){
-        const reports=[];
-        for(const file of ns.ls('home',surveyPrefix))try{const r=JSON.parse(ns.read(file));r.live=ns.ps(r.host).some(p=>p.pid===r.pid&&p.filename===nodeFile);reports.push(r);}catch{}
-        const reset=ns.getResetInfo(),values=await coordinateDarknetDevelopment(ns,reports,reset);
+        const reports=snapshot.surveys;
+        const reset=ns.getResetInfo(),values=await coordinateDarknetDevelopment(ns,reports,reset,snapshot.navigators);
         await coordinateDarknetAnchors(ns,reports,passwords,reset,values);
+        const charismaGoal=await coordinateCharismaGoal(ns,[...reports,{live:true,at:Date.now(),neighbours:ns.dnet.probe(),charismaBlocked:[...managerCharismaBlocked.values()]}],reset);
+        if(charismaGoal.state==='target'){
+          note('charisma-goal','Dark Net Charisma: '+charismaGoal.current+'/'+charismaGoal.target+(charismaGoal.host?' for '+charismaGoal.host:' for the next labyrinth')+'.');
+          try{const t=JSON.parse(ns.read(charismaTrainingFile));if(t.parentPid===ns.pid&&t.nodeReset===reset.lastNodeReset&&t.augReset===reset.lastAugReset&&t.target===charismaGoal.target&&t.at<=Date.now()&&Date.now()-t.at<120000)note('charisma-training','Charisma training: '+t.state+'; '+t.reason+'.');}catch{}
+        }
       }
       const candidates = [...new Set([...parseCandidates(), ...dictionaryWords(ns)])];
       let depth = 0;
-      for (const file of ns.ls('home', 'tasks/dnet-')) {
-        try {
-          const status = JSON.parse(ns.read(file));
-          if (status.pid && Number.isFinite(status.depth) && Date.now() - status.at < 120000 && ns.isRunning(status.pid))
-            depth = Math.max(depth, status.depth);
-        } catch { }
-      }
+      for(const status of snapshot.heartbeats)if(Number.isFinite(status.depth))depth=Math.max(depth,status.depth);
       await ns.write(frontierFile, JSON.stringify({ depth, expiresAt: Date.now() + 90000 }), 'w');
 
       // Read and hash the small deployment set once per exploration pass.
@@ -274,8 +312,40 @@ export async function main(ns) {
       const fileHashes = new Map(syncFiles.map(f => [f, hashText(ns.read(f))]));
       const signature = syncFiles.map(f => f+':'+fileHashes.get(f)).join('|');
       const codeSignature = codeFiles.filter(f => fileHashes.has(f)).map(f => fileHashes.get(f)).join('|');
-      await refreshDarknetScouts(ns,syncFiles,codeSignature,upgradePending);
-      for (const host of ns.dnet.probe()) {
+      await ns.write(darknetDeploymentFile,JSON.stringify({version:1,at:Date.now(),files:syncFiles}),'w');
+      await refreshDarknetScouts(ns,syncFiles,codeSignature,upgradePending,snapshot.heartbeats);
+      // Normal roots come first. Also include any surveyed server that has a
+      // reward cache or is a completed labyrinth: those are exactly the hosts
+      // the old labyrinth skip used to leave out of the deployment loop.
+      const targets = new Set(prioritizeDarknetTargets(ns.dnet.probe(),targetTurn++,host=>ns.dnet.getServerDetails(host)));
+      for (const report of snapshot.surveys) {
+        if (!report?.host || report.live === false) continue;
+        if (Number(report.caches) > 0 || (report.modelId === '(The Labyrinth)' && report.rooted)) targets.add(report.host);
+      }
+      // The navigator's completion report is the durable maze-solved marker;
+      // it may still be on home after the adjacent navigator process exits.
+      for (const file of ns.ls('home', 'tasks/dnet-navigator-')) {
+        try {
+          const report = JSON.parse(ns.read(file));
+          if (report?.phase === 'complete' && typeof report.target === 'string') targets.add(report.target);
+        } catch { }
+      }
+      for (const file of ns.ls('home', 'tasks/dnet-cache-rewards-')) {
+        try {
+          const report = JSON.parse(ns.read(file));
+          if (typeof report?.host === 'string') targets.add(report.host);
+        } catch { }
+      }
+      // Credentials include hosts that are not roots and have no live survey.
+      // Inspect only hosts that already hold a cache; this catches a completed
+      // labyrinth whose navigator has exited and whose cache is still pending.
+      for (const host of passwords.keys()) {
+        try {
+          if (ns.ls(host, '.cache').length && ns.dnet.getServerDetails(host).modelId === '(The Labyrinth)') targets.add(host);
+        } catch { }
+      }
+      for (const host of targets) {
+        takeAttempt=createAttemptBudget();
         try {
           const details = ns.dnet.getServerDetails(host);
           if (details.isOnline === false) continue;
@@ -288,6 +358,7 @@ export async function main(ns) {
             }
           }
 
+          if(details.modelId==='(The Labyrinth)'&&ns.getPlayer().skills.charisma<details.requiredCharismaSkill)managerCharismaBlocked.set(host,{host,modelId:details.modelId,required:details.requiredCharismaSkill,at:Date.now()});else managerCharismaBlocked.delete(host);
           const hostCandidates = candidatesFor(details, candidates);
           const authenticated = await authenticate(host, details, passwords.get(host), hostCandidates);
 
@@ -296,10 +367,10 @@ export async function main(ns) {
             const charisma = ns.getPlayer().skills.charisma;
             const required = ns.dnet.getServerRequiredCharismaLevel(host);
             const lastPeek = heartbleedAt.get(host) || 0;
-            if (charisma >= required && Date.now() - lastPeek > 10 * 60_000) {
+            if (details.modelId!=='(The Labyrinth)'&&charisma >= required && Date.now() - lastPeek > 10 * 60_000) {
               heartbleedAt.set(host, Date.now());
               try {
-                const result = await ns.dnet.heartbleed(host, { peek: true, logsToCapture: 8 });
+                const result = await nativeCall(host,'darknet-heartbleed',()=>ns.dnet.heartbleed(host, { peek: true, logsToCapture: 8 }));
                 // heartbleed returns { success, code, message, logs: string[] }.
                 if (result?.logs?.length) ns.print(`${host}: heartbleed log clue: ${JSON.stringify(result.logs)}`);
               } catch (error) {
@@ -311,9 +382,9 @@ export async function main(ns) {
 
           // Only reallocate while the owner still blocks RAM; it is slow, and
           // fails with NoBlockRAM once there is nothing left to free.
-          if (details.blockedRam > 0) {
-            try { await ns.dnet.memoryReallocation(host); }
-            catch (error) { ns.print(`${host}: memory reallocation failed: ${String(error)}`); }
+          if(details.blockedRam>0){
+            const reset=ns.getResetInfo(),scope=[reset.lastNodeReset,reset.lastAugReset,host,ramRecoveryModel,details.modelId];
+            await scheduleRamRecovery(ns,host,{...details,hasSession:true},scope,'root');
           }
 
           if (ns.fileExists(nodeFile, "home")) {
@@ -324,7 +395,8 @@ export async function main(ns) {
               // changed; the launch step below starts the new version.
               const oldCode = deployedCode.get(host);
               if (oldCode !== undefined && oldCode !== codeSignature) {
-                for (const p of ns.ps(host)) if (codeFiles.includes(p.filename)) ns.kill(p.pid);
+                if(!await prepareDarknetRollout(ns,host))continue;
+                for (const p of ns.ps(host)) if (codeFiles.includes(p.filename)&&p.filename!=='darknet-maze.js') ns.kill(p.pid);
               }
               if (!(await ns.scp(changedFiles, host, "home"))) {
                 note(`${host}:sync`, `${host}: deployment incomplete; will retry.`);
@@ -339,9 +411,10 @@ export async function main(ns) {
             try {
               const status = JSON.parse(ns.read(`tasks/dnet-${encodeURIComponent(host)}.json`) || '{}');
               if (isStalledScout(scout, status) || (scout && status.pid === scout.pid && (status.version !== 3 || status.revision !== codeSignature))) {
+                if(!await prepareDarknetRollout(ns,host))continue;
                 if(!await ns.scp(syncFiles,host,'home'))continue;
                 ns.kill(scout.pid);
-                for (const process of ns.ps(host)) if ([lootFile, stasisFile, cacheFile, 'darknet-promote.js', 'darknet-migrate.js'].includes(process.filename)) ns.kill(process.pid);
+                for (const process of ns.ps(host)) if ([lootFile, stasisFile, cacheFile, watcherFile, 'darknet-promote.js', 'darknet-migrate.js'].includes(process.filename)) ns.kill(process.pid);
                 note(`${host}:restart`, `${host}: refreshing an outdated or stalled scout.`);
               }
             } catch { /* missing heartbeat: leave an existing scout running */ }
@@ -358,13 +431,22 @@ export async function main(ns) {
                 note(`${host}:scout`, `${host}: scout needs ${fmtRam(ram)} free RAM; ${fmtRam(free)} available.`);
               }
             }
+            // One watcher per host. It re-probes live neighbours each cycle, so
+            // a newly created edge is picked up without a manager restart.
+            if (ns.fileExists(watcherFile, host) && !ns.ps(host).some(p => p.filename === watcherFile)) {
+              const watcherRam = ns.getScriptRam(watcherFile, host);
+              const watcherFree = ns.getServerMaxRam(host) - ns.getServerUsedRam(host);
+              if (watcherRam > 0 && watcherFree >= watcherRam && !ns.exec(watcherFile, host, 1)) {
+                note(`${host}:cache-watch`, `${host}: cache watcher launch failed.`);
+              }
+            }
           }
         } catch (error) {
           ns.print(`${host}: skipped after a server/network error: ${String(error)}`);
         }
       }
 
-      await manageStorm();
+      await manageStorm(snapshot.surveys);
       await ns.sleep(30_000);
     } catch (error) {
       ns.print(`Darknet manager waiting: ${String(error)}`);
@@ -372,3 +454,4 @@ export async function main(ns) {
     }
   }
 }
+

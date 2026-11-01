@@ -95,8 +95,8 @@ test('recovery deadlines survive reload and reset scope prevents stale restores'
 test('controller persists and enforces recovery while using a bounded shared purchase-aware forecast',()=>{
  const source=readFileSync(new URL('../gangs.js',import.meta.url),'utf8');
  assert.match(source,/forecastGangCrewAscensions\(\{members,gang:gangInfo/);
- assert.match(source,/maxPlanningMs:150,maxSimulations:60,valuationOffset:ascensionValuationCursor/);
- assert.match(source,/ascensionRecoveries\[member\]=\{resetAt,startedAt:resetAt,until,workUntil:until,task:assignedTasks\[member\],/);
+ assert.match(source,/maxPlanningMs:aggression.active\?200:150,maxSimulations:aggression.active\?90:60,valuationOffset:ascensionValuationCursor/);
+ assert.match(source,/ascensionRecoveries\[member\]=\{replacementCash:[^\n]+resetAt,startedAt:resetAt,until,workUntil:until,task:assignedTasks\[member\],/);
  assert.match(source,/const mandatory=cycleActive\|\|recovering\|\|/);
  assert.match(source,/\(!ascensionRecovering\|\|options\['power-focus'\]\)&&row.permitted/);
  assert.match(source,/episodes:trainingEpisodes,ascensionRecoveries/);
@@ -133,9 +133,9 @@ test('purchase timing remains available before full recruitment and with an expl
   const ownedSourceFiles={4:1},myGangFaction='Faction',myGangMembers=Array(8),purchaseGoal={cost:1000,rep:100},requiredRep=100;
   const options={'money-focus':true},resetInfo={lastNodeReset:1,lastAugReset:2};
   const getNsDataThroughFile=async(ns,code)=>code.startsWith('({player:')?{player:{money:500,mults:{faction_rep:2}},prices:{}}:{rep:50,favor:0};
-  const gangFocus=()=> 'money';
+  const ascensionRecoveries={};const optimizeGangCrime={};const gangReserveOwnership=()=>({purpose:'none'}),equipmentDiagnostics=null;const gangFocus=()=> 'money';
   ${source.slice(start,end)}
-  return async()=>{await updateGrowthFocus({read:()=>''},{territory:1,moneyGainRate:0},{});return {purchaseTimingContext,purchaseFocusContext};};`);
+  return async()=>{await updateGrowthFocus({read:()=>'',write:async()=>{}},{territory:1,moneyGainRate:0},{});return {purchaseTimingContext,purchaseFocusContext};};`);
  const result=await make(gangDevelopmentCashTarget,gangIncomeFunding,observeGangIncome,gangPlannedEquipmentCash,gangMoneyAllowed,gangTerritoryDevelopmentFocus)();
  assert.equal(result.purchaseTimingContext.factionRep,50);assert.equal(result.purchaseTimingContext.goal.rep,100);
  assert.equal(result.purchaseFocusContext,null);

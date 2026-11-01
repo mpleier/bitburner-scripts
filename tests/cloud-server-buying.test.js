@@ -11,7 +11,7 @@ const defaults={c:false,'run-continuously':false,interval:10000,'min-ram-exponen
  budget:Infinity,'allow-worse-purchases':false,'compare-to-home-threshold':.25,'compare-to-network-ram-threshold':.02};
 const purchase=vm.runInNewContext('('+cloudPurchaseSource+')');
 function fixture({money=100000,limit=2,maxRam=256,owned={},options={},used=120}={}){
- const state={money,owned:{...owned},used,limit,maxRam},files={},calls=[],claims=[];
+ const state={money,owned:{...owned},used,limit,maxRam},files={'spending-standalone.txt':'true'},calls=[],claims=[];
  const ns={pid:5,args:[],read:f=>files[f]||'',write:(f,s)=>files[f]=s,isRunning:()=>true,
   getResetInfo:()=>({lastAugReset:1,lastNodeReset:2}),getPlayer:()=>({money:state.money}),
   ps:()=>[{pid:1,filename:'autopilot.js'}],serverExists:n=>n==='home'||n in state.owned,hasRootAccess:()=>true,

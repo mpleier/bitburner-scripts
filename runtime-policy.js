@@ -19,13 +19,24 @@ export function automationHeartbeat(ns){
  const record=registrations.get(ns.pid),now=Date.now();
  if(record&&(record.at===undefined||now-record.at>=10000)){record.at=now;ns.write('tasks/runtime/'+ns.pid+'.json',JSON.stringify(record),'w');}
 }
+/** Bounded native-action receipt; never renew its deadline while the call is pending. */
+export function beginAutomationAction(ns,kind,expectedMs){
+ const record=registrations.get(ns.pid);if(!record)return false;
+ const expected=Number.isFinite(expectedMs)&&expectedMs>0?Math.min(600000,Math.max(1000,expectedMs)):600000;
+ const at=Date.now();record.action={kind,startedAt:at,expectedMs:expected,deadline:at+expected*3+120000};record.at=at;
+ ns.write('tasks/runtime/'+ns.pid+'.json',JSON.stringify(record),'w');return true;
+}
+export function endAutomationAction(ns){const record=registrations.get(ns.pid);if(!record)return;delete record.action;record.at=Date.now();ns.write('tasks/runtime/'+ns.pid+'.json',JSON.stringify(record),'w');}
 export function maintenanceRequested(ns){try{const r=JSON.parse(ns.read('tasks/automation-maintenance.json'));return r.expiresAt>Date.now()&&ns.isRunning(r.ownerPid);}catch{return false;}}
-export function recoveryDecision({record,signature,observedAt,now,paused=false,protectedWork=false,attempts=0,statusAt,script}){
+export function recoveryDecision({record,signature,observedAt,now,paused=false,protectedWork=false,attempts=0,statusAt,script,pid}){
  if(paused)return 'paused';
  const startedAt=Number.isFinite(record?.startedAt)&&record.startedAt>0&&record.startedAt<=now?record.startedAt:observedAt;
  const grace=now-startedAt<120000;
  const limit=script==='go.js'?20*60000:script==='contract-validation.js'?15*60000:4*60000;
  if(grace)return 'starting';
+ const a=record?.action;
+ const busy=script==='darknet-manager.js'&&record?.script===script&&(pid===undefined||record.pid===pid)&&['darknet-authenticate','darknet-heartbleed'].includes(a?.kind)&&Number.isFinite(a.startedAt)&&a.startedAt>=startedAt&&a.startedAt<=now&&Number.isFinite(a.expectedMs)&&a.expectedMs>=1000&&a.expectedMs<=600000&&a.deadline===a.startedAt+a.expectedMs*3+120000&&a.deadline>now&&record.at>=a.startedAt&&record.at<=now;
+ if(busy)return 'busy-native';
  const changed=record?.signature&&record.signature!==signature;
  const stale=record?.at&&now-record.at>limit||statusAt&&now-statusAt>limit;
  const unknown=!record||!Number.isFinite(record.at)||record.at<=0||record.at>now||typeof record.signature!=='string'||!record.signature;

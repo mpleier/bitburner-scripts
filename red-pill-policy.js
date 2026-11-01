@@ -44,7 +44,9 @@ export function redPillInfiltrationChoices(locations, plan) {
     const needed=plan.canDonate?Math.min(plan.remainingRep,Math.max(0,plan.targetCash-plan.worth)*plan.repPerDollar):plan.remainingRep;
     for(const info of locations) {
         if(plan.stage==='fund'){if(positive(info.reward?.sellCash))result.push({...info,reward:{...info.reward,tradeRep:Math.min(Math.max(0,plan.targetCash-plan.worth),info.reward.sellCash)},redPillReward:'money'});continue;}
-        if(positive(info.reward?.tradeRep))result.push({...info,reward:{...info.reward,tradeRep:Math.min(needed,info.reward.tradeRep)},redPillReward:'reputation'});
+        // Trading reputation costs no money, so cap it by the remaining reputation gap, not by
+        // what the remaining cash could buy.
+        if(positive(info.reward?.tradeRep))result.push({...info,reward:{...info.reward,tradeRep:Math.min(plan.remainingRep,info.reward.tradeRep)},redPillReward:'reputation'});
         if(plan.canDonate&&positive(plan.repPerDollar)&&positive(info.reward?.sellCash))
             result.push({...info,reward:{...info.reward,tradeRep:Math.min(needed,info.reward.sellCash*plan.repPerDollar)},redPillReward:'money'});
     }

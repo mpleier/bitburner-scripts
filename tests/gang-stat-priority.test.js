@@ -1,3 +1,4 @@
+import {gangEarlyFundingAnchor as earlyFundingAnchor} from '../gang-stat-policy.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
@@ -47,7 +48,7 @@ test('ordinary skill-first work protects reserves and respects explicit focus an
 test('executed ordinary task planner trains for stats while retaining one cash producer',async()=>{
  const source=readFileSync(new URL('../gangs.js',import.meta.url),'utf8').replace(/\r/g,''),begin=source.indexOf('async function optimizeGangCrime('),end=source.indexOf('async function fixWantedGainRate(',begin),f=crew();
  const table={'Money':{name:'Money',difficulty:1,strWeight:100,baseWanted:0},'Train Combat':f.training,'Vigilante Justice':{name:'Vigilante Justice',difficulty:1,baseWanted:-1}};
- const ctx={Date,Math,gangStatSupportCrew,memberRecoveryProtected:()=>false,trainingPlans:{},trainingEpisodes:{},trainingReference:[],saveGangTraining:async()=>{},gangStatReputationAnchor,gangMoneyAllowed,gangStatTaskRate,gangStatFundingAnchor,projectGangMember,gangObjectiveValue,gangObjectiveWeight,gangTaskTotals,planGangWantedCrew,betterGangPlan,nextWantedDowngrade,largestWantedDowngrade,improveGangPlan,
+ const ctx={growthHorizon:{bonusSeconds:0},lastOtherGangInfo:null,gangRivalsSnapshot:null,gangWarfareThreshold:()=>.7,territoryTickDetected:false,territoryTickWaitPadding:200,updateInterval:200,postTickRestoreMs:0,territoryTickTime:20000,gangWarfareContext:()=>({}),gangWarfareWorkFractions:()=>({}),gangMoneyAllowed:g=>g?.territory>.9,gangEarlyFundingAnchor:earlyFundingAnchor,incomeFunding:{known:false},options:{manualTasks:{}},Date,Math,gangStatSupportCrew,memberRecoveryProtected:()=>false,trainingPlans:{},trainingEpisodes:{},trainingReference:[],saveGangTraining:async()=>{},gangStatReputationAnchor,gangMoneyAllowed,gangStatTaskRate,gangStatFundingAnchor,projectGangMember,gangObjectiveValue,gangObjectiveWeight,gangTaskTotals,planGangWantedCrew,betterGangPlan,nextWantedDowngrade,largestWantedDowngrade,improveGangPlan,
   myGangMembers:Object.keys(f.members),allTaskStats:table,allTaskNames:Object.keys(table),assignedTasks:Object.fromEntries(Object.keys(f.members).map(n=>[n,'Money'])),purchaseGoal:null,purchaseFocusQuote:{focus:'money'},purchaseFocusContext:null,growthFocus:'stats',
   wantedPenaltyThreshold:.01,isHackGang:false,strWantedReduction:'Vigilante Justice',memberProtectedTask:()=>null,memberNeedsTraining:()=>false,getGangInfoDict:async()=>f.members,gangWantedTolerance:()=>0,updateGrowthFocus:async()=> 'stats',refreshForecastWantedLimits(){},refreshTrainingPlans(){},computeRepGains:()=>0,calculateMoneyGains:(_g,t,m)=>t==='Money'?(m.name==='M0'?100:10):0,computeWantedGains:()=>0,shuffleArray:x=>x,updateMemberActivities:async()=>{},waitForGameUpdate:async()=>({moneyGainRate:100,respectGainRate:0,wantedLevelGainRate:0,updateObserved:false}),formatMoney:String,formatNumberShort:String,log(){},fixWantedGainRate:async()=>{throw Error('Unexpected repair');}};
  vm.runInNewContext(source.slice(begin,end)+';globalThis.run=optimizeGangCrime;',ctx);await ctx.run({fileExists:()=>false},{territory:1,moneyGainRate:210,respectGainRate:0,wantedLevelGainRate:0});
@@ -55,6 +56,15 @@ test('executed ordinary task planner trains for stats while retaining one cash p
  ctx.assignedTasks=Object.fromEntries(Object.keys(f.members).map(n=>[n,'Money']));
  await ctx.run({fileExists:()=>false},{territory:.9,moneyGainRate:210,respectGainRate:0,wantedLevelGainRate:0});
  assert.equal(Object.values(ctx.assignedTasks).filter(t=>t==='Train Combat').length,12);
+ ctx.assignedTasks=Object.fromEntries(Object.keys(f.members).map(n=>[n,'Train Combat']));
+ const at=Date.now();ctx.incomeFunding={known:true,at,expiresAt:at+30000,cash:0,target:10000,externalCashRate:0,early:{reviewed:true,cash:0,target:10000}};
+ await ctx.run({fileExists:()=>false},{territory:.2,moneyGainRate:0,respectGainRate:0,wantedLevelGainRate:0});
+ assert.equal(ctx.assignedTasks.M0,'Money');
+ assert.equal(Object.values(ctx.assignedTasks).filter(t=>t==='Money').length,1);
+ ctx.incomeFunding.cash=10000;ctx.incomeFunding.early.cash=10000;
+ await ctx.run({fileExists:()=>false},{territory:.2,moneyGainRate:100,respectGainRate:0,wantedLevelGainRate:0});
+ assert.equal(Object.values(ctx.assignedTasks).filter(t=>t==='Train Combat').length,12);
+
 
  // Reproduce the live freeze: every optional trainee is protected, existing
  // wanted is severe, and every productive crime needs a justice partner.

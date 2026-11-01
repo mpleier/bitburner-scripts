@@ -1,9 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import vm from 'node:vm';
-import {readFileSync} from 'node:fs';
 import {mergeHgwDelaySamples,hackingDrainPadding} from '../hacking-deadline-policy.js';
 import {collectHgwTelemetry} from '../hgw-telemetry-policy.js';
+import {reportHgwEvent,mergeHgwDelaySamples as workerMerge} from '../Remote/hgw-telemetry.js';
 const now=200000,reset={lastNodeReset:1,lastAugReset:2},options={now,nodeReset:1,augReset:2,ownerPid:7};
 const event=(i=0,extra={})=>({owner:7,pid:i+1,tool:'hack',batchVersion:1,batchId:'1:2:7:'+i,at:now-3000+i*100,deadline:now-4000+i*100,lateMs:1000,...extra});
 const merge=(prior,events,extra={})=>mergeHgwDelaySamples(prior,events,{...options,...extra});
@@ -20,14 +19,12 @@ test('summaries are capped at 64 and preserve every batch when merging two bound
  const prior=Array.from({length:64},(_,i)=>event(i,{at:now-10000+i,deadline:now-11000+i}));
  const next=Array.from({length:64},(_,i)=>event(i+64,{at:now-1000+i,deadline:now-2000+i}));const r=merge(prior,next);assert.equal(r.length,64);assert.equal(r[0].batchId,'1:2:7:127');assert.equal(r[63].batchId,'1:2:7:64');
 });
-test('all worker reporters preserve independent batches through a burst of split receipts',()=>{
- for(const name of ['hack','grow','weak']){
-  const source=readFileSync(new URL('../Remote/'+name+'-target.js',import.meta.url),'utf8');const report=vm.runInNewContext(source.slice(source.indexOf('function report('))+';report');const workerMerge=vm.runInNewContext(source.slice(source.indexOf('function mergeHgwDelaySamples('))+';mergeHgwDelaySamples');assert.equal(workerMerge.toString().replaceAll('\r\n','\n'),mergeHgwDelaySamples.toString().replaceAll('\r\n','\n'));
-  let queue='NULL PORT DATA';const ns={getPortHandle:()=>({peek:()=>queue,read:()=>{queue='NULL PORT DATA';},write:s=>{queue=s;}})};
-  for(let i=0;i<6;i++)report(ns,{port:20,nodeReset:1,augReset:2},event(i),true);
-  for(let i=0;i<40;i++)report(ns,{port:20,nodeReset:1,augReset:2},event(5,{pid:100+i}),true);
-  const data=JSON.parse(queue);assert.equal(data.recent.length,20);assert.equal(new Set(data.recent.map(e=>e.batchId)).size,1);assert.equal(data.delaySamples.length,6);
- }
+test('the shared worker reporter preserves independent batches through a burst of split receipts',()=>{
+ assert.equal(workerMerge.toString().replaceAll('\r\n','\n'),mergeHgwDelaySamples.toString().replaceAll('\r\n','\n'));
+ let queue='NULL PORT DATA';const ns={getPortHandle:()=>({peek:()=>queue,read:()=>{queue='NULL PORT DATA';},write:s=>{queue=s;}})};
+ for(let i=0;i<6;i++)reportHgwEvent(ns,{port:20,nodeReset:1,augReset:2},event(i),true);
+ for(let i=0;i<40;i++)reportHgwEvent(ns,{port:20,nodeReset:1,augReset:2},event(5,{pid:100+i}),true);
+ const data=JSON.parse(queue);assert.equal(data.recent.length,20);assert.equal(new Set(data.recent.map(e=>e.batchId)).size,1);assert.equal(data.delaySamples.length,6);
 });
 test('collector persists summary history despite raw-buffer crowding and drops previous owners',()=>{
  const files=new Map();let queue='NULL PORT DATA';const ns={read:f=>files.get(f)||'',write:(f,s)=>files.set(f,s),print(){},toast(){},getPortHandle:()=>({peek:()=>queue,read:()=>{queue='NULL PORT DATA';}})};

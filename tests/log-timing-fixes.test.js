@@ -9,8 +9,8 @@ const initial=()=>adaptiveHgwTiming(null,snapshot(100000),{now:100000});
 const events=(at=129000,lateMs=6500)=>Array.from({length:3},(_,pid)=>({at,pid,tool:'hack',target:'n00dles',deadline:at-lateMs,lateMs,legSpacingMs:4000,toleranceMs:250,error:null}));
 function next(s,at=130000,n=20,bad=3,recent=events(),extra={}){return adaptiveHgwTiming(s,{...snapshot(at,n,bad,recent),...extra},{now:at,targetCount:4});}
 test('three recent independent timing risks can exceed fixed backoff while limiting concurrency',()=>{
- const s=next(initial());assert.equal(s.multiplier,1.5);assert.equal(s.cycleMs,52000);assert.equal(s.targetCap,1);
- assert.equal(restoreHgwTiming(s,snapshot(130000,20,3),130001).latencyFloorMs,52000);
+ const s=next(initial());assert.equal(s.multiplier,1.5);assert.equal(s.cycleMs,26000);assert.equal(s.targetCap,1);
+ assert.equal(restoreHgwTiming(s,snapshot(130000,20,3),130001).latencyFloorMs,26000);
 });
 test('latency floor ignores old, future, duplicate, invalid, failed and blocked evidence',()=>{
  for(const recent of [events(99000),events(130001),[events()[0],events()[0],events()[0]],events().map(e=>({...e,lateMs:Infinity})),events().map(e=>({...e,error:'failed'})),events().slice(0,2)])assert.equal(next(initial(),130000,20,3,recent).cycleMs,6000);
@@ -18,10 +18,10 @@ test('latency floor ignores old, future, duplicate, invalid, failed and blocked 
  assert.equal(next(initial(),130000,20,3,events(),{counts:{operations:20,deadlineOverruns:3}}).cycleMs,6000);
 });
 test('measured pacing is bounded, survives silence, decays with clean windows and clears on reset',()=>{
- let s=next(initial(),130000,20,3,events(129000,1e9));assert.equal(s.cycleMs,64000);
- s=next(s,160000,20,3,[]);assert.equal(s.cycleMs,64000);
+ let s=next(initial(),130000,20,3,events(129000,1e9));assert.equal(s.cycleMs,32000);
+ s=next(s,160000,20,3,[]);assert.equal(s.cycleMs,32000);
  for(let i=1;i<=3;i++)s=next(s,160000+i*60000,20+i*20,3,[]);
- assert.equal(s.cycleMs,51200);
+ assert.equal(s.cycleMs,25600);
  assert.equal(next(s,350000,100,3,[],{augReset:3}).cycleMs,4000);
  for(const latencyFloorMs of [Infinity,-1,64001])assert.equal(restoreHgwTiming({...s,latencyFloorMs},snapshot(s.at,80,3),s.at),null);
 });

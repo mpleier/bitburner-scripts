@@ -56,7 +56,8 @@ test('Bladeburner recovery credits native regeneration only after protecting all
 });
 function fixture(){
  const at=Date.now(),r={...reset,currentNode:10,ownedSF:new Map([[4,3]])},plan={...route,at,ownerPid:7},observed={...cash,at,cashObservation:{...cash.cashObservation,samples:[{at:at-30000,rate:1e6},{at,rate:1e6}]}};
- const store=new Map([['tasks/node-route-plan.json',JSON.stringify(plan)],['tasks/speed-observation.json',JSON.stringify(observed)]]),started=[];
+ const store=new Map([['spending-standalone.txt','true'],['tasks/node-route-plan.json',JSON.stringify(plan)],['tasks/speed-observation.json',JSON.stringify(observed)]]),started=[];
+ store.set('tasks/augmentation-choice-offer.json',JSON.stringify({schemaVersion:1,at,ownerPid:7,nodeReset:r.lastNodeReset,augReset:r.lastAugReset,horizonMs:7200000,cashRate:1e6,channels:{hacking_exp:.15}}));
  const ns={pid:5,read:f=>store.get(f)||'',getResetInfo:()=>r,ps:()=>[{pid:7,filename:'autopilot.js'}],getPlayer:()=>({city:'New Tokyo',money:1e9,entropy:0}),getTotalScriptIncome:()=>[0,0],getMoneySources:()=>({sinceInstall:{}}),
  singularity:{getCurrentWork:()=>null,getOwnedAugmentations:()=>['Congruity Implant'],getAugmentationPrereq:()=>[],getAugmentationStats:()=>({hacking_exp:2}),travelToCity:()=>true},
  grafting:{getGraftableAugmentations:()=>['XP'],getAugmentationGraftPrice:()=>1e6,getAugmentationGraftTime:()=>60000,graftAugmentation:name=>{started.push(name);return true;}}};
@@ -83,4 +84,22 @@ test('known imminent completion also blocks a slow cash graft',()=>{
  const f=fixture(),route={...f.plan,routes:{hacking:{...f.plan.routes.hacking,lowerMs:10000,upperMs:20000}}};
  f.store.set('tasks/node-route-plan.json',JSON.stringify(route));f.ns.getTotalScriptIncome=()=>[1e6,0];f.ns.singularity.getAugmentationStats=()=>({hacking_money:2});
  assert.equal(graftTick(f.ns).status,'waiting');assert.equal(f.started.length,0);
+});
+
+test('background XP continues during graft; gains apply only after completion',()=>{
+ const paused=graftProgressionValue(input()),continuing=graftProgressionValue(input({continuesDuringGraft:true}));
+ assert.equal(continuing.savedMs,(7200000-60000)*.25);
+ assert.equal(paused.overheadMs-continuing.overheadMs,60000);
+ assert.equal(graftProgressionValue(input({continuesDuringGraft:true,duration:7200001})).eligible,false);
+});
+test('managed grafts require a fresh comparison and preserve milestone installs',()=>{
+ for(const mode of ['missing','stale','milestone','install-wins']){
+  const f=fixture(),o=JSON.parse(f.store.get('tasks/augmentation-choice-offer.json'));
+  if(mode==='missing')f.store.delete('tasks/augmentation-choice-offer.json');
+  if(mode==='stale')o.at-=120001;
+  if(mode==='milestone')o.protectedMilestone=true;
+  if(mode==='install-wins')o.install={eligible:true,gain:2,cost:1000,delayMs:0,downtimeMs:1000};
+  if(mode!=='missing')f.store.set('tasks/augmentation-choice-offer.json',JSON.stringify(o));
+  const result=graftTick(f.ns);assert.notEqual(result.status,'started',mode);assert.equal(f.started.length,0,mode);
+ }
 });

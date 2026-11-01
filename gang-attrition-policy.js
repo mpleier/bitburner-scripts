@@ -94,8 +94,9 @@ export function planGangAttrition(input){
  if(input?.monitorHealth?.known===false||input?.monitorHealth?.suspended===true)return no('Early clashes paused by monitor reliability backoff');
  if(input?.calibration?.known===false||input?.calibration?.suspended===true)return no('Early clashes paused by forecast calibration');
  if(w?.preparation?.enabled===true&&input?.allowTrainingFirst!==true)return no('Training-first policy preserves the safe warfare threshold');
- if(!w?.powerPriority||members?.length!==12||!Array.isArray(cumulative)||!cumulative.length||cumulative.at(-1)?.at<2060||w.rivals?.some(r=>!Number.isFinite(r.samples)||r.samples<3)||w.rivals?.some(r=>w.power/(w.power+r.power)<.65))return no('Attrition needs fresh strong observations and a full development horizon');
- if(Array.isArray(input.participants)&&!input.participants.length)return no('No eligible warfare participants');
+ if(!w?.powerPriority||(!Array.isArray(members)||members.length<9||members.length>12)||!Array.isArray(cumulative)||!cumulative.length||cumulative.at(-1)?.at<2060||w.rivals?.some(r=>!Number.isFinite(r.samples)||r.samples<3)||w.rivals?.some(r=>w.power/(w.power+r.power)<.65))return no('Attrition needs fresh strong observations and a full development horizon');
+ if(members.length<12&&(!Array.isArray(input.participants)||input.participants.length<9))return no('At least nine eligible warfare participants required');
+ if(Array.isArray(input.participants)&&input.participants.length<9)return no('At least nine eligible warfare participants required');
  if(input.allowTrainingFirst===true&&w.rivals.every(r=>w.power/(w.power+r.power)>=.7))return no('Routine warfare odds reached; no early attempt required');
  const scenarios=[.5,1,2].map(rivalGrowthScale=>{
   const wait=simulateGangAttrition({...input,rivalGrowthScale,attrition:false}),fight=simulateGangAttrition({...input,rivalGrowthScale,attrition:true});
@@ -265,7 +266,7 @@ export function startGangAttrition(ns,q,allowed,calibrate=null,headroom=null,mon
   }
   let old;try{old=JSON.parse(ns.read('tasks/gang-attrition.json'));}catch{}
   if(old?.nodeReset===r.lastNodeReset&&old.augReset===r.lastAugReset&&(old.state==='active'||!Number.isFinite(old.cooldownUntil)||old.cooldownUntil>now))return false;
-  const names=ns.gang.getMemberNames();if(names.length!==12)return false;
+  const names=ns.gang.getMemberNames();if(names.length<9||names.length>12||names.length<12&&(!Array.isArray(q.participants)||q.participants.length<9))return false;
   const members=names.map(name=>ns.gang.getMemberInformation(name));
   const signature=JSON.stringify(members.map(m=>[m.name,m.def,...['hack','str','def','dex','agi','cha'].map(k=>m[k+'_exp']),m.upgrades,m.augmentations]).sort((a,b)=>a[0].localeCompare(b[0])));
   if(signature!==q.signature||!Array.isArray(q.rivals)||!q.rivals.length||q.rivals.some(r=>typeof r.name!=='string'||!Number.isFinite(r.power)||r.power<=0))return false;
@@ -273,7 +274,7 @@ export function startGangAttrition(ns,q,allowed,calibrate=null,headroom=null,mon
   if(rivals.length!==q.rivals.length||rivals.some(([name,v])=>{const before=q.rivals.find(x=>x.name===name);return !before||!Number.isFinite(v.power)||v.power>before.power*1.01||v.power<before.power*.99||v.power<0||g.power/(g.power+v.power)<.65;}))return false;
   if(q.participants!==undefined){
     if(rivals.every(([,v])=>g.power/(g.power+v.power)>=.7))return false;
-    if(!Array.isArray(q.participants)||!q.participants.length||new Set(q.participants).size!==q.participants.length||!Array.isArray(q.excluded)||q.excluded.some(n=>!names.includes(n)))return false;
+    if(!Array.isArray(q.participants)||q.participants.length<9||new Set(q.participants).size!==q.participants.length||!Array.isArray(q.excluded)||q.excluded.some(n=>!names.includes(n)))return false;
     const maxDefense=Math.max(...members.map(m=>m.def));
     const expected=members.filter(m=>!q.excluded.includes(m.name)&&m.def>=100&&m.def>=Math.min(10000,maxDefense*.1)).map(m=>m.name).sort();
     if(JSON.stringify([...q.participants].sort())!==JSON.stringify(expected))return false;

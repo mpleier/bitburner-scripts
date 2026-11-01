@@ -38,12 +38,12 @@ export function hashCapacityChoice(api,maxCost=Infinity) {
 /** Cash bottlenecks favor upgrades that repay within an hour. BN9 keeps its primary-engine policy. */
 export function hacknetPayoffLimit(requested, plan, reset, now, ownerAlive) {
  if(ownerAlive&&plan?.reset===reset.lastAugReset&&plan?.expiresAt>now&&plan?.epoch<=now){
-  if(plan.signals?.augmentationCashTarget)return Math.min(requested,3600);
+  if(plan.signals?.augmentationCashTarget)return Math.min(requested,plan.signals.route==='hacking'?7200:3600);
   if(plan.signals?.route==='bladeburner')return Math.min(requested,7200);
  }
  if (reset.currentNode === 9 || !ownerAlive || plan?.reset !== reset.lastAugReset ||
      !(plan?.expiresAt > now) || plan?.epoch > now || plan?.signals?.bottleneck !== 'cash') return requested;
- return Math.min(requested, 3600);
+ return Math.min(requested, plan?.signals?.route==='hacking'?7200:3600);
 }
 
 /** Current native production, rather than a hypothetical idle fleet, funds a bounded cash investment. */
@@ -66,7 +66,7 @@ export function quoteHacknetInvestment(ns,candidate){
     let receipt,status;try{receipt=JSON.parse(ns.read('tasks/hash-spending-'+p.pid+'.json'));status=JSON.parse(ns.read('tasks/hash-worker-status-'+p.pid+'.json'));}catch{continue;}
     const fresh=(v,age)=>v?.pid===p.pid&&v.nodeReset===reset.lastNodeReset&&v.augReset===reset.lastAugReset&&Number.isFinite(v.at)&&v.at<=now&&now-v.at<=age;
     if(fresh(receipt,30000)&&fresh(status,15000)&&receipt.action==='Sell for Money'&&receipt.success===true&&receipt.allowed===true&&Number.isFinite(receipt.spent)&&receipt.spent>0&&
-     receipt.preferred==='Sell for Money'&&status.state==='spending'&&status.decision?.preferred==='Sell for Money'){cashWorker=true;break;}
+     receipt.preferred==='Sell for Money'&&['spending','checking','purchased'].includes(status.state)&&status.decision?.preferred==='Sell for Money'){cashWorker=true;break;}
    }
    if(!cashWorker)return null;
    const hashCost=ns.hacknet.hashCost('Sell for Money'),capacity=ns.hacknet.hashCapacity();

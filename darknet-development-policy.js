@@ -30,35 +30,44 @@ export function electMazeLeases(previous,reports,reset,managerPid,now){
  for(const r of reports){if(!r.live||!Number.isFinite(r.at)||r.at>now||now-r.at>90000||!Number.isSafeInteger(r.pid)||r.pid<=0||!Array.isArray(r.neighbours))continue;
   for(const q of (Array.isArray(r.mazeRequests)?r.mazeRequests:[]).slice(0,8)){
    if(typeof q.maze!=='string'||q.maze.length>100||!Array.isArray(q.scope)||q.scope.length<3||q.scope.length>8||JSON.stringify(q.scope).length>2000||q.scope[0]!==reset.lastNodeReset||q.scope[1]!==reset.lastAugReset||q.scope[2]!==q.maze||!Number.isFinite(q.at)||q.at>now||now-q.at>90000||!r.neighbours.includes(q.maze))continue;
-   const key=q.maze,rows=candidates.get(key)||[];rows.push({host:r.host,pid:r.pid,maze:q.maze,scope:q.scope,requestedAt:q.at,progressAt:Number.isFinite(q.progressAt)&&q.progressAt<=now?q.progressAt:0});candidates.set(key,rows);
+   const key=q.maze,rows=candidates.get(key)||[];rows.push({host:r.host,pid:r.pid,maze:q.maze,scope:q.scope,requestedAt:q.at,progressAt:Number.isFinite(q.progressAt)&&q.progressAt<=now?q.progressAt:0,expectedMs:Number.isFinite(q.expectedMs)&&q.expectedMs>0?q.expectedMs:null,navigator:r.navigator===true,active:(q.scope[3]==='(RAM Recovery)'||r.navigator===true)&&q.active===true});candidates.set(key,rows);
   }
  }
  const leases=[];
- for(const [key,allRows]of candidates){if(leases.length>=8)break;
+ for(const [key,allRows]of [...candidates].sort(([,a],[,b])=>Number(b.some(r=>r.navigator))-Number(a.some(r=>r.navigator)))){if(leases.length>=64)break;
   const latest=[...allRows].sort((a,b)=>b.requestedAt-a.requestedAt||a.pid-b.pid)[0],rows=allRows.filter(r=>JSON.stringify(r.scope)===JSON.stringify(latest.scope));
-  const prior=same&&Array.isArray(previous.leases)&&previous.leases.slice(0,8).find(l=>l&&l.maze===key&&JSON.stringify(l.scope)===JSON.stringify(latest.scope)),old=prior&&rows.find(r=>r.host===prior.host&&r.pid===prior.pid);
+  const prior=same&&Array.isArray(previous.leases)&&previous.leases.slice(0,64).find(l=>l&&l.maze===key&&JSON.stringify(l.scope)===JSON.stringify(latest.scope)),old=prior&&rows.find(r=>r.host===prior.host&&r.pid===prior.pid);
   const started=prior&&Number.isFinite(prior.startedAt)&&prior.startedAt<=now?prior.startedAt:prior?.at;
-  const advancing=old&&(now-old.progressAt<90000||now-started<90000);
+  const advancing=old&&(old.active||now-old.progressAt<90000||now-started<90000);
   const alternatives=rows.filter(r=>!old||r.pid!==old.pid||r.host!==old.host);
-  const selected=advancing?old:(alternatives.length?alternatives:rows).sort((a,b)=>a.pid-b.pid||a.host.localeCompare(b.host))[0];
+  const selected=advancing?old:(alternatives.length?alternatives:rows).sort((a,b)=>Number(b.active)-Number(a.active)||(a.expectedMs??Infinity)-(b.expectedMs??Infinity)||a.pid-b.pid||a.host.localeCompare(b.host))[0];
   leases.push({...selected,startedAt:selected===old?started:now,managerPid,at:now,expiresAt:now+90000});
  }
  return {version:1,nodeReset:reset.lastNodeReset,augReset:reset.lastAugReset,at:now,leases};
 }
-export async function mazeLeaseOwned(ns,scope){
- if(!Array.isArray(scope)||!ns.fileExists(mazeLeaseFile,'home')||!await ns.scp(mazeLeaseFile,ns.getHostname(),'home'))return false;
- try{const raw=ns.read(mazeLeaseFile);if(raw.length>50000)return false;const f=JSON.parse(raw),now=Date.now();
-  if(f.version!==1||f.nodeReset!==scope[0]||f.augReset!==scope[1]||f.at>now||now-f.at>90000)return false;
-  return f.leases.some(l=>l.host===ns.getHostname()&&l.pid===ns.pid&&l.at<=now&&l.expiresAt>now&&l.expiresAt-l.at<=90000&&JSON.stringify(l.scope)===JSON.stringify(scope)&&ns.isRunning(l.managerPid));
- }catch{return false;}
+export async function readMazeLease(ns,scope,owner=null){
+ if(!Array.isArray(scope)||!ns.fileExists(mazeLeaseFile,'home')||!await ns.scp(mazeLeaseFile,ns.getHostname(),'home'))return null;
+ try{const raw=ns.read(mazeLeaseFile);if(raw.length>250000)return null;const f=JSON.parse(raw),now=Date.now();
+  if(f.version!==1||f.nodeReset!==scope[0]||f.augReset!==scope[1]||f.at>now||now-f.at>90000)return null;
+  return f.leases.find(l=>l.host===(owner?.host??ns.getHostname())&&l.pid===(owner?.pid??ns.pid)&&l.at<=now&&l.expiresAt>now&&l.expiresAt-l.at<=90000&&JSON.stringify(l.scope)===JSON.stringify(scope)&&ns.isRunning(l.managerPid))||null;
+ }catch{return null;}
 }
-export async function coordinateDarknetDevelopment(ns,reports,reset){
- const now=Date.now();let saved=null,prior=null;try{const raw=ns.read(anchorValueFile);if(raw.length<1000000)saved=JSON.parse(raw);}catch{}try{const raw=ns.read(mazeLeaseFile);if(raw.length<50000)prior=JSON.parse(raw);}catch{}
+export const mazeLeaseIdentity=lease=>lease?JSON.stringify([lease.managerPid,lease.startedAt,lease.host,lease.pid,lease.scope]):null;
+export async function mazeLeaseOwned(ns,scope){return !!await readMazeLease(ns,scope);}
+export async function coordinateDarknetDevelopment(ns,reports,reset,navigators=[]){
+ const now=Date.now();let saved=null,prior=null;try{const raw=ns.read(anchorValueFile);if(raw.length<1000000)saved=JSON.parse(raw);}catch{}try{const raw=ns.read(mazeLeaseFile);if(raw.length<250000)prior=JSON.parse(raw);}catch{}
  const same=saved?.nodeReset===reset.lastNodeReset&&saved.augReset===reset.lastAugReset,hosts={};
  const linked=new Set(ns.dnet.getStasisLinkedServers());
  for(const r of [...reports].sort((a,b)=>Number(linked.has(b.host))-Number(linked.has(a.host))||(b.depth||0)-(a.depth||0)||String(a.host).localeCompare(String(b.host))).slice(0,128)){const value=observeAnchorValue(same?saved.hosts?.[r.host]:null,r,reset,now);if(value)Object.defineProperty(hosts,r.host,{value,enumerable:true,configurable:true});}
+ const phishingHosts=reports.filter(r=>r.live&&r.at<=now&&now-r.at<=90000).flatMap(r=>{const p=r.phishing;return p?.version===1&&p.host===r.host&&p.nodeReset===reset.lastNodeReset&&p.augReset===reset.lastAugReset&&p.at<=now&&now-p.at<=90000&&[p.attempts,p.successes,p.durationMs].every(n=>Number.isFinite(n)&&n>=0)&&p.successes<=p.attempts?[p]:[];}).slice(0,128);
+ if(phishingHosts.length&&now-(coordinateDarknetDevelopment.phishingLogAt??-Infinity)>=300000){
+  const attempts=phishingHosts.reduce((sum,p)=>sum+p.attempts,0),successes=phishingHosts.reduce((sum,p)=>sum+p.successes,0),duration=phishingHosts.reduce((sum,p)=>sum+p.durationMs,0);
+  ns.print('Phishing observed: '+successes+'/'+attempts+' successful attempts across '+phishingHosts.length+' hosts; '+(attempts?duration/attempts/1000:0).toFixed(1)+' seconds per attempt. Cash amount unavailable.');coordinateDarknetDevelopment.phishingLogAt=now;
+ }
+ try{await ns.write('tasks/dnet-phishing-summary.json',JSON.stringify({version:1,at:now,nodeReset:reset.lastNodeReset,augReset:reset.lastAugReset,hosts:phishingHosts}),'w');}catch{/* Metrics never block exploration. */}
  const warn=error=>{if(now-(coordinateDarknetDevelopment.warningAt??-Infinity)>=60000){ns.print('Dark Net development persistence deferred: '+String(error));coordinateDarknetDevelopment.warningAt=now;}};
  try{await ns.write(anchorValueFile,JSON.stringify({version:1,nodeReset:reset.lastNodeReset,augReset:reset.lastAugReset,at:now,hosts}),'w');}catch(error){warn(error);}
- try{await ns.write(mazeLeaseFile,JSON.stringify(electMazeLeases(prior,reports,reset,ns.pid,now)),'w');}catch(error){warn(error);}
+ try{await ns.write(mazeLeaseFile,JSON.stringify(electMazeLeases(prior,[...reports,...navigators],reset,ns.pid,now)),'w');}catch(error){warn(error);}
  return hosts;
 }
+

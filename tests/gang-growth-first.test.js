@@ -77,7 +77,7 @@ test('the executed controller considers training before ascension and refreshes 
  const source=readFileSync(new URL('../gangs.js',import.meta.url),'utf8');
  const start=source.indexOf('    // Preserve existing bursts'),end=source.indexOf('    await tryUpgradeMembers',start);
  assert.ok(start>=0&&end>start);
- const build=Function('change',`return async()=>{const events=[],ns={},options={},myGangMembers=['M0'],ascensionRecoveries={},trainingEpisodes={};let wantedPreparation=null,dictMembers={},myGangInfo={};const refreshTrainingPlans=async()=>events.push('training'),tryAscendMembers=async()=>{events.push('ascension');if(change)ascensionRecoveries.M0={until:10000};},getGangInfoDict=async()=>({}),getNsDataThroughFile=async()=>{events.push('fresh-info');return {};};${source.slice(start,end)}return events;}`);
+ const build=Function('change',`return async()=>{const gangPlanningShouldYield=()=>false,territoryNextTick=null,territoryTickWaitPadding=200,onTerritoryTick={};const events=[],ns={},options={},myGangMembers=['M0'],ascensionRecoveries={},trainingEpisodes={};let wantedPreparation=null,dictMembers={},myGangInfo={};const refreshTrainingPlans=async()=>events.push('training'),tryAscendMembers=async()=>{events.push('ascension');if(change)ascensionRecoveries.M0={until:10000};},getGangInfoDict=async()=>({}),getNsDataThroughFile=async()=>{events.push('fresh-info');return {};};${source.slice(start,end)}return events;}`);
  assert.deepEqual(await build(false)(),['training','ascension']);
  assert.deepEqual(await build(true)(),['training','ascension','fresh-info','training']);
 });

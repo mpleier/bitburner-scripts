@@ -40,10 +40,10 @@ export function adaptiveHgwTiming(previous,telemetry,{now=Date.now(),baseCycleMs
      Number.isFinite(e.toleranceMs)&&e.toleranceMs>=0&&!e.error&&e.lateMs>Math.max(e.toleranceMs,e.legSpacingMs/2));
     const distinct=new Map(risky.map(e=>[JSON.stringify([e.pid,e.tool,e.target,e.at,e.deadline]),e]));
     if(spacingComplete&&distinct.size>=3)state.latencyFloorMs=Math.max(state.latencyFloorMs||0,
-     Math.min(base*16,Math.ceil(Math.max(...[...distinct.values()].map(e=>e.lateMs))*8)));
+     Math.min(base*8,Math.ceil(Math.max(...[...distinct.values()].map(e=>e.lateMs))*4)));
     state.changedAt=now;
    }}
-   else if(bad/n<=.01){
+   else if(bad/n<=.05){
     const fastRecovery=provenClean;
     const decay=fastRecovery?1.5:1.25;
     state.recoveryEvidence={batches:ordered.length,decay};
@@ -70,7 +70,7 @@ export function restoreHgwTiming(saved, telemetry, now = Date.now()) {
      !Number.isSafeInteger(saved.cleanWindows) || saved.cleanWindows < 0 || saved.cleanWindows > 3 ||
      !Number.isSafeInteger(saved.operations) || saved.operations < 0 || saved.operations > telemetry?.counts?.operations ||
      !Number.isSafeInteger(saved.late) || saved.late < 0 || saved.late > saved.operations || saved.late > telemetry?.counts?.deadlineOverruns) return null;
- return { ...saved };
+ return { ...saved, ...(Number.isFinite(saved.latencyFloorMs) ? { latencyFloorMs: Math.min(saved.latencyFloorMs, saved.baseCycleMs * 8) } : {}) };
 }
 
 /** A queued augmentation alone is not a scheduled reset. */

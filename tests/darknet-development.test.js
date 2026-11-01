@@ -12,7 +12,7 @@ test('anchor rates require three comparable native windows and use exact cache a
 test('failed observation and grant writes do not stop other manager work',async()=>{
  let writes=0;const messages=[];coordinateDarknetDevelopment.warningAt=-Infinity;
  const ns={pid:1,read:()=>'',write:async()=>{writes++;throw Error('disk unavailable');},print:s=>messages.push(s),dnet:{getStasisLinkedServers:()=>[]}};
- assert.deepEqual(await coordinateDarknetDevelopment(ns,[],reset),{});assert.equal(writes,2);assert.equal(messages.length,1);
+ assert.deepEqual(await coordinateDarknetDevelopment(ns,[],reset),{});assert.equal(writes,3);assert.equal(messages.length,1);
 });
 test('repeated surveys add no windows and serialized derived rates are recomputed',()=>{
  const s=history(),r=report(s.last.at,900,['a','n0','n1','n2']);const v=observeAnchorValue({...s,cashRate:1e99,discoveryRate:1e99},r,reset,r.at);assert.equal(v.cashRate,10);assert.equal(v.windows.length,3);
@@ -57,16 +57,18 @@ test('native lease guard checks live manager, owner PID, expiry and reset before
  const at=Date.now(),f=electMazeLeases(null,[candidate('a',7,at)],reset,1,at);const ns={pid:7,getHostname:()=> 'a',fileExists:()=>true,scp:async()=>true,read:()=>JSON.stringify(f),isRunning:()=>true};assert.equal(await mazeLeaseOwned(ns,scope),true);
  ns.pid=8;assert.equal(await mazeLeaseOwned(ns,scope),false);ns.pid=7;ns.isRunning=()=>false;assert.equal(await mazeLeaseOwned(ns,scope),false);ns.isRunning=()=>true;f.leases[0].expiresAt=at-1;assert.equal(await mazeLeaseOwned(ns,scope),false);assert.equal(await mazeLeaseOwned(ns,[1,3,'lab']),false);
 });
-test('executed scouts publish maze requests and only the granted PID authenticates a move',async()=>{
- for(const granted of [false,true]){
+test('scouts publish maze requests and only the grantee launches a navigator, without moving themselves',async()=>{
+ for(const granted of [false,true,'rooted']){
   const at=Date.now(),mazeScope=[1,2,'lab','(The Labyrinth)',4,'numeric',''],f=electMazeLeases(null,[{...candidate('origin',granted?7:8,at),mazeRequests:[{maze:'lab',scope:mazeScope,at}]}],reset,1,at);
-  const files=new Map([[mazeLeaseFile,JSON.stringify(f)],['tasks/dnet-cache-context.json',JSON.stringify({nodeReset:1,augReset:2})]]),attempts=[],messages=[],stop=Error('end scout');
+  const files=new Map([[mazeLeaseFile,JSON.stringify(f)],['tasks/dnet-cache-context.json',JSON.stringify({nodeReset:1,augReset:2})]]),attempts=[],messages=[],launched=[],stop=Error('end scout');
   const info={modelId:'(The Labyrinth)',passwordLength:4,passwordFormat:'numeric',data:'',blockedRam:0,hasSession:false,requiredCharismaSkill:0};
-  const ns={pid:7,getHostname:()=> 'origin',disableLog(){},read:f=>files.get(f)||'',write:async(f,v)=>files.set(f,v),ls:(_h,prefix='')=>[...files.keys()].filter(f=>f.includes(prefix)),fileExists:f=>f===mazeLeaseFile,hasRootAccess:()=>true,
-   scp:async()=>true,isRunning:()=>true,ps:()=>[],getServerMaxRam:()=>16,getServerUsedRam:()=>16,getScriptRam:()=>0,getPlayer:()=>({skills:{charisma:10000}}),print:s=>messages.push(s),sleep:async()=>{throw stop;},
+  const ns={pid:7,getHostname:()=> 'origin',disableLog(){},read:f=>files.get(f)||'',write:async(f,v)=>files.set(f,v),ls:(_h,prefix='')=>[...files.keys()].filter(f=>f.includes(prefix)),fileExists:f=>f===mazeLeaseFile||f==='darknet-maze.js',hasRootAccess:h=>h!=='lab'||granted==='rooted',
+   scp:async()=>true,isRunning:()=>true,ps:()=>[],getServerMaxRam:()=>16,getServerUsedRam:()=>8.45,getScriptRam:()=>4,exec:(...args)=>{launched.push(args);return 10;},getPlayer:()=>({skills:{charisma:10000}}),print:s=>messages.push(s),sleep:async()=>{throw stop;},
    dnet:{probe:()=>['lab'],getServerDetails:h=>h==='lab'?info:{depth:0,difficulty:0},getStasisLinkedServers:()=>[],getStasisLinkLimit:()=>0,getServerRequiredCharismaLevel:()=>Infinity,
     labreport:async()=>({success:true,coords:[1,1],east:true,north:false,south:false,west:false}),labradar:async()=>({success:false}),authenticate:async(_h,p)=>{attempts.push(p);throw stop;}}};
-  await assert.rejects(scout(ns),e=>e===stop);assert.equal(attempts.length,granted?1:0);assert.equal(messages.some(s=>/TypeError|ReferenceError/.test(s)),false,messages.join('\n'));
+  await assert.rejects(scout(ns),e=>e===stop);assert.equal(attempts.length,0);assert.equal(launched.length,granted===true?1:0);if(granted===true)assert.equal(launched[0][0],'darknet-maze.js');assert.equal(messages.some(s=>/TypeError|ReferenceError/.test(s)),false,messages.join('\n'));
   assert.ok([...files.keys()].some(f=>f.startsWith('tasks/dnet-survey-')));
  }
 });
+
+

@@ -90,11 +90,11 @@ test('maintenance helpers serialize independently for native workers',()=>{
 });
 test('production fallback action worker includes maintenance without taxing Black Ops',async()=>{
  const source=await readFile(new URL('../bladeburner.js',import.meta.url),'utf8');
- const literal=source.match(/actionMetrics=await getNsDataThroughFile\(ns,\s*(`[^`]+`)/)[1];
+ const literal=source.match(/quotedMetrics=await getNsDataThroughFile\(ns,\s*(`[^`]+`)/)[1];
  const expression=Function('readBladeburnerMaintenance','bladeburnerStaminaChance','return '+literal)(readBladeburnerMaintenance,bladeburnerStaminaChance);
- const {api}=fixture();const rows=[['Retirement','Contracts'],['Sting Operation','Operations'],['Operation Typhoon','Black Operations']];
- const ns={bladeburner:api,getPlayer:()=>({skills:{charisma:1000}}),args:[JSON.stringify(rows),50,JSON.stringify(bladeburnerDifficulty)]};
- const result=Function('ns','return '+expression)(ns);
+ const {api}=fixture();api.getActionAutolevel=()=>true;api.getSkillLevel=()=>0;api.getStamina=()=>[100,100];api.getActionCountRemaining=()=>100;const rows=[['Retirement','Contracts'],['Sting Operation','Operations'],['Operation Typhoon','Black Operations']];
+ const ns={bladeburner:api,read:()=>'',getPlayer:()=>({skills:{charisma:1000,agility:100},mults:{bladeburner_stamina_gain:1},hp:{current:100,max:100},money:1000}),args:[JSON.stringify(rows),50,JSON.stringify(bladeburnerDifficulty)]};
+ const result=Function('ns','return '+expression)(ns).metrics;
  assert.equal(result.Retirement.chaosControl.effect.success,.04);
  assert.equal(result['Sting Operation'].team,2);assert.equal(result['Sting Operation'].recruitment.chance,.01);
  assert.equal(result['Operation Typhoon'].team,undefined);assert.equal(result['Operation Typhoon'].chaosControl,undefined);

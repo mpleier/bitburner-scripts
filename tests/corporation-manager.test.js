@@ -30,7 +30,7 @@ async function cycle({ exportCost = 20e9, cash = 3e12, wallet = 100, nodeCost = 
     issueDividends:rate=>{dividendRate=rate;calls.dividends.push(rate);},
     getDivision: name => ({ ...divisions[name], products: [...divisions[name].products] }),
     expandIndustry: (industry,name)=>{funds-=industryCosts[industry]||0;divisions[name]={name,industry,cities:['Sector-12'],products:[],maxProducts:3,makesProducts:industry==='Tobacco',researchPoints:0};calls.industries.push({industry,name});},
-    getIndustryData: industry => ({ scienceFactor,advertisingFactor:.2,startingCost:industryCosts[industry]||0,requiredMaterials: industry === 'Agriculture' ? { Water: 0.5, Chemicals: 0.2 } : industry === 'Chemical' ? { Water: 0.5, Plants: 1 } : industry === 'Restaurant' ? { Food: 1, Water: 0.5 } : { Water: 0.2 }, producedMaterials: industry === 'Water Utilities' ? ['Water'] : industry === 'Chemical' ? ['Chemicals'] : industry === 'Agriculture' ? ['Plants','Food'] : [] }),
+    getIndustryData: industry => ({ scienceFactor,advertisingFactor:.2,startingCost:industryCosts[industry]||0,requiredMaterials: industry === 'Agriculture' ? { Water: 0.5, Chemicals: 0.2 } : industry === 'Chemical' ? { Water: 0.5, Plants: 1 } : industry === 'Restaurant' ? { Food: 1, Water: 0.5 } : { Water: 0.2 }, producedMaterials: industry === 'Water Utilities' ? ['Water'] : industry === 'Chemical' ? ['Chemicals'] : industry === 'Agriculture' ? ['Plants','Food'] : industry === 'Software' ? ['AI Cores'] : [] }),
     hasUnlock: name => unlocked.has(name),
     getUnlockCost: name => name === 'Export' ? exportCost : Infinity,
     purchaseUnlock: name => {
@@ -91,7 +91,7 @@ async function cycle({ exportCost = 20e9, cash = 3e12, wallet = 100, nodeCost = 
       numNodes: () => calls.nodes, getPurchaseNodeCost: () => nodeCost,
       purchaseNode: () => { money -= nodeCost; return calls.nodes++; },
       getNodeStats: () => ({ level: 1, ram: 1, cores: 1, cache: 4, hashCapacity: 100 }),
-      numHashes: () => hashes, hashCost: a => hashCosts[a]??Infinity, hashCapacity:()=>10000,
+      numHashes: () => hashes, hashCost: (a,q=1) => (hashCosts[a]??Infinity)*q, hashCapacity:()=>10000,
       spendHashes:a=>{const cost=hashCosts[a];if(!(hashes>=cost))return false;hashes-=cost;calls.hashes.push(a);if(a==='Sell for Corporation Funds')funds+=1e9;else if(a==='Exchange for Corporation Research')for(const d of Object.values(divisions))d.researchPoints+=1000;return true;},
       getLevelUpgradeCost: () => nodeCost,
       getRamUpgradeCost: () => nodeCost,
@@ -110,6 +110,14 @@ test('real manager accepts the final private round using its independent growth 
  assert.deepEqual(calls.investments,[4]);const status=JSON.parse(files['tasks/corporation-status.json']);
  assert.equal(status.minOwnership,.5);assert.equal(status.investmentMinOwnership,.1);
  const strict=await cycle({cash:1e9,ownedShares:300e6,offer:{round:4,funds:100e9,shares:200e6},managerOptions:{'investment-min-ownership':.5}});assert.deepEqual(strict.calls.investments,[]);
+});
+test('round two prices the missing supply division and a working office/warehouse',async()=>{
+ const {files}=await cycle({omitDivisions:['Chem','Dining'],cash:1e9,offer:{round:2,funds:10e9,shares:100e6},industryCosts:{Chemical:70e9,Tobacco:20e9}});
+ const decision=JSON.parse(files['tasks/corporation-finance.json']).decision;
+ assert.equal(decision.stageDivision,'Chemical');
+ assert.equal(decision.stageCapital,79e9);
+ assert.equal(decision.capitalBlocked,true);
+ assert.equal(decision.stageFunded,false);
 });
 test('real capital planner buys a beneficial Wilson pair in order without duplicate upgrades or adverts',async()=>{
  const {calls,files}=await cycle({cash:8e9,advertCost:1e9,upgradeCosts:{'Wilson Analytics':1e6},divisionAwareness:1e6,divisionPopularity:1e6});
@@ -190,7 +198,15 @@ test('real hash worker can complete a foundation funding gap above its old emerg
  const target='Sell for Corporation Funds';
  const {calls,files}=await cycle({cash:2e9,wallet:1e12,exportCost:2.1e9,hashes:100,hashCosts:{[target]:100},managerOptions:{'manage-shares':false}});
  assert.deepEqual(calls.hashes,[target]);const status=JSON.parse(files['tasks/corporation-status.json']);
- assert.equal(status.growthGoal.label,'Buy Export');assert.equal(status.hashMilestone.gap,320e6);
+ assert.equal(status.growthGoal.label,'Buy Export');assert.equal(status.hashMilestone.gap,300e6);
+});
+
+test('real manager funds a multi-reward capital milestone and then executes the purchase',async()=>{
+ const target='Sell for Corporation Funds';
+ const {calls,files}=await cycle({cash:2e9,wallet:1e12,exportCost:5.1e9,hashes:5000,hashCosts:{[target]:100},phases:Array(6).fill('START'),managerOptions:{'manage-shares':false}});
+ assert.ok(calls.unlocks.includes('Export'));assert.equal(calls.hashes.filter(a=>a===target).length,4);
+ const journal=JSON.parse(files['tasks/hash-purchases.json']);assert.equal(journal.totals[target].purchases,4);assert.equal(journal.totals[target].spent,400);
+ assert.ok(journal.recent.every(r=>r.effect.corporationFunds===1e9));
 });
 
 test('corporation unlocks Export before setting up supply routes', async () => {
@@ -297,6 +313,11 @@ test('existing product divisions retire only their weakest managed product', asy
 test('existing material industries sell their industry-specific output', async () => {
   const { calls } = await cycle({ extraDivision: { name: 'Water Works', industry: 'Water Utilities', makesProducts: false } });
   assert.equal(calls.sales.filter(args => args[0] === 'Water Works' && args[2] === 'Water').length, 6);
+});
+
+test('product industries also sell the materials they produce', async () => {
+  const { calls } = await cycle({ extraDivision: { name: 'Soft', industry: 'Software', makesProducts: true, cities: ['Sector-12'], products: [], maxProducts: 3 } });
+  assert.ok(calls.sales.some(args => args[0] === 'Soft' && args[2] === 'AI Cores'), 'product division should place a material sell order');
 });
 
 test('restart preserves existing export routes instead of attempting duplicates', async () => {

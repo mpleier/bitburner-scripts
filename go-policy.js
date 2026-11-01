@@ -128,12 +128,13 @@ export function goTacticalMove(board,valid,outcomes,random=Math.random) {
 }
 
 
-const goKomi={'Netburners':1.5,'Slum Snakes':3.5,'The Black Hand':3.5,Tetrads:5.5,Daedalus:5.5,Illuminati:7.5,'????????????':9.5};
+export const goKomi={'Netburners':1.5,'Slum Snakes':3.5,'The Black Hand':3.5,Tetrads:5.5,Daedalus:5.5,Illuminati:7.5,'????????????':9.5};
 /** Conservative pass: no neutral regions, only our territory is playable, and every friendly group has two independent vital regions. */
 export function goSettledPass(board,valid,controlled,outcomes,opponent,analysis=analyzeGoBoard(board),gameState=null) {
  if(analysis.board!==board||analysis.signature!==board.join('/'))analysis=analyzeGoBoard(board);
- if(!Number.isFinite(goKomi[opponent])||!analysis.groups.some(g=>g.color==='X'))return false;
- let black=0,white=goKomi[opponent];
+ const nativeScore=!!gameState&&Number.isFinite(gameState.blackScore)&&Number.isFinite(gameState.whiteScore)&&gameState.currentPlayer==='Black';
+ if((!nativeScore&&!Number.isFinite(goKomi[opponent]))||!analysis.groups.some(g=>g.color==='X'))return false;
+ let black=0,white=nativeScore?gameState.whiteScore:goKomi[opponent];
  for(let x=0;x<board.length;x++)for(let y=0;y<board.length;y++){
   const cell=board[x][y];if(cell==='X')black++;else if(cell==='O')white++;
   else if(cell==='.'){
@@ -254,13 +255,30 @@ export function chooseGoEngine(engines={},options={}) {
   const rows=Object.values(engines[engine]||{}).filter(r=>r&&r.opponent===opponent&&r.size===size&&r.cheats===cheats&&r.rewardVersion===2&&(!configurations||r.configuration===configurations[engine]));
   const h=rows.flatMap(r=>Array.isArray(r.history)?r.history:[]).filter(g=>g&&Number.isFinite(g.at)&&g.at<=now&&now-g.at<=7200000&&Number.isFinite(g.bonus)&&g.bonus>=0&&[0,1].includes(g.win));
   const evidence=goEngineEvidence(h),interruptedMs=goInterruptedMs(rows,now),scale=evidence.elapsedMs>0?evidence.elapsedMs/(evidence.elapsedMs+interruptedMs):1;
-  return {...evidence,interruptedMs,rate:evidence.rate===null?null:evidence.rate*scale,lower:evidence.lower===null?null:evidence.lower*scale,upper:evidence.upper===null?null:evidence.upper*scale,standardError:evidence.standardError===null?null:evidence.standardError*scale};
+  return {...evidence,interruptedMs,rate:evidence.rate===null?null:evidence.rate*scale,lower:evidence.lower===null?null:evidence.lower*scale,upper:evidence.upper===null?null:evidence.upper*scale,standardError:evidence.standardError===null?null:evidence.standardError*scale,history:h};
  };
  const tactical=measure('tactical'),search=measure('search-v1');
- if(tactical.samples<3)return {engine:'tactical',reason:'requires-matching-baseline',trial:false,tactical,search};
+ // Time-matched pairs reduce variance when the two engines were tested close
+ // together on the same opponent/board; they complement the independent ranges.
+ const paired=(()=>{
+  const used=new Set(),pairs=[];
+  for(const s of search.history){
+   let best=null,bestGap=Infinity;
+   for(const t of tactical.history){if(used.has(t))continue;const gap=Math.abs(t.at-s.at);if(gap<=600000&&gap<bestGap){best=t;bestGap=gap;}}
+   if(best){used.add(best);pairs.push([best,s]);}
+  }
+  const ms=rows=>rows.reduce((sum,row)=>sum+Math.max(1,row.ms||1),0);
+  const tacticalMs=ms(pairs.map(p=>p[0])),searchMs=ms(pairs.map(p=>p[1]));
+  return {samples:pairs.length,
+   tacticalWins:pairs.reduce((n,p)=>n+(p[0].win===1?1:0),0),searchWins:pairs.reduce((n,p)=>n+(p[1].win===1?1:0),0),
+   tacticalRate:tacticalMs?pairs.reduce((n,p)=>n+(Number(p[0].bonus)||0),0)/tacticalMs*60000:null,
+   searchRate:searchMs?pairs.reduce((n,p)=>n+(Number(p[1].bonus)||0),0)/searchMs*60000:null};
+ })();
+ const pairedPrefer=paired.samples>=3&&Number.isFinite(paired.searchRate)&&Number.isFinite(paired.tacticalRate)&&paired.searchRate>paired.tacticalRate*1.15;
+ if(tactical.samples<3)return {engine:'tactical',reason:'requires-matching-baseline',trial:false,tactical,search,paired};
  const enough=tactical.samples>=6&&search.samples>=6&&tactical.effectiveSamples>=3&&search.effectiveSamples>=3;
- const preferSearch=enough&&search.rate>tactical.rate*1.15&&search.lower>tactical.upper;
- const slot=Number.isSafeInteger(completed)&&completed>=0&&completed%8===7;
+ const preferSearch=(enough&&search.rate>tactical.rate*1.15&&search.lower>tactical.upper)||pairedPrefer;
+ const slot=Number.isSafeInteger(completed)&&completed>=0&&completed%(search.samples<6?4:8)===(search.samples<6?3:7);
  // Promotion must not starve its reference player of fresh measurements.
  if(slot&&preferSearch&&now-tactical.lastAt>=1800000)
   return {engine:'tactical',reason:'bounded-baseline-refresh',trial:true,tactical,search};

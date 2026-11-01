@@ -11,20 +11,35 @@ export function corporationFundingGoal(plans,info,reserve,bank,{enabled=true,max
  const free=Math.max(0,info.funds-reserve),rate=Math.max(0,info.revenue-info.expenses)*.75;
  const ranked=plans.filter(p=>typeof p?.label==='string'&&Number.isFinite(p.cost)&&p.cost>0&&Number.isFinite(p.score)&&p.score>0)
   .sort((a,b)=>(Number(b.priority)||0)-(Number(a.priority)||0)||b.score-a.score||a.cost-b.cost);
- const p=ranked[0];if(!p||p.cost<=Math.min(bank,free))return null;
- const shortfall=Math.max(0,p.cost-Math.min(bank,free)),cashGap=Math.max(0,p.cost-free),waitSeconds=rate>0?shortfall/rate:null;
- const protect=waitSeconds!==null&&waitSeconds<=maxWaitSeconds;
- if(!protect&&!(cashGap>0&&cashGap<=1e9))return null;
- return {label:p.label,cost:p.cost,cashGap,waitSeconds,protect,amount:protect?Math.min(bank,free,p.cost):0};
+ // A top-ranked wish-list item must not hide a reachable lower-ranked plan.
+ for(const p of ranked){
+  if(p.cost<=Math.min(bank,free))return null;
+  const shortfall=Math.max(0,p.cost-Math.min(bank,free)),cashGap=Math.max(0,p.cost-free),waitSeconds=rate>0?shortfall/rate:null;
+  const protect=waitSeconds!==null&&waitSeconds<=maxWaitSeconds;
+  if(protect||cashGap>0&&cashGap<=16e9)
+   return {label:p.label,cost:p.cost,cashGap,waitSeconds,protect,amount:protect?Math.min(bank,free,p.cost):0};
+ }
+ return null;
 }
 
-/** Hash rewards must complete a quoted milestone in one purchase. Native consumers recheck usefulness. */
-export function corporationHashMilestone(funding,research,{funds,reserve,fundCost,researchCost}={}) {
+/** Quote the entire bounded reward sequence, including native escalating prices. */
+export function corporationHashMilestone(funding,research,{funds,reserve,fundCost,researchCost,quote=null,maxHashes=5000,maxPurchases=16,remainingBudget=null}={}) {
  if(![funds,reserve].every(Number.isFinite)||reserve<0||funds<reserve)return null;
- const priced=cost=>Number.isFinite(cost)&&cost>0&&cost<=5000;
- const r=research.find(r=>typeof r?.division==='string'&&typeof r.name==='string'&&[r.cost,r.points].every(Number.isFinite)&&r.points>=0&&r.cost>r.points&&r.cost-r.points<=1000);
- if(r&&priced(researchCost))return {action:'Exchange for Corporation Research',label:r.division+': '+r.name,gap:r.cost-r.points,reward:1000};
- if(funding&&Number.isFinite(funding.cashGap)&&funding.cashGap>0&&funding.cashGap<=1e9&&priced(fundCost))return {action:'Sell for Corporation Funds',label:funding.label,gap:funding.cashGap,reward:1e9};
+ if(!Number.isFinite(maxHashes)||maxHashes<=0||!Number.isSafeInteger(maxPurchases)||maxPurchases<1||maxPurchases>32)return null;
+ const make=(action,label,gap,reward,extra={})=>{
+  const purchases=Math.ceil(gap/reward);if(!(Number.isFinite(gap)&&gap>0&&purchases>=1&&purchases<=maxPurchases))return null;
+  const key=JSON.stringify([action,label,action==='Sell for Corporation Funds'&&Number.isFinite(extra.target)?extra.target:null]);
+  const remaining=remainingBudget?remainingBudget(key):{purchases:16,hashes:5000};
+  if(!remaining||purchases>remaining.purchases)return null;
+  let totalHashes;try{totalHashes=quote?quote(action,purchases):purchases===1?(action==='Sell for Corporation Funds'?fundCost:researchCost):Infinity;}catch{return null;}
+  if(!Number.isFinite(totalHashes)||totalHashes<=0||totalHashes>Math.min(maxHashes,remaining.hashes))return null;
+  return {action,label,gap,reward,purchases,totalHashes,key,...extra};
+ };
+ for(const r of research||[]){
+  if(typeof r?.division!=='string'||typeof r.name!=='string'||![r.cost,r.points].every(Number.isFinite)||r.points<0)continue;
+  const plan=make('Exchange for Corporation Research',r.division+': '+r.name,r.cost-r.points,1000,{division:r.division,research:r.name,target:r.cost});if(plan)return plan;
+ }
+ if(funding&&typeof funding.label==='string')return make('Sell for Corporation Funds',funding.label,funding.cashGap,1e9,{target:funding.cost,...(funding.staged===true?{staged:true}:{})});
  return null;
 }
 

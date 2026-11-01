@@ -5,6 +5,7 @@ import {readFileSync} from 'node:fs';
 import {createHgwBatch,withHgwBatch,withHgwPiece,summarizeHgwBatches} from '../hgw-batch-policy.js';
 import {classifyHgwEvent,readHgwTiming} from '../hgw-diagnostics-policy.js';
 import {renderCommandJob} from '../remote-api-command.js';
+import {reportHgwEvent,hackingLoopShouldStop} from '../Remote/hgw-telemetry.js';
 const reset={lastNodeReset:1,lastAugReset:2},now=100000;
 const items=()=>['hack','weak1','grow','weak2'].map((description,i)=>({description,toolShortName:['hack','weak','grow','weak'][i],threadsNeeded:i===1?4:2,end:new Date(now-4000+i*1000)}));
 const batch=(seq=1)=>createHgwBatch(7,reset,seq,'x',items());
@@ -50,7 +51,7 @@ test('actual workers publish their allocated thread receipts but looping events 
   const tool=name==='weak'?'weaken':name,step=name==='weak'?'weak1':name,b=batch(),meta={port:20,...b,batchStep:step,pieceThreads:2};let at=95000,queue='NULL PORT DATA',running=true;
   const flags=tool==='weaken'?[false,loop,7,JSON.stringify(meta)]:[false,false,loop,7,JSON.stringify(meta)];
   const ns={args:['x',95000,1000,'batch',...flags],pid:99,isRunning:()=>running,print(){},toast(){},['get'+tool[0].toUpperCase()+tool.slice(1)+'Time']:()=>1000,[tool]:async()=>{at=96010;running=false;return 1;},getPortHandle:()=>({peek:()=>queue,read:()=>{queue='NULL PORT DATA';},write:s=>queue=s})};
-  const ctx=vm.createContext({ns,Date:{now:()=>at},Math,JSON,Number});const text=readFileSync(new URL('../Remote/'+name+'-target.js',import.meta.url),'utf8');vm.runInContext(text.replace('export async function main','async function main')+';result=main(ns);',ctx);await ctx.result;
+  const ctx=vm.createContext({ns,Date:{now:()=>at},Math,JSON,Number,reportHgwEvent,hackingLoopShouldStop});const text=readFileSync(new URL('../Remote/'+name+'-target.js',import.meta.url),'utf8').replace(/^\uFEFF?import[^\n]*\n/,'');vm.runInContext(text.replace('export async function main','async function main')+';result=main(ns);',ctx);await ctx.result;
   const e=JSON.parse(queue).recent[0];assert.equal(e.batchId,loop?undefined:b.batchId);if(!loop){assert.equal(e.pieceThreads,2);assert.equal(e.batchStep,step);}
  }
 });

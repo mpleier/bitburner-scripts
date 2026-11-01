@@ -205,7 +205,7 @@ test('search engine requires matching recent throughput evidence and a fifteen-p
 });
 test('challenger trials are bounded, protect streaks, avoid board trials and honor explicit modes',()=>{
  const engines={tactical:engineRows(),'search-v1':{}};
- for(let completed=0;completed<24;completed++)assert.equal(chooseGoEngine(engines,{...engineOptions,completed}).trial,completed%8===7);
+ for(let completed=0;completed<24;completed++)assert.equal(chooseGoEngine(engines,{...engineOptions,completed}).trial,completed%4===3);
  for(const patch of [{protectStreak:true},{trial:true}])assert.equal(chooseGoEngine(engines,{...engineOptions,completed:7,...patch}).engine,'tactical');
  assert.equal(chooseGoEngine({}, {...engineOptions,completed:7}).reason,'requires-matching-baseline');
  assert.equal(chooseGoEngine({}, {...engineOptions,mode:'play'}).engine,'search-v1');

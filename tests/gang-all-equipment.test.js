@@ -66,7 +66,7 @@ test('a valid timed augmentation wait remains protected from equipment collectio
   plan:{worthWaiting:true,name:'Timed augmentation',cashTarget:100,at,deadline}}));
  assert.equal(claimSpending(f.ns,'gang',10,f.proof),false);
 });
-test('controller enables collection by default and keeps the territory income rule',()=>{
- const s=readFileSync(new URL('../gangs.js',import.meta.url),'utf8');assert.match(s,/prioritize-all-equipment', true/);
+test('controller keeps all-equipment collection opt-in and keeps the territory income rule',()=>{
+ const s=readFileSync(new URL('../gangs.js',import.meta.url),'utf8');assert.match(s,/prioritize-all-equipment', false/);
  assert.match(s,/planGangEquipmentCollection\(dictMembers,equipments/);assert.match(s,/gangTerritoryDevelopmentFocus/);assert.match(s,/gang-equipment-priority.json/);
 });

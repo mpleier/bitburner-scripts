@@ -49,6 +49,8 @@ test('shared startup gates preserve priority, RAM, source files, explicit disabl
  for(const name of ['go.js','infiltration-manager.js','achievement-manager.js','bladeburner.js'])assert.equal(full.get(name),false);
  assert.equal(full.get('corporation-manager.js'),true);assert.equal(full.get('grafting-manager.js'),true);assert.equal(full.get('spend-hacknet-hashes.js'),true);
  assert.equal(plan({homeRam:64,sourceFiles:{6:1},bladeburnerRank:0}).get('bladeburner.js'),false);
+ assert.equal(plan({homeRam:64,sourceFiles:{6:1},route:'hacking'}).get('bladeburner.js'),false);
+ assert.equal(plan({homeRam:64,sourceFiles:{6:1},route:'hacking',simulacrum:true}).get('bladeburner.js'),true);
 });
 test('preview works with only read APIs and separates running, paused, locked and planned launches',()=>{
  const f=fixture({processes:[{filename:'stats.js',pid:3}]});f.files['remote-control/paused/go.js.txt']='true';

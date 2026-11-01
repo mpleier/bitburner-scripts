@@ -4,8 +4,9 @@ export function rankHashMaintenanceRequired(ns,actions) {
   const r=JSON.parse(ns.read('tasks/automation-maintenance.json'));
   if(!(r.expiresAt>Date.now()&&ns.isRunning(r.ownerPid)))return false;
   const rankOnly=Array.isArray(actions)&&actions.length>0&&actions.every(a=>['Exchange for Bladeburner Rank','Exchange for Bladeburner SP'].includes(a));
-  const independent=['corporation-manager.js','gangs.js','stockmaster.js','go.js'];
-  return !(rankOnly&&Array.isArray(r.scripts)&&r.scripts.length>0&&r.scripts.every(s=>typeof s==='string'&&independent.includes(s.replace(/^\//,''))));
+  const independent=['gangs.js','stockmaster.js','go.js','health-manager.js','stats.js','infiltration-manager.js'];
+  if(rankOnly)independent.push('corporation-manager.js');
+  return !(Array.isArray(actions)&&actions.length>0&&Array.isArray(r.scripts)&&r.scripts.length>0&&r.scripts.every(s=>typeof s==='string'&&independent.includes(s.replace(/^\//,''))));
  }catch{return false;}
 }
 
@@ -17,7 +18,7 @@ export function readRankHashUpgradeContext(ns,now=Date.now()) {
   const valid=processes.some(p=>{
    if(p.filename.replace(/^\//,'')!=='spend-hacknet-hashes.js')return false;
    let s;try{s=JSON.parse(ns.read('tasks/hash-worker-status-'+p.pid+'.json'));}catch{return false;}
-   return s.pid===p.pid&&s.nodeReset===reset.lastNodeReset&&s.augReset===reset.lastAugReset&&Number.isFinite(s.at)&&s.at<=now&&now-s.at<15000&&s.state==='spending'&&s.decision?.preferred==='Exchange for Bladeburner Rank'&&s.decision.rankGap>0;
+   return s.pid===p.pid&&s.nodeReset===reset.lastNodeReset&&s.augReset===reset.lastAugReset&&Number.isFinite(s.at)&&s.at<=now&&now-s.at<15000&&['spending','checking','purchased'].includes(s.state)&&s.decision?.preferred==='Exchange for Bladeburner Rank'&&s.decision.rankGap>0;
   });
   if(!valid)return null;
   const cost=ns.hacknet.hashCost('Exchange for Bladeburner Rank'),hashes=ns.hacknet.numHashes(),capacity=ns.hacknet.hashCapacity();

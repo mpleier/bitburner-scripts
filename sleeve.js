@@ -72,6 +72,7 @@ let trainingReserve = 0;
 let reputationTargets = [], reputationAssignments = {}, nextRepRefresh = 0;
 let bladeburnerSupportSleeves = new Set();
 let adaptiveBladeburnerTasks={},bladeburnerDevelopmentPlan=null,combatGymQuotes=[],combatGymProgress={},combatGymAt=0,combatGymKey=null;
+let karmaRecoveryWorker=null;
 let startupPlan={stage:'normal',assignments:{},workers:[]};
 let sleeveXpObservation=null,sleeveReputationObservation=null;
 const recoveryForecastCache=new Map(),recoverySearches=new Map(),recoveryPlanningState={cursor:0};
@@ -362,13 +363,22 @@ async function mainLoop(ns) {
     }
     let previousRecovery;try{previousRecovery=JSON.parse(ns.read('tasks/sleeve-recovery-observation.json'));}catch{}
     const recoveryObservation=sleeveRecoveryObservation(previousRecovery,sleeveInfo,actualTasks,Date.now(),reset,ns.pid);
+    const playerCrime=playerWorkInfo.type==='CRIME'?cachedCrimeStats[playerWorkInfo.crimeType]:null;
+    const externalKarmaPerSecond=playerCrime?.time>0?sleeveCrimeChance(playerInfo,playerCrime,crimeNodeMultiplier)*Math.max(0,playerCrime.karma||0)/(playerCrime.time/1000):0;
     startupPlan=sleeveStartupPlan({sleeves:sleeveInfo,tasks:actualTasks,crimes:cachedCrimeStats,money:playerInfo.money,
         casinoPending,gangAvailable:needsKarma,inGang:playerInGang,karma:ns.heart.break(),intelligence:playerInfo.skills.intelligence,
-        nodeMultiplier:crimeNodeMultiplier,previousWorkers:startupPlan.stage==='gang-karma'?startupPlan.workers:[],enabled:adaptiveStartup});
+        externalKarmaPerSecond,recoveryRates:recoveryObservation.sleeves.map(s=>s.rate),nodeMultiplier:crimeNodeMultiplier,previousWorkers:startupPlan.stage==='gang-karma'?startupPlan.workers:[],enabled:adaptiveStartup});
     if(adaptiveStartup&&startupPlan.stage==='gang-karma'){
         const planningStarted=performance.now();
-        startupPlan.karmaTraining=sleeveKarmaTrainingPlan({sleeves:sleeveInfo,tasks:actualTasks,crimes:cachedCrimeStats,workers:startupPlan.workers,assignments:startupPlan.assignments,karma:ns.heart.break(),nodeMultiplier:crimeNodeMultiplier,crimeExpMultiplier,levelMultipliers:combatLevelMultipliers,recoveryRates:recoveryObservation.sleeves.map(s=>s.rate),enabled:!options['disable-training']&&!reset.bitNodeOptions?.disableSleeveExpAndAugmentation,canEvaluate:()=>performance.now()-planningStarted<20});
+        if(karmaRecoveryWorker!==null&&sleeveInfo[karmaRecoveryWorker]?.shock>0){startupPlan.workers=[...new Set([...startupPlan.workers,karmaRecoveryWorker])];startupPlan.assignments[karmaRecoveryWorker]='karma';}
+        else karmaRecoveryWorker=null;
+        startupPlan.karmaTraining=sleeveKarmaTrainingPlan({sleeves:sleeveInfo,tasks:actualTasks,crimes:cachedCrimeStats,workers:startupPlan.workers,assignments:startupPlan.assignments,karma:ns.heart.break(),nodeMultiplier:crimeNodeMultiplier,crimeExpMultiplier,levelMultipliers:combatLevelMultipliers,externalKarmaPerSecond,recoveryRates:recoveryObservation.sleeves.map(s=>s.rate),enabled:!options['disable-training']&&!reset.bitNodeOptions?.disableSleeveExpAndAugmentation,canEvaluate:()=>performance.now()-planningStarted<20});
     }
+    if(startupPlan.stage==='gang-karma'){
+        const recommendation=startupPlan.karmaTraining?.best;
+        karmaRecoveryWorker=recommendation?.action==='recovery'?recommendation.index:null;
+        if(karmaRecoveryWorker!==null){startupPlan.assignments[karmaRecoveryWorker]='recovery';startupPlan.workers=startupPlan.workers.filter(i=>i!==karmaRecoveryWorker);}
+    }else karmaRecoveryWorker=null;
     if (adaptiveStartup && startupPlan.stage === 'conditioning' && !options['disable-combat-xp-support'] &&
         !options['disable-bladeburner'] && playerInBladeburner && readNodeRoutePlan(ns)?.selected === 'bladeburner' &&
         !reset.bitNodeOptions?.disableSleeveExpAndAugmentation) {
@@ -455,7 +465,7 @@ async function mainLoop(ns) {
         if(upgraded){combatGymAt=0;log(ns,'SUCCESS: Improved gym training for native-confirmed sleeve sessions.');}
     }catch{}
     await ns.write('tasks/sleeve-recovery-observation.json',JSON.stringify({...recoveryObservation,sleeves:recoveryObservation.sleeves.map((s,i)=>({...s,recovering:currentTasks[i]?.type==='RECOVERY'}))}),'w');
-    await ns.write('tasks/sleeve-status.json', JSON.stringify({at:Date.now(),pid:ns.pid,state:'managing',reputationAccuracy:sleeveReputationObservation,reputationAssignments,xpObservation:{reason:sleeveXpObservation?.reason,observedAt:sleeveXpObservation?.observedAt,pool:sleeveXpObservation?.pool},startup:{karmaTraining:startupPlan.karmaTraining||null,stage:startupPlan.stage,workers:startupPlan.workers,assignments:startupPlan.assignments,combatWorker:startupPlan.combatWorker||null,combatWorkers:startupPlan.combatWorkers||[],augmentationRecovery:startupPlan.augmentationRecovery||{}},route:worldDaemonPriority?'hacking':'normal',bladeburnerSupport:[...bladeburnerSupportSleeves],sleeves:sleeveInfo.map((s,i)=>({index:i,shock:s.shock,sync:s.sync,memory:s.memory,task:task[i]||'waiting',actualTask:currentTasks[i]})),purchaseAllocation:{cost:augmentationAllocation.cost,gain:augmentationAllocation.gain,metric:augmentationAllocation.metric,states:augmentationAllocation.states,selected:Object.keys(augmentationAllocation.plan)},purchasePlans:sleevePurchasePlans,remainingAugBudget:budget,sharedAugBudgetRemaining:sleeveAugSpendingBudget(ns,budget)}), 'w');
+    await ns.write('tasks/sleeve-status.json', JSON.stringify({at:Date.now(),pid:ns.pid,state:'managing',reputationAccuracy:sleeveReputationObservation,reputationAssignments,xpObservation:{reason:sleeveXpObservation?.reason,observedAt:sleeveXpObservation?.observedAt,pool:sleeveXpObservation?.pool},startup:{externalKarmaPerSecond,recoveryWorker:karmaRecoveryWorker,karmaTraining:startupPlan.karmaTraining||null,stage:startupPlan.stage,workers:startupPlan.workers,assignments:startupPlan.assignments,combatWorker:startupPlan.combatWorker||null,combatWorkers:startupPlan.combatWorkers||[],augmentationRecovery:startupPlan.augmentationRecovery||{}},route:worldDaemonPriority?'hacking':'normal',bladeburnerSupport:[...bladeburnerSupportSleeves],sleeves:sleeveInfo.map((s,i)=>({index:i,shock:s.shock,sync:s.sync,memory:s.memory,task:task[i]||'waiting',actualTask:currentTasks[i]})),purchaseAllocation:{cost:augmentationAllocation.cost,gain:augmentationAllocation.gain,metric:augmentationAllocation.metric,states:augmentationAllocation.states,selected:Object.keys(augmentationAllocation.plan)},purchasePlans:sleevePurchasePlans,remainingAugBudget:budget,sharedAugBudgetRemaining:sleeveAugSpendingBudget(ns,budget)}), 'w');
 }
 
 /** Picks the best task for a sleeve, and returns the information to assign and give status updates for that task.
@@ -473,7 +483,7 @@ async function pickSleeveTask(ns, playerInfo, playerWorkInfo, i, sleeve, canTrai
         return await crimeTask(ns,(openingTask==='karma'?startupPlan.karmaTraining?.choices?.[i]:null)||bestSleeveCrime(sleeve,cachedCrimeStats,openingTask,crimeNodeMultiplier),i,sleeve,
             openingTask==='money'?'funding the $300,000 casino seed':startupPlan.karmaTraining?.best?.index===i?'free crime conditioning projects an earlier gang unlock':'unlocking the gang while other sleeves recover');
     if(openingTask==='combat-xp')return await crimeTask(ns,(startupPlan.combatWorkers?.find(w=>w.index===i)||startupPlan.combatWorker).name,i,sleeve,'transferring combat XP while the next Black Op is chance-blocked; recovery compared over a fifteen-minute horizon');
-    if(openingTask==='recovery')return shockRecoveryTask(sleeve,i,'other sleeves handle immediate startup milestones');
+    if(openingTask==='recovery')return shockRecoveryTask(sleeve,i,karmaRecoveryWorker===i?'measured recovery projects an earlier gang unlock':'player and other sleeves handle immediate startup milestones');
     if(openingTask==='sync')return ['synchronize','ns.sleeve.setToSynchronize(ns.args[0])',[i],'synchronizing for useful karma, XP and reputation gains'];
     // Must synchronize first iif you haven't maxed memory on every sleeve
     if (sleeve.sync < 100)

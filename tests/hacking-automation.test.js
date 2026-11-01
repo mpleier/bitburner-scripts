@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import {readFile} from 'node:fs/promises';
 import {hackThreadsForFraction,canFitHackingJob,launchHackingBatch} from '../hacking-policy.js';
+import {relativeWorkerDependencies} from '../worker-dependency-policy.js';
 import {main as manualHack} from '../Remote/manualhack-target.js';
 import {main as hack} from '../Remote/hack-target.js';
 
@@ -31,7 +32,7 @@ async function executor({ram=[16,8],names=['alpha','beta'],split=false,copy=true
  const servers=ram.map((n,i)=>({name:names[i],server:{cpuCores:Array.isArray(cores)?cores[i]:cores},_files:{},hasRoot:()=>true,totalRam:()=>n,ramAvailable:()=>writes&&ramAfterWrite!==null?ramAfterWrite[i]:n}));
  const ledger=new Map();let writes=0;
  const ns={write:async(f,text)=>{writes++;if(failLedger)throw Error('write failed');ledger.set(f,text);},pid:7,getScriptName:()=> 'daemon.js',read:f=>ledger.get(f)||(f.includes('paused')||f.includes('maintenance')||f.includes('achievement')?'':'source')};
- const context={coreAdjustedThreads,getServerByName:()=>({serverGrowthPercentage:()=>growth}),unadjustedGrowthRate:1.03,lastHackingInventory:deadlineInventory,withHgwPiece,reserveHackingProcess,releaseHackingProcess,hackingProcessBudget:{ready:true,inventoryAt:Date.now(),used:0,limit:processLimit},commitHackingCapacity,resetInfo:{lastNodeReset:1,lastAugReset:2},hackingWorker,loopJobSequence:0,withHackingLoopCapacity,hackingDrain:null,reclaimHomeRam:()=>true,homeRamReserve:()=>0,canFitHackingJob,isScriptPaused:()=>false,maintenanceRequested:()=>false,getAllServersByFreeRam:()=>servers,getAllServersByMaxRam:()=>servers.slice(),verbose:false,daemonHost:'home',getFilePath:s=>s,doesFileExist:async()=>true,getNsDataThroughFile:async()=>copy,hashCode:()=>1,exec:async(ns,name,host,options,...args)=>{if(failExecution)return 0;if(options.threads*2>servers.find(s=>s.name===host).ramAvailable())return 0;runs.push({host,threads:options.threads,args,capacityRecorded:ledger.has("tasks/hgw-capacity-7.json")});return runs.length;},log:()=>{},formatRam:String,homeServer:{ramAvailable:()=>100},options:{}};
+ const context={coreAdjustedThreads,getServerByName:()=>({serverGrowthPercentage:()=>growth}),unadjustedGrowthRate:1.03,lastHackingInventory:deadlineInventory,withHgwPiece,reserveHackingProcess,releaseHackingProcess,hackingProcessBudget:{ready:true,inventoryAt:Date.now(),used:0,limit:processLimit},commitHackingCapacity,resetInfo:{lastNodeReset:1,lastAugReset:2},hackingWorker,loopJobSequence:0,withHackingLoopCapacity,hackingDrain:null,reclaimHomeRam:()=>true,homeRamReserve:()=>0,canFitHackingJob,isScriptPaused:()=>false,maintenanceRequested:()=>false,getAllServersByFreeRam:()=>servers,getAllServersByMaxRam:()=>servers.slice(),verbose:false,daemonHost:'home',getFilePath:s=>s,doesFileExist:async()=>true,getNsDataThroughFile:async()=>copy,hashCode:()=>1,exec:async(ns,name,host,options,...args)=>{if(failExecution)return 0;if(options.threads*2>servers.find(s=>s.name===host).ramAvailable())return 0;runs.push({host,threads:options.threads,args,capacityRecorded:ledger.has("tasks/hgw-capacity-7.json")});return runs.length;},log:()=>{},formatRam:String,homeServer:{ramAvailable:()=>100},relativeWorkerDependencies,options:{}};
  vm.runInNewContext(source.slice(start,end)+';globalThis.execute=arbitraryExecution;',context);
  const tool={name:'Remote/'+toolShortName+'-target.js',shortName:toolShortName,cost:2,ignoreReservedRam:false,isThreadSpreadingAllowed:split,existsOnHost:async()=>false,deployedHashes:new Map(),runOptions:{}};
  const capacityJobs=captureCapacity?[]:null;const result=await context.execute(ns,tool,threads,args,null,false,null,launched,capacityJobs);return {result,runs,launched,tool,capacityJobs,ledger,writes,budget:context.hackingProcessBudget};
@@ -83,6 +84,14 @@ test('daemon assigns startup options before reading the manual-hacking flag',asy
  assert.ok(assignment>=0&&guard>assignment);
  const line=source.slice(guard,source.indexOf('\n',guard));
  const options={i:true};new Function('options','dictSourceFiles','ns','log',line)(options,{}, {},()=>{});assert.equal(options.i,false);
+});
+
+test('looping XP mode maps and reads hosts by target name, never by numeric index',async()=>{
+ const source=await readFile(new URL('../daemon.js',import.meta.url),'utf8');
+ assert.ok(source.includes('jobHostMappings[selectedTarget.name]'));
+ assert.ok(source.includes("some(mapped => mapped?.name === h.name)"));
+ assert.ok(!source.includes('jobHostMappings[i]'));
+ assert.ok(!source.includes('h.name in Object.values(jobHostMappings)'));
 });
 
 test('real split executor gives all fragments the full expected loop capacity and one job id',async()=>{

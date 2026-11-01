@@ -46,7 +46,7 @@ export function autocomplete(data, args) {
  * NOTE: This script is written to support multiple concurrent instances running with different arguments. **/
 export async function main(ns) {
     let lastToast = 0, lastStatusAt = 0, lastStatusState = "", lastProduction = 0,lastDecision=null,lastDecisionLog='',lastDecisionAt=0;
-    const report = async (state,extra={}) => { const now=Date.now();if(now-lastStatusAt<5000&&state===lastStatusState)return;lastStatusAt=now;lastStatusState=state;if(state==='spending')lastDecision=hashSpendingDecision(ns,toBuy[0],{...policyOptions,target:spendOnServer});const record={at:now,pid:ns.pid,state,nodeReset:ns.getResetInfo().lastNodeReset,augReset:ns.getResetInfo().lastAugReset,decision:lastDecision,...extra};
+    const report = async (state,extra={}) => { const now=Date.now();if(now-lastStatusAt<5000&&state===lastStatusState)return;lastStatusAt=now;lastStatusState=state;if(state==='spending')lastDecision=hashSpendingDecision(ns,toBuy[0],{...policyOptions,target:spendOnServer});const record={at:now,pid:ns.pid,state:state==="spending"?(extra.cashReceipt?.success?"purchased":lastDecision?.allowed===false?"blocked":"checking"):state,nodeReset:ns.getResetInfo().lastNodeReset,augReset:ns.getResetInfo().lastAugReset,decision:lastDecision,...extra};
       await ns.write("tasks/hacknet-hash-status.json",JSON.stringify(record),"w");await ns.write('tasks/hash-worker-status-'+ns.pid+'.json',JSON.stringify(record),'w'); };
  registerAutomation(ns);
     if(isScriptPaused(ns,ns.getScriptName()))return;

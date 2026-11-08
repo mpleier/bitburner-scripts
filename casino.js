@@ -1,4 +1,5 @@
-import { casinoOptionsError, casinoHookArgs, casinoWager, casinoRoundDelta, blackjackShouldHit, parseDealerRank, performCasinoUiAction, stopCasinoCompetitors,casinoControlAllowed,reloadCasinoWindow,launchCasinoHook } from './casino-policy.js';
+import { casinoOptionsError, casinoHookArgs, casinoWager, casinoRoundDelta, blackjackShouldHit, parseDealerRank, performCasinoUiAction, stopCasinoCompetitors,stopCasinoFocusCompetitors,casinoControlAllowed,reloadCasinoWindow,launchCasinoHook } from './casino-policy.js';
+import { recordCasinoWindfall } from './casino-augmentation-windfall-policy.js';
 import { isScriptPaused } from './automation-control.js';
 import { beginTransition, endTransition } from './progression-coordination.js';
 import {
@@ -10,6 +11,8 @@ const argsSchema = [
     ['save-sleep-time', 10], // Time to sleep in milliseconds before and after saving. If you are having trouble with your automatic saves not "taking effect" try increasing this.
     ['click-sleep-time', 5], // Time to sleep in milliseconds before and after clicking any button (or setting text). Increase if clicks don't appear to be "taking effect".
     ['find-sleep-time', 0], // Time to sleep in milliseconds before (but not after) trying to find any element on screen. Increase if you are frequently getting errors detecting elements that should be on screen.
+    ['save-every-wins', 5], // Save at most once per this many winning hands instead of on every new peak.
+    ['reload-loss-bets', 30], // Reload after losing this many maximum bets from the last saved bankroll.
     ['use-basic-strategy', false], // Set to true to use the basic strategy (Stay on 17+)
     ['enable-logging', false], // Set to true to pop up a tail window and generate logs.
     ['kill-all-scripts', false], // Set to true to kill all running scripts before running.
@@ -59,6 +62,8 @@ export async function main(ns) {
         await reportCasino('starting');
         ns.atExit(() => endTransition(ns));
         const saveSleepTime = options['save-sleep-time'];
+        const saveEveryWins = Math.max(1, Number(options['save-every-wins']) || 1);
+        const reloadLossBets = Math.max(1, Number(options['reload-loss-bets']) || 1);
         verbose = options['enable-logging'];
         if (verbose)
             tail(ns, undefined, true);
@@ -121,7 +126,13 @@ export async function main(ns) {
             let closeModal,closed=0;
             do {
                 assertControl();
-                if(closed++>=20)throw new Error("Casino modal closing did not settle after 20 attempts.");
+                // The target may be reached while a modal is blocking the UI.
+                // Treat that as completion instead of fighting an uncloseable modal.
+                if (casinoEarnings() >= 1e10) return true;
+                if(closed++>=8) {
+                    log(ns, "WARNING: Casino modal did not settle after 8 close attempts; treating completion as authoritative if the target was reached.", false, 'warning');
+                    return casinoEarnings() >= 1e10;
+                }
                 const kickedOut = await tryfindElement("//span[contains(text(), 'Alright cheater get out of here')]", retries);
                 if (kickedOut !== null) return true; // Success: We've been kicked out
                 // If there are any other modals, they may need to be closed before we can see the kicked out alert.
@@ -129,13 +140,26 @@ export async function main(ns) {
                 if (!closeModal) break; // There appears to be no other modals blocking in the way
                 log(ns, "Found a modal that needs to be closed.")
                 await click(closeModal, true); // Click the close button on this modal so we can see others behind it
+                // MUI modal close transitions are asynchronous; wait for the same button
+                // to unmount instead of immediately clicking it again.
+                const settleUntil=Date.now()+750;
+                do {
+                    await ns.sleep(40);
+                    closeModal=await tryfindElement("//button[contains(@class,'closeButton')]",1);
+                } while(closeModal&&Date.now()<settleUntil);
             } while (closeModal !== null);
             return false;
         }
 
-        // Casino has priority over grafting. Standalone launches also stop an active graft when SF4 permits.
-        try { await getNsDataThroughFile(ns, `(${casinoControlAllowed.toString()})(ns,ns.args[0])&&ns.singularity.getCurrentWork()?.type === "GRAFTING" ? (ns.singularity.stopAction(), true) : false`, '/Temp/casino-stop-graft.txt', [ns.pid], false, 1, 0, true); }
+        // Casino has priority over any focus work, including faction/company work.
+        try { await getNsDataThroughFile(ns, `(${casinoControlAllowed.toString()})(ns,ns.args[0]) ? (ns.singularity.stopAction(), true) : false`, '/Temp/casino-stop-work.txt', [ns.pid], false, 1, 0, true); }
         catch { /* UI navigation remains available without Singularity. */ }
+        // Kill only workers that can immediately restart focus work. Preserve the
+        // gang/sleeve/autopilot controllers and the Remote API worker.
+        try {
+            const stopped=stopCasinoFocusCompetitors(ns,ns.pid);
+            if(stopped.length)log(ns,`Stopped focus competitors: ${stopped.map(process=>process.script).join(', ')}`,false);
+        } catch { }
 
         // Run this to try and pre-emptively clear away any modals that pop up when we restart.
         // Note that at game startup it seems to take a long while for these to be detected,
@@ -268,7 +292,7 @@ export async function main(ns) {
 
         // Step 4: Play until we lose or are kicked out
         try {
-            let startGameRetries = 0, netWinnings = 0, peakWinnings = 0;
+            let startGameRetries = 0, netWinnings = 0, peakWinnings = 0, winsSinceSave = 0, lastSavedWinnings = 0;
             while (true) {
                 if (abort || isScriptPaused(ns, ns.getScriptName())) return;
                 // Step 4.1: Bet the maximum amount (we save scum to avoid losing, so no risk of going broke)
@@ -374,13 +398,15 @@ export async function main(ns) {
                 switch (winLoseTie) {
                     case "tie": // Nothing gained or lost, we can immediately start a new game.
                         continue;
-                    case "win": // We want to "lock in" our wins by saving the game after each one
+                    case "win": // Batch saves so we do not pay the UI cost on every winning hand
                         const blackjack = !!await tryfindElement("//p[contains(text(), 'Blackjack!')]", 1);
                         netWinnings += casinoRoundDelta('win', bet, beforeCasinoEarnings, casinoEarnings(), blackjack);
-                        // Keep tabs of our best winnings, and save the game each time we top it
-                        if (netWinnings > peakWinnings) {
-                            peakWinnings = netWinnings
+                        if (netWinnings > peakWinnings) peakWinnings = netWinnings;
+                        winsSinceSave++;
+                        if (winsSinceSave >= saveEveryWins && netWinnings >= lastSavedWinnings) {
                             await saveGame();
+                            lastSavedWinnings = netWinnings;
+                            winsSinceSave = 0;
                         }
                         // Quick pre-emptive test after each win to see if we've been kicked out
                         if (casinoEarnings()>1e10 || await checkForKickedOut(1)) // Only 1 retry should be very fast
@@ -388,8 +414,8 @@ export async function main(ns) {
                         continue;
                     case "lose":
                         netWinnings += casinoRoundDelta('lose', bet, beforeCasinoEarnings, casinoEarnings());
-                        // To avoid reloading too often, only reload if we're losing really badly (almost broke, or down by 10 games)
-                        if (ns.getPlayer().money < 1E8 || netWinnings <= peakWinnings - 10 * 1E8)
+                        // To avoid reloading too often, only reload if we're losing really badly (almost broke, or well below the last save)
+                        if (ns.getPlayer().money < 1E8 || netWinnings <= lastSavedWinnings - reloadLossBets * 1E8)
                             return await reload(); // We want to reload the game (save scum) to undo our loss :)
                         continue;
                     default:
@@ -475,6 +501,7 @@ export async function main(ns) {
         casinoCompleted = true;
         await reportCasino('complete', {earnings:casinoEarnings()});
         const infrastructureReset=ns.getResetInfo();
+        try{await recordCasinoWindfall(ns,infrastructureReset,casinoEarnings());}catch{}
         await ns.write('tasks/post-casino-infrastructure.json',JSON.stringify({version:1,at:Date.now(),pid:ns.pid,
             augReset:infrastructureReset.lastAugReset,nodeReset:infrastructureReset.lastNodeReset,state:'pending',index:0}),'w');
         if (kickedOutAfterPlaying)

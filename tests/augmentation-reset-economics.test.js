@@ -16,7 +16,7 @@ test('ordinary count and quick-install requests need positive bounded payback, e
 });
 
 test('verified milestones and the explicit economics override retain their reset exceptions',()=>{
- for(const flag of ['priority','favor','countUnlock','campaign','bn8Quick'])
+ for(const flag of ['priority','favor','countUnlock','campaign','bn8Quick','gangAggressive'])
   assert.equal(augmentationResetDecision({requested:true,[flag]:true,speed:{resetPaysBack:false,recoveryBlocked:true}}).allowed,true,flag);
  assert.equal(augmentationResetDecision({requested:true,adaptive:false}).allowed,true);
 });
@@ -146,7 +146,7 @@ test('unknown, stale or previous-reset wait records cannot force an install dela
  }
  const prior=waitDecision(now).waitWindow;
  const current=waitDecision(now+minute,{...prior,augReset:1});assert.equal(current.waitWindow.startedAt,now+minute);
- for(const flag of ['priority','favor','countUnlock','campaign','bn8Quick'])
+ for(const flag of ['priority','favor','countUnlock','campaign','bn8Quick','gangAggressive'])
   assert.equal(waitDecision(now,null,{[flag]:true}).allowed,true,flag);
  assert.equal(waitDecision(now,null,{requested:false}).waitWindow,undefined);
 });

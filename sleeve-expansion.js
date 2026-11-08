@@ -3,17 +3,25 @@ import { registerAutomation, automationHeartbeat, maintenanceRequested } from '.
 import { claimSpending } from './spending-policy.js';
 import { isScriptPaused } from './automation-control.js';
 import { maximumSleeves } from './sleeve-policy.js';
+import { readSleeveMemoryPriority } from './sleeve-memory-priority-policy.js';
 /** Buys sleeves and raises memory in BN10, without changing sleeve tasks. */
 export function expandSleeves(ns, fraction = 1) {
   const reset = ns.getResetInfo();
   if (reset.currentNode !== 10) return { available: false, bought: 0, upgraded: 0 };
-  if(isScriptPaused(ns,'sleeve-expansion.js')||maintenanceRequested(ns)||!achievementActionAllowed(ns,'sleeve'))return {available:false,bought:0,upgraded:0};
+  // Memory is permanent BN10 progress. A transient maintenance/achievement
+  // window must not strand an affordable memory upgrade.
+  if(isScriptPaused(ns,'sleeve-expansion.js'))return {available:false,bought:0,upgraded:0};
+  // New sleeves wait for maintenance/achievement windows; permanent memory
+  // upgrades do not, so an affordable memory step is never stranded.
+  const memoryPriority = readSleeveMemoryPriority(ns, reset);
+  const canBuySleeve=!memoryPriority&&!maintenanceRequested(ns)&&achievementActionAllowed(ns,'sleeve');
 
-  const reserve = Math.max(0, Number(ns.read('reserve.txt')) || 0);
-  let remaining = Math.max(0, ns.getPlayer().money - reserve) * (Number.isFinite(fraction) ? Math.max(0, Math.min(1, fraction)) : 0);
+  const reserve = memoryPriority ? 0 : Math.max(0, Number(ns.read('reserve.txt')) || 0);
+  const budgetFraction = memoryPriority ? 1 : fraction;
+  let remaining = Math.max(0, ns.getPlayer().money - reserve) * (Number.isFinite(budgetFraction) ? Math.max(0, Math.min(1, budgetFraction)) : 0);
   let bought = 0, upgraded = 0;
   const affordable = cost => Number.isFinite(cost) && cost > 0 && cost <= remaining && ns.getPlayer().money >= cost + reserve;
-  if (ns.sleeve.getNumSleeves() < maximumSleeves(reset)) {
+  if (canBuySleeve && ns.sleeve.getNumSleeves() < maximumSleeves(reset)) {
     const cost = ns.sleeve.getSleeveCost();
     if (affordable(cost)&&claimSpending(ns,"sleeveExpansion",cost)) {
       const before = ns.sleeve.getNumSleeves();
@@ -22,12 +30,15 @@ export function expandSleeves(ns, fraction = 1) {
     }
   }
   const candidates = [];
+  let nextMemoryCost = Infinity;
   for (let index = 0; index < ns.sleeve.getNumSleeves(); index++) {
     const memory = ns.sleeve.getSleeve(index).memory;
     if (!Number.isFinite(memory) || memory >= 100) continue;
     let amount = Math.min(10, 100 - memory);
     while (amount > 1 && ns.sleeve.getMemoryUpgradeCost(index, amount) > remaining) amount--;
-    candidates.push({ index, amount, cost: ns.sleeve.getMemoryUpgradeCost(index, amount), memory });
+    const cost = ns.sleeve.getMemoryUpgradeCost(index, amount);
+    if (Number.isFinite(cost) && cost > 0) nextMemoryCost = Math.min(nextMemoryCost, cost);
+    candidates.push({ index, amount, cost, memory });
   }
   for (const item of candidates.sort((a, b) => a.cost - b.cost)) {
     while (item.amount > 1 && item.cost > remaining) {
@@ -38,7 +49,7 @@ export function expandSleeves(ns, fraction = 1) {
     ns.sleeve.upgradeMemory(item.index, item.amount);
     if (ns.sleeve.getSleeve(item.index).memory > item.memory) { remaining -= item.cost; upgraded++; }
   }
-  return { available: true, bought, upgraded };
+  return { available: true, bought, upgraded, remaining, nextMemoryCost: Number.isFinite(nextMemoryCost) ? nextMemoryCost : null };
 }
 
 export async function main(ns) {
@@ -55,6 +66,8 @@ export async function main(ns) {
     try {
       const result = expandSleeves(ns, Number(options['budget-fraction']));
       if (result.bought || result.upgraded) ns.print(`Sleeves: ${result.bought} purchased, ${result.upgraded} memory upgrades.`);
+      else if (result.available && result.nextMemoryCost)
+        ns.print(`Sleeve memory waiting: next upgrade costs $${Math.ceil(result.nextMemoryCost).toLocaleString('en-US')}; usable budget $${Math.floor(result.remaining).toLocaleString('en-US')}.`);
     } catch (error) { ns.print(`Sleeve expansion waiting: ${String(error)}`); }
     await ns.sleep(60_000);
   }

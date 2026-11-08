@@ -6,7 +6,7 @@ export const noncashRewardKeys=['shares','programs','stockAccess','dataFiles','c
 const keys=['money','shares','programs','stockAccess','dataFiles','contracts','augmentations','karma','unknown'];
 const empty=()=>Object.fromEntries(keys.map(k=>[k,0]));
 /** Native numeric amounts and counts only. No formatted-message parsing or dollar conversion. */
-export function recordDarknetCache(previous,result,{host,pid,at,reset}){
+export function recordDarknetCache(previous,result,{host,pid,at,reset,modelId=null}){
  if(result?.success!==true)return previous;
  const same=previous?.host===host&&previous.nodeReset===reset.lastNodeReset&&previous.augReset===reset.lastAugReset&&typeof previous.epoch==='string'&&previous.at<=at;
  const totals=empty();for(const k of keys)if(same&&Number.isFinite(previous.totals?.[k])&&previous.totals[k]>=0)totals[k]=previous.totals[k];
@@ -17,7 +17,7 @@ export function recordDarknetCache(previous,result,{host,pid,at,reset}){
  // A native $0 cash award is known, even when karma is its only nonzero field.
  if(!keys.filter(k=>k!=='karma'&&k!=='unknown').some(k=>delta[k]>0)&&!(Number.isFinite(result.money)&&result.money>=0))delta.unknown=1;
  for(const k of keys)totals[k]+=delta[k];
- return {schemaVersion:1,host,nodeReset:reset.lastNodeReset,augReset:reset.lastAugReset,epoch:same?previous.epoch:`${at}:${pid}`,at,opened:(same&&Number.isSafeInteger(previous.opened)?previous.opened:0)+1,totals};
+ return {schemaVersion:1,host,modelId:typeof modelId==='string'?modelId:previous?.modelId??null,nodeReset:reset.lastNodeReset,augReset:reset.lastAugReset,epoch:same?previous.epoch:`${at}:${pid}`,at,opened:(same&&Number.isSafeInteger(previous.opened)?previous.opened:0)+1,totals};
 }
 /** Single home owner merges cumulative reports; duplicate surveys contribute zero. */
 export function mergeDarknetRewards(previous,reports,reset,now=Date.now()){

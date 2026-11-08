@@ -22,6 +22,8 @@ const argsSchema = [
     ['disable-adaptive-startup', false], // Restore strict synchronization/recovery-first behavior.
     ['min-shock-recovery', 0], // Recovery threshold outside adaptive opening milestones; custom values restore strict ordering.
     ['shock-recovery', 0.05], // Set to a number between 0 and 1 to devote that ratio of time to periodic shock recovery (until shock is at 0)
+    ['shock-recovery-first', true], // While gang karma is far away and shocked sleeves are ineffective at crime, recover every sleeve before farming karma.
+    ['karma-train-first', true], // After shock recovery, train combat before attempting low-chance Karma crimes.
     ['crime', null], // If specified, sleeves will perform only this crime regardless of stats
     ['homicide-chance-threshold', 0.5], // Sleeves on crime will automatically start homicide once their chance of success exceeds this ratio
     ['disable-gang-homicide-priority', false], // By default, sleeves will do homicide to farm Karma until we're in a gang. Set this flag to disable this priority.
@@ -38,8 +40,10 @@ const argsSchema = [
     ['train-to-agility', 70], // Sleeves will go to the gym until they reach this much Agi
     ['study-to-hacking', 25], // Sleeves will go to university until they reach this much Hak
     ['study-to-charisma', 25], // Sleeves will go to university until they reach this much Cha
-    ['training-reserve', null], // Extra training reserve; the global reserve is always preserved.
+    ['training-reserve', 0], // Extra training reserve; the global reserve is always preserved.
     ['training-cap-seconds', 2 * 60 * 60 /* 2 hours */], // Time since the start of the bitnode after which we will no longer attempt to train sleeves to their target "train-to" settings
+    ['early-money-target', 10000000], // Keep sleeves on their best money crime until the player has this much early-node cash; 0 disables.
+    ['early-money-seconds', 1800], // Only use sleeves for early money during this window after the BitNode reset.
     ['disable-spending-hashes-for-gym-upgrades', false], // Set to true to disable spending hashes on gym upgrades when training up sleeves.
     ['disable-spending-hashes-for-study-upgrades', false], // Set to true to disable spending hashes on study upgrades when smarting up sleeves.
     ['disable-bladeburner-team-support',false], // Disable automatic healthy-sleeve support for a live Black Op team shortfall.
@@ -256,7 +260,10 @@ async function mainLoop(ns) {
     if(ns.ps('home').some(p=>p.filename.replace(/^\//,'')==='autopilot.js'&&p.args.includes('--disable-casino')))casinoPending=false;
     if(casinoPending)try{casinoPending=(await getNsDataThroughFile(ns,'ns.getMoneySources().sinceInstall.casino','/Temp/sleeve-casino-earned.txt'))<=1e10;}catch{}
     const needsKarma=reset.currentNode!==2&&!!ownedSourceFiles[2]&&!playerInGang&&!options['disable-gang-homicide-priority']&&achievementActionAllowed(ns,'gang')&&ns.heart.break()>-54000;
-    const startupUrgent=adaptiveStartup&&(casinoPending&&playerInfo.money<300000||needsKarma);
+    const earlyMoney=adaptiveStartup&&Number(options['early-money-target'])>0&&
+        playerInfo.money<Number(options['early-money-target'])&&
+        timeInBitnode<Number(options['early-money-seconds'])*1000;
+    const startupUrgent=adaptiveStartup&&(casinoPending&&playerInfo.money<300000||needsKarma||earlyMoney);
     if(startupUrgent){canTrain=false;budget=0;}
     const augmentationReserve = canTrain ? trainingReserve + costByNextLoop : reserve;
     budget = startupUrgent ? 0 : Math.max(0, playerInfo.money - augmentationReserve) * Math.max(0,Math.min(1,Number(options['aug-budget'])||0));
@@ -367,12 +374,34 @@ async function mainLoop(ns) {
     const externalKarmaPerSecond=playerCrime?.time>0?sleeveCrimeChance(playerInfo,playerCrime,crimeNodeMultiplier)*Math.max(0,playerCrime.karma||0)/(playerCrime.time/1000):0;
     startupPlan=sleeveStartupPlan({sleeves:sleeveInfo,tasks:actualTasks,crimes:cachedCrimeStats,money:playerInfo.money,
         casinoPending,gangAvailable:needsKarma,inGang:playerInGang,karma:ns.heart.break(),intelligence:playerInfo.skills.intelligence,
-        externalKarmaPerSecond,recoveryRates:recoveryObservation.sleeves.map(s=>s.rate),nodeMultiplier:crimeNodeMultiplier,previousWorkers:startupPlan.stage==='gang-karma'?startupPlan.workers:[],enabled:adaptiveStartup});
+        externalKarmaPerSecond,recoveryRates:recoveryObservation.sleeves.map(s=>s.rate),nodeMultiplier:crimeNodeMultiplier,previousWorkers:startupPlan.stage==='gang-karma'?startupPlan.workers:[],enabled:adaptiveStartup,
+        earlyMoneyTarget:Number(options['early-money-target']),bitNodeAgeSeconds:timeInBitnode/1000,earlyMoneySeconds:Number(options['early-money-seconds'])});
     if(adaptiveStartup&&startupPlan.stage==='gang-karma'){
         const planningStarted=performance.now();
         if(karmaRecoveryWorker!==null&&sleeveInfo[karmaRecoveryWorker]?.shock>0){startupPlan.workers=[...new Set([...startupPlan.workers,karmaRecoveryWorker])];startupPlan.assignments[karmaRecoveryWorker]='karma';}
         else karmaRecoveryWorker=null;
         startupPlan.karmaTraining=sleeveKarmaTrainingPlan({sleeves:sleeveInfo,tasks:actualTasks,crimes:cachedCrimeStats,workers:startupPlan.workers,assignments:startupPlan.assignments,karma:ns.heart.break(),nodeMultiplier:crimeNodeMultiplier,crimeExpMultiplier,levelMultipliers:combatLevelMultipliers,externalKarmaPerSecond,recoveryRates:recoveryObservation.sleeves.map(s=>s.rate),enabled:!options['disable-training']&&!reset.bitNodeOptions?.disableSleeveExpAndAugmentation,canEvaluate:()=>performance.now()-planningStarted<20});
+    }
+    const karmaRemaining=54000+ns.heart.break();
+    if(adaptiveStartup&&options['shock-recovery-first']&&startupPlan.stage==='gang-karma'&&karmaRemaining>5000&&sleeveInfo.some(s=>s.shock>0)){
+        // At high shock the sleeves' karma chance is negligible, and every sleeve
+        // recovers in parallel. Finish the fixed-rate shock recovery together.
+        startupPlan.stage='shock-recovery';
+        startupPlan.workers=[];
+        startupPlan.karmaTraining=null;
+        startupPlan.assignments=Object.fromEntries(sleeveInfo.map((s,i)=>[i,s.shock>0?'recovery':s.sync<100?'sync':'karma']));
+        karmaRecoveryWorker=null;
+    }
+    const combatStats=['strength','defense','dexterity','agility'];
+    const combatTrainingNeeded = sleeveInfo.some(s=>combatStats.some(stat=>s.skills[stat] < options['train-to-'+stat]));
+    if(adaptiveStartup&&options['karma-train-first']&&startupPlan.stage==='gang-karma'&&karmaRemaining>5000&&
+       !sleeveInfo.some(s=>s.shock>0)&&combatTrainingNeeded){
+        // Low combat skill makes Homicide nearly worthless for Karma. Train first.
+        startupPlan.stage='karma-training';
+        startupPlan.workers=[];
+        startupPlan.assignments={};
+        startupPlan.karmaTraining=null;
+        karmaRecoveryWorker=null;
     }
     if(startupPlan.stage==='gang-karma'){
         const recommendation=startupPlan.karmaTraining?.best;

@@ -1,8 +1,11 @@
 import {gangFundingETA} from './gang-funding-diagnostics-policy.js';
 const trainingNames=['Train Combat','Train Hacking','Train Charisma'];
-/** Skill priority can defer the development shopping list, but never an unmet cash reserve. */
+/** Skill priority can defer the development shopping list, but never an unmet cash reserve.
+ *  power-training-always keeps combat training after safe warfare readiness; the
+ *  caller suppresses it while an augmentation/recruitment goal is active. */
 export function gangStatPriorityAllowed({preparation,funding,members,options={},now=Date.now()}){
- return preparation?.enabled===true&&preparation.known===true&&preparation.active===true&&members===12&&
+ const active=preparation?.active===true||options['power-training-always']===true;
+ return preparation?.enabled===true&&preparation.known===true&&active&&members===12&&
   !options['disable-adaptive-growth']&&!options['no-training']&&!options['money-focus']&&!options['reputation-focus']&&
   funding?.known===true&&[funding.at,funding.expiresAt,funding.cash,funding.reserveShortfall,now].every(Number.isFinite)&&
   funding.at<=now&&now-funding.at<=30000&&funding.expiresAt>now&&funding.cash>=0&&funding.reserveShortfall===0;

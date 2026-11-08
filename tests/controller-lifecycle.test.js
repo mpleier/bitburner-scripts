@@ -85,11 +85,11 @@ test('autopilot rechecks its pause and maintenance before each iteration', async
     const end = source.indexOf('\n    }', start);
     const loop = source.slice(start, end);
     let paused = false, maintenance = true, loops = 0, sleeps = 0, startups = 0;
-    await new AsyncFunction('ns','automationHeartbeat','isScriptPaused','maintenanceRequested','startUp','mainLoop','log','getErrorInfo','shouldWeKeepRunning',
+    await new AsyncFunction('ns','automationHeartbeat','isScriptPaused','maintenanceRequested','startUp','mainLoop','log','getErrorInfo','shouldWeKeepRunning','getFilePath','launchScriptHelper',
         'let startUpRan=false,keepRunning=true;const options={interval:1};' + loop)(
-        { getScriptName: () => 'autopilot.js', sleep: async () => { if (++sleeps === 1) maintenance = false; else paused = true; } },
+        {ps:()=>[{filename:'bootstrap-start.js'}], getScriptName: () => 'autopilot.js', sleep: async () => { if (++sleeps === 1) maintenance = false; else paused = true; } },
         () => {}, () => paused, () => maintenance, async () => { startups++; return true; },
-        async () => { loops++; return true; }, () => {}, String, () => true);
+        async () => { loops++; return true; }, () => {}, String, () => true,x=>x,()=>1);
     assert.equal(startups, 1); assert.equal(loops, 1); assert.equal(sleeps, 2);
 });
 test('autopilot cannot launch children after its own pause or during maintenance', async () => {

@@ -76,29 +76,60 @@ export function formatDateTime(datetime) { return datetime.toISOString(); }
 
 /** Format a duration (in milliseconds) as e.g. '1h 21m 6s' for big durations or e.g '12.5s' / '23ms' for small durations */
 export function formatDuration(duration) {
-    if (duration < 1000) return `${duration.toFixed(0)}ms`
     if (!isFinite(duration)) return 'forever (Infinity)'
-    const portions = [];
-    const msInHour = 1000 * 60 * 60;
-    const hours = Math.trunc(duration / msInHour);
-    if (hours > 0) {
-        portions.push(hours + 'h');
-        duration -= (hours * msInHour);
+    if (!(duration > 0)) return '0s'
+    // Round once to the nearest second before splitting, so carries such as
+    // 23h 59m 59.6s become 1d 0h 0m 0s instead of 23h 59m 60s.
+    const totalSeconds = Math.round(duration / 1000)
+    const minute = 60
+    const hour = 60 * minute
+    const day = 24 * hour
+    const week = 7 * day
+    // For this formatter a month is four weeks, matching the requested
+    // "more than four weeks" boundary.
+    const month = 4 * week
+    const year = 12 * month
+    const portions = []
+    if (totalSeconds > 12 * month) {
+        const years = Math.floor(totalSeconds / year)
+        const afterYears = totalSeconds % year
+        const months = Math.floor(afterYears / month)
+        const afterMonths = afterYears % month
+        const weeks = Math.floor(afterMonths / week)
+        const afterWeeks = afterMonths % week
+        const days = Math.floor(afterWeeks / day)
+        const hours = Math.floor((afterWeeks % day) / hour)
+        const minutes = Math.floor((afterWeeks % hour) / minute)
+        const seconds = afterWeeks % minute
+        portions.push(years + 'y', months + 'mo', weeks + 'w', days + 'd', hours + 'h', minutes + 'm', seconds + 's')
+    } else if (totalSeconds > 4 * week) {
+        const months = Math.floor(totalSeconds / month)
+        const remaining = totalSeconds % month
+        const weeks = Math.floor(remaining / week)
+        const days = Math.floor((remaining % week) / day)
+        const hours = Math.floor((remaining % day) / hour)
+        const minutes = Math.floor((remaining % hour) / minute)
+        const seconds = remaining % minute
+        portions.push(months + 'mo', weeks + 'w', days + 'd', hours + 'h', minutes + 'm', seconds + 's')
+    } else if (totalSeconds > 7 * day) {
+        const weeks = Math.floor(totalSeconds / week)
+        const remaining = totalSeconds % week
+        const days = Math.floor(remaining / day)
+        const hours = Math.floor((remaining % day) / hour)
+        const minutes = Math.floor((remaining % hour) / minute)
+        const seconds = remaining % minute
+        portions.push(weeks + 'w', days + 'd', hours + 'h', minutes + 'm', seconds + 's')
+    } else {
+        const days = Math.floor(totalSeconds / day)
+        const hours = Math.floor((totalSeconds % day) / hour)
+        const minutes = Math.floor((totalSeconds % hour) / minute)
+        const seconds = totalSeconds % minute
+        if (days > 0) portions.push(days + 'd')
+        if (days > 0 || hours > 0) portions.push(hours + 'h')
+        if (days > 0 || hours > 0 || minutes > 0) portions.push(minutes + 'm')
+        portions.push(seconds + 's')
     }
-    const msInMinute = 1000 * 60;
-    const minutes = Math.trunc(duration / msInMinute);
-    if (minutes > 0) {
-        portions.push(minutes + 'm');
-        duration -= (minutes * msInMinute);
-    }
-    let seconds = (duration / 1000.0)
-    // Include millisecond precision if we're on the order of seconds
-    seconds = (hours == 0 && minutes == 0) ? seconds.toPrecision(3) : seconds.toFixed(0);
-    if (seconds > 0) {
-        portions.push(seconds + 's');
-        duration -= (minutes * 1000);
-    }
-    return portions.join(' ');
+    return portions.join(' ')
 }
 
 /** Generate a hashCode for a string that is pretty unique most of the time */

@@ -157,7 +157,7 @@ test('early research staffing retains at least the baseline R&D headcount, inclu
  }
 });
 test('research milestones preserve the laboratory and TA pair research pools',()=>{
- const lab=corporationResearchGoal({points:50,laboratoryCost:100});assert.equal(lab.stage,'laboratory');assert.equal(lab.target,200);assert.equal(lab.progress,.25);assert.equal(lab.protectResearch,true);
+ const lab=corporationResearchGoal({points:50,laboratoryCost:100});assert.equal(lab.stage,'laboratory');assert.equal(lab.target,100);assert.equal(lab.progress,.5);assert.equal(lab.protectResearch,true);
  const pricing=corporationResearchGoal({laboratory:true,ta1:true,ta1Cost:10,ta2Cost:200,points:100});assert.equal(pricing.target,400);assert.equal(pricing.stage,'pricing');
  const done=corporationResearchGoal({laboratory:true,ta2:true},true);assert.equal(done.protectResearch,false);assert.equal(done.protectEngineering,false);
  assert.equal(corporationResearchGoal({laboratoryCost:Infinity}).target,null);

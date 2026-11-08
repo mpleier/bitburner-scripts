@@ -80,7 +80,7 @@ let ascensionRecoveries={};
 let lastPreparationReason='';
 let incomeFunding=null,incomeObservation=null,equipmentFundingQuote=null;
 let preparationPhase=null,pendingPowerPulse=null,powerCalibration=[];
-let wantedPreparation=null,expectedAscensions={},trainingReference=[],trainingEpisodes={},trainingValuationCursor=0,trainingDiagnostics=null,ascensionDiagnostics=null,ascensionValuationCursor=0;
+let wantedPreparation=null,expectedAscensions={},trainingReference=[],trainingEpisodes={},trainingValuationCursor=0,trainingDiagnostics=null,ascensionDiagnostics=null,ascensionValuationCursor=0,lastAscensionReason='',lastWantedEmergencyLog=0;
 let nextAttritionQuote=0;
 let aggressionQuote=null,nextAggressionQuote=0;
 let equipmentPurchaseCursor=null,comparisonTiming=[];
@@ -90,11 +90,12 @@ let purchaseGoal=null,growthFocus='respect',trainingPlans={},trainingForecasts={
 const argsSchema = [
     ['manual-task-overrides', '{}'], // Optional JSON member-to-task map. Clear it to resume full automation.
     ['gang-type', 'combat'], // Choose combat or hacking when creating a gang. Does not change an existing gang.
-    ['gang-faction', null], // Optional exact host; implies its gang type and waits for this faction.
+    ['gang-faction', 'Speakers for the Dead'], // Default host: strongest territory advantage in the current rival layout.
     ['gang-skip', []], // Factions that must not be used as a gang host.
 
     ['training-first', true], // Prioritize safe-warfare readiness, then return to balanced development.
     ['power-focus', true], // Enable power development; training-first limits priority to safe readiness.
+    ['power-training-always', true], // Keep combat training after safe readiness while no augmentation/recruitment goal is active.
     ['disable-adaptive-growth', false], // Use legacy training, ascension thresholds and price-ordered equipment.
     ['growth-horizon-minutes', 15], // Baseline modeled payback window; fresh route/recruitment evidence can extend it to an hour.
     ['disable-adaptive-horizon',false], // Keep the configured baseline; verified reset/route deadlines still cap it.
@@ -102,11 +103,12 @@ const argsSchema = [
     ['no-training', false], // Don't train unless all other tasks generate no gains or the member ascended recently (--min-training-ticks)
     ['aggressive-ascensions', true], // Forecast-gated two/three-member recovery pipeline at full crew.
     ['no-auto-ascending', false], // Don't ascend members
-    ['ignore-ascension-respect-loss', true], // Prioritize ascension growth without respect-loss caps or recruitment-respect holds.
-    ['ascend-multi-threshold', 1.01], // Minimum weighted multiplier gain; adaptive mode also requires a completed economic forecast.
+    ['ignore-ascension-respect-loss', false], // Preserve recruitment/respect progress until the crew is established.
+    ['ignore-ascension-equipment-cost', false], // Require replacement equipment to be funded before ascending.
+    ['ascend-multi-threshold', 1.03], // Require a meaningful stat gain instead of ascending on every 1% bump.
     ['ascend-multi-threshold-spacing', 0.01], // Additional member-index spacing in legacy mode (--disable-adaptive-growth).
     // Legacy defaults yield [1.13, 1.12, ..., 1.02]; adaptive mode uses the base threshold for every member.
-    ['min-training-ticks', 10], // Require this many ticks of training after ascending or recruiting to rebuild stats
+    ['min-training-ticks', 20], // Require this many ticks of training after ascending or recruiting to rebuild stats
     ['wanted-penalty-threshold', 0.03], // Higher wanted budget unlocks higher-respect tasks; capped at this production penalty.
     ['pre-roster-training', true], // Keep one bounded combat trainee while recruiting toward the full twelve-member roster.
     ['reserve', null], // Reserve this much cash before determining spending budgets (defaults to contents of reserve.txt if not specified)
@@ -116,7 +118,7 @@ const argsSchema = [
     ['money-focus', false], // Optimize for money only after territory exceeds 90%. Is otherwise balanced.
     ['disable-attrition', false], // Disable conservative early-warfare attrition forecasts.
     ['aggressive-warfare', true], // Forecast-gated 65% entry for 9–12-member crews; ordinary threshold remains the fallback.
-    ['warfare-win-chance', 0.70], // Minimum chance against every active rival.
+    ['warfare-win-chance', 0.60], // Minimum chance against every active rival.
     ['reputation-focus', false], // Always optimize gang crimes for maximum reputation gain. Is otherwise balanced.
 ];
 
@@ -132,8 +134,8 @@ export async function main(ns) {
     const runOptions = getConfiguration(ns, argsSchema);
     if (!runOptions || await instanceCount(ns) > 1) return; // Prevent multiple instances of this script from being started, even with different args.
     assignedTasks = {}, lastMemberReset = {}, nextRepRefresh = 0, nextRecruitCheck = 0;
-    gangRivalsSnapshot=null;ascensionRecoveries={};wantedPreparation=null;expectedAscensions={};trainingReference=[];trainingEpisodes={};trainingValuationCursor=0;trainingDiagnostics=null;ascensionDiagnostics=null;ascensionValuationCursor=0;equipmentValuationItems={};equipmentValuationCursor=0;trainingPlans={};trainingForecasts={};purchaseGoal=null;purchaseFocusQuote=null;purchaseFocusContext=null;purchaseTimingContext=null;growthFocus='respect';plannedAscensions=new Set();equipmentOpportunity=null;equipmentDiagnostics=null;
-    if(runOptions['training-first']==='false')runOptions['training-first']=false;else if(runOptions['training-first']==='true')runOptions['training-first']=true;
+    gangRivalsSnapshot=null;ascensionRecoveries={};wantedPreparation=null;expectedAscensions={};trainingReference=[];trainingEpisodes={};trainingValuationCursor=0;trainingDiagnostics=null;ascensionDiagnostics=null;ascensionValuationCursor=0;lastAscensionReason='';lastWantedEmergencyLog=0;equipmentValuationItems={};equipmentValuationCursor=0;trainingPlans={};trainingForecasts={};purchaseGoal=null;purchaseFocusQuote=null;purchaseFocusContext=null;purchaseTimingContext=null;growthFocus='respect';plannedAscensions=new Set();equipmentOpportunity=null;equipmentDiagnostics=null;
+    for(const flag of ['training-first','power-training-always','ignore-ascension-equipment-cost']){if(runOptions[flag]==='false')runOptions[flag]=false;else if(runOptions[flag]==='true')runOptions[flag]=true;}
     updateGrowthFocus.incomeSaveState=undefined;updateGrowthFocus.incomeReason=undefined;
     lastPreparationReason='';incomeFunding=null;incomeObservation=null;equipmentFundingQuote=null;preparationPhase=null;pendingPowerPulse=null;powerCalibration=[];
     options = runOptions; // We don't set the global "options" until we're sure this is the only running instance
@@ -558,7 +560,9 @@ async function optimizeGangCrime(ns, myGangInfo) {
     const protectedTaskFor=name=>memberProtectedTask(name)||supportTasks[name]||(statAnchor?.name===name?statAnchor.task:null);
     const dictMembers = await getGangInfoDict(ns, myGangMembers, 'getMemberInformation');
     // Tolerate our wanted level increasing, as long as reputation increases several orders of magnitude faster and we do not currently have a penalty more than -0.01%
-    const wantedGainTolerance=gangWantedTolerance(myGangInfo,wantedPenaltyThreshold);
+    // Wanted level cannot fall below 1, so at the floor the crew must accept
+    // wanted growth while it builds the Respect needed to dilute the penalty.
+    const wantedGainTolerance=myGangInfo.wantedLevel<=1.25?Math.max(1,gangWantedTolerance(myGangInfo,wantedPenaltyThreshold)):gangWantedTolerance(myGangInfo,wantedPenaltyThreshold);
     let optStat=await updateGrowthFocus(ns,myGangInfo,dictMembers);
     refreshForecastWantedLimits(dictMembers,myGangInfo);
     await refreshTrainingPlans(ns,dictMembers,myGangInfo);
@@ -689,6 +693,27 @@ async function optimizeGangCrime(ns, myGangInfo) {
         const trainingMembers=myGangMembers.filter(m=>protectedTaskFor(m));
         bestTaskAssignments=improveGangPlan(bestTaskAssignments,memberTaskRates,optStat,wantedGainTolerance,trainingMembers);
     }
+    // A large wanted backlog suppresses respect, power and ascension progress.
+    // Put every unprotected member on the best wanted-reduction task until the
+    // backlog is back inside the configured penalty band.
+    const wantedRatio=myGangInfo.wantedLevel/(Math.max(0,myGangInfo.respect)+Math.max(0,myGangInfo.wantedLevel));
+    const wantedEmergencyThreshold=Math.max(.1,wantedPenaltyThreshold*3);
+    if(Number.isFinite(wantedRatio)&&wantedRatio>wantedEmergencyThreshold&&myGangInfo.wantedLevel>1.25){
+        const forced={};
+        for(const name of myGangMembers){
+            const protectedName=protectedTaskFor(name),rows=memberTaskRates[name]||[];
+            const task=protectedName?rows.find(t=>t.name===protectedName):
+                rows.find(t=>t.name===strWantedReduction)||rows.filter(t=>Number.isFinite(t.wanted)&&t.wanted<0).sort((a,b)=>a.wanted-b.wanted)[0];
+            if(task)forced[name]=task;
+        }
+        if(Object.keys(forced).length===myGangMembers.length){
+            bestTaskAssignments=forced;
+            if(Date.now()-lastWantedEmergencyLog>=30000){
+                lastWantedEmergencyLog=Date.now();
+                log(ns,`INFO: Wanted emergency ${(wantedRatio*100).toFixed(1)}%; assigning all unprotected members to wanted reduction.`,false,'warning');
+            }
+        }
+    }
     // Linear-objective improvements can trade away the limiting resource. Keep
     // the selected feasible plan if the final allocation delays joint readiness.
     if(purchaseFocusQuote&&purchaseFocusContext&&optStat!=='stats'){
@@ -722,7 +747,7 @@ async function optimizeGangCrime(ns, myGangInfo) {
     } else
         log(ns, `INFO: Determined all ${myGangMembers.length} gang member assignments need no improvement in this pass for ${optStat} with wanted gain tolerance ${wantedGainTolerance.toPrecision(2)} (${elapsed} ms).`);
     // Fail-safe: Recover using the least costly members if observed wanted exceeds the plan.
-    if (myGangInfo.updateObserved!==false&&myGangInfo.wantedLevelGainRate > wantedGainTolerance) await fixWantedGainRate(ns, myGangInfo, wantedGainTolerance, memberTaskRates, optStat);
+    if (myGangInfo.updateObserved!==false&&myGangInfo.wantedLevelGainRate > wantedGainTolerance&&myGangInfo.wantedLevel>1.25) await fixWantedGainRate(ns, myGangInfo, wantedGainTolerance, memberTaskRates, optStat);
 }
 
 /** @param {NS} ns
@@ -785,8 +810,10 @@ async function tryAscendMembers(ns, gangInfo,trainingLocks=trainingEpisodes) {
     const powerContext=gangWarfareContext(gangInfo,lastOtherGangInfo?.gangs?lastOtherGangInfo:gangRivalsSnapshot,gangWarfareThreshold(),Date.now(),{detected:territoryTickDetected,paddingMs:territoryTickWaitPadding,intervalMs:updateInterval,restoreMs:postTickRestoreMs,periodMs:territoryTickTime,powerFocusEnabled:!options['disable-adaptive-growth']&&(options['power-focus']||!options['money-focus']),powerPriority:options['power-focus']===true,trainingFirst:gangTrainingFirst(),incomeFunding});
     const crimeStats=eligibilityMembers?gangAscensionTaskWeights(eligibilityMembers,dictAscensionResults,allTaskStats,(m,task)=>memberBestValue(m,gangInfo,null,task),importantStats):importantStats;
     const ascensionStats=gangPowerAscensionWeights(eligibilityMembers||{},crimeStats,!options['disable-adaptive-growth']&&powerContext.powerFocus);
+    const firstAscension=!!eligibilityMembers&&Object.values(eligibilityMembers).every(m=>['hack','str','def','dex','agi','cha'].every(k=>Number(m[k+'_asc_mult']??1)<=1+1e-9));
+    const ascendBase=firstAscension?Math.min(options['ascend-multi-threshold'],1.001):options['ascend-multi-threshold'];
     const candidates=chooseGangAscensions(dictAscensionResults,gangInfo,myGangMembers,ascensionStats,
-        options['ascend-multi-threshold'],options['ascend-multi-threshold-spacing'],options['disable-adaptive-growth']?1:12,!options['disable-adaptive-growth'],!options['disable-adaptive-growth'],options['ignore-ascension-respect-loss']===true).filter(c=>!options.manualTasks?.[c.name]);
+        ascendBase,options['ascend-multi-threshold-spacing'],options['disable-adaptive-growth']?1:12,!options['disable-adaptive-growth'],!options['disable-adaptive-growth'],options['ignore-ascension-respect-loss']===true).filter(c=>!options.manualTasks?.[c.name]);
     const plans=[];
     if(options['disable-adaptive-growth'])plans.push(...candidates.map(c=>({name:c.name,economics:null})));
     else if(candidates.length){
@@ -818,29 +845,58 @@ async function tryAscendMembers(ns, gangInfo,trainingLocks=trainingEpisodes) {
         const committedTraining=gangCommittedTraining({...trainingLocks,...ascensionRecoveries},members,lastMemberReset,sampledAt);
         const recoveryUntil=Object.fromEntries(Object.entries(ascensionRecoveries).filter(([,r])=>r.until>sampledAt).map(([n,r])=>[n,(r.until-sampledAt)/1000]));
         const recoveryTasks=Object.fromEntries(Object.entries(ascensionRecoveries).map(([n,r])=>[n,r.task]));
-        const crew=Object.keys(ascensions).length?forecastGangCrewAscensions({members,gang:gangInfo,training,tasks:allTaskStats,assignments:assignedTasks,fixedTasks:options.manualTasks||{},
+        const firstAvailable=firstAscension&&Object.keys(ascensions).length>0;
+        const crew=firstAvailable?{plans:[],deferred:[],diagnostics:{model:'first-ascension',simulations:0},forecasts:{},waitingForecasts:{},trainingAlternatives:{},nextOffset:ascensionValuationCursor}:Object.keys(ascensions).length?forecastGangCrewAscensions({members,gang:gangInfo,training,tasks:allTaskStats,assignments:assignedTasks,fixedTasks:options.manualTasks||{},
             evaluate:(m,g,task)=>memberBestValue(m,g,null,task),names:Object.keys(ascensions),ascensions,goals,warfare,committedTraining,recoveryUntil,recoveryTasks,mixedTraining:options['power-focus']===true,repeatAscensions:options['power-focus']===true,aggressiveAscensions:aggression.active,referenceTraining:trainingReference,developmentCycles:!options['no-training'],wantedPreparation:true,trainingOptions:['Train Combat','Train Hacking','Train Charisma'],
             economicReview:true,ignoreRespectLoss:options['ignore-ascension-respect-loss']===true,otherCashRate:context?.otherCashRate||0,horizonSeconds:growthHorizon.seconds,bonusSeconds:growthHorizon.bonusSeconds,
             windows:options['no-training']?[2,20,60,120,200,300].filter(seconds=>seconds<=options['min-training-ticks']*territoryTickTime/1000):[2,5,10,20,60,120,200,300],
             ascensionEligible:(m,state,reset)=>chooseGangAscensions({[m.name]:reset.result},state,myGangMembers,ascensionStats,
-                options['ascend-multi-threshold'],options['ascend-multi-threshold-spacing'],12,true,true,options['ignore-ascension-respect-loss']===true).some(candidate=>candidate.name===m.name),
+                ascendBase,options['ascend-multi-threshold-spacing'],12,true,true,options['ignore-ascension-respect-loss']===true).some(candidate=>candidate.name===m.name),
             waitWindows:[20,60,120],maxPlanningMs:aggression.active?200:150,maxSimulations:aggression.active?90:60,valuationOffset:ascensionValuationCursor}):{plans:[],diagnostics:{simulations:0},nextOffset:ascensionValuationCursor};
-        ascensionValuationCursor=crew.nextOffset;ascensionDiagnostics={passAt:sampledAt,...crew.diagnostics,aggression,policy:{economicReview:true,minimumIntervalMs:2000,concurrentRecovery:true,minimumMultiplier:options['ascend-multi-threshold'],respectLoss:options['ignore-ascension-respect-loss']?'ignored-by-request':'crew-forecast-with-wanted-and-recruitment-guards'},availability,forecasts:crew.forecasts,waitingForecasts:crew.waitingForecasts,trainingAlternatives:crew.trainingAlternatives,deferred:crew.deferred};
+        ascensionValuationCursor=crew.nextOffset;ascensionDiagnostics={passAt:sampledAt,...crew.diagnostics,aggression,policy:{economicReview:true,minimumIntervalMs:2000,concurrentRecovery:true,minimumMultiplier:ascendBase,firstAscension,respectLoss:options['ignore-ascension-respect-loss']?'ignored-by-request':'crew-forecast-with-wanted-and-recruitment-guards'},availability,forecasts:crew.forecasts,waitingForecasts:crew.waitingForecasts,trainingAlternatives:crew.trainingAlternatives,deferred:crew.deferred};
+        if(firstAvailable&&!plans.length){
+            const member=Object.keys(ascensions)[0],ascResult=dictAscensionResults[member],original=members[member];
+            plans.push({name:member,economics:{economicReview:false,adaptive:true,model:'first-ascension',name:member,member:original,ascension:ascResult,gang:gangInfo,
+                crewNames:myGangMembers.slice(),crewSnapshot:members,trainingSeconds:Math.max(1,options['min-training-ticks']*territoryTickTime/1000),trainingTask:gangTrainingTaskName(original.task,isHackGang),
+                paybackSeconds:0,horizonSeconds:Math.max(20,growthHorizon.seconds),netGain:1,respectLoss:Math.max(0,ascResult.respect||0),expiresAt:Date.now()+5000,ownerPid:ns.pid,cashAtQuote,warfare}});
+            ascensionDiagnostics.firstAscension=true;ascensionDiagnostics.reason='First ascension: immediate reset';
+        }
+        if(!plans.length&&!activeWantedPreparation()){
+            const highGainThreshold=Math.max(1.03,Number(options['ascend-multi-threshold'])+0.02);
+            const member=Object.keys(ascensions).find(name=>importantStats.some(k=>Number(dictAscensionResults[name]?.[k])>=highGainThreshold));
+            if(member){
+                const ascResult=dictAscensionResults[member],original=members[member],ignoreEquipmentCost=options['ignore-ascension-equipment-cost']!==false;
+                plans.push({name:member,economics:{economicReview:false,adaptive:true,model:'high-gain-bypass',name:member,member:original,ascension:ascResult,gang:gangInfo,
+                    crewNames:myGangMembers.slice(),crewSnapshot:members,trainingSeconds:Math.max(1,options['min-training-ticks']*territoryTickTime/1000),trainingTask:gangTrainingTaskName(original.task,isHackGang),
+                    paybackSeconds:0,horizonSeconds:Math.max(20,growthHorizon.seconds),netGain:1,respectLoss:Math.max(0,ascResult.respect||0),expiresAt:Date.now()+5000,ownerPid:ns.pid,cashAtQuote,warfare,
+                    aggressive:false,ignoreReplacementCost:ignoreEquipmentCost,replacementCash:0,replacementEquipment:[]}});
+                ascensionDiagnostics.highGainBypass={member,threshold:highGainThreshold};
+            }
+        }
         const quotedAt=Date.now();
         for(const plan of crew.deferred||[])if(Number.isFinite(plan.waitSeconds)&&plan.waitSeconds>0&&plan.waitSeconds<=120&&Number.isFinite(plan.production))expectedAscensions[plan.name]={at:quotedAt,until:quotedAt+plan.waitSeconds*1000};
         let funding=null;
         if(aggression.active)funding=await getNsDataThroughFile(ns,'({cash:ns.getServerMoneyAvailable("home"),reserve:Math.max(0,Number(ns.read("reserve.txt"))||0),prices:Object.fromEntries(JSON.parse(ns.args[0]).map(n=>[n,ns.gang.getEquipmentCost(n)]))})','/Temp/gang-aggressive-funding.txt',[JSON.stringify([...new Set(Object.values(members).flatMap(m=>m.upgrades))])]);
         for(const plan of (aggression.active?[...crew.plans].sort((a,b)=>Number(b.powerObjective===true)-Number(a.powerObjective===true)||(b.powerSecondsSaved||0)/Math.max(1,b.paybackSeconds)-(a.powerSecondsSaved||0)/Math.max(1,a.paybackSeconds)||a.trainingSeconds-b.trainingSeconds):crew.plans)){
             const member=plan.name,ascResult=dictAscensionResults[member],original=members[member];
-            const replacementCash=aggression.active?original.upgrades.reduce((sum,n)=>sum+(funding.prices[n]??Infinity),0):0;
-            const committed=Object.values(ascensionRecoveries).reduce((sum,r)=>sum+(r.replacementCash||0),0);
-            if(aggression.active&&(!Number.isFinite(replacementCash)||Math.min(funding.cash-Math.max(funding.reserve,Number(options['reserve'])||0),sharedGangAllowance(ns,funding.cash))<replacementCash+committed)){ascensionDiagnostics.reason='Aggressive replacement equipment not funded';continue;}
-            const economics={...plan,aggressive:aggression.active,replacementCash,replacementEquipment:original.upgrades,aggressiveLimit:aggression.limit,ownerPid:ns.pid,adaptive:true,restoreEquipment:false,name:member,member:original,ascension:ascResult,
+            const ignoreEquipmentCost=options['ignore-ascension-equipment-cost']!==false;
+            const replacementCash=aggression.active&&!ignoreEquipmentCost?original.upgrades.reduce((sum,n)=>sum+(funding.prices[n]??Infinity),0):0;
+            const committed=ignoreEquipmentCost?0:Object.values(ascensionRecoveries).reduce((sum,r)=>sum+(r.replacementCash||0),0);
+            if(!ignoreEquipmentCost&&aggression.active&&(!Number.isFinite(replacementCash)||Math.min(funding.cash-Math.max(funding.reserve,Number(options['reserve'])||0),sharedGangAllowance(ns,funding.cash))<replacementCash+committed)){ascensionDiagnostics.reason='Aggressive replacement equipment not funded';continue;}
+            const economics={...plan,aggressive:aggression.active,ignoreReplacementCost:ignoreEquipmentCost,replacementCash,replacementEquipment:ignoreEquipmentCost?[]:original.upgrades,aggressiveLimit:aggression.limit,ownerPid:ns.pid,adaptive:true,restoreEquipment:false,name:member,member:original,ascension:ascResult,
                 gang:gangInfo,crewNames:myGangMembers.slice(),crewSnapshot:members,cashAtQuote,warfare,
                 respectLoss:Math.max(0,ascResult.respect||0),expiresAt:sampledAt+5000};
             plans.push({name:member,economics});
         }
         if(!plans.length){
+            const deniedReasons=Object.entries(availability||{}).filter(([,a])=>a?.allowed===false).map(([name,a])=>name+': '+a.reason);
+            const forecastReasons=(crew.deferred||[]).map(p=>p.reason).filter(Boolean);
+            const deferredReason=aggression.limit===0?('Aggressive measurement gate: '+aggression.reason):
+                deniedReasons.length?deniedReasons.slice(0,4).join('; '):
+                forecastReasons.length?forecastReasons.slice(0,3).join('; '):
+                (candidates.length?'Forecast found no beneficial ascension':'No candidate above threshold');
+            ascensionDiagnostics.deferredReason=deferredReason;
+            if(deferredReason!==lastAscensionReason){lastAscensionReason=deferredReason;log(ns,'INFO: Ascension deferred: '+deferredReason,false,'info');}
             const cycle=crew.deferred?.filter(p=>!options.manualTasks?.[p.preparationMember]&&((p.preTrainingSeconds>0&&Number.isFinite(p.preTrainingSeconds)&&p.preTrainingSeconds<=120)||(p.preWantedSeconds>0&&Number.isFinite(p.preWantedSeconds)&&p.preWantedSeconds<=120&&myGangMembers.includes(p.preparationMember)))&&Number.isFinite(p.production))
                 .sort((a,b)=>b.production-a.production)[0];
             if(cycle&&!Object.values(trainingLocks).some(e=>e.until>Date.now())&&!Object.values(ascensionRecoveries).some(e=>e.until>Date.now())){
@@ -861,10 +917,12 @@ async function tryAscendMembers(ns, gangInfo,trainingLocks=trainingEpisodes) {
         plannedAscensions=new Set(plans.map(p=>p.name));
     }
     if(plans.some(p=>p.economics?.aggressive))await saveGangTraining(ns);
-    for(const {name:member,economics} of plans){
+    for(let planIndex=0;planIndex<plans.length;planIndex++){
+        const {name:member,economics}=plans[planIndex];
         const ascResult=dictAscensionResults[member];
+        const workerBase=economics?.model==='first-ascension'?1.001:options['ascend-multi-threshold'];
         let receipt;try{receipt=await getNsDataThroughFile(ns,`(${ascendGangMemberSafely.toString()})(ns,ns.args[0],JSON.parse(ns.args[2]),ns.args[3],ns.args[4],(${chooseGangAscensions.toString()}),ns=>(${gangMutationAllowed.toString()})(ns,ns.args[1]),JSON.parse(ns.args[5]),true,ns.args[6])`,
-            '/Temp/gang-ascend-member.txt',[member,ns.pid,JSON.stringify(ascensionStats),options['ascend-multi-threshold'],options['ascend-multi-threshold-spacing'],JSON.stringify(economics),options['ignore-ascension-respect-loss']===true]);}catch{receipt={success:false,reason:'worker-outcome-unknown',at:Date.now()};}
+            '/Temp/gang-ascend-member.txt',[member,ns.pid,JSON.stringify(ascensionStats),workerBase,options['ascend-multi-threshold-spacing'],JSON.stringify(economics),options['ignore-ascension-respect-loss']===true]);}catch{receipt={success:false,reason:'worker-outcome-unknown',at:Date.now()};}
         const attempt={name:member,at:Date.now(),success:receipt?.success===true,warfarePreserved:receipt?.warfarePreserved===true,reason:typeof receipt?.reason==='string'?receipt.reason:'invalid-worker-reply'};
         (ascensionDiagnostics.nativeAttempts??=[]).push(attempt);
         if(receipt?.success===true){
@@ -875,7 +933,32 @@ async function tryAscendMembers(ns, gangInfo,trainingLocks=trainingEpisodes) {
                 attempt.recovery={resetAt,until,expected:economics.recoveryStats,original:Object.fromEntries(['hack','str','def','dex','agi','cha'].map(k=>[k,economics.member[k]])),ascMults:Object.fromEntries(['hack','str','def','dex','agi','cha'].map(k=>[k,(economics.member[k+'_asc_mult']??1)*(ascResult[k]??1)])),augmentations:economics.member.augmentations};
                 ascensionRecoveries[member]={replacementCash:economics.replacementCash||0,replacementEquipment:economics.replacementEquipment||[],expected:economics.recoveryStats,resetAt,startedAt:resetAt,until,workUntil:until,task:assignedTasks[member],...(economics.mixedTraining?{mixedTraining:true,trainingSchedule:economics.trainingSchedule}:{})};}
             plannedAscensions.delete(member); // Buying equipment after the reset cannot discard it in that reset.
-            await saveGangTraining(ns);break;
+            if(options['ignore-ascension-equipment-cost']!==false&&typeof ns.getPlayer==='function'&&typeof ns.gang?.getMemberInformation==='function'&&gangMutationAllowed(ns,ns.pid)){
+                let cash=ns.getPlayer().money-Math.max(0,Number(ns.read('reserve.txt'))||0,Number(options.reserve)||0);
+                if(cash>0){
+                    const live=ns.gang.getMemberInformation(member);
+                    const missing=equipments.filter(e=>!live.upgrades.includes(e.name)&&!live.augmentations.includes(e.name))
+                        .map(e=>({name:e.name,cost:ns.gang.getEquipmentCost(e.name)}))
+                        .filter(e=>Number.isFinite(e.cost)&&e.cost>0).sort((a,b)=>a.cost-b.cost);
+                    let bought=0;
+                    for(const item of missing){if(item.cost>cash)break;if(ns.gang.purchaseEquipment(member,item.name)){cash-=item.cost;bought++;}}
+                    if(bought)log(ns,`Rebuilt ${bought} equipment/augmentation item(s) for ${member} after ascension.`);
+                }
+            }
+            await saveGangTraining(ns);
+            if(planIndex+1<plans.length){
+                const freshMembers=await getGangInfoDict(ns,myGangMembers,'getMemberInformation');
+                const freshGang=await getNsDataThroughFile(ns,'ns.gang.getGangInformation()');
+                for(let next=planIndex+1;next<plans.length;next++){
+                    const quote=plans[next].economics;
+                    if(!quote)continue;
+                    quote.crewSnapshot=freshMembers;
+                    quote.gang=freshGang;
+                    quote.cashAtQuote=null;
+                    quote.expiresAt=Date.now()+5000;
+                    if(freshMembers[plans[next].name])quote.member=freshMembers[plans[next].name];
+                }
+            }
         }
     }
 }
@@ -1067,11 +1150,29 @@ async function tryUpgradeMembers(ns, dictMembers) {
         equipmentOpportunity=opportunity?{powerObjective:opportunity.powerObjective,powerGainPerTick:opportunity.powerGainPerTick,powerPaybackSeconds:opportunity.powerPaybackSeconds,paybackSeconds:opportunity.paybackSeconds,cashPaybackSeconds:opportunity.cashPaybackSeconds,valuePaybackSeconds:opportunity.valuePaybackSeconds,cost:opportunity.cost,reason:opportunity.reason,recruitSecondsSaved:opportunity.recruitSecondsSaved}:null;
         equipmentDiagnostics={...plan.diagnostics,developmentChecks,developmentComparisons,comparisonTiming,comparisonBudget:{candidateLimit:comparisonBudget.candidateLimit,perComparisonMs:comparisonBudget.perComparisonMs,reason:comparisonBudget.reason},ownership:Object.fromEntries(Object.values(dictMembers).map(m=>[m.name,{upgrades:m.upgrades,augmentations:m.augmentations}]))};
         orders=plan.orders;
+        // Always allow a small number of genuinely cheap missing items, even
+        // when no marginal upgrade passes the ROI forecast.
+        if(Array.isArray(orders)&&homeMoney>0){
+            let cheapFloor=0;
+            for(const member of myGangMembers){
+                const live=dictMembers[member];if(!live)continue;
+                for(const equip of equipments){
+                    if(equip.type!=='Augmentation'&&plannedAscensions.has(member))continue;
+                    if((live.upgrades||[]).includes(equip.name)||(live.augmentations||[]).includes(equip.name))continue;
+                    if(!(equip.cost>0)||equip.cost>homeMoney*.001)continue;
+                    if(orders.some(order=>order.member===member&&order.equipmentName===equip.name))continue;
+                    orders.push({member,equipmentName:equip.name,type:equip.type,cost:equip.cost,reason:'cheap',cheapFraction:.001});
+                    if(++cheapFloor>=4)break;
+                }
+                if(cheapFloor>=4)break;
+            }
+            if(cheapFloor)equipmentDiagnostics.cheapFloor=cheapFloor;
+        }
         const fundingOpportunity=plan.fundingOpportunity;
         const fundingItems=fundingOpportunity?(fundingOpportunity.items?.map(e=>({member:fundingOpportunity.member,equipmentName:e.name}))||[{member:fundingOpportunity.member,equipmentName:fundingOpportunity.equipmentName}]):[];
         equipmentFundingQuote={at:Date.now(),nodeReset:resetInfo.lastNodeReset,augReset:resetInfo.lastAugReset,faction:gang.faction,members:Object.keys(dictMembers),
             complete:!plan.diagnostics.timeLimited&&!plan.diagnostics.skippedEvaluations&&!plan.diagnostics.deferredForecasts&&!plan.diagnostics.bundleSearchLimited,orders:fundingItems};
-        await ns.write('tasks/gang-growth.json',JSON.stringify({schemaVersion:2,at:Date.now(),pid:ns.pid,nodeReset:resetInfo.lastNodeReset,augReset:resetInfo.lastAugReset,powerPriority:options['power-focus']===true,powerFocus:warfare.powerFocus===true,incomePersistence:updateGrowthFocus.incomeSaveState??null,incomeContribution:incomeObservation?{known:incomeObservation.known,at:incomeObservation.rateAt,gangRate:incomeObservation.gangRate,externalRate:incomeObservation.externalRate,gangShare:incomeObservation.gangShare,observedGangShare:incomeObservation.observedGangShare,observedGangRate:incomeObservation.observedGangRate,observedExternalRate:incomeObservation.observedExternalRate}:null,incomeFunding,equipmentFundingQuote,equipmentOpportunity,equipmentDiagnostics,horizon:growthHorizon,expectedAscensions,wantedPreparation,recruitmentSprint:trainingDiagnostics?.recruitmentSprint===true}),'w');
+        await ns.write('tasks/gang-growth.json',JSON.stringify({schemaVersion:2,at:Date.now(),pid:ns.pid,nodeReset:resetInfo.lastNodeReset,augReset:resetInfo.lastAugReset,powerPriority:options['power-focus']===true,powerFocus:warfare.powerFocus===true,incomePersistence:updateGrowthFocus.incomeSaveState??null,incomeContribution:incomeObservation?{known:incomeObservation.known,at:incomeObservation.rateAt,gangRate:incomeObservation.gangRate,externalRate:incomeObservation.externalRate,gangShare:incomeObservation.gangShare,observedGangShare:incomeObservation.observedGangShare,observedGangRate:incomeObservation.observedGangRate,observedExternalRate:incomeObservation.observedExternalRate}:null,incomeFunding,equipmentFundingQuote,equipmentOpportunity,equipmentDiagnostics,horizon:growthHorizon,expectedAscensions,wantedPreparation,ascension:ascensionDiagnostics?{at:ascensionDiagnostics.passAt,deferredReason:ascensionDiagnostics.deferredReason??null,availability:ascensionDiagnostics.availability??null,aggression:ascensionDiagnostics.aggression??null,firstAscension:ascensionDiagnostics.firstAscension===true,highGainBypass:ascensionDiagnostics.highGainBypass??null,policy:ascensionDiagnostics.policy??null,nativeAttempts:(ascensionDiagnostics.nativeAttempts||[]).slice(-3)}:null,recruitmentSprint:trainingDiagnostics?.recruitmentSprint===true}),'w');
     }
     const receipts=await doUpgradePurchases(ns, orders, reserve);
     if(equipmentDiagnostics)equipmentDiagnostics.receipts=receipts;
@@ -1282,7 +1383,11 @@ async function saveGangTraining(ns){
 function sharedGangAllowance(ns,fallback){
  try{const p=JSON.parse(ns.read('tasks/spending-plan.json'));if(p.expiresAt>Date.now()&&p.reset===resetInfo.lastAugReset&&ns.isRunning(p.ownerPid)){
     let used=0;try{const u=JSON.parse(ns.read('tasks/spending-usage.json'));if(u.epoch===p.epoch)used=Number(u.spent?.gang)||0;}catch{}
-    return Math.max(0,(Number(p.allowances?.gang)||0)-used);
+    const allowance=Number(p.allowances?.gang)||0;
+    // A zero allowance usually comes from a global hacking/augmentation reserve.
+    // Early gangs still need cheap equipment to grow power, so fall back instead
+    // of treating that reserve as a hard prohibition on gang investment.
+    if(allowance>0)return Math.max(0,allowance-used);
  }}catch{}return fallback;
 }
 async function updateGrowthFocus(ns,gang,members){
@@ -1334,9 +1439,12 @@ async function updateGrowthFocus(ns,gang,members){
  }
  growthFocus=gangFocus({reputationFocus:options['reputation-focus'],moneyFocus:options['money-focus'],members:myGangMembers.length,
   factionRep:factionRep??0,requiredRep,money,respect:gang.respect,goal:options['disable-adaptive-growth']?null:purchaseGoal,purchaseForecast:purchaseFocusQuote,incomeFunding});
- if(options['training-first']===true&&options['power-focus']===true&&gangStatPriorityAllowed({preparation:preparationFor(gang),funding:incomeFunding,members:myGangMembers.length,options}))growthFocus='stats';
+ const augmentationClose=!!purchaseGoal&&Number.isFinite(purchaseFocusQuote?.etaSeconds)&&purchaseFocusQuote.etaSeconds<=600;
+ const powerTrainingAlways=options['power-training-always']===true&&!augmentationClose&&Number.isFinite(factionRep)&&factionRep>=requiredRep;
+ const statOptions={...options,'power-training-always':powerTrainingAlways};
+ if(options['training-first']===true&&options['power-focus']===true&&gangStatPriorityAllowed({preparation:preparationFor(gang),funding:incomeFunding,members:myGangMembers.length,options:statOptions}))growthFocus='stats';
  growthFocus=gangTerritoryDevelopmentFocus(gang,myGangMembers.length,growthFocus,options);
- const focusReason=!gangMoneyAllowed(gang)?'Broad gang income deferred until 90% territory; bounded funding exceptions enabled; prioritizing '+growthFocus:growthFocus==='stats'?'Prioritizing gang stat growth until safe clash readiness; retaining a cash producer':null;
+ const focusReason=!gangMoneyAllowed(gang)?'Broad gang income deferred until 90% territory; bounded funding exceptions enabled; prioritizing '+growthFocus:growthFocus==='stats'?'Prioritizing gang stat growth'+(powerTrainingAlways?' for sustained power':' until safe clash readiness')+'; retaining a cash producer':null;
  if(focusReason&&updateGrowthFocus.statReason!==focusReason)ns.print?.('INFO: '+focusReason);updateGrowthFocus.statReason=focusReason;
  const incomeReason=(!gangMoneyAllowed(gang)?'territory-locked':incomeFunding.reason)+':'+(incomeObservation.known?'measured':'sampling');
  if(updateGrowthFocus.incomeReason!==incomeReason){updateGrowthFocus.incomeReason=incomeReason;ns.print?.('INFO: Gang income priority: '+(!gangMoneyAllowed(gang)?'Broad income deferred; bounded funding exceptions enabled':incomeFunding.reason)+(Number.isFinite(incomeObservation.gangShare)?' (gang '+(incomeObservation.gangShare*100).toFixed(1)+'% of conservatively credited recurring income)':' (income sampling)'));}

@@ -22,8 +22,11 @@ export async function main(ns) {
       if (!file.endsWith('.json') || file.includes('summary')) continue;
       try {
         const receipt = JSON.parse(ns.read(file));
-        if (!receipt?.host || !Number.isFinite(receipt.at)) continue;
-        const modelId = ns.dnet.getServerDetails(receipt.host).modelId;
+        if (!receipt?.host || !Number.isFinite(receipt.at) || !(Number(receipt?.totals?.augmentations) > 0)) continue;
+        let modelId = receipt.modelId;
+        if (!modelId) {
+          try { modelId = ns.dnet.getServerDetails(receipt.host).modelId; } catch { }
+        }
         if (modelId === '(The Labyrinth)') candidates.push(receipt.host);
       } catch { }
     }
@@ -34,6 +37,7 @@ export async function main(ns) {
     try {
       const receipt = JSON.parse(ns.read('tasks/dnet-cache-rewards-' + encodeURIComponent(host) + '.json'));
       if (receipt?.host === host && Number.isFinite(receipt.at) &&
+          Number(receipt?.totals?.augmentations) > 0 &&
           receipt.nodeReset === reset.lastNodeReset && receipt.augReset === reset.lastAugReset) {
         receipts.push(receipt);
       }
@@ -50,7 +54,7 @@ export async function main(ns) {
     if (ns.isRunning('ascend.js')) return;
 
     // ascend.js performs the faction purchase pass, then installs and resets.
-    const pid = ns.run('ascend.js', 1, '--install-augmentations', true, '--on-reset-script', 'daemon.js');
+    const pid = ns.run('ascend.js', 1, '--install-augmentations', true, '--on-reset-script', 'bootstrap-start.js');
     if (!pid) return;
 
     ns.write(markerFile, JSON.stringify({

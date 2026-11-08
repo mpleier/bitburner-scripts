@@ -118,7 +118,7 @@ test('ordinary supervisor passes omit the larger aggressive validator',async t=>
 });
 test('controller and supervisor wire independent proof validation and preserve default threshold',()=>{
  const source=readFileSync(new URL('../gangs.js',import.meta.url),'utf8'),supervisor=readFileSync(new URL('../reliability-manager.js',import.meta.url),'utf8');
- assert.match(source,/warfare-win-chance', 0.70/);assert.match(source,/aggressive-warfare', true/);assert.match(source,/expiresAt:at\+5000/);assert.match(source,/adaptiveCooldownRequired:true/);assert.match(source,/routine\|\|aggressive/);assert.match(source,/conditionalAggression:options/);
+ assert.match(source,/warfare-win-chance', 0.60/);assert.match(source,/aggressive-warfare', true/);assert.match(source,/expiresAt:at\+5000/);assert.match(source,/adaptiveCooldownRequired:true/);assert.match(source,/routine\|\|aggressive/);assert.match(source,/conditionalAggression:options/);
  assert.match(supervisor,/gangAggressionGuardSource\(\)/);assert.match(supervisor,/gang-aggression-guard.json/);
 });
 test('strong nine to twelve member crews can use the 65% forecast with unchanged full-tail loss budgets',()=>{

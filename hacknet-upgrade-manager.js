@@ -90,7 +90,13 @@ function setStatus(ns, logMessage) {
 /** @param {NS} ns **/
 export function upgradeHacknet(ns,maxSpend,maxPayoffTimeSeconds=3600,options={}) {
  if(isScriptPaused(ns,ns.getScriptName())||maintenanceRequested(ns)||!achievementActionAllowed(ns,'hacknetExpense'))return 0;
- const count=ns.hacknet.numNodes(),servers=hacknetServerMode(ns.getResetInfo(),count?ns.hacknet.getNodeStats(0):null);
+ const reset=ns.getResetInfo();
+ let maxOut=false;
+ try{
+  const m=JSON.parse(ns.read('tasks/hacknet-maxout.json'));
+  maxOut=m?.version===1&&m.active===true&&m.nodeReset===reset.lastNodeReset&&m.augReset===reset.lastAugReset&&Number.isFinite(m.expiresAt)&&m.expiresAt>Date.now();
+ }catch{}
+ const count=ns.hacknet.numNodes(),servers=hacknetServerMode(reset,count?ns.hacknet.getNodeStats(0):null);
  const multiplier=ns.getPlayer().mults.hacknet_node_money*(options.productionMultiplier??1);
  let hashValue=1;
  if(servers){
@@ -98,7 +104,7 @@ export function upgradeHacknet(ns,maxSpend,maxPayoffTimeSeconds=3600,options={})
   // price. The old hardcoded 250k/hash is only correct while the hash cost is 4.
   try{const hashCost=ns.hacknet.hashCost('Sell for Money');hashValue=Number.isFinite(hashCost)&&hashCost>0?1e6/hashCost:250000;}catch{hashValue=250000;}
  }
- const reserve=Math.max(0,Number(options.reserve??ns.read('reserve.txt'))||0),funds=Math.min(maxSpend,ns.getPlayer().money-reserve);
+ const reserve=maxOut?0:Math.max(0,Number(options.reserve??ns.read('reserve.txt'))||0),funds=Math.min(maxSpend,ns.getPlayer().money-reserve);
  const candidates=[];
  const add=(candidate,gain)=>{if(Number.isFinite(candidate.cost)&&candidate.cost>0&&Number.isFinite(gain)&&gain>0){candidate.payoff=candidate.cost/(gain*hashValue);candidate.gain=gain;candidates.push(candidate);}};
  for(let i=0;i<count;i++){
@@ -115,10 +121,12 @@ export function upgradeHacknet(ns,maxSpend,maxPayoffTimeSeconds=3600,options={})
   payoffLimit=hacknetPayoffLimit(maxPayoffTimeSeconds,plan,reset,now,ownerAlive);
   isCashBottleneck=payoffLimit<maxPayoffTimeSeconds||(reset.currentNode!==9&&ownerAlive&&plan?.reset===reset.lastAugReset&&plan?.expiresAt>now&&plan?.epoch<=now&&plan?.signals?.bottleneck==='cash');
  }
- const useful=candidates.filter(c=>c.payoff<=payoffLimit&&(!options['adaptive-tiers']||hacknetTierEligible(c,ns.getPlayer().money))).sort((a,b)=>a.payoff-b.payoff);
+ if(maxOut){payoffLimit=Infinity;isCashBottleneck=false;}
+ const useful=candidates.filter(c=>(maxOut||c.payoff<=payoffLimit)&&(maxOut||!options['adaptive-tiers']||hacknetTierEligible(c,ns.getPlayer().money)))
+  .sort((a,b)=>(maxOut?(Number(b.kind==='node')-Number(a.kind==='node')):0)||a.payoff-b.payoff);
  const affordable=useful.filter(c=>c.cost<=funds);
  // Preserve financial eligibility and wallet limits; rank value only orders eligible upgrades.
- const rankContext=servers&&!isCashBottleneck?readRankHashUpgradeContext(ns):null;
+ const rankContext=!maxOut&&servers&&!isCashBottleneck?readRankHashUpgradeContext(ns):null;
  if(rankContext){
   for(const c of affordable)c.rankValue=rankHashUpgradeValue(c,rankContext);
   affordable.sort((a,b)=>(b.rankValue?.secondsSavedPerDollar??0)-(a.rankValue?.secondsSavedPerDollar??0)||a.payoff-b.payoff);

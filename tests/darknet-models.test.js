@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { modelCandidates, solveFeedbackPassword, evalArithmetic, isStalledScout } from '../darknet-solvers.js';
+import { modelCandidates, solveFeedbackPassword, evalArithmetic, isStalledScout, passwordLengthMatches, passwordHintCandidates } from '../darknet-solvers.js';
 
 function simulation(modelId, password, feedback, format = 'numeric') {
   const logs = [], guesses = [];
@@ -21,10 +21,24 @@ test('static decoders are integrated without evaluating injected game hints', ()
   assert.deepEqual(modelCandidates({ modelId: 'BellaCuore', data: 'XIV' }), ['14']);
   assert.deepEqual(modelCandidates({ modelId: 'OctantVoxel', data: '16,FF' }), ['255']);
   assert.deepEqual(modelCandidates({ modelId: 'Pr0verFl0', passwordLength: 4 }), ['AAAAAAAA']);
+  assert.equal(passwordLengthMatches({ modelId: 'Pr0verFl0', passwordLength: 4 }, 'AAAA'), true);
+  assert.equal(passwordLengthMatches({ modelId: 'Pr0verFl0', passwordLength: 4 }, 'AAAAAAAA'), true);
+  assert.equal(passwordLengthMatches({ modelId: 'Pr0verFl0', passwordLength: 4 }, 'AAA'), false);
+  assert.equal(passwordLengthMatches({ modelId: 'FreshInstall_1.0', passwordLength: 4 }, 'AAAAAAAA'), false);
   assert.equal(evalArithmetic('(2+3)*4'), 20);
+  assert.equal(evalArithmetic('2^3+1'), 9);
+  assert.equal(evalArithmetic('2**3+1'), 9);
   assert.equal(evalArithmetic('(2+3'), null);
   assert.equal(evalArithmetic('2.3.4'), null);
   assert.equal(evalArithmetic('globalThis.process.exit()'), null);
+});
+
+test('password hints only supply explicit candidates', () => {
+  assert.deepEqual(passwordHintCandidates({passwordHint: 'The password is "hunter2"'}), ['hunter2']);
+  assert.deepEqual(passwordHintCandidates({passwordHint: 'Your PIN is: 0421'}), ['0421']);
+  assert.deepEqual(passwordHintCandidates({passwordHint: 'The code is 73'}), ['73']);
+  assert.deepEqual(passwordHintCandidates({passwordHint: "The password isn't set"}), []);
+  assert.deepEqual(passwordHintCandidates({passwordHint: 'There is no password'}), []);
 });
 
 test('number feedback uses logarithmic search', async () => {

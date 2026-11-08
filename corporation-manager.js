@@ -85,6 +85,7 @@ export async function main(ns) {
   // ---- Hacknet server management ----------------------------------------
   const BUY_HACKNET_SERVERS = true;
   const HACKNET_SPEND_FRACTION = 0.05;
+  const HACKNET_GROWTH_CARVEOUT = 0.05;
   const HACKNET_MAX_SERVERS = 20;
   const HACKNET_CACHE_TARGET = 4;
 
@@ -171,7 +172,11 @@ export async function main(ns) {
     const label = selfFund ? "self-fund" : "seed";
     const eligible = safe(`Check ${label} eligibility`, () => c.canCreateCorporation(selfFund));
     if (eligible !== "Success") return { ok: false, reason: `${label}: ${String(eligible)}` };
-    if(selfFund&&!claimSpending(ns,'corporation',150e9))return {ok:false,reason:'Waiting for corporation funding allowance'};
+    // A daemon-only run has no autopilot-managed allowance to consult. In that
+    // mode the explicit wallet/reserve check above is the authoritative guard;
+    // otherwise a stale managed plan could block startup forever.
+    const supervised = ns.ps('home').some(p => p.filename.replace(/^\//, '') === 'autopilot.js');
+    if(selfFund&&supervised&&!claimSpending(ns,'corporation',150e9))return {ok:false,reason:'Waiting for corporation funding allowance'};
     safe(`Create corporation (${label})`, () => c.createCorporation(name, selfFund));
     if (safe("Confirm corporation", () => c.hasCorporation()) === true)
       return { ok: true, label };
@@ -190,11 +195,43 @@ export async function main(ns) {
     await ns.sleep(60_000);
   }
 
+  // Staff existing offices before spending $9b opening another empty city.
+  const officesUnderstaffed = () => divisions().some(name => {
+    const info = safe(`Read understaffed division ${name}`, () => c.getDivision(name));
+    return (info?.cities || []).some(city => {
+      const office = safe(`Read understaffed office ${name}/${city}`, () => c.getOffice(name, city));
+      return office && Number(office.size) < 9;
+    });
+  });
+  // While the next office increment is the gate to city expansion, preserve cash
+  // instead of spending it on optional boosts, adverts, products or upgrades.
+  const criticalOfficeFunding = () => {
+    if (growthGoal && /^(Expand |Unlock Warehouse API)/.test(growthGoal.label)) {
+      const free = Math.max(0, funds() - reserve);
+      if (growthGoal.cost > free)
+        return {kind:'expansion',label:growthGoal.label,cost:growthGoal.cost,gap:growthGoal.cost-free};
+    }
+    for (const division of divisions()) {
+      const d = safe(`Read office funding division ${division}`, () => c.getDivision(division));
+      if (!d || d.cities?.length !== 1) continue;
+      const city = d.cities[0], office = safe(`Read office funding office ${division}/${city}`, () => c.getOffice(division, city));
+      if (!office || !(Number(office.size) < 9)) continue;
+      const add = Math.min(3, 9 - Number(office.size));
+      const cost = Number(safe(`Quote office funding ${division}/${city}`, () => c.getOfficeSizeUpgradeCost(division, city, add)));
+      const free = Math.max(0, funds() - reserve);
+      if (Number.isFinite(cost) && cost > 0 && cost > free)
+        return {division, city, size: Number(office.size), cost, gap: cost - free};
+    }
+    return null;
+  };
+
   const expand = (division, city) => {
     const d = safe(`Read division ${division}`, () => c.getDivision(division));
     if (!d || d.cities.includes(city) || !hasUnlock('Warehouse API')) return;
     // Finish existing sites before committing another office-only expansion.
     if(d.cities.some(location=>safe('Expansion prerequisite warehouse',()=>c.hasWarehouse(division,location))!==true))return;
+    // An understaffed office is a stronger growth lever than another empty city.
+    if(typeof officesUnderstaffed==='function'&&officesUnderstaffed())return;
     const officeCost=Number(constants.officeInitialCost)||4e9,warehouseCost=Number(constants.warehouseInitialCost)||5e9;
     const packageCost=officeCost+warehouseCost+20e6;
     capitalPurchase(`Expand ${division} to ${city}`,packageCost,()=>{
@@ -239,6 +276,7 @@ export async function main(ns) {
   const expansionFundingActive=()=>!!growthGoal&&/^(Expand |Unlock Warehouse API)/.test(growthGoal.label);
   const hireAdVert=division=>{if(expansionFundingActive())return;advertQueue.add(division);};
   const buyAdVert = (division) => {
+    if (criticalOfficeFunding()) return;
     const d=safe('Read advertising division',()=>c.getDivision(division));
     let goals;try{goals=JSON.parse(ns.read('tasks/achievement-goals.json'));}catch{}
     if(!d||supportAdvertLimit(d,goals?.expiresAt>Date.now()&&goals.finance)||d.awareness===Number.MAX_VALUE&&d.popularity===Number.MAX_VALUE)return;
@@ -325,6 +363,7 @@ export async function main(ns) {
     for(const division of divisions()){
       const d=safe('Read expansion funding division',()=>c.getDivision(division));
       if(!d||d.cities?.length!==1||d.cities.some(city=>safe('Read expansion funding warehouse',()=>c.hasWarehouse(division,city))!==true))continue;
+      if(typeof officesUnderstaffed==='function'&&officesUnderstaffed())return null;
       const cashGap=Math.max(0,packageCost-Math.max(0,funds()-reserve));
       if(cashGap>0)return {label:'Expand '+division+' to a second city',cost:packageCost,cashGap,priority:3};
     }
@@ -354,15 +393,29 @@ export async function main(ns) {
     });
     const expansionFunding=firstExpansionFunding();
     let liveFunding=growthGoal?{...growthGoal,cashGap:Math.max(0,growthGoal.cost-Math.max(0,funds()-reserve))}:expansionFunding;
-    // Expansion packages exceed one bounded 5,000-hash quote. Fund one receipt at a time;
-    // the next corporation cycle re-quotes the remaining gap.
-    if(liveFunding&&/^(Expand |Unlock Warehouse API)/.test(liveFunding.label))liveFunding={...liveFunding,cashGap:Math.min(liveFunding.cashGap,1e9),staged:true};
-    hashMilestone=quoteCorporateHashes(liveFunding,!growthGoal&&expansionFunding?[]:research,liveFunding?.staged?20000:5000,liveFunding?.staged?32:16);
+    // Fund as many complete $1b receipts as the current hash balance can pay for.
+    if(liveFunding&&/^(Expand |Unlock Warehouse API)/.test(liveFunding.label)){
+      const receiptHashes=Math.max(1,Number(cSafeHashCost('Sell for Corporation Funds',1))||500);
+      const receipts=Math.max(1,Math.floor(available/receiptHashes));
+      liveFunding={...liveFunding,cashGap:Math.min(liveFunding.cashGap,receipts*1e9),staged:true};
+    }
+    const hashBudget=Math.max(1,Math.min(available,liveFunding?.staged?20000:5000));
+    const researchMilestone=research.length?quoteCorporateHashes(null,research,hashBudget,liveFunding?.staged?32:16):null;
+    hashMilestone=researchMilestone||quoteCorporateHashes(liveFunding,!growthGoal&&expansionFunding?[]:research,hashBudget,liveFunding?.staged?32:16);
     // If the current hash balance is below the next receipt, still publish the target so
     // other consumers reserve hashes instead of spending the corporation's ramp.
     if(!hashMilestone&&liveFunding?.staged){
       const cost=Number(cSafeHashCost('Sell for Corporation Funds',1));
       if(Number.isFinite(cost)&&cost>0)hashMilestone={action:'Sell for Corporation Funds',label:liveFunding.label,gap:1e9,reward:1e9,purchases:1,totalHashes:cost,target:liveFunding.cost,staged:true};
+    }
+    // Publish a research hash target only when the current balance can fund
+    // it. An unaffordable staged target would block every other hash use.
+    if(!hashMilestone&&research.length){
+      const r=research[0],gap=Math.max(1,r.cost-r.points),purchases=Math.min(16,Math.ceil(gap/1000));
+      if(purchases>=1){
+        const cost=Number(cSafeHashCost('Exchange for Corporation Research',purchases));
+        if(Number.isFinite(cost)&&cost>0&&cost<=available)hashMilestone={action:'Exchange for Corporation Research',label:r.division+': '+r.name,gap,reward:1000,purchases,totalHashes:cost,division:r.division,research:r.name,target:r.cost,staged:true};
+      }
     }
     await ns.write('tasks/corporation-hash-goal.json',JSON.stringify({schemaVersion:2,at:Date.now(),ownerPid:ns.pid,nodeReset:resetInfo.lastNodeReset,augReset:resetInfo.lastAugReset,priority:growthPriority,milestone:hashMilestone}),'w');
     if(!canManage())return null;
@@ -402,9 +455,27 @@ export async function main(ns) {
     try { numNodes = ns.hacknet.numNodes(); }
     catch { return; }
     const playerReserve = Math.max(0, Number(ns.read('reserve.txt')) || 0);
-    let budget = Math.max(0, ns.getPlayer().money - playerReserve) * HACKNET_SPEND_FRACTION;
-    const canSpend = cost => Number.isFinite(cost) && cost > 0 && cost <= budget && ns.getPlayer().money >= cost + playerReserve;
-    if (budget <= 0) return;
+    const normalRemaining = Math.max(0, ns.getPlayer().money - playerReserve) * HACKNET_SPEND_FRACTION;
+    // Hash production is a direct corporation-growth input. While the corporation
+    // is in a growth phase, allow a small carve-out from the player reserve so a
+    // large reserve cannot make every Hacknet upgrade unaffordable.
+    let growthRemaining = growthPriority && hashMilestone ? Math.max(0, ns.getPlayer().money * HACKNET_GROWTH_CARVEOUT - normalRemaining) : 0;
+    let normalAvailable = normalRemaining;
+    const canSpend = cost => Number.isFinite(cost) && cost > 0 &&
+      ((cost <= normalAvailable && ns.getPlayer().money >= cost + playerReserve) ||
+       (cost <= growthRemaining && ns.getPlayer().money >= cost));
+    const claimHacknet = cost => {
+      if (cost <= normalAvailable && ns.getPlayer().money >= cost + playerReserve && claimSpending(ns, "hacknet", cost)) {
+        normalAvailable -= cost;
+        return true;
+      }
+      if (cost <= growthRemaining && ns.getPlayer().money >= cost) {
+        growthRemaining -= cost;
+        return true;
+      }
+      return false;
+    };
+    if (normalAvailable + growthRemaining <= 0) return;
 
     let bought = 0;
     while (numNodes < HACKNET_MAX_SERVERS && bought < 3) {
@@ -412,11 +483,10 @@ export async function main(ns) {
       try { cost = ns.hacknet.getPurchaseNodeCost(); }
       catch { cost = Infinity; }
       if (!canSpend(cost)) break;
-      try { if(claimSpending(ns,"hacknet",cost))ns.hacknet.purchaseNode(); }
+      try { if (!claimHacknet(cost)) break; ns.hacknet.purchaseNode(); }
       catch { break; }
       const after = ns.hacknet.numNodes();
       if (after <= numNodes) break;
-      budget = Math.max(0, budget - cost);
       numNodes = after;
       bought++;
     }
@@ -441,7 +511,7 @@ export async function main(ns) {
         if (!canSpend(cost)) continue;
         if (!bestCache || cost < bestCache.cost) bestCache = { i, cost };
       }
-      if (bestCache && canSpend(bestCache.cost) && claimSpending(ns,"hacknet",bestCache.cost)) {
+      if (bestCache && canSpend(bestCache.cost) && claimHacknet(bestCache.cost)) {
         attempt(`Upgrade cache on node ${bestCache.i}`, () => ns.hacknet.upgradeCache(bestCache.i, 1));
         return;
       }
@@ -470,7 +540,7 @@ export async function main(ns) {
         if (!best || ratio > best.ratio) best = { ...cand, i, ratio };
       }
     }
-    if (!best || !canSpend(best.cost) || !claimSpending(ns,"hacknet",best.cost)) return;
+    if (!best || !canSpend(best.cost) || !claimHacknet(best.cost)) return;
     const upgradeFns = {
       level: () => ns.hacknet.upgradeLevel(best.i, 1),
       ram:   () => ns.hacknet.upgradeRam(best.i, 1),
@@ -582,6 +652,10 @@ export async function main(ns) {
       ? (funds() > 1e15 ? 120 : funds() > 1e14 ? 100 : funds() > 1e13 ? 80 : funds() > 1e12 ? 60 : 30)
       : (funds() > 1e13 ? 60 : funds() > 5e12 ? 45 : funds() > 1e12 ? 30 : funds() > 1e11 ? 20 : funds() > 1e10 ? 15 : funds() > 1e9 ? 9 : 3);
       if(productDivision&&!developing)target=Math.max(9,Math.floor(target/2));
+      // A one-city division must reach nine employees before the city-expansion
+      // gate opens; do not let the cash-tier target fall back to three after
+      // the first office purchase.
+      if(!productDivision&&(divisionInfo?.cities?.length||0)<=1)target=Math.max(9,target);
       if(developing&&city===developmentCity&&options['development-speed']&&!recovering&&office.size>=target&&!outputBacklog(officeProducts.filter(p=>p.developmentProgress>=100))){
         const metric=productMetrics[division],progress=Number(rawPending?.developmentProgress),elapsed=metric?.name===rawPending?.name&&metric?.startedAt?Math.max(0,Date.now()-metric.startedAt):0;
         const remainingMs=rawPending&&progress>0&&progress<100&&elapsed>0?Math.min(3600000,elapsed*(100-progress)/progress):null;
@@ -591,17 +665,25 @@ export async function main(ns) {
       let achievements;try{achievements=JSON.parse(ns.read('tasks/achievement-goals.json'));}catch{}
       if(achievements?.expiresAt>Date.now()&&achievements.finance&&!achievements.owned?.includes('CORPORATION_EMPLOYEE_3000'))target=Math.max(target,500);
       if (office.size < target) {
-      if(developing&&options['development-speed']&&!recovering){
+      if(office.size<9&&options['development-speed']&&!recovering){
         const free=Math.max(0,funds()-reserve);
-        const allocation=office.size<9?Math.min(5e9,free):free*.5;
-        growthBank=Math.min(free,Math.max(growthBank,allocation));
+        // Understaffed offices are the gate for every second-city expansion.
+        // Fund them from free cash even before they become product-development
+        // offices; otherwise the growth bank can strand an affordable upgrade.
+        growthBank=Math.min(free,Math.max(growthBank,free));
+      } else if(developing&&options['development-speed']&&!recovering){
+        const free=Math.max(0,funds()-reserve);
+        growthBank=Math.min(free,Math.max(growthBank,free*.5));
       }
       let add = target - office.size;
       let cost = safe("Get office size cost", () => c.getOfficeSizeUpgradeCost(division, city, add));
       if(add>3&&cost>growthBank){add=3;cost=safe("Get incremental office cost",()=>c.getOfficeSizeUpgradeCost(division,city,add));}
-      if (Number.isFinite(cost) && funds() > cost + reserve) {
+      // A large increment can be unaffordable while a single hire is cheap; keep
+      // the office moving instead of waiting for the full target in one purchase.
+      if(add>1&&(!Number.isFinite(cost)||cost>funds()-reserve)){add=1;cost=safe("Get single office cost",()=>c.getOfficeSizeUpgradeCost(division,city,add));}
+      if (Number.isFinite(cost) && cost > 0) {
         const fraction=Math.pow((office.size+add)/Math.max(1,office.size),developing?.34:.4)-1;
-        capitalPurchase('Upgrade office '+division+'/'+city,cost,()=>c.upgradeOfficeSize(division,city,add),fraction*(developing?3:1)/cost,developing?(options['development-speed']?2:1):0,0,{kind:developing?'development':'production',division,city});
+        capitalPurchase('Upgrade office '+division+'/'+city,cost,()=>c.upgradeOfficeSize(division,city,add),fraction*(developing?3:1)/cost,developing?(options['development-speed']?2:1):0,0,{kind:'development',division,city});
         office = safe("Refresh office", () => c.getOffice(division, city)) ?? office;
       }
     }
@@ -797,7 +879,7 @@ export async function main(ns) {
       sellThrough,backlog:known&&backlog,pressure:wh.sizeUsed/Math.max(1,wh.size)});
     let used = wh ? wh.sizeUsed / Math.max(1, wh.size) : 0;
     if (used > 0.8 && !backlog) storagePressure = true;
-    for (let level = 0; level < 5 && used > 0.7 && !backlog; level++) {
+    for (let level = 0; level < 5 && used > 0.7 && !backlog && !criticalOfficeFunding(); level++) {
       const cost = safe("Get warehouse upgrade cost", () => c.getUpgradeWarehouseCost(division, city));
       if (!Number.isFinite(cost) || funds() <= cost + reserve) break;
       capitalPurchase('Upgrade warehouse '+division+'/'+city,cost,()=>c.upgradeWarehouse(division,city),Math.max(.1,used-.7)*3/cost,0,0,{kind:'storage',division,city});
@@ -914,7 +996,7 @@ export async function main(ns) {
       return;
     }
     if(metric.name&&!metric.finishedAt&&products.some(p=>p.name===metric.name)){metric.finishedAt=Date.now();metric.developmentMs=Math.max(0,metric.finishedAt-metric.startedAt);}
-    if(expansionFundingActive())return;
+    if(criticalOfficeFunding()||expansionFundingActive())return;
     const investment=productInvestment(funds(),reserve,growthBank);if(!(investment>=10e6))return;
     const prefix=division===restaurant?'Apex Dining':division+' Auto',retiring=products.length>=d.maxProducts?chooseRetirement(products,prefix):null;
     const baseline=corporationProductBaseline(history,metric,retiring?.name);
@@ -1192,7 +1274,7 @@ export async function main(ns) {
         // Real Estate). Unsold output fills the warehouse and throttles product production.
         sellMaterials(division, industry.producedMaterials || []);
       }
-      if (Date.now() - lastUpgrade >= 30_000) {
+      if (!criticalOfficeFunding() && Date.now() - lastUpgrade >= 30_000) {
         const cash = funds();
         const order = [
           ...(storagePressure ? ["Smart Storage"] : []),
@@ -1229,7 +1311,7 @@ export async function main(ns) {
       }
       await bribeFactions();
       if(!canManage()){clearCorporationBuyRates(c);continue;}
-      let remainingBoostBudget=recovering?0:Math.min(growthBank,boostPurchaseBudget({...info,funds:funds()},reserve,0,cycleSeconds,{developmentSpeed:options['development-speed']}));
+      let remainingBoostBudget=recovering||criticalOfficeFunding()?0:Math.min(growthBank,boostPurchaseBudget({...info,funds:funds()},reserve,0,cycleSeconds,{developmentSpeed:options['development-speed']}));
       for(let index=0;index<boostLocations.length;index++){
         boostBudget=remainingBoostBudget/(boostLocations.length-index);const allowance=boostBudget;
         manageBoosts(boostLocations[index].city,boostLocations[index].division);remainingBoostBudget-=allowance-boostBudget;
@@ -1289,7 +1371,7 @@ export async function main(ns) {
         growthBank, growthDecisions, fundingDiagnostics:corporationFundingDiagnostics([...foundationWaits,...rankedGrowth].filter(p=>!growthDecisions.some(d=>d.label===p.label&&['purchased','ordered'].includes(d.state))),liveStatus,reserve,growthBank), researchDecisions, advertisingRecovery:[...advertisingRecovery], calibration:{status:calibrationState.status,pending:calibrationState.pending?.quote?.upgrade||null,learnedUpgrades:Object.values(calibrationState.stats).filter(s=>s.length>=3).length}, productMetrics, staffingGoals:Object.fromEntries(staffingGoals), mode: recovering ? 'cash recovery' : 'growth', funds: funds(), reserve, divisions: divisions(),
         revenue: liveStatus.revenue, expenses: liveStatus.expenses, public: liveStatus.public,
         ownership: liveStatus.totalShares > 0 ? liveStatus.numShares / liveStatus.totalShares : null,
-        minOwnership, investmentMinOwnership, growthPriority, growthPhase, growthGoal, hashMilestone, liquidityDecision, retainedProfitFraction:1-Number(liveStatus.dividendRate||0), playerCashBottleneck:playerCashBottleneck(), estimatedDividendIncome:corporationDividendRate(liveStatus,cycleSeconds), developmentSpeed:options['development-speed'], financing:financeDecision?.reason, lastShareSaleAt, dividendRate: Math.max(0, lastDividendRate), expandAllIndustries: options['expand-all-industries'],
+        minOwnership, investmentMinOwnership, growthPriority, growthPhase, growthGoal, hashMilestone, criticalOfficeFunding:criticalOfficeFunding(), liquidityDecision, retainedProfitFraction:1-Number(liveStatus.dividendRate||0), playerCashBottleneck:playerCashBottleneck(), estimatedDividendIncome:corporationDividendRate(liveStatus,cycleSeconds), developmentSpeed:options['development-speed'], financing:financeDecision?.reason, lastShareSaleAt, dividendRate: Math.max(0, lastDividendRate), expandAllIndustries: options['expand-all-industries'],
       }), 'w');
       const now = Date.now();
       if (now - lastInvestmentCycle > 60_000) {

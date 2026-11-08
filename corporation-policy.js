@@ -226,7 +226,7 @@ export function corporationResearchGoal({laboratory=false,ta1=false,ta2=false,po
  const cost=stage==='laboratory'?laboratoryCost:stage==='pricing'?(ta1?0:ta1Cost)+ta2Cost:0;
  const target=stage==='quality'?0:corporationResearchDecision({name:stage==='laboratory'?'Hi-Tech R&D Laboratory':'Market-TA.II',points,cost,context}).target;
  const progress=target>0&&Number.isFinite(points)?Math.max(0,Math.min(1,points/target)):stage==='quality'?1:0;
- return {stage,target,points:Number.isFinite(points)?Math.max(0,points):0,progress,protectResearch:!ta2,protectEngineering:!products,researchWeight:ta2?.08:laboratory?.18:.20};
+ return {stage,target,points:Number.isFinite(points)?Math.max(0,points):0,progress,protectResearch:!ta2,protectEngineering:!products,researchWeight:ta2?.08:.35};
 }
 
 /** Core launches may use retained unallocated cash, but keep setup money and the operating reserve. */
@@ -347,7 +347,7 @@ export function corporationDevelopmentExpansion({size,cost,free,profitPerSecond=
 
 /** Conservative opportunity model, not a measured cash ROI. Unknown evidence retains legacy reserves. */
 export function corporationResearchDecision({name,points,cost,context=null,legacyTarget=null}={}) {
- const legacyFraction=['Hi-Tech R&D Laboratory','Market-TA.II'].includes(name)?.5:.2;
+ const legacyFraction=name==='Hi-Tech R&D Laboratory'?1:['Market-TA.II'].includes(name)?.5:.2;
  const target=Number.isFinite(cost)&&cost>=0?(Number.isFinite(legacyTarget)&&legacyTarget>=cost?legacyTarget:cost/legacyFraction):null;
  const base={ready:false,early:false,target,reason:'Retaining the research pool'};
  if(!Number.isFinite(points)||points<0||target===null||points<cost)return {...base,reason:'Research is not affordable'};

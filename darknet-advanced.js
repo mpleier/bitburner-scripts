@@ -72,7 +72,6 @@ export async function solveAdvancedPassword(details, probe, readLogs, state, rea
       if (state.packetGuesses.length) state.packetGuesses.shift();
       const capture = String(result.feedback.data || '');
       const windows = packetCandidates(capture, length, details.hostname);
-      if (!windows.length) return { success: false, reason: 'packet capture has no valid candidates' };
       const scraped = await readLogs();
       const direct = [];
       for (const line of scraped?.logs || []) {
@@ -82,8 +81,10 @@ export async function solveAdvancedPassword(details, probe, readLogs, state, rea
       }
       const marker = details.hostname ? capture.indexOf(details.hostname + ':') : -1;
       if (marker >= 0) direct.push(capture.slice(marker + details.hostname.length + 1, marker + details.hostname.length + 1 + length));
-      state.packetWindows = state.packetWindows ? state.packetWindows.filter(word => windows.includes(word)) : windows;
-      if (!state.packetWindows.length) state.packetWindows = windows;
+      if (windows.length) {
+        const filtered = state.packetWindows ? state.packetWindows.filter(word => windows.includes(word)) : windows;
+        state.packetWindows = filtered.length ? filtered : windows;
+      } else if (!state.packetWindows) state.packetWindows = [];
       state.packetCaptures = (state.packetCaptures || 0) + 1;
       state.packetTried ??= new Set(); state.packetTried.add(guess);
       state.packetGuesses = [...new Set([...direct, ...state.packetGuesses,

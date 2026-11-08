@@ -78,7 +78,7 @@ test('augmentation preparation, another activity owner and exhausted budgets can
   const f=trainerFixture();
   if(mode==='reset')f.files.set('tasks/augmentation-reset-plan.json',JSON.stringify({pending:true,ownerPid:1,expiresAt:Date.now()+60000}));
   if(mode==='activity')f.files.set('tasks/activity-lock.json',JSON.stringify({ownerPid:99,expiresAt:Date.now()+60000}));
-  if(mode==='budget'){const ledger=JSON.parse(f.files.get(charismaLedgerFile));ledger.goals['1500']={seconds:1800,cash:0};f.files.set(charismaLedgerFile,JSON.stringify(ledger));}
+  if(mode==='budget'){const ledger=JSON.parse(f.files.get(charismaLedgerFile));ledger.goals['1500']={seconds:86400,cash:0};f.files.set(charismaLedgerFile,JSON.stringify(ledger));}
   if(['class','crime','grafting'].includes(mode))f.ns.singularity.getCurrentWork=()=>({type:mode.toUpperCase(),classType:'Leadership',location:'ZB Institute of Technology'});
   await train(f.ns);assert.equal(f.studies(),0,mode);assert.equal(f.stops(),0,mode);
  }

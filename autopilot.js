@@ -1,3 +1,4 @@
+import {coreStartupReservation,reclaimStartupHelpers} from './core-startup-policy.js';
 import {graftHandoff,comparisonCashRate} from './graft-install-policy.js';
 import {startupChargeRamTarget,affordableRouteSnapshot,startupPendingRam} from './startup-ram-policy.js';
 import {observeIncomeRecovery} from './income-recovery-policy.js';
@@ -25,6 +26,9 @@ import { spendingPlan,adaptiveBudgetSignals,claimSpending } from './spending-pol
 import { prepareResetBackup } from './reset-backup.js';
 import { maximumSleeves,sleeveCrimeChance } from './sleeve-policy.js';
 import { casinoRetryPending, casinoHookArgs } from './casino-policy.js';
+import { casinoWindfallState, recordCasinoWindfall } from './casino-augmentation-windfall-policy.js';
+import { readSleeveMemoryPriority } from './sleeve-memory-priority-policy.js';
+import { ensureStanekFirst } from './stanek-first-policy.js';
 import { isScriptPaused } from './automation-control.js';
 import { planBitNodePriority,rankOptionalBitNodes,recordBitNodeRun,bitNodeHistoryFile,restrictedBitNodeRun } from './bitnode-priority.js';
 import { activityBusy, ramReserveFile, activityGuard } from './activity-coordination.js';
@@ -49,7 +53,8 @@ const argsSchema = [ // The set of all command line arguments
     ['disable-auto-destroy-bn', false], // Set to true if you do not want to auto destroy this BN when done
     ['install-at-aug-count', 8], // Automatically install when we can afford this many new augmentations (with NF only counting as 1). Note: This number will automatically be increased by 1 for every level of SF11 you have (up to 3)
     ['install-at-aug-plus-nf-count', 12], // or... automatically install when we can afford this many augmentations including additional levels of Neuroflux.  Note: This number will automatically be increased by 1 for every level of SF11 you have (up to 3)
-    ['install-for-augs', ["The Red Pill", "The Blade's Simulacrum"]], // or... install when one of these is affordable or purchased and awaiting installation
+    ['aggressive-player-installs-in-gang', true], // Once the gang has territory and several members, use the four-augmentation player quick-install basket by default.
+    ['install-for-augs', ["The Red Pill", "The Blade's Simulacrum", "The W1ngs of Icarus", "The B00ts of Perseus", "The H4mmer of Daedalus", "The St4ff of Asclepius", "The L4w of Bayes", "The B1ade of Solomonoff"]], // Priority-install direct labyrinth rewards and special augmentations.
     ['disable-adaptive-resets', false], // Use only the existing augmentation count and countdown rules.
     ['stale-install-hours', 2], // If progress stalls and at least one augmentation is affordable, install rather than wait indefinitely.
     ['adaptive-node-route', true], // Use BN preferences and stable ETA comparisons. False retains the legacy WD preference.
@@ -59,6 +64,7 @@ const argsSchema = [ // The set of all command line arguments
     ['disable-node-route-planner', false], // Keep legacy progression priorities; ignore route comparisons.
     ['disable-adaptive-spending', false], // Keep the base cash allowances.
     ['install-countdown', 5 * 60 * 1000], // If we're ready to install, wait this long first to see if more augs come online (we might just be gaining momentum)
+    ['hacknet-maxout-minutes', 30], // With no augmentation install this long, let Hacknet buy nodes and upgrades freely.
     ['time-before-boosting-best-hack-server', 15 * 60 * 1000], // Wait this long before picking our best hack-income server and spending hashes on boosting it
     ['reduced-aug-requirement-per-hour', 0.5], // For every hour since the last reset, require this many fewer augs to install.
     ['interval', 2000], // Wake up this often (milliseconds) to check on things
@@ -73,6 +79,8 @@ const argsSchema = [ // The set of all command line arguments
     ['disable-wait-for-4s', false], // If true, will doesn't wait for the 4S Tix API to be acquired under any circumstantes
     ['disable-rush-gangs', false], // Set to true to disable focusing work-for-faction on Karma until gangs are unlocked
     ['disable-casino', false], // Set to true to disable running the casino.js script automatically
+    ['fully-fund-gang-equipment', true], // Replenish casino cash with early resets until every gang equipment item is owned.
+    ['casino-gang-income-minutes', 15], // Skip/cancel casino when gang income can replace the needed cash within this many minutes. 0 disables.
     ['spend-hashes-on-server-hacking-threshold', 0.1], // Threshold for how good hacking multipliers must be to merit spending hashes for boosting hack income. Set to a large number to disable this entirely.
     ['on-completion-script', null], // Spawn this script when we defeat the bitnode
     ['on-completion-script-args', []], // Optional args to pass to the script when we defeat the bitnode
@@ -113,6 +121,7 @@ export async function main(ns) {
     let playerInBladeburner = false; // Whether we've joined bladeburner
     let wdHack = (/**@returns{null|number}*/() => null)(); // If the WD server is available (i.e. TRP is installed), caches the required hack level
     let casinoSeedWorkerPid=0,casinoSeedPending=false,lastSeedSleeves=0;
+    let casinoWatchdogSince=0;
     let ranCasino = false; // Flag to indicate whether we've stolen 10b from the casino yet
     let reservedPurchase = 0; // The amount of player money that has been reserved to purchase augmentations
     let alreadyJoinedDaedalus = false, autoJoinDaedalusUnavailable = false, reservingMoneyForDaedalus = false, disableStockmasterForDaedalus = false; // Flags to indicate that we should be keeping 100b cash on hand to earn an invite to Daedalus
@@ -130,6 +139,7 @@ export async function main(ns) {
     let playerInstalledAugCount = (/**@returns{null|number}*/() => null)(); // Number of augs installed, or null if we don't have SF4 and can't tell.
     let installedAugmentations = [],augmentationOwnership=null;
     let acceptedStanek = false, stanekLaunched = false;
+    let stanekWasInstalled = false, stanekAscensionCheck = false;
     let daemonStartTime = 0; // The time we personally launched daemon.
     let speedObservation, combatRecovery, hackingRecovery, incomeRecovery, augmentationWaitWindow, installWindowStarted=0;
     let nextFactionSummaryRefresh=0;
@@ -174,6 +184,8 @@ export async function main(ns) {
             try {
                 // Start-up actions, wrapped in error handling in case of temporary failures
                 if (!startUpRan) startUpRan = await startUp(ns);
+                // A casino reload may restore a save predating the recovery controller.
+                if(startUpRan&&!ns.ps('home').some(p=>p.filename.replace(/^\//,'')===getFilePath('bootstrap-start.js')))launchScriptHelper(ns,'bootstrap-start.js');
                 // Main loop: Monitor progress in the current BN and automatically reset when we can afford TRP, or N augs.
                 keepRunning = await mainLoop(ns);
             }
@@ -286,15 +298,66 @@ export async function main(ns) {
     /** Logic run periodically throughout the BN
      * @param {NS} ns */
     async function mainLoop(ns) {
-        // A casino started outside autopilot still has first priority.
-        if (ns.ps('home').some(process => /(^|\/)casino\.js$/.test(process.filename))) return true;
+        // A casino started outside autopilot still has first priority, but a
+        // modal-stuck process must not permanently kill every controller.
+        const casinoProcess = ns.ps('home').find(process => /(^|\/)casino\.js$/.test(process.filename));
+        if (casinoProcess) {
+            let casinoStatus; try { casinoStatus = JSON.parse(ns.read('tasks/casino-status.json')); } catch { }
+            const observedAt = casinoStatus?.pid === casinoProcess.pid && Number.isFinite(casinoStatus.at) ? casinoStatus.at : 0;
+            if (observedAt > 0 && observedAt <= Date.now()) casinoWatchdogSince = observedAt;
+            else if (!casinoWatchdogSince) casinoWatchdogSince = Date.now();
+            if (gangIncomeCasinoSkip(ns,ns.getPlayer())) {
+                ns.kill(casinoProcess.pid);
+                const sources=await getPlayerMoneySources(ns),earnings=Number(sources.sinceInstall.casino)||0;
+                await ns.write('tasks/casino-status.json', JSON.stringify({at:Date.now(),pid:casinoProcess.pid,augReset:resetInfo.lastAugReset,
+                    mode:'complete',skippedForGangIncome:true,earnings,reason:'gang income replaces casino cash'}), 'w');
+                ranCasino=true;casinoWatchdogSince=0;
+                log(ns, 'INFO: Casino cancelled; gang income can replace the needed cash faster.', false);
+            } else {
+            const target=finalCasinoEarnPending(ns)?null:gangEquipmentCashTarget(ns);
+            if(target&&ns.getPlayer().money>=target){
+                ns.kill(casinoProcess.pid);
+                const sources=await getPlayerMoneySources(ns),earnings=Number(sources.sinceInstall.casino)||0;
+                await ns.write('tasks/casino-status.json', JSON.stringify({at:Date.now(),pid:casinoProcess.pid,augReset:resetInfo.lastAugReset,
+                    mode:'complete',targetReached:true,earnings,reason:'gang equipment cash target reached'}), 'w');
+                try{await recordCasinoWindfall(ns,resetInfo,earnings);}catch{}
+                ranCasino=true;casinoWatchdogSince=0;
+                log(ns, `INFO: Casino stopped at the gang equipment target (${formatMoney(target)}).`, false);
+            } else if (Date.now() - casinoWatchdogSince < 10 * 60 * 1000) return true;
+            else {
+            ns.kill(casinoProcess.pid);
+            await ns.write('tasks/casino-status.json', JSON.stringify({at:Date.now(),pid:casinoProcess.pid,augReset:resetInfo.lastAugReset,
+                mode:'failed',retryAt:Date.now()+10*60*1000,reason:'casino watchdog timeout'}), 'w');
+            casinoWatchdogSince=0;
+            log(ns, 'WARNING: casino.js was stale for ten minutes; stopped it and restored automation.', true, 'warning');
+            }
+            }
+        } else casinoWatchdogSince=0;
+        if(!casinoProcess&&finalCasinoEarnPending(ns)){
+            try{const sources=await getPlayerMoneySources(ns);if((sources.sinceInstall.casino||0)>=1e10)await clearFinalCasinoEarn(ns);}catch{}
+        }
         const player = await getPlayerInfo(ns);
+        const stanekFirst = ensureStanekFirst(ns);
+        if (stanekFirst.accepted) log_once(ns, "SUCCESS: Accepted Stanek's Gift before any other augmentation.", false, 'success');
+        const stanekPresent = stanekFirst.installed || stanekFirst.accepted;
+        if (stanekPresent && !stanekWasInstalled) stanekAscensionCheck = true;
+        if (stanekPresent) stanekWasInstalled = true;
         // Cash-poor starts prioritize the casino at every home size; unavailable workers yield to hacking.
         if (await bootstrapCasino(ns, player)) return true;
         if(casinoSeedPending){
             await checkOnRunningScripts(ns,player,true);
             return shouldWeKeepRunning(ns);
         }
+        // Immediately after an augmentation install, the casino is the highest
+        // value use of the starting cash. Do not spend it on home RAM first.
+        let casinoRetry=false;try{casinoRetry=casinoRetryPending(JSON.parse(ns.read('tasks/casino-status.json')),resetInfo.lastAugReset);}catch{}
+        if(!options['disable-casino']&&!isScriptPaused(ns,'casino.js')&&!casinoRetry&&!ranCasino&&getTimeInAug()<10*60*1000&&player.money>=casinoSeedMoney&&player.money<10e12){
+            setStatus(ns,'Beelining to the casino after augmentation installation.');
+            await maybeDoCasino(ns,player);
+            if(ranCasino)return true;
+        }
+        // Keep the Remote API mailbox alive as a first-class automation service.
+        await ensureRemoteApiAgent(ns);
         await ensureEssentialHomeRam(ns,player);
         await updateCachedData(ns);
         let stocksValue = 0;
@@ -323,7 +386,26 @@ export async function main(ns) {
         await maybeAcceptStaneksGift(ns, player);
         await checkOnRunningScripts(ns, player);
         await maybeInstallAugmentations(ns, player);
+        await updateHacknetMaxout(ns);
         return shouldWeKeepRunning(ns); // Return false to shut down autopilot.js if we installed augs, or don't have enough home RAM
+    }
+
+    /** Publish a bounded signal allowing Hacknet to spend freely when no reset is near. */
+    async function updateHacknetMaxout(ns) {
+        const now = Date.now();
+        let pending = false;
+        try {
+            const plan = JSON.parse(ns.read('tasks/augmentation-reset-plan.json'));
+            pending = plan?.pending === true && plan.augReset === resetInfo.lastAugReset &&
+                Number.isFinite(plan.expiresAt) && plan.expiresAt > now;
+        } catch { }
+        const sleevePriority = readSleeveMemoryPriority(ns, resetInfo);
+        const waitMinutes = Number(options['hacknet-maxout-minutes']);
+        const idle = getTimeInAug() >= (Number.isFinite(waitMinutes) ? Math.max(0, waitMinutes) : 30) * 60 * 1000;
+        const active = !sleevePriority && !pending && !(installCountdown > now) && !reservedPurchase && idle;
+        await ns.write('tasks/hacknet-maxout.json', JSON.stringify({version: 1, active, at: now, expiresAt: now + 2 * 60 * 1000,
+            nodeReset: resetInfo.lastNodeReset, augReset: resetInfo.lastAugReset,
+            reason: active ? 'No augmentation install is planned; max out Hacknet' : 'Augmentation/reset planning is active'}), 'w');
     }
 
     /** Ram-dodge getting player info.
@@ -577,7 +659,7 @@ export async function main(ns) {
         try {
             await prepareResetBackup(ns,'Red Pill installation');
             const pid=await runCommand(ns,`ns.isRunning(ns.args[1])&&ns.getResetInfo().lastAugReset===ns.args[2]&&ns.singularity.getOwnedAugmentations(true).includes("The Red Pill")&&!ns.singularity.getOwnedAugmentations(false).includes("The Red Pill") ? ns.singularity.installAugmentations(ns.args[0]):false`,
-                '/Temp/install-red-pill.js',[ns.getScriptName(),ns.pid,resetInfo.lastAugReset]);
+                '/Temp/install-red-pill.js',[getFilePath('bootstrap-start.js'),ns.pid,resetInfo.lastAugReset]);
             if(pid)await waitForProcessToComplete(ns,pid,true);
         }finally{endTransition(ns);}
     }
@@ -693,9 +775,9 @@ export async function main(ns) {
         // Use the new special singularity function to automate entering a new BN
         pid = await runCommand(ns, `ns.singularity.destroyW0r1dD43m0n(ns.args[0], ns.args[1]` +
             `, { sourceFileOverrides: new Map() }` + // Work around a long-standing bug on bitburner-official.github.io TODO: Remove when no longer needed
-            `)`, '/Temp/singularity-destroyW0r1dD43m0n.js', [nextBn, ns.getScriptName()]);
+            `)`, '/Temp/singularity-destroyW0r1dD43m0n.js', [nextBn, getFilePath('bootstrap-start.js')]);
         if (pid) {
-            log(ns, `SUCCESS: Initiated process ${pid} to execute 'singularity.destroyW0r1dD43m0n' with args: [${nextBn}, ${ns.getScriptName()}]`, true, 'success')
+            log(ns, `SUCCESS: Initiated process ${pid} to execute 'singularity.destroyW0r1dD43m0n' with args: [${nextBn}, bootstrap-start.js]`, true, 'success')
             await waitForProcessToComplete(ns, pid);
             log(ns, `WARNING: Process is done running, why am I still here? Sleeping 10 seconds...`, true, 'error')
             await ns.sleep(10000);
@@ -749,7 +831,8 @@ export async function main(ns) {
             let speed;try{speed=JSON.parse(ns.read('tasks/progression-speed.json'));}catch{}
             if(!options['disable-adaptive-spending'])signals.bottleneck=homeRam<64?'ram':routePlan?.redPill?.active?(routePlan.redPill.canDonate?'cash':'reputation'):routePlan?.selected==='bladeburner'&&!options['force-xp']?'combat':routeContinuousXp(options,routePlan)?'hacking':prioritizeHackForDaedalus||prioritizeHackForWd?'hacking':speed?.augReset===resetInfo.lastAugReset&&speed.at>Date.now()-120000?speed.bottleneck:'balanced';
             signals.activeCategories={graft:!!unlockedSFs[10]&&!!unlockedSFs[4],soa:!!unlockedSFs[4],sleeves:!!unlockedSFs[10],sleeveExpansion:resetInfo.currentNode===10&&!!unlockedSFs[10],gang:!!unlockedSFs[2],corporation:!options['disable-corporation']&&!!unlockedSFs[3]};
-            await ns.write('tasks/spending-plan.json',JSON.stringify(spendingPlan({money:player.money,reserve:Number(ns.read('reserve.txt'))||0,homeRam,node:resetInfo.currentNode,ownerPid:ns.pid,reset:resetInfo.lastAugReset,signals})), 'w');
+            spending=spendingPlan({money:player.money,reserve:Number(ns.read('reserve.txt'))||0,homeRam,node:resetInfo.currentNode,ownerPid:ns.pid,reset:resetInfo.lastAugReset,signals});
+            await ns.write('tasks/spending-plan.json',JSON.stringify(spending), 'w');
         }
         const postCasino=postCasinoInfrastructure(ns,resetInfo,unlockedSFs,(script,args)=>launchScriptHelper(ns,script,args));
         if(postCasino?.active)return; // Bounded infrastructure pass before restarting competing controllers.
@@ -778,8 +861,12 @@ export async function main(ns) {
             try {
                 const hasCorporation = await getNsDataThroughFile(ns, 'ns.corporation.hasCorporation()', '/Temp/autopilot-corporation-exists.txt');
                 corporationKnown = true;
-                corporationReady = hasCorporation || achievementActionAllowed(ns, 'corporation') &&
-                    (resetInfo.currentNode === 3 || player.money >= 150e9 + Math.max(0, Number(ns.read('reserve.txt')) || 0));
+                const reserve = Math.max(0, Number(ns.read('reserve.txt')) || 0);
+                const planAllowance = spending?.ownerPid === ns.pid && spending.reset === resetInfo.lastAugReset && spending.expiresAt > Date.now()
+                    ? Number(spending.corporationStartupReserve) : NaN;
+                const startupFunded = resetInfo.currentNode === 3 ||
+                    (Number.isFinite(planAllowance) ? planAllowance >= 150e9 : player.money >= 150e9 + reserve);
+                corporationReady = hasCorporation || achievementActionAllowed(ns, 'corporation') && startupFunded;
                 if (!corporationReady && findScript('corporation-manager.js'))
                     await killScript(ns, 'corporation-manager.js', runningScripts);
             } catch { /* Keep a running controller when native state cannot be read. */ }
@@ -970,8 +1057,13 @@ export async function main(ns) {
                 launchScriptHelper(ns, manager, manager === 'darknet-manager.js' && options['auto-stormseed'] ? ['--enable-auto-stormseed'] : []);
         }
 
+        // A BN10 completion waiting only on sleeve memory must not have its
+        // cash diverted into stock positions.
+        const sleeveMemoryPriority = readSleeveMemoryPriority(ns, resetInfo);
+        if (sleeveMemoryPriority && findScript('stockmaster.js')) await killScript(ns, 'stockmaster.js');
+
         // Launch stock-master in a way that emphasizes it as our main source of income early-on
-        if (!findScript('stockmaster.js') && !redPillLiquidating && !disableStockmasterForDaedalus && homeRam >= 32 && ns.getServerMaxRam('home')-ns.getServerUsedRam('home') >= ns.getScriptRam(getFilePath('stockmaster.js'),'home')+16)
+        if (!sleeveMemoryPriority && !findScript('stockmaster.js') && !redPillLiquidating && !disableStockmasterForDaedalus && homeRam >= 32 && ns.getServerMaxRam('home')-ns.getServerUsedRam('home') >= ns.getScriptRam(getFilePath('stockmaster.js'),'home')+16)
             launchScriptHelper(ns, 'stockmaster.js', [
                 "--fracH", resetInfo.currentNode == 8 ? 0.001 : 0.1, // Fraction of wealth to keep as cash (10% - unless in BN8)
                 "--reserve", 0, // Override to ignore the global reserve.txt. Any money we reserve can more or less safely live as stocks
@@ -1049,7 +1141,22 @@ export async function main(ns) {
         if (2 in unlockedSFs && achievementActionAllowed(ns,"gang")) {
             // Check if we've joined a gang yet. (Never have to check again once we know we're in one)
             if (!playerInGang) playerInGang = await getNsDataThroughFile(ns, 'ns.gang.inGang()');
-            rushGang = !options['disable-rush-gangs'] && !playerInGang;
+            const forcedGangFaction = 'Speakers for the Dead';
+            let gangType = 'combat';
+            if (!playerInGang && resetInfo.currentNode === 2) {
+                // BN2 starts with gang mechanics unlocked. Always use the selected
+                // combat host rather than grinding karma for a source-file unlock.
+                try {
+                    const invitations = await getNsDataThroughFile(ns, 'ns.singularity.checkFactionInvitations()', '/Temp/gang-host-invitations.txt');
+                    const host = Array.isArray(invitations) && invitations.includes(forcedGangFaction) ? forcedGangFaction : null;
+                    if (host) {
+                        await getNsDataThroughFile(ns, 'ns.singularity.joinFaction(ns.args[0])', '/Temp/gang-host-join.txt', [host]);
+                        playerInGang = await getNsDataThroughFile(ns, 'ns.gang.inGang()');
+                        if (playerInGang) log(ns, `INFO: Joined BN2 ${gangType} gang host "${host}".`, false);
+                    }
+                } catch { /* Invites can be temporarily unavailable; retry next pass. */ }
+            }
+            rushGang = !options['disable-rush-gangs'] && !playerInGang && resetInfo.currentNode !== 2; // BN2 already has gang mechanics; join a host instead of grinding karma.
             // Detect if a 'work-for-factions.js' instance is running with args that don't match our goal. We aren't too picky,
             // (so the player can run with custom args), but should have --crime-focus if (and only if) we're still working towards a gang.
             const wrongWork = findScript('work-for-factions.js', !rushGang ? s => s.args.includes("--crime-focus") :
@@ -1059,14 +1166,24 @@ export async function main(ns) {
 
             // Start gangs immediately (even though daemon would eventually start it) since we want any income they provide right away after an ascend
             // TODO: Consider monitoring gangs territory progress and increasing their budget / decreasing their reserve to help kick-start them
-            if (playerInGang && !findScript('gangs.js'))
-                launchScriptHelper(ns, 'gangs.js');
+            const gangArgs = [...(options['fully-fund-gang-equipment'] !== false ? ['--prioritize-all-equipment', 'true'] : []), '--gang-type', gangType, '--gang-faction', forcedGangFaction];
+            const existingGang=findScript('gangs.js');
+            const existingGangType = existingGang?.args?.[existingGang.args.indexOf('--gang-type') + 1];
+            const existingGangFaction = existingGang?.args?.[existingGang.args.indexOf('--gang-faction') + 1];
+            if(existingGang&&!playerInGang&&(existingGangType!==gangType||existingGangFaction!==forcedGangFaction)){
+                if(ns.kill(existingGang.pid))log(ns,`INFO: Restarting gangs.js to select ${forcedGangFaction}.`,false);
+            }
+            if(playerInGang&&existingGang&&options['fully-fund-gang-equipment']!==false&&
+               !(existingGang.args.includes('--prioritize-all-equipment')&&existingGang.args[existingGang.args.indexOf('--prioritize-all-equipment')+1]==='true')){
+                if(ns.kill(existingGang.pid))log(ns,'INFO: Restarting gangs.js with all-equipment funding enabled.',false);
+            }
+            if (!findScript('gangs.js')) launchScriptHelper(ns, 'gangs.js', gangArgs);
         }
 
         // Launch work-for-factions if it isn't already running (rules for maybe killing unproductive instances are above)
         // Native startup readiness replaces the fixed 30-second focus delay.
         let daemonReadiness;try{daemonReadiness=JSON.parse(ns.read('tasks/daemon-readiness.json'));}catch{}
-        if ((4 in unlockedSFs) && !findScript('work-for-factions.js') && factionWorkerReady(daemonReadiness,findScript('daemon.js'),resetInfo)) {
+        if ((4 in unlockedSFs) && !findScript('work-for-factions.js') && !findScript('casino.js') && factionWorkerReady(daemonReadiness,findScript('daemon.js'),resetInfo)) {
             // If we're trying to rush gangs, run in such a way that we will spend most of our time doing crime, reducing Karma (also okay early income)
             // NOTE: Default work-for-factions behaviour is to spend hashes on coding contracts, which suits us fine
             launchScriptHelper(ns, 'work-for-factions.js', rushGang ? rushGangsArgs : workForFactionsArgs);
@@ -1113,11 +1230,71 @@ export async function main(ns) {
         acceptedStanek = true;
     }
 
+    /** Keep the in-game Remote API worker running without waiting for manager capacity. */
+    async function ensureRemoteApiAgent(ns) {
+        const name = 'remote-api-agent.js';
+        if (ns.ps('home').some(p => p.filename.replace(/^\//, '') === name)) return false;
+        const path = getFilePath(name);
+        if (!ns.fileExists(path, 'home')) return false;
+        const required = ns.getScriptRam(path, 'home');
+        const free = ns.getServerMaxRam('home') - ns.getServerUsedRam('home');
+        if (!(required > 0) || free < required + 8) return false;
+        const pid = launchScriptHelper(ns, name, ['--protocol-version', 2]);
+        if (pid) log_once(ns, 'Remote API worker launched by autopilot.', false, 'info');
+        return !!pid;
+    }
+
+    /** Cash needed to finish the current gang equipment collection, from the gang controller's own plan. */
+    function gangEquipmentCashTarget(ns, reset = resetInfo) {
+        try {
+            const p = JSON.parse(ns.read('tasks/gang-equipment-priority.json'));
+            if (p?.schemaVersion === 1 && p.enabled === true && p.nodeReset === reset.lastNodeReset &&
+                p.augReset === reset.lastAugReset && Number.isFinite(p.at) && p.at <= Date.now() && Date.now() - p.at <= 60000 &&
+                Number.isSafeInteger(p.remainingCount) && p.remainingCount > 0 &&
+                Number.isFinite(p.remainingCost) && p.remainingCost > 0) return p.remainingCost;
+        } catch { }
+        return null;
+    }
+
+    /** Once gang cash flow can replace the casino target quickly, the casino adds little. */
+    function gangIncomeCasinoSkip(ns, player, reset = resetInfo) {
+        const minutes = Number(options['casino-gang-income-minutes']);
+        if (!(minutes > 0) || finalCasinoEarnPending(ns, reset)) return false;
+        let gang;
+        try { if (!ns.gang.inGang()) return false; gang = ns.gang.getGangInformation(); } catch { return false; }
+        const rate = Number(gang?.moneyGainRate);
+        if (!(rate > 0)) return false;
+        const target = gangEquipmentCashTarget(ns, reset);
+        const need = target !== null ? Math.max(0, target - Number(player.money || 0)) : Math.max(0, 1e10 - Number(player.money || 0));
+        return need <= 0 || need / rate <= minutes * 60;
+    }
+
+    function casinoTargetReached(ns, reset = resetInfo) {
+        try {
+            const s = JSON.parse(ns.read('tasks/casino-status.json'));
+            return s?.mode === 'complete' && s.targetReached === true && s.augReset === reset.lastAugReset;
+        } catch { return false; }
+    }
+
+    const finalCasinoEarnFile = 'tasks/casino-final-full-earn.json';
+    function finalCasinoEarnPending(ns, reset = resetInfo) {
+        try {
+            const p = JSON.parse(ns.read(finalCasinoEarnFile));
+            return p?.pending === true && p.nodeReset === reset.lastNodeReset && Number.isFinite(p.at) && Date.now() - p.at <= 30 * 60 * 1000;
+        } catch { return false; }
+    }
+    async function setFinalCasinoEarn(ns) {
+        await ns.write(finalCasinoEarnFile, JSON.stringify({pending:true,at:Date.now(),nodeReset:resetInfo.lastNodeReset}), 'w');
+    }
+    async function clearFinalCasinoEarn(ns) {
+        await ns.write(finalCasinoEarnFile, JSON.stringify({pending:false,at:Date.now(),nodeReset:resetInfo.lastNodeReset}), 'w');
+    }
+
     async function bootstrapCasino(ns, player) {
         homeRam=ns.getServerMaxRam('home');casinoSeedPending=false;
         if(ranCasino||options['disable-casino']||isScriptPaused(ns,'casino.js'))return false;
         const sources=await getPlayerMoneySources(ns);
-        if((sources.sinceInstall.casino||0)>1e10){ranCasino=true;return false;}
+        if((sources.sinceInstall.casino||0)>1e10){ranCasino=true;try{if(!casinoWindfallState(ns,resetInfo))await recordCasinoWindfall(ns,resetInfo,sources.sinceInstall.casino);}catch{}return false;}
         // Larger, established economies keep the existing wealth/income skip logic.
         if(homeRam>32&&player.money>1e9)return false;
         casinoSeedPending=player.money<casinoSeedMoney;
@@ -1174,18 +1351,35 @@ export async function main(ns) {
     async function maybeDoCasino(ns, player, bootstrap = false) {
         if (isScriptPaused(ns, "casino.js")) return;
         if (ranCasino || options['disable-casino']) return;
+        if (casinoTargetReached(ns)) { ranCasino = true; return; }
+        if (gangIncomeCasinoSkip(ns, player)) {
+            log_once(ns, 'INFO: Skipping casino because gang income can replace the needed cash before a casino run finishes.');
+            return;
+        }
+        const finalEarn=finalCasinoEarnPending(ns);
+        let inGang=false;try{inGang=ns.gang.inGang();}catch{}
+        if(inGang&&!finalEarn&&options['fully-fund-gang-equipment']!==false){
+            const target=gangEquipmentCashTarget(ns);
+            // Never delay the post-install casino while waiting for a fresh
+            // gang-equipment quote. With no quote, run the normal full casino.
+            if(target!==null&&player.money>=target){log_once(ns,`INFO: Existing cash already covers the gang equipment target (${formatMoney(target)}); waiting for purchases.`,false);return;}
+            if(target===null&&!ns.ps('home').some(p=>p.filename.replace(/^\//,'')==='gangs.js'))
+                launchScriptHelper(ns,'gangs.js',['--prioritize-all-equipment','true']);
+        }
         // Figure out whether we've already been kicked out of the casino for earning more than 10b there
         const moneySources = await getPlayerMoneySources(ns);
         try { if (casinoRetryPending(JSON.parse(ns.read('tasks/casino-status.json')), resetInfo.lastAugReset)) return; } catch { }
         const casinoEarnings = moneySources.sinceInstall.casino;
         if (casinoEarnings > 1e10) {
+            if(finalEarn)await clearFinalCasinoEarn(ns);
             log(ns, `INFO: Skipping running casino.js, as we've previously earned ${formatMoney(casinoEarnings)} and been kicked out.`);
             return ranCasino = true;
         }
-        // If we already have more than 1t money but hadn't run casino.js yet, don't bother. Another 10b won't move the needle much.
+        // Don't bother with the casino once spare cash alone is above 10t;
+        // another 10b cannot materially accelerate progression.
         const playerWealth = player.money + (await getStocksValue(ns));
-        if (playerWealth >= 1e12) {
-            log(ns, `INFO: Skipping running casino.js, since we're already ridiculously wealthy (${formatMoney(playerWealth)} > 1t).`);
+        if (player.money >= 10e12) {
+            log(ns, `INFO: Skipping running casino.js, since cash (${formatMoney(player.money)}) is already above 10t.`);
             return ranCasino = true;
         }
 
@@ -1219,12 +1413,37 @@ export async function main(ns) {
         if (4 in unlockedSFs) // No big deal if we can't, casino.js has logic to find the stop button and click it.
             await getNsDataThroughFile(ns, `ns.singularity.stopAction()`);
 
-        const pid = launchScriptHelper(ns, 'casino.js', ['--kill-all-scripts', true, '--on-completion-script', ns.getScriptName()]);
+        const target=finalEarn?null:gangEquipmentCashTarget(ns);
+        if(!finalEarn&&target&&player.money>=target){ranCasino=true;return;}
+        const pid = launchScriptHelper(ns, 'casino.js', ['--kill-all-scripts', false, '--on-completion-script', ns.getScriptName()]);
         if (pid) {
-            await waitForProcessToComplete(ns, pid);
-            await ns.sleep(10000); // Give time for this script to be killed if the game is being restarted by casino.js
-            // Otherwise, something went wrong
-            log(ns, `ERROR: Something went wrong. casino.js was run, but we haven't been killed. It must have run into a problem...`)
+            // Keep autopilot alive as a watchdog. A modal-stuck casino previously
+            // killed every controller and then sat forever on this screen.
+            const deadline = Date.now() + 10 * 60 * 1000;
+            let targetReached=false;
+            while (ns.isRunning(pid) && Date.now() < deadline) {
+                const currentTarget=finalEarn?null:(gangEquipmentCashTarget(ns)||target);
+                if(currentTarget&&ns.getPlayer().money>=currentTarget){targetReached=true;break;}
+                await ns.sleep(1000);
+            }
+            if(targetReached&&ns.isRunning(pid)){
+                ns.kill(pid);
+                const sources=await getPlayerMoneySources(ns),earnings=Number(sources.sinceInstall.casino)||0;
+                await ns.write('tasks/casino-status.json', JSON.stringify({at:Date.now(),pid,augReset:resetInfo.lastAugReset,
+                    mode:'complete',targetReached:true,earnings,reason:'gang equipment cash target reached'}), 'w');
+                try{await recordCasinoWindfall(ns,resetInfo,earnings);}catch{}
+                ranCasino=true;
+                log(ns, `INFO: Casino stopped at the gang equipment target (${formatMoney(target)}).`, false);
+            } else if (ns.isRunning(pid)) {
+                ns.kill(pid);
+                await ns.write('tasks/casino-status.json', JSON.stringify({at:Date.now(),pid,augReset:resetInfo.lastAugReset,
+                    mode:'failed',retryAt:Date.now()+10*60*1000,reason:'casino startup/modal timeout'}), 'w');
+                log(ns, 'WARNING: casino.js was stuck for ten minutes; stopped it and restored automation.', true, 'warning');
+            } else {
+                const sources=await getPlayerMoneySources(ns),earnings=Number(sources.sinceInstall.casino)||0;
+                if(finalEarn&&earnings>=1e10)await clearFinalCasinoEarn(ns);
+                log(ns, 'INFO: casino.js completed; automation is resuming.');
+            }
         }
         } finally { endTransition(ns); }
     }
@@ -1239,11 +1458,32 @@ export async function main(ns) {
         return freshFactionManagerOutput(ns.read(factionManagerOutputFile),resetInfo,Date.now(),120000,typeof augmentationOwnership==='undefined'?null:augmentationOwnership);
     }
 
+    /** Established gang status only changes the PLAYER augmentation reset pace; it never buys gang-member augments. */
+    function gangReadyForAggressiveInstall(ns) {
+        if (!options['aggressive-player-installs-in-gang'] || !playerInGang) return false;
+        try {
+            const saved = JSON.parse(ns.read('tasks/gang-status.json'));
+            const info = saved?.info || {};
+            return saved?.status === 'managing' &&
+                saved.nodeReset === resetInfo.lastNodeReset &&
+                saved.augReset === resetInfo.lastAugReset &&
+                Number.isFinite(saved.at) && Date.now() - saved.at <= 10 * 60 * 1000 &&
+                Number.isFinite(saved.memberCount) && saved.memberCount >= 6 &&
+                Number.isFinite(info.power) && info.power > 0 &&
+                Number.isFinite(info.territory) && info.territory > 0;
+        } catch { return false; }
+    }
+
     /** Logic to detect if it's a good time to install augmentations, and if so, do so
      * @param {NS} ns
      * @param {Player} player */
     async function maybeInstallAugmentations(ns, player) {
         if(xpMeasurementActive)return setStatus(ns,'Measuring dedicated hacking XP; augmentation installs resume after the timed experiment.');
+        const sleevePriority=readSleeveMemoryPriority(ns,resetInfo);
+        if(sleevePriority){
+            await ns.write('tasks/augmentation-reset-plan.json',JSON.stringify({pending:false,ownerPid:ns.pid,expiresAt:Date.now()+30000}),'w');
+            return setStatus(ns,'Sleeve memory is the only BN10 completion blocker; holding augmentation installs and preserving cash for memory.');
+        }
         let achievementGoals;try{achievementGoals=JSON.parse(ns.read('tasks/achievement-goals.json'));}catch{}
         if(!options['disable-achievements']&&achievementGoals?.expiresAt>Date.now()&&ns.isRunning(achievementGoals.ownerPid)&&achievementGoals.nodeReset===resetInfo.lastNodeReset&&achievementGoals.holdAugmentations) {
             if(!achievementGoals.minimumQueue||achievementGoals.holdPuzzle){setStatus(ns,'Achievement campaign is holding augmentation resets');return;}
@@ -1324,6 +1564,13 @@ export async function main(ns) {
         let resetStatus = `Reserving ${formatMoney(totalCost)} to install ${augSummary}`
         let shouldReset = priorityAugmentationReady(options['install-for-augs'], facman) ||
             pendingAugCount >= augsNeeded || pendingAugInclNfCount >= augsNeededInclNf;
+        if (stanekAscensionCheck) {
+            stanekAscensionCheck = false;
+            if (pendingAugInclNfCount > 0) {
+                shouldReset = true;
+                resetStatus = `Stanek's Gift was acquired; checking whether the current ${pendingAugInclNfCount}-augmentation basket repays a reset.\n${resetStatus}`;
+            }
+        }
         // A stalled faction-reputation loop must not wait forever for an unreachable count.
         const staleInstall = !shouldReset && pendingAugCount >= 1 && getTimeInAug() >= options['stale-install-hours'] * 3600000;
         if (staleInstall) shouldReset = true;
@@ -1364,16 +1611,71 @@ export async function main(ns) {
         // Heuristic: if we can afford 4 or more augs in the first ~20 minutes, it's usually worth doing a "quick install"
         // For example, in BN8, we get a big cash influx on each reset and can buy reputation immediately, so it's worth
         //     doing an few immediate installs to purchase upgrades, then reset for more free cash.
-        // When in a gang, require a more augs and don't countdown as quickly, since each reset reduces gang member ascention multipliers
-        const quickInstallThreshold = playerInGang ? 6 : 4;
+        // When in a gang, require more player augs and don't countdown as quickly,
+        // unless the gang is established enough (members, power and territory)
+        // to absorb the player reset.
+        const aggressiveGang = gangReadyForAggressiveInstall(ns);
+        const quickInstallThreshold = playerInGang ? (aggressiveGang ? 4 : 6) : 4;
+        const quickInstallDelay = !playerInGang || aggressiveGang;
         if (!inFirstBn9Aug && (
             (getTimeInAug() < 20 * 60 * 1000 && pendingAugInclNfCount >= quickInstallThreshold) ||
             // Heuristic: In BN8, reinstall repeatedly for the first 10 minutes to purchase every little thing we can with our flat 10B casino winnings
             (resetInfo.currentNode == 8 && getTimeInBitnode() < 10 * 60 * 1000))) {
             shouldReset = true;
             resetStatus = `We haven't been in this reset for long. We can do a quick reset immediately for a quick stat boost.\n${resetStatus}`;
-            if (installDelay > 30 * 1000 && !playerInGang)
+            if (installDelay > 30 * 1000 && quickInstallDelay)
                 installDelay = 30 * 1000; // Install relatively quickly in this scenario (30s)
+        }
+        if (!inFirstBn9Aug && aggressiveGang && pendingAugInclNfCount >= quickInstallThreshold) {
+            shouldReset = true;
+            resetStatus = `Gang is established; installing an early player augmentation basket.\n${resetStatus}`;
+            if (installDelay > 30 * 1000) installDelay = 30 * 1000;
+        }
+        // Casino winnings should become permanent augmentations, but let an
+        // existing gang purchase equipment from a fresh windfall first. The
+        // window is bounded so the windfall cannot indefinitely delay ascension.
+        const casinoWindfall = casinoWindfallState(ns, resetInfo);
+        let windfallGangWindow = false;
+        try { windfallGangWindow = !!casinoWindfall && Date.now() - casinoWindfall.at < 5 * 60 * 1000 && ns.gang.inGang(); } catch { }
+        if(!inFirstBn9Aug&&casinoWindfall&&pendingAugInclNfCount>=quickInstallThreshold&&!windfallGangWindow){
+            shouldReset=true;
+            resetStatus='Casino windfall is funding a quick augmentation install.\n'+resetStatus;
+            if(installDelay>30*1000&&quickInstallDelay)installDelay=30*1000;
+        } else if(windfallGangWindow&&pendingAugInclNfCount>=quickInstallThreshold) {
+            shouldReset=false;
+            resetStatus='Casino windfall is funding gang equipment before ascension.\n'+resetStatus;
+        }
+        // Deliberate cash loop: once the casino is exhausted, reset for another
+        // augment basket/casino run while any gang equipment remains unfunded.
+        if(options['fully-fund-gang-equipment']!==false&&playerInGang&&!shouldReset&&
+           (!casinoWindfall||Date.now()-casinoWindfall.at>=5*60*1000)){
+            let equipmentFunding=null,casinoStatus=null;
+            try{equipmentFunding=JSON.parse(ns.read('tasks/gang-equipment-priority.json'));}catch{}
+            try{casinoStatus=JSON.parse(ns.read('tasks/casino-status.json'));}catch{}
+            const freshEquipment=equipmentFunding?.schemaVersion===1&&equipmentFunding.enabled===true&&
+                equipmentFunding.nodeReset===resetInfo.lastNodeReset&&equipmentFunding.augReset===resetInfo.lastAugReset&&
+                Number.isFinite(equipmentFunding.at)&&equipmentFunding.at<=Date.now()&&Date.now()-equipmentFunding.at<=60000&&
+                Number.isSafeInteger(equipmentFunding.remainingCount)&&equipmentFunding.remainingCount>0&&
+                Number.isFinite(equipmentFunding.remainingCost)&&equipmentFunding.remainingCost>0;
+            const casinoExhausted=casinoStatus?.mode==='complete'&&casinoStatus.augReset===resetInfo.lastAugReset&&
+                (casinoStatus.targetReached===true||(Number.isFinite(casinoStatus.earnings)&&casinoStatus.earnings>=1e10));
+            if(freshEquipment&&casinoExhausted&&equipmentFunding.remainingCost>player.money){
+                shouldReset=true;
+                resetStatus=`Ascending to replenish casino cash for gang equipment: ${equipmentFunding.remainingCount} items, ${formatMoney(equipmentFunding.remainingCost)} remaining.\n${resetStatus}`;
+                if(installDelay>30*1000&&quickInstallDelay)installDelay=30*1000;
+            }
+            const freshEquipmentComplete=equipmentFunding?.schemaVersion===1&&equipmentFunding.enabled===true&&
+                equipmentFunding.nodeReset===resetInfo.lastNodeReset&&equipmentFunding.augReset===resetInfo.lastAugReset&&
+                Number.isFinite(equipmentFunding.at)&&equipmentFunding.at<=Date.now()&&Date.now()-equipmentFunding.at<=60000&&
+                equipmentFunding.remainingCount===0;
+            const shortCasino=casinoStatus?.mode==='complete'&&casinoStatus.augReset===resetInfo.lastAugReset&&
+                Number.isFinite(casinoStatus.earnings)&&casinoStatus.earnings<1e10;
+            if(!shouldReset&&!finalCasinoEarnPending(ns)&&freshEquipmentComplete&&shortCasino){
+                await setFinalCasinoEarn(ns);
+                shouldReset=true;
+                resetStatus=`Final funding loop: running one full 10b casino pass before stopping.\n${resetStatus}`;
+                if(installDelay>30*1000&&quickInstallDelay)installDelay=30*1000;
+            }
         }
 
         // Fresh native milestone evidence supersedes count/NF/reset heuristics and old favor flags.
@@ -1396,6 +1698,7 @@ export async function main(ns) {
             countUnlock:speed.countMilestone===true||!inFirstBn9Aug&&speed.countProgress===true,
             campaign:!options['disable-achievements']&&achievementGoals?.expiresAt>Date.now()&&achievementGoals.minimumQueue>0&&pendingAugInclNfCount>=achievementGoals.minimumQueue,
             bn8Quick:resetInfo.currentNode===8&&getTimeInBitnode()<10*60*1000,
+            gangAggressive:aggressiveGang,
             remainingMs:augmentationRoute.remainingMs,lowerMs:augmentationRoute.lowerMs});
         const choiceOffer={schemaVersion:1,at:Date.now(),ownerPid:ns.pid,nodeReset:resetInfo.lastNodeReset,augReset:resetInfo.lastAugReset,
             protectedMilestone:economicsDecision.allowed&&(economicsDecision.reason==='Verified augmentation progression milestone'||!adaptiveEnabled),basket:(facman.speedSnapshot?.ready||[]).map(a=>a.name),channels:speed.comparisonChannels,horizonMs:speed.paybackLimitMs,cashRate:comparisonCashRate(speedObservation,resetInfo),
@@ -1486,11 +1789,13 @@ export async function main(ns) {
         const resetLog = `  Invoking ascend.js at ${formatDuration(getTimeInAug()).padEnd(11)} since last aug to install: ${augSummary}`;
         persist_log(ns, log(ns, resetLog, true, 'info'));
 
+        if (ns.ps('home').some(p => p.filename.replace(/^\//, '') === 'ascend.js'))
+            return setStatus(ns, 'An augmentation installation is already in progress; waiting for it to finish.');
         if (!await beginTransition(ns, 'augmentation installation', true)) return;
         try {
         // Kick off ascend.js
         let errLog;
-        const ascendArgs = ['--install-augmentations', true, '--on-reset-script', ns.getScriptName()]
+        const ascendArgs = ['--install-augmentations', true, '--on-reset-script', getFilePath('bootstrap-start.js')]
         if (pendingAugInclNfCount == 0) // If we know we would install 0 augs, but still wish to reset, we must enable soft resetting
             ascendArgs.push("--allow-soft-reset")
         let pid = launchScriptHelper(ns, 'ascend.js', ascendArgs);
@@ -1683,7 +1988,11 @@ export async function main(ns) {
             log_once(ns,'INFO: '+baseScriptName+' exited repeatedly; retrying after '+new Date(prior.retryAt).toISOString(),false);return 0;
         }
         const required=ns.getScriptRam(script,'home');
-        if(!(required>0)||!reclaimHomeRam(ns,required+homeRamReserve(ns)))return 0;
+        const critical=['bootstrap-start.js','reliability-manager.js','casino.js'].includes(baseScriptName.replace(/^\//,''));
+        const headroom=critical?Math.min(16,homeRamReserve(ns)):homeRamReserve(ns);
+        const needed=required+headroom+coreStartupReservation(ns,baseScriptName);
+        if(critical&&required>0)reclaimStartupHelpers(ns,needed);
+        if(!(required>0)||!reclaimHomeRam(ns,needed))return 0;
         let pid, err;
         try { pid = ns.run(convertFileName ? getFilePath(baseScriptName) : baseScriptName, 1, ...args); }
         catch (e) { err = e; }

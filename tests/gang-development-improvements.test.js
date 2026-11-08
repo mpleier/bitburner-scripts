@@ -65,9 +65,9 @@ test('adaptive native ascension eligibility uses economic threshold and rejects 
  assert.deepEqual(calls,['warfare','ascend','train']);calls.length=0;respect=9000;
  assert.equal(ascendGangMemberSafely(ns,'Old',['str'],1.05,.05,chooseGangAscensions,()=>true,plan),null);assert.deepEqual(calls,[]);
 });
-test('controller retains recruit protection, individual cooldown, one ascension and explicit money/equipment priorities',()=>{
+test('controller retains recruit protection, individual cooldown, multi-ascension execution and explicit money/equipment priorities',()=>{
  const source=readFileSync(new URL('../gangs.js',import.meta.url),'utf8');
- assert.match(source,/plannedAscensions.delete\(member\)/);assert.match(source,/await saveGangTraining\(ns\);break;/);
+ assert.match(source,/plannedAscensions.delete\(member\)/);assert.match(source,/if\(planIndex\+1<plans\.length\)/);
  assert.match(source,/lastMemberReset\[member\]\|\|0\)<2000/);
  assert.match(source,/maximumMs:options\['min-training-ticks'\]\*territoryTickTime,allowConcurrent:true/);
  assert.match(source,/planGangTrainingBursts\(rows,trainingEpisodes,at,crew.jointPlan,\{growthFirst:true,preparation:preparation.active\}\)/);

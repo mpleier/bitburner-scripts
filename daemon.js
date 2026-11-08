@@ -1,3 +1,4 @@
+import {coreStartupReservation} from './core-startup-policy.js';
 import {estimateHackingDrain,hackingDrainPadding} from './hacking-deadline-policy.js';
 import {selectHackingTargetCandidates,quoteHackingTarget,planHackingTargets,sampleHackingRevenue,hackingPlanningHorizon} from './hacking-target-policy.js';
 import {createHgwBatch,withHgwBatch,withHgwPiece} from './hgw-batch-policy.js';
@@ -291,7 +292,7 @@ export async function main(ns) {
         const runOptions = getConfiguration(ns, argsSchema);
         if (!runOptions) return;
         if(!Number.isSafeInteger(runOptions['max-hacking-processes'])||runOptions['max-hacking-processes']<4||runOptions['max-hacking-processes']>100000)
-            return ns.tprint('max-hacking-processes must be an integer between 4 and 100000.');
+            return log(ns,'max-hacking-processes must be an integer between 4 and 100000.',false,'error');
 
         // Ensure no other copies of this script are running (they share memory)
         const scriptName = ns.getScriptName();
@@ -300,7 +301,7 @@ export async function main(ns) {
         if (competingDaemons.length > 0) { // We expect only 1, due to this logic, but just in case, generalize the code below to support multiple.
             const daemonPids = competingDaemons.map(p => p.pid);
             log(ns, `Info: Killing another '${scriptName}' instance running on home (pid: ${daemonPids} args: ` +
-                `[${competingDaemons[0].args.join(", ")}]) with new args ([${ns.args.join(", ")}])...`, true)
+                `[${competingDaemons[0].args.join(", ")}]) with new args ([${ns.args.join(", ")}])...`, false)
             const killPid = await killProcessIds(ns, daemonPids);
             await waitForProcessToComplete_Custom(ns, getHomeProcIsAlive(ns), killPid);
             await ns.sleep(loopInterval); // The game can be slow to kill scripts, give it an extra bit of time.
@@ -344,7 +345,7 @@ export async function main(ns) {
 
         // Process configuration
         options = runOptions;
-        if(options.i&&!(4 in dictSourceFiles)){options.i=false;log(ns,"Manual hacking requires SF4; continuing with ordinary hacking.",true);}
+        if(options.i&&!(4 in dictSourceFiles)){options.i=false;log(ns,"Manual hacking requires SF4; continuing with ordinary hacking.",false);}
 
         hackOnly = options.h || options['hack-only'];
         xpOnly = options.x || options['xp-only'];
@@ -403,6 +404,9 @@ export async function main(ns) {
         // ASYNCHRONOUS HELPERS
         // Standalone managers are supervised; one-shot tools retain their original lifecycle.
         asynchronousHelpers = [
+            { name: "bootstrap-start.js", shouldRun: () => reqRam(128), shouldTail: false },
+            { name: "autopilot.js", shouldRun: () => reqRam(128), shouldTail: false }, // Top-level supervisor; restarts after crashes/resets.
+            { name: "remote-api-agent.js", shouldRun: () => reqRam(32), shouldTail: false }, // Keeps the local Remote API mailbox worker alive across resets.
             { name: "stats.js", shouldRun: () => reqRam(64), shouldTail: false }, // Adds stats not usually in the HUD (nice to have)
             { name: "darknet-manager.js", shouldRun: () => reqRam(64), shouldTail: false },
             { name: "health-manager.js", shouldRun: () => reqRam(32) && 4 in dictSourceFiles, shouldTail: false },
@@ -636,7 +640,7 @@ export async function main(ns) {
      * @returns {Promise<boolean>} true if all scripts have been launched */
     async function runStartupScripts(ns) {
         let launched = 0;
-        const supervised = new Set(['stats.js', 'darknet-manager.js', 'corporation-manager.js', 'health-manager.js',
+        const supervised = new Set(['bootstrap-start.js','autopilot.js','stats.js', 'darknet-manager.js', 'corporation-manager.js', 'health-manager.js',
             'infiltration-manager.js', 'go.js', 'spend-hacknet-hashes.js', 'sleeve.js', 'sleeve-expansion.js',
             'grafting-manager.js', 'gangs.js', 'work-for-factions.js', 'bladeburner.js']);
         for (const script of asynchronousHelpers) {
@@ -745,7 +749,7 @@ export async function main(ns) {
             return blocked('condition');
         }
         if (!(await doesFileExist(ns, tool.name))) { // Ensure the script exists
-            log(ns, `ERROR: Tool ${tool.name} was not found on ${daemonHost}`, true, 'error');
+            log(ns, `ERROR: Tool ${tool.name} was not found on ${daemonHost}`, false, 'error');
             return blocked('missing');
         }
         let [runningOnServer, runningPid] = whichServerIsRunning(ns, tool.name, false);
@@ -767,7 +771,7 @@ export async function main(ns) {
         if (!lowHomeRam) {
             const targetServer = getServerByName(daemonHost);
             const availableRam = targetServer.ramAvailable(/*ignoreReservedRam:*/true);
-            if (availableRam < tool.cost) {
+            if (availableRam < tool.cost + coreStartupReservation(ns,tool.name)) {
                 if (!tool.ramWaitLogged) {
                     log(ns, `INFO: Delaying ${tool.name} until enough RAM is free (needs ${formatRam(tool.cost)}, has ${formatRam(availableRam)}).`);
                     tool.ramWaitLogged = true;
@@ -1028,7 +1032,7 @@ export async function main(ns) {
                         if (server.previouslyPrepped)
                             log(ns, `WARNING ${server.prepRegressions++}: Server was prepped, but now at security: ${formatNumber(server.getSecurity())} ` +
                                 `(min ${formatNumber(server.getMinSecurity())}) money: ${formatMoney(server.getMoney(), 3)} (max ${formatMoney(server.getMaxMoney(), 3)}). ` +
-                                `Prior cycle: ${server.previousCycle}. ETA now (Hack ${playerHackSkill()}) is ${formatDuration(server.timeToWeaken())}`, true, 'warning');
+                                `Prior cycle: ${server.previousCycle}. ETA now (Hack ${playerHackSkill()}) is ${formatDuration(server.timeToWeaken())}`, false, 'warning');
                         prepping.push(server); // Perform weakening and initial growth until the server is "perfected" (unless in hack-only mode)
                     } else if (!hackOnly && !server.isPrepped()) { // If prepServer returned false or null. Check ourselves whether it is prepped
                         log(ns, 'Prep failed for "' + server.name + '" (RAM Utilization: ' + (getTotalNetworkUtilization() * 100).toFixed(2) + '%)');
@@ -1214,7 +1218,7 @@ export async function main(ns) {
             } catch (err) {
                 // Sometimes a script is shut down by throwing an object containing internal game script info. Detect this and exit silently
                 if (err?.env?.stopFlag) return;
-                log(ns, `WARNING: daemon.js Caught an error in the targeting loop: ${getErrorInfo(err)}`, true, 'warning');
+                log(ns, `WARNING: daemon.js Caught an error in the targeting loop: ${getErrorInfo(err)}`, false, 'warning');
                 continue;
             }
         } while (!runOnce);
@@ -1855,7 +1859,7 @@ export async function main(ns) {
             if (preferredServerIndex != -1)
                 preferredServerOrder.unshift(preferredServerOrder.splice(preferredServerIndex, 1)[0]);
             else
-                log(ns, `ERROR: Configured preferred server "${preferredServerName}" for ${tool.name} is not a valid server name`, true, 'error');
+                log(ns, `ERROR: Configured preferred server "${preferredServerName}" for ${tool.name} is not a valid server name`, false, 'error');
         }
         if (verbose) log(ns, `Preferred Server ${preferredServerName ?? "(any)"} for ${threads} threads of ${tool.name} (use small=` + `${useSmallestServerPossible})` +
             ` resulted in preferred order:${preferredServerOrder.map(s => ` ${s.name} (${formatRam(s.ramAvailable(igRes))})`)}`);
@@ -2158,7 +2162,7 @@ export async function main(ns) {
     async function scheduleHackExpCycle(ns, server, percentOfFreeRamToConsume, verbose, advancedMode, allocatedServer = null, singleServer = false) {
         //if (verbose) log(ns, `scheduleHackExpCycle advancedMode=${advancedMode} singleServer=${singleServer} allocatedServer=${allocatedServer?.name ?? "(any)"} targetting=${server.name}`);
         if (!server.hasRoot() && server.canCrack()) await doRoot(ns, server); // Get root if we do not already have it.
-        if (!server.hasRoot()) return log(ns, `ERROR: Cannot farm XP from unrooted server ${server.name}`, true, 'error');
+        if (!server.hasRoot()) return log(ns, `ERROR: Cannot farm XP from unrooted server ${server.name}`, false, 'error');
         // If we are already farming XP from this server, wait for it to complete (if the last cycle is almost done) or skip scheduling more work
         const eta = nextXpCycleEnd[server.name];
         const activeCycleTimeLeft = (eta || 0) - Date.now();
@@ -2394,14 +2398,14 @@ export async function main(ns) {
         // Remove from the list of server names
         let findIndex = allHostNames.indexOf(deletedHostName)
         if (findIndex === -1)
-            log(ns, `ERROR: Failed to find server with the name "${deletedHostName}" in the allHostNames list.`, true, 'error');
+            log(ns, `ERROR: Failed to find server with the name "${deletedHostName}" in the allHostNames list.`, false, 'error');
         else
             allHostNames.splice(findIndex, 1);
         // Remove from the list of server objects
         const arrAllServers = getAllServers();
         findIndex = arrAllServers.findIndex(s => s.name === deletedHostName);
         if (findIndex === -1)
-            log(ns, `ERROR: Failed to find server by name "${deletedHostName}".`, true, 'error');
+            log(ns, `ERROR: Failed to find server by name "${deletedHostName}".`, false, 'error');
         else {
             arrAllServers.splice(findIndex, 1);
             log(ns, `"${deletedHostName}" was found at index ${findIndex} of servers and removed leaving ${arrAllServers.length} items.`);
@@ -2706,7 +2710,7 @@ export async function main(ns) {
             } catch (err) {
                 if (err?.env?.stopFlag) return;
                 if (attempt === 5) {
-                    log(ns, `ERROR: daemon.js Keeps catching a fatal error during startup: ${getErrorInfo(err)}`, true, 'error');
+                    log(ns, `ERROR: daemon.js Keeps catching a fatal error during startup: ${getErrorInfo(err)}`, false, 'error');
                     return;
                 }
                 log(ns, `WARN: daemon.js Caught an error during startup: ${getErrorInfo(err)}` +

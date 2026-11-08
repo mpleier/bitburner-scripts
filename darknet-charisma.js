@@ -26,16 +26,17 @@ export async function main(ns){
   // is installed. The quote calculation below already assumes that rate.
   const focus=installed.includes('Neuroreceptor Management Implant');
   const key=String(goal.target),prior=ledger.goals[key]||{seconds:0,cash:0},interruptBudget=prior.interrupt||{count:0,seconds:0,cash:0,lastAt:0};
-  const studySeconds=1800,studyCash=15000000;
+  const studySeconds=24*60*60,studyCash=1000000000;
   const gap=goal.target-p.skills.charisma,smallGap=gap>0&&gap<=Math.max(1,Math.ceil(goal.target*.05));
-  const interruptSecondsLeft=Math.max(0,Math.min(45-interruptBudget.seconds,studySeconds-prior.seconds));
-  const interruptCashLeft=Math.max(0,Math.min(1000000-interruptBudget.cash,studyCash-prior.cash));
+  const remainingStudySeconds=Math.max(0,studySeconds-prior.seconds),remainingStudyCash=Math.max(0,studyCash-prior.cash);
+  const interruptSecondsLeft=Math.max(0,Math.min(45-interruptBudget.seconds,remainingStudySeconds));
+  const interruptCashLeft=Math.max(0,Math.min(1000000-interruptBudget.cash,remainingStudyCash));
   let gangUrgent=false;try{gangUrgent=!ns.gang.inGang()&&p.karma>-54000;}catch{}
   const interruptibleWork=!!work&&['CRIME','COMPANY','FACTION'].includes(work.type);
   const canInterrupt=work?.type==='CRIME'&&smallGap&&!gangUrgent&&interruptBudget.count<2&&interruptSecondsLeft>=1&&interruptCashLeft>0&&Date.now()-interruptBudget.lastAt>=600000;
-  // A Charisma bottleneck is allowed one bounded takeover of low-value company or
-  // faction work every ten minutes; work-for-factions resumes afterward.
-  const canTakeover=!!work&&['COMPANY','FACTION'].includes(work.type)&&!gangUrgent&&interruptBudget.count<1&&interruptSecondsLeft>=1&&interruptCashLeft>0&&Date.now()-interruptBudget.lastAt>=600000;
+  // A Charisma bottleneck takes priority over ordinary company/faction work
+  // until the labyrinth requirement is met. Work-for-factions resumes after.
+  const canTakeover=!!work&&['COMPANY','FACTION'].includes(work.type)&&!gangUrgent&&remainingStudySeconds>=1&&remainingStudyCash>0;
   if((work&&!canInterrupt&&!canTakeover)||!compatibleFocusWorkers(ns,processes)||processes.some(p=>/(^|\/)(casino|ascend)\.js$/.test(p.filename))||processes.some(p=>p.filename==='bladeburner.js')&&!installed.includes("The Blade's Simulacrum")){
    ledger.sample=null;await save();await status('deferred','Existing player work has priority');return;
   }

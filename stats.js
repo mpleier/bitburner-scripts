@@ -94,7 +94,21 @@ function prepareHudElements(hudData) {
         p.appendChild(tooltip);
         tooltip.textContent = toolTip;
         tooltip.className = "tooltiptext bb-stats-tooltip"+(id.startsWith("BitNode-")?" bb-bitnode-tooltip":"");
-        const showTip=()=>{doc.body?.appendChild(tooltip);tooltip.style.visibility='visible';positionOverviewTooltip(p,tooltip,doc);};
+        const showTip=()=>{
+            doc.body?.appendChild(tooltip);
+            // Some game tooltip rules force a narrow inline box. Use an explicit
+            // fixed width so multi-line overview content cannot collapse.
+            const width = tooltip.classList.contains('bb-bitnode-tooltip') ? 'min(680px, calc(100vw - 32px))' : 'min(360px, calc(100vw - 32px))';
+            tooltip.style.setProperty('display','block','important');
+            tooltip.style.setProperty('width',width,'important');
+            tooltip.style.setProperty('min-width',width,'important');
+            tooltip.style.setProperty('max-width',width,'important');
+            tooltip.style.setProperty('white-space','pre-wrap','important');
+            tooltip.style.setProperty('overflow-wrap','break-word','important');
+            tooltip.style.setProperty('word-break','normal','important');
+            tooltip.style.visibility='visible';
+            positionOverviewTooltip(p,tooltip,doc);
+        };
         const hideTip=event=>{if(!tooltip.contains?.(event?.relatedTarget))tooltip.style.visibility='hidden';};
         p.addEventListener?.('pointerenter',showTip);p.addEventListener?.('pointerleave',hideTip);
         p.addEventListener?.('focusin',showTip);p.addEventListener?.('focusout',hideTip);
@@ -415,13 +429,13 @@ async function getHudData(ns, bitNode, dictSourceFiles, options, resetInfo) {
     const routePlan=readNodeRoutePlan(ns);
     if(routePlan) {
         const label=route=>route==='hacking'?'WD':'BB';
-        const describe=(name,r)=>!r?name+': unavailable':name+': '+(Number.isFinite(r.etaMs)?formatDuration(r.etaMs):'Unknown')+' — '+r.reason;
+        const describe=(name,r)=>!r?name+': unavailable':name+': '+(r.reason||(r.actionable===false?'blocked':'available'));
         const presentation=overviewRoutePresentation(routePlan,formatDuration);
         const details=[presentation.note,routePlan.reason,routePlan.redPill?.reason||'',describe('WD',routePlan.routes?.hacking),describe('BB',routePlan.routes?.bladeburner),...(routePlan.assumptions||[])].join('\n');
         hudData.push(['Node Route',true,presentation.label,details]);
         const selected=routePlan.routes?.[routePlan.selected];
         if(presentation.probe)eta={text:label(routePlan.selected)+' probe',etaMs:null,tooltip:details};
-        else if(presentation.confidence==='provisional')eta={text:label(routePlan.selected)+' provisional',etaMs:null,tooltip:details+'\nProvisional rate estimate only: '+formatDuration(selected.etaMs)+'. Required route evidence is still missing; this is not an actionable completion forecast.'};
+        else if(presentation.confidence==='provisional')eta={text:label(routePlan.selected)+' provisional',etaMs:null,tooltip:details+'\nProvisional rate estimate only; required route evidence is still missing. This is not an actionable completion forecast.'};
         else if(presentation.confidence==='actionable')eta={text:selected.phase==='backdoor'?'Backdoor WD':label(routePlan.selected)+' ~'+formatDuration(selected.etaMs),etaMs:selected.etaMs,tooltip:details};
         else if(routePlan.selected) {
             // A selected route with unknown timing must show its own blocker, never the other route's state.
@@ -432,7 +446,6 @@ async function getHudData(ns, bitNode, dictSourceFiles, options, resetInfo) {
             eta={text:label(routePlan.selected)+': '+phase,etaMs:null,tooltip:details};
         }
     }
-    hudData.push(['Node ETA',true,eta.text,eta.tooltip+'\nXP observations use a rolling five-minute window (minimum 60 seconds); unknown prerequisites are shown as blockers.']);
     if(Date.now()-etaStatusAt>=5000){etaStatusAt=Date.now();await ns.write('tasks/overview-status.json',JSON.stringify({at:etaStatusAt,pid:ns.pid,nodeEta:eta,routePlan,rates:{xp:rates.xp,rank:rates.rank,windowMs:rates.windowMs,sampling:rates.sampling},hasRedPill:progress?.hasRedPill,wdHack:progress?.wdHack}),'w');}
     const unavailable=[...new Set(hudReadFailures)];
     hudData.push(['HUD Data',unavailable.length>0,'Partial',unavailable.join(', ')+' readings unavailable. Other values are still updating.']);
@@ -482,6 +495,10 @@ const css = (rootStyle) => `<style id="statsCSS">
     .bb-stats-row.hidden { display: none; }
     .bb-stats-row:hover .tooltiptext { visibility: visible; opacity: 1; }
     .bb-stats-tooltip {
+        display: block !important;
+        width: min(360px, calc(100vw - 32px)) !important;
+        min-width: min(360px, calc(100vw - 32px)) !important;
+        max-width: min(360px, calc(100vw - 32px)) !important;
         visibility: hidden; position: fixed; z-index: 10002;box-sizing:border-box;
         right: 20px; top: 19px; padding: 2px 10px;
         text-align: left; white-space: pre-wrap; width: max-content; min-width:min(240px,60vw); max-width: min(460px, 75vw); overflow-wrap:break-word; max-height:65vh; overflow-y:auto;
@@ -561,9 +578,11 @@ async function getOverviewProgress(ns,canReadWork){
 /** Dark Net progress is file-backed and changes slowly; refresh it separately. */
 async function getDarknetHudData(ns,reset){
  const now=Date.now();
- if(typeof ns.ls!=='function'||typeof ns.ps!=='function')return ['Dark Web',false,'','Dark Net progress is unavailable in this interface.'];
+ if(typeof ns.ls!=='function'||typeof ns.ps!=='function')return ['Dark Web',false,'','Dark Web progress is unavailable in this interface.'];
  if(darknetHud&&darknetHud.nodeReset===reset.lastNodeReset&&darknetHud.augReset===reset.lastAugReset&&now-darknetHudAt<10000)return darknetHud.row;
  const manager=ns.ps('home').some(p=>p.filename.replace(/^\//,'')==='darknet-manager.js');
+ let summary=null;try{summary=JSON.parse(ns.read('tasks/dnet-cache-rewards-summary.json'));}catch{}
+ const summaryFresh=summary?.nodeReset===reset.lastNodeReset&&summary?.augReset===reset.lastAugReset&&Number.isFinite(summary?.at)&&summary.at<=now&&now-summary.at<=90000;
  const hosts=new Set(),rooted=new Set(),labyrinths=new Map();
  let pending=0;
  for(const file of ns.ls('home','tasks/dnet-survey-')){
@@ -571,7 +590,7 @@ async function getDarknetHudData(ns,reset){
   try{
    const report=JSON.parse(ns.read(file));
    if(!report?.host)continue;
-   // Old survey files are historical, not current Dark Net progress.
+   // Old survey files are historical, not current Dark Web progress.
    if(!Number.isFinite(report.at)||report.at>now+5000||now-report.at>600000)continue;
    hosts.add(report.host);
    if(report.rooted===true)rooted.add(report.host);
@@ -589,24 +608,37 @@ async function getDarknetHudData(ns,reset){
    cash+=Math.max(0,Number(receipt?.totals?.money)||0);
   }catch{}
  }
+ const seenOpened=summaryFresh&&summary?.seen&&typeof summary.seen==='object'?Object.keys(summary.seen).length:0;
+ const liveHosts=Math.max(hosts.size,summaryFresh?Math.max(0,Number(summary?.coverage?.liveHosts)||0):0);
+ const openedCaches=Math.max(opened,seenOpened);
+ const totals=summaryFresh&&summary?.totals&&typeof summary.totals==='object'?summary.totals:{};
+ const rewardParts=[];
+ for(const [key,label] of [['shares','shares'],['programs','programs'],['stockAccess','stock access'],['dataFiles','data files'],['contracts','contracts'],['augmentations','augmentations'],['karma','karma'],['unknown','unknown']]){
+  const value=Number(totals[key])||0;
+  if(value>0)rewardParts.push(`${value} ${label}`);
+ }
  let storm='';try{const result=JSON.parse(ns.read('tasks/dnet-storm-result.json'));storm=String(result?.reason||result?.status||'').slice(0,80);}catch{}
  let value;
- if(opened&&pending)value=opened+'c '+pending+'p';
- else if(opened)value=opened+' caches';
+ if(openedCaches&&pending)value=openedCaches+'c '+pending+'p';
+ else if(openedCaches)value=openedCaches+' caches';
  else if(pending)value=pending+' pending';
- else if(hosts.size)value=rooted.size+'/'+hosts.size;
+ else if(liveHosts)value=rooted.size+'/'+liveHosts;
+ else if(rewardParts.length)value=rewardParts[0];
  else value=manager?'scouting':'no data';
  const solved=[...labyrinths.values()].filter(Boolean).length;
- const tooltip=['Dark Net progress',
-  'Live hosts: '+hosts.size,
+ const tooltip=['Dark Web progress',
+  'Live hosts: '+liveHosts,
+  ...(hosts.size?['Surveyed hosts: '+hosts.size]:[]),
   'Rooted: '+rooted.size,
   'Pending caches: '+pending,
-  'Caches opened: '+opened,
+  'Caches opened: '+openedCaches,
   ...(cash?['Cache cash: '+formatMoney(cash,3,2)]:[]),
+  ...(rewardParts.length?['Rewards: '+rewardParts.join(', ')]:[]),
   ...(labyrinths.size?['Labyrinths: '+solved+'/'+labyrinths.size+' solved']:[]),
+  ...(summaryFresh?'Reward report age: '+formatDuration(now-summary.at):'Reward report: unavailable or stale'),
   ...(storm?['StormSeed: '+storm]:[]),
   ...(manager?'Manager:\u00a0running':'Manager:\u00a0not\u00a0running')].join('\n');
- const row=['Dark Web',manager||hosts.size>0||opened>0,value,tooltip];
+ const row=['Dark Web',manager||liveHosts>0||openedCaches>0||rewardParts.length>0,value,tooltip];
  darknetHud={nodeReset:reset.lastNodeReset,augReset:reset.lastAugReset,row};darknetHudAt=now;
  return row;
 }

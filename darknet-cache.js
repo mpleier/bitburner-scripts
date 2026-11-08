@@ -9,13 +9,15 @@ import {cacheContextFile,cacheRewardReset,cacheRewardFile,recordDarknetCache} fr
 export async function main(ns) {
   ns.disableLog("ALL");
   const self = ns.getHostname();
+  let modelId = null;
+  try { modelId = ns.dnet.getServerDetails(self)?.modelId ?? null; } catch { }
   for (const file of ns.ls(self, ".cache")) {
     try {
       const result = ns.dnet.openCache(file, true);
       if (result?.success) await ns.write('tasks/dnet-last-cache.json', JSON.stringify({at:Date.now()}), 'w');
           if(result?.success)try{
             let previous;try{previous=JSON.parse(ns.read(cacheRewardFile(self)));}catch{}
-            const reward=recordDarknetCache(previous,result,{host:self,pid:ns.pid,at:Date.now(),reset:cacheRewardReset(ns.read(cacheContextFile))});
+            const reward=recordDarknetCache(previous,result,{host:self,pid:ns.pid,at:Date.now(),reset:cacheRewardReset(ns.read(cacheContextFile)),modelId});
             await ns.write(cacheRewardFile(self),JSON.stringify(reward),'w');
           }catch(error){ns.print('Cache reward report deferred: '+String(error));}
       ns.print(`${self}: opened ${file}: ${JSON.stringify(result)}`);

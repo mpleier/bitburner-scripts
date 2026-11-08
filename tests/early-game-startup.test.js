@@ -115,6 +115,14 @@ test('near-target karma avoids pointless synchronization and respects explicit o
  const p=opening({sleeves:[sleeve({sync:99})],karma:-53999});assert.equal(p.assignments[0],'karma');
  assert.equal(opening({enabled:false}).stage,'normal');assert.deepEqual(opening({enabled:false}).assignments,{});
 });
+test('new BitNode early cash keeps sleeves on their best money crime until the bank is built',()=>{
+ const p=sleeveStartupPlan({sleeves:[sleeve()],crimes,money:1000,casinoPending:false,gangAvailable:false,earlyMoneyTarget:1e6,bitNodeAgeSeconds:60,earlyMoneySeconds:1800});
+ assert.equal(p.stage,'early-money');assert.equal(p.assignments[0],'money');assert.deepEqual(p.workers,[0]);
+ const mature=sleeveStartupPlan({sleeves:[sleeve()],crimes,money:1e6,casinoPending:false,gangAvailable:false,earlyMoneyTarget:1e6,bitNodeAgeSeconds:60,earlyMoneySeconds:1800});
+ assert.notEqual(mature.stage,'early-money');
+ const expired=sleeveStartupPlan({sleeves:[sleeve()],crimes,money:1000,casinoPending:false,gangAvailable:false,earlyMoneyTarget:1e6,bitNodeAgeSeconds:1800,earlyMoneySeconds:1800});
+ assert.notEqual(expired.stage,'early-money');
+});
 test('zero synchronization retains a path to karma and empty sleeves never produce invalid ETA',()=>{
  const p=opening({sleeves:[sleeve({sync:0}),sleeve({sync:0})]});assert.equal(Object.values(p.assignments).filter(v=>v==='sync').length,1);
  assert.equal(opening({sleeves:[]}).etaSeconds,null);

@@ -54,22 +54,43 @@ const companySpecificConfigs = [
     { name: "Silhouette", companyName: "TBD", repRequiredForFaction: 1.0e7 } // Hack: 3.2e6 should be enough rep to get the CTO position, but once
     // we hit this rep we might break out of the work loop before getting the final promotion, so we keep working until we get the faction invite.
 ]
-const jobs = [ // Job stat requirements for a company with a base stat modifier of +224 (modifier of all megacorps except the ones above which are 25 higher)
-    {
-        name: "IT",
-        reqRep: [0e0, 7e3, 35e3, 175e3],
-        reqHck: [225, 250, 275, 375], // [1, 26, 51, 151] + 224
-        reqCha: [0e0, 0e0, 275, 300], // [0,  0, 51,  76] + 224
-        repMult: [0.9, 1.1, 1.3, 1.4]
+// Reputation multiplier and per-skill effectiveness for every company job track.
+// Position requirements come from getCompanyPositionInfo(), so company stat offsets
+// and backdoor discounts are always native values rather than a hardcoded table.
+const jobTrackMetadata = {
+    "Software": {
+        rep: [0.9, 1.1, 1.3, 1.5, 1.6, 1.6, 1.75, 2.0],
+        eff: [{ hacking: .85, charisma: .15 }, { hacking: .85, charisma: .15 }, { hacking: .80, charisma: .20 },
+            { hacking: .75, charisma: .25 }, { hacking: .75, charisma: .25 }, { hacking: .75, charisma: .25 },
+            { hacking: .70, charisma: .30 }, { hacking: .65, charisma: .35 }]
     },
-    {
-        name: "Software",
-        reqRep: [0e0, 8e3, 4e4, 2e5, 4e5, 8e5, 16e5, 32e5],
-        reqHck: [225, 275, 475, 625, 725, 725, 825, 975],   // [1, 51, 251, 401, 501, 501, 601, 751] + 224
-        reqCha: [0e0, 0e0, 275, 375, 475, 475, 625, 725],   // [0,  0,  51, 151, 251, 251, 401, 501] + 224
-        repMult: [0.9, 1.1, 1.3, 1.5, 1.6, 1.6, 1.75, 2.0]
+    "IT": {
+        rep: [0.9, 1.1, 1.3, 1.4],
+        eff: [{ hacking: .90, charisma: .10 }, { hacking: .85, charisma: .15 }, { hacking: .80, charisma: .20 }, { hacking: .80, charisma: .20 }]
     },
-]
+    "Security": {
+        rep: [1.0, 1.1, 1.25, 1.4],
+        eff: [{ hacking: .05, strength: .20, defense: .20, dexterity: .20, agility: .20, charisma: .15 },
+            { hacking: .10, strength: .20, defense: .20, dexterity: .20, agility: .20, charisma: .10 },
+            { hacking: .10, strength: .15, defense: .15, dexterity: .15, agility: .15, charisma: .30 },
+            { hacking: .10, strength: .15, defense: .15, dexterity: .15, agility: .15, charisma: .30 }]
+    },
+    "Business": {
+        rep: [0.9, 1.1, 1.3, 1.5, 1.6, 1.75],
+        eff: [{ hacking: .10, charisma: .90 }, { hacking: .15, charisma: .85 }, { hacking: .15, charisma: .85 },
+            { hacking: .15, charisma: .85 }, { hacking: .10, charisma: .90 }, { hacking: .10, charisma: .90 }]
+    },
+    "Security Engineer": { rep: [1.2], eff: [{ hacking: .85, charisma: .15 }] },
+    "Network Engineer": { rep: [1.2, 1.3], eff: [{ hacking: .85, charisma: .15 }, { hacking: .80, charisma: .20 }] },
+    "Agent": {
+        rep: [1.0, 1.25, 1.5],
+        eff: [{ hacking: .10, strength: .15, defense: .15, dexterity: .20, agility: .20, charisma: .20 },
+            { hacking: .15, strength: .15, defense: .15, dexterity: .20, agility: .20, charisma: .15 },
+            { hacking: .15, strength: .15, defense: .15, dexterity: .20, agility: .20, charisma: .15 }]
+    },
+    "Software Consultant": { rep: [1.0, 1.2], eff: [{ hacking: .80, charisma: .20 }, { hacking: .75, charisma: .25 }] },
+    "Business Consultant": { rep: [1.0, 1.2], eff: [{ hacking: .20, charisma: .80 }, { hacking: .15, charisma: .85 }] },
+};
 const factions = ["Illuminati", "Daedalus", "The Covenant", "ECorp", "MegaCorp", "Bachman & Associates", "Blade Industries", "NWO", "Clarke Incorporated", "OmniTek Incorporated",
     "Four Sigma", "KuaiGong International", "Fulcrum Secret Technologies", "BitRunners", "The Black Hand", "NiteSec", "Aevum", "Chongqing", "Ishima", "New Tokyo", "Sector-12",
     "Volhaven", "Speakers for the Dead", "The Dark Army", "The Syndicate", "Silhouette", "Tetrads", "Slum Snakes", "Netburners", "Tian Di Hui", "CyberSec"];
@@ -114,10 +135,13 @@ const waitForFactionInviteTime = 30 * 1000; // The game will only issue one new 
 
 let augmentationOwnershipSignature=null,augmentationOwnershipChanged=false,lastOwnershipProbeAt=0,ownershipProbeWarned=false;
 let shouldFocus; // Whether we should focus on work or let it be backgrounded (based on whether "Neuroreceptor Management Implant" is owned, or "--no-focus" is specified)
+let focusOptOut=false, focusObserved=false; // Respect an explicit "Do something else simultaneously" choice until the player focuses again.
+const focusForWork=()=>shouldFocus===undefined?true:shouldFocus===true&&!focusOptOut;
 // And a bunch of globals because managing state and encapsulation is hard.
 let hasFocusPenalty, hasSimulacrum, favorToDonate, fulcrumHackReq, notifiedAboutDaedalus, playerInBladeburner, wasGrafting, currentBitnode;
 let dictSourceFiles, dictFactionFavors, playerGang, mainLoopStart, scope, numJoinedFactions, lastTravel, crimeCount;
 let firstFactions, skipFactions, completedFactions, softCompletedFactions, mostExpensiveAugByFaction, mostExpensiveDesiredAugByFaction;
+const companyJobCache = new Map();
 let bitNodeMults = (/**@returns{BitNodeMultipliers}*/() => undefined)(); // Trick to get strong typing in mono
 
 export function autocomplete(data, args) {
@@ -702,9 +726,17 @@ export async function crimeForKillsKarmaStats(ns, reqKills, reqKarma, reqStats, 
         if (!forever && breakToMainLoop()) return ns.print('INFO: Interrupting crime to check on high-level priorities.');
         let crimeChances = await getNsDataThroughFile(ns, `Object.fromEntries(ns.args.map(c => [c, ns.singularity.getCrimeChance(c)]))`, '/Temp/crime-chances.txt', bestCrimesByDifficulty);
         let karma = -ns.heart.break();
-        crime = crimeCount < 2 ? (crimeChances["Homicide"] > 0.75 ? "Homicide" : "Mug") : // Start with a few fast & easy crimes to boost stats if we're just starting
-            (!needStats && (player.numPeopleKilled < reqKills || karma < reqKarma)) ? "Homicide" : // If *all* we need now is kills or Karma, homicide is the fastest way to do that, even at low proababilities
-                bestCrimesByDifficulty.find((c, index) => doFastCrimesOnly && index <= 1 ? 0 : crimeChances[c] >= chanceThresholds[index]); // Otherwise, crime based on success chance vs relative reward (precomputed)
+        const karmaOnly = reqKills <= 0 && reqKarma > 0 && reqStats <= 0;
+        const killOnly = reqKills > 0 && reqStats <= 0;
+        // Expected Karma per second. Homicide is almost always better, but at a
+        // very low success chance Mug can still produce more Karma.
+        const homicideKarmaRate = (crimeChances["Homicide"] || 0) * 3 / 3;
+        const mugKarmaRate = (crimeChances["Mug"] || 0) * 0.25 / 4;
+        crime = karmaOnly ? (homicideKarmaRate >= mugKarmaRate ? "Homicide" : "Mug") :
+            killOnly ? "Homicide" :
+            crimeCount < 2 ? (crimeChances["Homicide"] > 0.75 ? "Homicide" : "Mug") :
+            (!needStats && (player.numPeopleKilled < reqKills || karma < reqKarma)) ? "Homicide" :
+                bestCrimesByDifficulty.find((c, index) => doFastCrimesOnly && index <= 1 ? 0 : crimeChances[c] >= chanceThresholds[index]);
         // Warn if current crime is disrupted
         let currentWork = await getCurrentWorkInfo(ns);
         let crimeType = currentWork.crimeType;
@@ -714,10 +746,10 @@ export async function crimeForKillsKarmaStats(ns, reqKills, reqKarma, reqStats, 
                 log(ns, `Committing Crime "${lastCrime}" Interrupted. (Now: ${crimeType ?? currentWork.type}) Restarting...`, false, 'warning');
                 if (!options['no-tail-windows']) tail(ns); // Force a tail window open to help the user kill this script if they accidentally closed the tail window and don't want to keep doing crime
             }
-            let focusArg = shouldFocus === undefined ? true : shouldFocus; // Only undefined if running as imported function
+            let focusArg = focusForWork(); // Only undefined if running as imported function
             crimeTime = await factionWorkCommand(ns, 'ns.singularity.commitCrime(ns.args[0], ns.args[1])', [crime, focusArg], true)
             if(!crimeTime)return;
-            if (shouldFocus && !options['no-tail-windows']) tail(ns); // Force a tail window open when auto-criming with focus so that the user can more easily kill this script
+            if (focusForWork() && !options['no-tail-windows']) tail(ns); // Force a tail window open when auto-criming with focus so that the user can more easily kill this script
         }
         // Periodic status update with progress
         if (lastCrime != crime || (Date.now() - lastStatusUpdateTime) > statusUpdateInterval) {
@@ -1055,11 +1087,40 @@ async function maintainWorkFocus(ns, expectedWork) {
         const expected = JSON.parse(ns.args[0]), current = ns.singularity.getCurrentWork();
         if (!current || !Object.entries(expected).every(([key, value]) => current[key] === value)) return null;
         if (ns.singularity.getOwnedAugmentations(false).includes('Neuroreceptor Management Implant')) return 'implant';
-        return ns.singularity.isFocused() || ns.singularity.setFocus(true);
+        return ns.singularity.isFocused() ? 'focused' : 'unfocused';
     })()`, [JSON.stringify(expected)], true);
     if (result === 'implant') {
         hasFocusPenalty = false;
         shouldFocus = false;
+        focusObserved = false;
+        focusOptOut = false;
+        return;
+    }
+    if (result === 'focused') {
+        focusObserved = true;
+        focusOptOut = false;
+        return;
+    }
+    if (result !== 'unfocused') return;
+    // Once we have seen the task focused, an unfocused task is treated as an
+    // explicit "Do something else simultaneously" choice. Do not steal it back.
+    if (focusObserved) {
+        if (!focusOptOut) {
+            focusOptOut = true;
+            log(ns, 'INFO: Work was changed to "Do something else simultaneously"; leaving focus alone until it is selected again.', false, 'info');
+        }
+        return;
+    }
+    // Initial restoration only: the controller has not yet observed the task focused.
+    const restored = await factionWorkCommand(ns, `(() => {
+        const expected = JSON.parse(ns.args[0]), current = ns.singularity.getCurrentWork();
+        if (!current || !Object.entries(expected).every(([key, value]) => current[key] === value)) return null;
+        if (ns.singularity.isFocused()) return 'focused';
+        return ns.singularity.setFocus(true) ? 'focused' : 'unfocused';
+    })()`, [JSON.stringify(expected)], true);
+    if (restored === 'focused') {
+        focusObserved = true;
+        focusOptOut = false;
     }
 }
 
@@ -1161,9 +1222,10 @@ export async function workForSingleFaction(ns, factionName, forceUnlockDonations
         }
         // Ensure we are doing the best faction work (must always be done after "detect" routine is run)
         if (!workAssigned) {
-            if (await startWorkForFaction(ns, factionName, bestFactionJob, shouldFocus)) {
+            if (await startWorkForFaction(ns, factionName, bestFactionJob, focusForWork())) {
                 workAssigned = true;
-                if (shouldFocus && !options['no-tail-windows']) tail(ns); // Keep a tail window open if we're stealing focus
+                focusObserved = focusObserved || focusForWork();
+                if (focusForWork() && !options['no-tail-windows']) tail(ns); // Keep a tail window open if we're stealing focus
             } else {
                 log(ns, `ERROR: Something went wrong, failed to start "${bestFactionJob}" work for faction "${factionName}" (Is gang faction, or not joined?)`, false, 'error');
                 break;
@@ -1179,7 +1241,7 @@ export async function workForSingleFaction(ns, factionName, forceUnlockDonations
             const eta_milliseconds = 1000 * (factionRepRequired - currentReputation) / repGainRate;
             ns.print(`${status} Currently at ${Math.round(currentReputation).toLocaleString('en')}, ` +
                 `earning ${formatNumberShort(repGainRate)} rep/sec. ` +
-                (hasFocusPenalty && !shouldFocus ? '(after 20% non-focus Penalty) ' : '') + `(ETA: ${formatDuration(eta_milliseconds)})`);
+                (hasFocusPenalty && !focusForWork() ? '(after 20% non-focus Penalty) ' : '') + `(ETA: ${formatDuration(eta_milliseconds)})`);
         }
         await tryBuyReputation(ns);
         await ns.sleep(loopSleepInterval);
@@ -1254,7 +1316,7 @@ async function detectBestFactionWork(ns, factionName) {
     try {
     if(calibrate&&await stop(ns)){passiveRate=await timedRate();passiveKnown=true;}
     for (const work of Object.values(ns.enums.FactionWorkType)) {
-        if (!(await startWorkForFaction(ns, factionName, work, shouldFocus))) {
+        if (!(await startWorkForFaction(ns, factionName, work, focusForWork()))) {
             //ns.print(`"${factionName}": "${work}"" work not supported.`);
             continue; // This type of faction work must not be supported
         }
@@ -1286,8 +1348,6 @@ async function detectBestFactionWork(ns, factionName) {
  * */
 export async function workForAllMegacorps(ns, megacorpFactionsInPreferredOrder, alsoWorkForCompanyFactions, oneCompanyFactionAtATime) {
     let player = await getPlayerInfo(ns);
-    if (player.skills.hacking < 225)
-        return ns.print(`Hacking Skill ${player.skills.hacking} is to low to work for any megacorps (min req. 225).`);
     let joinedCompanyFactions = player.factions.filter(f => megacorpFactionsInPreferredOrder.includes(f)); // Company factions we've already joined
     if (joinedCompanyFactions.length > 0)
         ns.print(`${joinedCompanyFactions.length} companies' factions have already been joined: ${joinedCompanyFactions.join(", ")}`)
@@ -1335,7 +1395,50 @@ const serverByCompany = { "Bachman & Associates": "b-and-a", "ECorp": "ecorp", "
 /** Apply to the specified role at the specified company
  * @param {NS} ns */
 async function tryApplyToCompany(ns, company, role) {
-    return await factionWorkCommand(ns, `ns.singularity.applyToCompany(ns.args[0], ns.args[1])`, [company, role], true)
+    // applyToCompany returns the resulting JobName (or null), not just a success flag.
+    const result = await factionWorkCommand(ns, `ns.singularity.applyToCompany(ns.args[0], ns.args[1])`, [company, role], true);
+    return typeof result === 'string' && result.length ? result : null;
+}
+
+/** Load every position offered by a company once, with native requirements and stat offsets. */
+async function getCompanyJobCatalog(ns, company) {
+    if (companyJobCache.has(company)) return companyJobCache.get(company);
+    const safe = company.replace(/[^A-Za-z0-9]+/g, '-');
+    let names;
+    try {
+        names = await getNsDataThroughFile(ns, 'ns.singularity.getCompanyPositions(ns.args[0])',
+            `/Temp/company-jobs-${safe}.txt`, [company]);
+    } catch { return []; }
+    if (!Array.isArray(names)) return [];
+    const positions = [];
+    for (let i = 0; i < names.length; i++) {
+        try {
+            const info = await getNsDataThroughFile(ns, 'ns.singularity.getCompanyPositionInfo(ns.args[0], ns.args[1])',
+                `/Temp/company-job-${safe}-${i}.txt`, [company, names[i]]);
+            if (info && typeof info.name === 'string') positions.push(info);
+        } catch { /* Skip a position whose metadata is temporarily unavailable. */ }
+    }
+    const byField = new Map();
+    for (const info of positions) {
+        if (!byField.has(info.field)) byField.set(info.field, []);
+        byField.get(info.field).push(info);
+    }
+    const catalog = [];
+    for (const [field, infos] of byField) {
+        infos.sort((a, b) => (a.requiredReputation || 0) - (b.requiredReputation || 0) || (a.salary || 0) - (b.salary || 0));
+        infos.forEach((info, tier) => catalog.push({ info, field, tier, meta: jobTrackMetadata[field] }));
+    }
+    companyJobCache.set(company, catalog);
+    return catalog;
+}
+
+function jobPerformanceScore(player, entry) {
+    const meta = entry.meta;
+    if (!meta || !meta.eff[entry.tier]) return 0;
+    let performance = 0;
+    for (const [skill, weight] of Object.entries(meta.eff[entry.tier]))
+        performance += (player.skills[skill] || 0) * weight;
+    return performance * (meta.rep[entry.tier] || 1);
 }
 
 /** Check if the server associated with the specified company has been backdoored. TODO: We could be caching this result once true.
@@ -1357,54 +1460,55 @@ async function backdoorStatusByServer(ns) {
 export async function workForMegacorpFactionInvite(ns, factionName, waitForInvite) {
     const companyConfig = companySpecificConfigs.find(c => c.name == factionName); // For anything company-specific
     const companyName = companyConfig?.companyName || factionName; // Name of the company that gives the faction (same for all but Fulcrum)
-    const statModifier = companyConfig?.statModifier || 0; // How much e.g. Hack / Cha is needed for a promotion above the base requirement for the job
 
     let player = await getPlayerInfo(ns);
     if (player.factions.includes(factionName)) return false; // Only return true if we did work to earn a new faction invite
     if ((await checkFactionInvites(ns)).includes(factionName))
         return waitForInvite ? await waitForFactionInvite(ns, factionName) : false;
-    // TODO: In some scenarios, the best career path may require combat stats, this hard-codes the optimal path for hack stats
-    const itJob = jobs.find(j => j.name == "IT");
-    const softwareJob = jobs.find(j => j.name == "Software");
-    if (itJob.reqHck[0] + statModifier > player.skills.hacking) // We don't qualify to work for this company yet if we can't meet IT qualifications (lowest there are)
-        return ns.print(`Cannot yet work for "${companyName}": Need Hack ${itJob.reqHck[0] + statModifier} to get hired (current Hack: ${player.skills.hacking});`);
+    const catalog = await getCompanyJobCatalog(ns, companyName);
+    if (!catalog.length) return ns.print(`Cannot work for "${companyName}": no company positions were available.`);
     ns.print(`Going to work for Company "${companyName}" next...`)
-    let currentReputation, currentRole = "", currentJobTier = -1; // TODO: Derive our current position and promotion index based on player.jobs[companyName]
+    let currentReputation;
     let lastStatus = "", lastStatusUpdateTime = 0;
     let isStudying = false, isWorking = false, decidedNotToStudy = false;
     let backdoored = await checkForBackdoor(ns, companyName);
     let repRequiredForFaction = (companyConfig?.repRequiredForFaction || 400_000) - (backdoored ? 100_000 : 0);
     while (((currentReputation = (await getCompanyReputation(ns, companyName))) < repRequiredForFaction) && !player.factions.includes(factionName)) {
         if (breakToMainLoop()) return ns.print('INFO: Interrupting corporation work to check on high-level priorities.');
-        // Determine the next promotion we're striving for (the sooner we get promoted, the faster we can earn company rep)
-        const getTier = job => Math.min( // Check all requirements for all job (taking into account modifiers) and find the minimum we meet
-            job.reqRep.filter(r => (r * (backdoored ? 0.75 : 1)) <= currentReputation).length,
-            job.reqHck.filter(h => (h === 0 ? 0 : h + statModifier) <= player.skills.hacking).length,
-            job.reqCha.filter(c => (c === 0 ? 0 : c + statModifier) <= player.skills.charisma).length) - 1;
-        // It's generally best to hop back-and-forth between it and software engineer career paths (rep gain is about the same, but better money from software)
-        const qualifyingItTier = getTier(itJob), qualifyingSoftwareTier = getTier(softwareJob);
-        const bestJobTier = Math.max(qualifyingItTier, qualifyingSoftwareTier); // Go with whatever job promotes us higher
-        const bestRoleName = qualifyingItTier > qualifyingSoftwareTier ? "IT" : "Software"; // If tied for qualifying tier, go for software
-        if (currentJobTier < bestJobTier || currentRole != bestRoleName) { // We are ready for a promotion, ask for one!
-            if (await tryApplyToCompany(ns, companyName, bestRoleName))
-                log(ns, `Successfully applied to "${companyName}" for a '${bestRoleName}' Job or Promotion`, false, 'success');
-            else if (currentJobTier !== -1) // Unless we just restarted "work-for-factions" and lost track of our current job, this is an error
-                log(ns, `Application to "${companyName}" for a '${bestRoleName}' Job or Promotion failed.`, false, 'error');
-            currentJobTier = bestJobTier; // API to apply for a job immediately gives us the highest tier we qualify for
-            currentRole = bestRoleName;
-            player = await getPlayerInfo(ns); // Update player.jobs info after attempted promotion
+        const eligibility = entry => {
+            const requiredRep = (entry.info.requiredReputation || 0) * (backdoored ? 0.75 : 1);
+            if (requiredRep > currentReputation) return false;
+            return Object.entries(entry.info.requiredSkills || {}).every(([skill, required]) => !required || (player.skills[skill] || 0) >= required);
+        };
+        const eligible = catalog.filter(entry => entry.meta && eligibility(entry));
+        const best = eligible.sort((a, b) => jobPerformanceScore(player, b) - jobPerformanceScore(player, a) ||
+            a.info.requiredReputation - b.info.requiredReputation)[0];
+        if (!best) {
+            // A starting position is always available; if not, the company has no usable track yet.
+            if (catalog.every(entry => !entry.meta)) return ns.print(`No usable job tracks at "${companyName}".`);
+            return ns.print(`Cannot yet qualify for any job at "${companyName}".`);
         }
-        const currentJob = player.jobs[companyName];
-        const nextJobTier = currentRole == "IT" ? currentJobTier : currentJobTier + 1;
-        const nextJobName = currentRole == "IT" || nextJobTier >= itJob.reqRep.length ? "Software" : "IT";
-        const nextJob = nextJobName == "IT" ? itJob : softwareJob;
-        const requiredRep = nextJob.reqRep[nextJobTier] * (backdoored ? 0.75 : 1); // Rep requirement is decreased when company server is backdoored
-        const requiredHack = nextJob.reqHck[nextJobTier] === 0 ? 0 : nextJob.reqHck[nextJobTier] + statModifier; // Stat modifier only applies to non-zero reqs
-        const requiredCha = nextJob.reqCha[nextJobTier] === 0 ? 0 : nextJob.reqCha[nextJobTier] + statModifier; // Stat modifier only applies to non-zero reqs
-        let status = `Next promotion ('${nextJobName}' #${nextJobTier}) at Hack:${requiredHack} Cha:${requiredCha} Rep:${requiredRep?.toLocaleString('en')}` +
-            (repRequiredForFaction > requiredRep ? '' : `, but we won't need it, because we'll sooner hit ${repRequiredForFaction.toLocaleString('en')} reputation to unlock company faction "${factionName}"!`);
-        if (nextJobTier >= nextJob.reqHck.length) // Special case status message if we're at the maximum promotion, but need additional reputation to unlock the company
-            status = `We've reached the maximum promotion level, but are continuing to work until we hit ${repRequiredForFaction.toLocaleString('en')} reputation to unlock company faction "${factionName}."`;
+        const beforeJob = player.jobs[companyName];
+        if (beforeJob !== best.info.name) {
+            const appliedJob = await tryApplyToCompany(ns, companyName, best.field);
+            player = await getPlayerInfo(ns);
+            const afterJob = player.jobs[companyName];
+            if (appliedJob && afterJob !== beforeJob)
+                log(ns, `Promoted at "${companyName}" from "${beforeJob || 'unemployed'}" to "${afterJob}"`, false, 'success');
+            else if (!appliedJob)
+                log(ns, `Application to "${companyName}" for '${best.field}' failed.`, false, 'error');
+        }
+        const nextInfo = best.info.nextPosition ? catalog.find(entry => entry.info.name === best.info.nextPosition) : null;
+        const nextRep = nextInfo ? (nextInfo.info.requiredReputation || 0) * (backdoored ? 0.75 : 1) : repRequiredForFaction;
+        const requiredRep = nextRep;
+        const requiredHack = nextInfo?.info.requiredSkills?.hacking || 0;
+        const requiredCha = nextInfo?.info.requiredSkills?.charisma || 0;
+        let status = `Best job: "${best.info.name}" (${best.field} #${best.tier}, ${best.meta.rep[best.tier]}× mult)` +
+            (nextInfo ? `; next "${nextInfo.info.name}" at Rep:${nextRep.toLocaleString('en')}` : '');
+        if (best.info.requiredReputation > repRequiredForFaction)
+            status = `Reached the best job needed before faction "${factionName}" at ${repRequiredForFaction.toLocaleString('en')} reputation.`;
+        if (nextInfo && nextRep >= repRequiredForFaction)
+            status += `, but faction "${factionName}" unlocks first.`;
         // Monitor that we are still performing the expected work
         let currentWork = await getCurrentWorkInfo(ns);
         // We should only study at university if every other requirement is met but Charisma
@@ -1435,14 +1539,14 @@ export async function workForMegacorpFactionInvite(ns, factionName, waitForInvit
                     if (!options['no-tail-windows']) tail(ns); // Force a tail window open to help the user kill this script if they accidentally closed the tail window and don't want to keep studying
                 }
                 if (!isStudying) { // Study at ZB university if CHA is the limiter.
-                    if (await studyForCharisma(ns, shouldFocus))
+                    if (await studyForCharisma(ns, focusForWork()))
                         [isWorking, isStudying] = [false, true];
                 }
                 if (requiredCha - player.skills.charisma > 10) { // Try to spend hacknet-node hashes on university upgrades while we've got a ways to study to make it go faster
                     let spentHashes = await trySpendHashes(ns, "Improve Studying");
                     if (spentHashes > 0) {
                         log(ns, 'Bought a "Improve Studying" upgrade.', false, 'success');
-                        await studyForCharisma(ns, shouldFocus); // We must restart studying for the upgrade to take effect.
+                        await studyForCharisma(ns, focusForWork()); // We must restart studying for the upgrade to take effect.
                     }
                 }
             }
@@ -1461,11 +1565,8 @@ export async function workForMegacorpFactionInvite(ns, factionName, waitForInvit
             }
         }
 
-        // Regardless of the earlier promotion logic, always try for a promotion to make sure we don't miss a promotion due to buggy logic
-        if (await tryApplyToCompany(ns, companyName, currentRole)) {
-            player = await getPlayerInfo(ns); // Find out what our new job is
-            log(ns, `Unexpected '${currentRole}' promotion from ${currentJob} to "${player.jobs[companyName]}. Promotion logic must be off..."`, false, 'warning');
-        }
+        // Promotion attempts happen above whenever the derived target tier improves.
+        // Do not apply unconditionally: applyToCompany returns the same title for a no-op.
 
         if (isWorking && !isStudying && currentWork.companyName === companyName) await maintainWorkFocus(ns, currentWork);
         // If not studying, ensure we are working for this company
@@ -1476,9 +1577,10 @@ export async function workForMegacorpFactionInvite(ns, factionName, waitForInvit
                 isWorking = false;
                 if (!options['no-tail-windows']) tail(ns); // Force a tail window open to help the user kill this script if they accidentally closed the tail window and don't want to keep working
             }
-            if (await factionWorkCommand(ns, `ns.singularity.workForCompany(ns.args[0], ns.args[1])`, [companyName, shouldFocus], true)) {
+            if (await factionWorkCommand(ns, `ns.singularity.workForCompany(ns.args[0], ns.args[1])`, [companyName, focusForWork()], true)) {
                 isWorking = true;
-                if (shouldFocus && !options['no-tail-windows']) tail(ns); // Keep a tail window open if we're stealing focus
+                focusObserved = focusObserved || focusForWork();
+                if (focusForWork() && !options['no-tail-windows']) tail(ns); // Keep a tail window open if we're stealing focus
             } else {
                 log(ns, `Something went wrong, failed to start working for company "${companyName}".`, false, 'error');
                 break;
@@ -1491,8 +1593,8 @@ export async function workForMegacorpFactionInvite(ns, factionName, waitForInvit
             const repGainRate = !isWorking ? 0 : await measureCompanyRepGainRate(ns, companyName);
             const eta = !isWorking ? "?" : formatDuration(1000 * ((requiredRep || repRequiredForFaction) - currentReputation) / repGainRate);
             player = await getPlayerInfo(ns);
-            ns.print(`Currently a "${player.jobs[companyName]}" ('${currentRole}' #${currentJobTier}) for "${companyName}" earning ${formatNumberShort(repGainRate)} rep/sec. ` +
-                (hasFocusPenalty && !shouldFocus ? `(after 20% non-focus Penalty)` : '') + `\n` +
+            ns.print(`Currently a "${player.jobs[companyName] || 'unemployed'}" for "${companyName}" earning ${formatNumberShort(repGainRate)} rep/sec. ` +
+                (hasFocusPenalty && !focusForWork() ? `(after 20% non-focus Penalty)` : '') + `\n` +
                 `${status}\nCurrent player stats are Hack:${player.skills.hacking} ${player.skills.hacking >= (requiredHack || 0) ? '✓' : '✗'} ` +
                 `Cha:${player.skills.charisma} ${player.skills.charisma >= (requiredCha || 0) ? '✓' : '✗'} ` +
                 `Rep:${Math.round(currentReputation).toLocaleString('en')} ${currentReputation >= (requiredRep || repRequiredForFaction) ? '✓' : `✗ (ETA: ${eta})`}`);

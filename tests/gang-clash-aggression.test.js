@@ -70,7 +70,7 @@ test('residual early-clash pulses retain the quoted exposure set until routine w
  await ctx.run(ns,crew,'Territory Warfare',{faction:'Own',territoryWarfareEngaged:true,territoryClashChance:1});assert.deepEqual(captured.map(o=>o.name),['A','B']);
 });
 test('controller allows bounded attrition under training-first while retaining pulse safeguards and opt-out',()=>{
- const s=readFileSync(new URL('../gangs.js',import.meta.url),'utf8');assert.match(s,/warfare-win-chance', 0.70/);
+ const s=readFileSync(new URL('../gangs.js',import.meta.url),'utf8');assert.match(s,/warfare-win-chance', 0.60/);
  assert.match(s,/function gangWarfareThreshold\(\)\{return options\['warfare-win-chance'\];\}/);
  assert.match(s,/allowTrainingFirst:true,participants/);assert.match(s,/gangWarfareMemberEligible\(m,maxDefense,1\)/);
  assert.match(s,/if\(lease.state==='active'\)/);assert.match(s,/activeLease&&!options\['disable-attrition'\]/);

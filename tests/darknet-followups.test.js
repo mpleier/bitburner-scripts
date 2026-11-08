@@ -14,6 +14,14 @@ test('candidate turns resume without replaying rejected guesses',async()=>{
  assert.equal((await candidatePasswordTurn(details,undefined,words,state,auth,auth,300,2)).password,'e');
  assert.deepEqual(guesses,words);
 });
+test('numeric feedback guesses keep the exact password length',async()=>{
+ const d={hostname:'h',modelId:'AccountsManager_4.2',passwordLength:2,passwordFormat:'numeric',data:'0,9'};
+ const guesses=[];
+ const auth=async p=>{guesses.push(p);return p==='07'?{success:true}:bad();};
+ const read=async()=>({success:true,logs:[{code:401,passwordAttempted:guesses.at(-1),data:Number(guesses.at(-1))<7?'Higher':'Lower'}]});
+ const result=await solveFeedbackPassword(d,auth,read,{});
+ assert.equal(result.success,true);assert.ok(guesses.length>0&&guesses.every(p=>p.length===2),JSON.stringify(guesses));
+});
 test('interrupted and thrown authentication preserve the current candidate',async()=>{
  for(const throws of [false,true]){
   const state={},guesses=[];let interrupt=true;

@@ -3,6 +3,8 @@ import {ensureFactionJoinPlan} from './faction-joining.js';
 import {factionJoinAllowed,rankFactionInvites} from './faction-policy.js';
 import {achievementActionAllowed} from './achievement-policy.js';
 import { prepareResetBackup } from './reset-backup.js';
+import { casinoWindfallFile } from './casino-augmentation-windfall-policy.js';
+import { ensureStanekFirst } from './stanek-first-policy.js';
 import { beginTransition, endTransition } from './progression-coordination.js';
 import {
     log, getConfiguration, getFilePath, runCommand, waitForProcessToComplete, getNsDataThroughFile,
@@ -38,6 +40,9 @@ export function autocomplete(data, args) {
 export async function main(ns) {
     const options = getConfiguration(ns, argsSchema);
     if (!options) return; // Invalid options, or ran in --help mode.
+    const selfName=ns.getScriptName().replace(/^\//,'');
+    if(ns.ps('home').some(p=>p.pid!==ns.pid&&p.filename.replace(/^\//,'')===selfName))
+        return log(ns,'Another ascend.js is already preparing an installation; not starting a second reset pass.',true,'warning');
     let dictSourceFiles = await getActiveSourceFiles(ns); // Find out what source files the user has unlocked
     if (!(4 in dictSourceFiles))
         return log(ns, "ERROR: You cannot automate installing augmentations until you have unlocked singularity access (SF4).", true, 'error');
@@ -95,24 +100,18 @@ export async function main(ns) {
     if (options['prioritize-home-ram']) await spendOnHomeRam();
 
     // STEP 3: (SF13) STANEK'S GIFT
-    // There is now an API to accept stanek's gift without resorting to exploits. We must do this before installing augs for the first time
-    if (13 in dictSourceFiles && achievementActionAllowed(ns,"stanek")) {
-        // By feature request: Auto-skip stanek in BN8 (requires a separate API check to get current BN)
-        let isInBn8 = 8 === (await getNsDataThroughFile(ns, `ns.getResetInfo()`)).currentNode;
-
-        if (options['skip-staneks-gift'])
-            log(ns, 'INFO: --skip-staneks-gift was set, we will not accept it.');
-        else if (isInBn8) {
-            log(ns, 'INFO: Stanek\'s gift is useless in BN8, setting the --skip-staneks-gift argument automatically.');
-            options['skip-staneks-gift'] = true;
+    // Never let ascend install another augmentation while Stanek is still obtainable but not installed.
+    if (13 in dictSourceFiles && !options['skip-staneks-gift']) {
+        const stanek = ensureStanekFirst(ns);
+        if (stanek.installed || stanek.accepted)
+            log(ns, "INFO: Confirmed Stanek's Gift is installed before any other augmentation.", false, 'info');
+        else if (!stanek.eligible) {
+            if (!/BN8/.test(String(stanek.reason)))
+                return log(ns, `Installation aborted: Stanek's Gift is still eligible but unavailable (${stanek.reason}).`, true, 'warning');
+        } else if (stanek.canAccept) {
+            return log(ns, "Installation aborted: Stanek's Gift can still be accepted and must be installed before any other augmentation.", true, 'warning');
         } else {
-            log(ns, 'Accepting Stanek\'s Gift (if this is the first reset)...', false, 'info');
-            const haveStanek = await getNsDataThroughFile(ns, `ns.stanek.acceptGift()`);
-            if (haveStanek) log(ns, 'INFO: Confirmed that we have Stanek\'s Gift', false, 'info');
-            else {
-                log(ns, 'WARNING: It looks like we can\'t get Stanek\'s Gift. (Did you manually purchase some augmentations?)', true, 'warning');
-                options['skip-staneks-gift'] = true; // Nothing we can do, no point in failing our augmentation install
-            }
+            log(ns, `WARNING: Stanek's Gift is permanently blocked by existing augmentations: ${stanek.blockers.join(', ')}. Continuing with the queued installation.`, true, 'warning');
         }
     }
 
@@ -204,11 +203,10 @@ export async function main(ns) {
     // FINALLY: If configured, soft reset
     if (options.reset || options['install-augmentations']) {
         await prepareResetBackup(ns,'augmentation reset');
+        try{await ns.rm(casinoWindfallFile,'home');}catch{} // The basket is complete; a new casino run records its own windfall.
         log(ns, '\nCatch you on the flippity-flip\n', true, 'success');
         await ns.sleep(1000); // Pause for effect?
-        const resetScript = options['on-reset-script'] ??
-            // Default script (if none is specified) is stanek.js if we have it (which in turn will spawn daemon.js when done)
-            (purchasedAugmentations.includes(`Stanek's Gift - Genesis`) ? getFilePath('stanek.js') : getFilePath('daemon.js'));
+        const resetScript = options['on-reset-script'] ?? getFilePath('bootstrap-start.js');
         const committed=await getNsDataThroughFile(ns,`(() => {
             const r=ns.getResetInfo();
             if(!ns.isRunning(ns.args[5])||r.lastAugReset!==ns.args[2]||r.lastNodeReset!==ns.args[3])return {allowed:false,reason:"Reset changed during preparation"};

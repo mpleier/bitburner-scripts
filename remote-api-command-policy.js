@@ -1,11 +1,12 @@
 // Import-free module registry and command validation shared with the local listener.
 export const commandFile = 'remote-control/request.json';
 export const heartbeatFile = 'remote-control/heartbeat.json';
-export const commandPolicyVersion = 30;
+export const commandPolicyVersion = 31;
 export const resultFile = id => 'remote-control/results/' + id + '.json';
 // Authoritative module metadata lives beside import-free command validation so the local
 // listener can hot-reload both together without stale dependency caches.
 export const moduleManifest=Object.freeze([
+ Object.freeze({"script":"bootstrap-start.js","remoteControl":true,"supervised":false,"diagnostic":true,"homeOnly":true,"statusFile":"tasks/bootstrap-start.json","priority":1,"launchOrder":1,"watched":false}),
  Object.freeze({"script":"reliability-manager.js","remoteControl":true,"supervised":false,"diagnostic":true,"homeOnly":true,"priority":2,"launchOrder":1,"watched":false}),
  Object.freeze({"script":"contract-validation.js","remoteControl":true,"supervised":true,"diagnostic":true,"homeOnly":true,"statusFile":"tasks/contract-validation.json","priority":3,"launchOrder":2,"watched":true}),
  Object.freeze({"script":"automation-dashboard.js","remoteControl":true,"supervised":false,"diagnostic":true,"homeOnly":true,"watched":false}),

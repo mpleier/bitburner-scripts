@@ -25,5 +25,5 @@ test('crew forecast drops the recruitment-respect veto without inventing retaine
  assert.ok(p.forecasts.A.respectLoss>0);
 });
 test('controller defaults to the requested preference and passes it into native execution',()=>{
- const s=readFileSync(new URL('../gangs.js',import.meta.url),'utf8');assert.match(s,/\['ignore-ascension-respect-loss', true\]/);assert.match(s,/ignoreRespectLoss:options\['ignore-ascension-respect-loss'\]===true/);assert.match(s,/JSON.parse\(ns.args\[5\]\),true,ns.args\[6\]/);
+ const s=readFileSync(new URL('../gangs.js',import.meta.url),'utf8');assert.match(s,/\['ignore-ascension-respect-loss', false\]/);assert.match(s,/ignoreRespectLoss:options\['ignore-ascension-respect-loss'\]===true/);assert.match(s,/JSON.parse\(ns.args\[5\]\),true,ns.args\[6\]/);
 });

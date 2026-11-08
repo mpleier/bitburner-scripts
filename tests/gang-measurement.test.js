@@ -74,7 +74,7 @@ test('controller requests bounded fast samples and consumes receipt.success expl
  const s=readFileSync(new URL('../gangs.js',import.meta.url),'utf8');assert.match(s,/mainLoop.lastRecoverySampleAt\?\?0\)>=1000/);assert.match(s,/if\(receipt\?\.success===true\)/);assert.match(s,/attempt.recovery=\{resetAt,until,expected:economics.recoveryStats/);assert.ok(s.includes('await publishGangMeasurements(ns,{reset:resetInfo'));assert.match(s,/ascensionMeasurements:measurements/);assert.equal(gangMeasurementFile,'tasks/gang-measurements.json');
 });
 test('executed native receipt handling never treats a rejection object as a successful ascension',async()=>{
- const source=readFileSync(new URL('../gangs.js',import.meta.url),'utf8').replace(/\r/g,''),start=source.indexOf('    for(const {name:member,economics} of plans){'),end=source.indexOf('\n}\n',start);
+ const source=readFileSync(new URL('../gangs.js',import.meta.url),'utf8').replace(/\r/g,''),start=source.indexOf('    for(let planIndex=0;planIndex<plans.length;planIndex++){'),end=source.indexOf('\n}\n',start);
  for(const outcome of ['rejected','unknown','success']){
   const ns={pid:7},economics={trainingSeconds:20,trainingTask:'Train Combat',member:{...member(5),...Object.fromEntries(keys.map(k=>[k+'_asc_mult',1]))},recoveryStats:v(10)},saves=[];
   const ctx={ns,plans:[{name:'A',economics}],dictAscensionResults:{A:{str:2}},ascensionStats:['str'],ascensionDiagnostics:{},options:{'ascend-multi-threshold':1.05,'ascend-multi-threshold-spacing':.05},ascendGangMemberSafely,chooseGangAscensions:()=>[],gangMutationAllowed:()=>true,
@@ -91,3 +91,4 @@ test('executed fast sampler requests only active recoveries at most once a secon
  vm.runInNewContext(source.slice(start,end)+'};globalThis.run=mainLoop;',ctx);await ctx.run({pid:7});at+=200;await ctx.run({pid:7});at+=1000;await ctx.run({pid:7});
  assert.deepEqual(requests,[['A'],[],['A']]);assert.equal(samples.length,2);assert.equal(samples[0].partial,true);
 });
+

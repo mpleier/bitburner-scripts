@@ -30,7 +30,7 @@ test('supervision, API permissions, diagnostics and automatic starts derive from
  assert.deepEqual(diagnosticScripts,moduleManifest.filter(m=>m.diagnostic).map(m=>m.script));
  assert.deepEqual(watchedScripts,moduleManifest.filter(m=>m.watched).map(m=>m.script));assert.ok(watchedScripts.includes('stats.js'));
  assert.equal(statusFiles['contract-validation.js'],'tasks/contract-validation.json');
- assert.equal(automaticManagerScripts.length,12);assert.equal(automaticManagerScripts[2],'achievement-manager.js');
+ assert.equal(automaticManagerScripts.length,13);assert.equal(automaticManagerScripts[3],'achievement-manager.js');
  for(const file of ['host-manager.js','Tasks/ram-manager.js','Tasks/contractor.js','Tasks/contractor.js.solver.js','automation-preview.js'])assert.ok(diagnosticScripts.includes(file));
  assert.ok(diagnosticScripts.length<=48);
 });

@@ -48,5 +48,5 @@ export function corporationFundingDiagnostics(plans,info,reserve,bank){
  if(![info?.funds,info?.revenue,info?.expenses,reserve,bank].every(Number.isFinite))return [];
  const free=Math.max(0,info.funds-Math.max(0,reserve)),available=Math.min(free,Math.max(0,bank)),rate=Math.max(0,info.revenue-info.expenses)*.75;
  const seen=new Set();
- return plans.filter(p=>typeof p?.label==='string'&&Number.isFinite(p.cost)&&p.cost>available&&!seen.has(p.label)&&seen.add(p.label)).slice(0,8).map(p=>({label:p.label,cost:p.cost,available,shortfall:p.cost-available,cashGap:Math.max(0,p.cost-free),estimatedSeconds:rate>0?(p.cost-available)/rate:null,basis:'Current net profit at 75% retention; other spending and future growth excluded'}));
+ return plans.filter(p=>typeof p?.label==='string'&&Number.isFinite(p.cost)&&p.cost>available&&!seen.has(p.label)&&seen.add(p.label)).slice(0,8).map(p=>({label:p.label,cost:p.cost,available,shortfall:p.cost-available,cashGap:Math.max(0,p.cost-free),budgetGap:Math.max(0,p.cost-available),cashAffordable:p.cost<=free,estimatedSeconds:rate>0?(p.cost-available)/rate:null,basis:'Current net profit at 75% retention; other spending and future growth excluded'}));
 }

@@ -7,7 +7,7 @@ import { surveyFile, stormRequestFile } from './darknet-storm-policy.js';
 import {serviceDarknetAnchor,anchorRequestFile} from './darknet-anchor-policy.js';
 import {mazeLeaseOwned,readMazeLease,mazeLeaseIdentity} from './darknet-development-policy.js';
 /** Runs on authenticated darknet servers, scouts outward, and tries exact-match candidates. */
-import { candidatePasswordTurn, isBlankPassword, solveFeedbackPassword, supportsFeedbackModel, modelCandidates, isStalledScout, dictionaryWords } from './darknet-solvers.js';
+import { candidatePasswordTurn, isBlankPassword, solveFeedbackPassword, supportsFeedbackModel, modelCandidates, isStalledScout, dictionaryWords, passwordLengthMatches, passwordHintCandidates } from './darknet-solvers.js';
 import { stockSignalFile, chooseStockPromotion } from './darknet-stock-policy.js';
 import { frontierFile, chooseMigrationTarget } from './darknet-migration-policy.js';
 export function createDarknetProgressReporter(publish, now=()=>Date.now()) {
@@ -100,7 +100,7 @@ export async function main(ns) {
   const readCandidates = () => [...new Set(ns.read(candidateFile).split(/\r?\n/).map(x => x.trim()).filter(x => x && !x.startsWith("#")))];
   const candidatesFor = (info, words) => {
     const matches = value => {
-      if (typeof info.passwordLength === "number" && value.length !== info.passwordLength) return false;
+      if (!passwordLengthMatches(info,value)) return false;
       switch (info.passwordFormat) {
         case "numeric": return /^\d+$/.test(value);
         case "alphabetic": return /^[a-z]+$/i.test(value);
@@ -124,13 +124,26 @@ export async function main(ns) {
     const counted = info.passwordFormat === "numeric" && info.passwordLength >= 1 && info.passwordLength <= 3
       ? Array.from({ length: 10 ** info.passwordLength }, (_, n) => String(n).padStart(info.passwordLength, "0"))
       : [];
-    return [...new Set([...modelCandidates(info).filter(matches), ...derived.filter(matches), ...(clue && matches(clue) ? [clue] : []), ...words.filter(matches), ...counted])];
+    return [...new Set([...modelCandidates(info).filter(matches), ...passwordHintCandidates(info).filter(matches),
+      ...derived.filter(matches), ...(clue && matches(clue) ? [clue] : []), ...words.filter(matches), ...counted])];
   };
   // v3 renamed ns.formatRam -> ns.format.ram; use whichever exists.
   const fmtRam = (v) => {
     try { if (ns.format && typeof ns.format.ram === "function") return ns.format.ram(v); } catch {}
     try { return ns.formatRam(v); } catch {}
     return `${Number(v).toFixed(2)}GB`;
+  };
+  const executionState = (host) => {
+    try {
+      const d = ns.dnet.getServerDetails(host);
+      if (d?.isOnline === false) return {ready:false,reason:'offline'};
+      let directHosts=[];try{directHosts=ns.dnet.probe();}catch{}
+      const directlyConnected = d?.hasStasisLink === true || d?.backdoorInstalled === true ||
+        (Array.isArray(directHosts) && directHosts.includes(host));
+      if (!directlyConnected) return {ready:false,reason:'not directly connected'};
+      if (d?.hasSession === false) return {ready:false,reason:'no authenticated session'};
+      return {ready:true,reason:'session ready'};
+    } catch (error) { return {ready:false,reason:'session check unavailable: '+String(error)}; }
   };
   // Result codes are numeric (DarknetResponseCodeType): 401 = wrong password,
   // 408 = request timed out (password may or may not have been right).
@@ -139,8 +152,8 @@ export async function main(ns) {
   const RETRY_AFTER_MS = 10 * 60_000;
   const tryPassword = async (host, password) => {
     try {
-      const length = ns.dnet.getServerDetails(host)?.passwordLength;
-      if (Number.isInteger(length) && String(password).length !== length)
+      const details = ns.dnet.getServerDetails(host);
+      if (!passwordLengthMatches(details, password))
         return {success:false,code:AUTH_FAILURE,message:'Candidate length mismatch'};
     } catch { }
     let result;
@@ -154,7 +167,7 @@ export async function main(ns) {
     return result;
   };
   const trySavedPassword = async (host, password, info) => {
-    if (Number.isInteger(info.passwordLength) && String(password).length !== info.passwordLength)
+    if (!passwordLengthMatches(info, password))
       return {success:false,code:AUTH_FAILURE,message:'Candidate length mismatch'};
     // Native reconnect has no authentication delay. Stationary/story servers retain the normal path.
     if (info.isStationary === false && password.length <= 100) {
@@ -302,14 +315,8 @@ export async function main(ns) {
       const procRunning = (file) => ns.ps(self).some((p) => p.filename === file);
       const linked = ns.dnet.getStasisLinkedServers();
       let stasisStarted = await serviceDarknetAnchor(ns);
-      let anchorHold=false;try{const r=JSON.parse(ns.read(anchorRequestFile));anchorHold=r.expiresAt>Date.now()&&!['done','blocked'].includes(r.phase)&&ns.isRunning(r.owner);}catch{}
-      // Deep servers are valuable exploration anchors. Respect the global link cap.
-      const selfInfo = ns.dnet.getServerDetails(self);
-      if (!anchorHold&&selfInfo.depth >= 2 && selfInfo.difficulty % 8 < 6 && !linked.includes(self) && linked.length < ns.dnet.getStasisLinkLimit()
-          && ns.fileExists(stasisFile, self) && !procRunning(stasisFile)) {
-        const ram = ns.getScriptRam(stasisFile, self);
-        if (ram > 0 && freeRam() >= ram) stasisStarted = ns.exec(stasisFile, self, 1) > 0;
-      }
+      // Stasis-link selection is manager-owned; this scout only executes the
+      // manager's current prepare/apply/release phase.
       // Open any .cache file on this server. The loot helper does this too, so the
       // one-shot is only needed when loot isn't running (e.g. not enough RAM yet).
       let cacheStarted = false;
@@ -426,10 +433,13 @@ export async function main(ns) {
           if(!homeFiles||!await ns.scp(homeFiles,host,'home')){note(host+':sync',host+': waiting for current deployment from home.');continue;}
           const ram = ns.getScriptRam(nodeFile, host);
           const free = ns.getServerMaxRam(host) - ns.getServerUsedRam(host);
-          if (ram > 0 && free >= ram) {
+          const session = executionState(host);
+          if (!session.ready) {
+            note(`${host}:scout`, `${host}: scout deferred (${session.reason}); ${fmtRam(free)} free, ${fmtRam(ram)} required.`);
+          } else if (ram > 0 && free >= ram) {
             // One thread: the scout on that server starts its own loot helper.
             const pid = ns.exec(nodeFile, host, 1);
-            if (!pid) note(`${host}:scout`, `${host}: scout launch failed (${fmtRam(free)} free, ${fmtRam(ram)} required).`);
+            if (!pid) note(`${host}:scout`, `${host}: scout exec rejected (${executionState(host).reason}); ${fmtRam(free)} free, ${fmtRam(ram)} required.`);
             else note(`${host}:scout`, `${host}: scout started (${fmtRam(ram)}).`);
           } else note(`${host}:scout`, `${host}: scout needs ${fmtRam(ram)} free RAM; ${fmtRam(free)} available.`);
         }

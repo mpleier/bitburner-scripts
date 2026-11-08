@@ -43,38 +43,52 @@ export async function anchorControlAllowed(ns){
   if(file.endsWith('.json'))try{const r=JSON.parse(raw);if(r.expiresAt>Date.now()&&ns.isRunning(r.ownerPid))return false;}catch{return false;}
  }return true;
 }
-/** Only replace a redundant anchor; retain the deepest and all story/stationary anchors. */
+/** Add an empty stasis slot, or replace a redundant anchor; retain the deepest and all story/stationary anchors. */
 export function chooseAnchorReplacement(reports,linked,limit,passwords,now,values={}){
- if(!Number.isSafeInteger(limit)||limit<2||linked.length!==limit||new Set(linked).size!==linked.length)return null;
+ if(!Number.isSafeInteger(limit)||limit<2||linked.length>limit||new Set(linked).size!==linked.length)return null;
  const fresh=reports.filter(r=>r&&r.at<=now&&now-r.at<=90000&&r.live&&r.busy===false&&typeof r.host==='string'&&Number.isFinite(r.depth)&&r.depth>=0&&Array.isArray(r.neighbours));
- if(linked.some(h=>!fresh.some(r=>r.host===h)))return null;
  const live=new Set(fresh.map(r=>r.host));
  const evidence=r=>{const v=values[r.host];return v&&v.at<=now&&now-v.at<=90000&&Number.isFinite(v.cashRate)&&v.cashRate>=0&&Number.isFinite(v.discoveryRate)&&v.discoveryRate>=0?v:null;};
  const maxCash=Math.max(1,...fresh.map(r=>evidence(r)?.cashKnown?evidence(r).cashRate:0)),maxDiscoveries=Math.max(.001,...fresh.map(r=>evidence(r)?.discoveryKnown?evidence(r).discoveryRate:0));
  const score=r=>r.depth*10+Math.min(20,r.neighbours.filter(h=>!live.has(h)).length)*8+Math.log2(Math.max(1,r.maxRam||1))+Math.min(5,r.caches||0)*2+
   (evidence(r)?.cashKnown?Math.min(20,evidence(r).cashRate/maxCash*20):0)+(evidence(r)?.discoveryKnown?Math.min(20,evidence(r).discoveryRate/maxDiscoveries*20):0);
  const protectedAnchor=r=>r.isStationary!==false||/labyrinth|story/i.test(r.modelId||'')||r.seed||r.contracts>0||r.caches>0;
+ const target=fresh.filter(r=>!linked.includes(r.host)&&!protectedAnchor(r)&&r.maxRam>=32&&passwords.has(r.host)&&typeof passwords.get(r.host)==='string'&&(r.hasSession===true||r.rooted===true)).sort((a,b)=>score(b)-score(a)||a.host.localeCompare(b.host))[0];
+ // Fill empty slots through the manager instead of leaving selection to an arbitrary scout.
+ if(linked.length<limit){
+  if(!target)return null;
+  return {action:'add',source:null,target:target.host,sourceIdentity:null,targetIdentity:anchorIdentity(target),scoreGain:null,cacheEconomics:null};
+ }
+ if(linked.some(h=>!fresh.some(r=>r.host===h)))return null;
  const anchors=fresh.filter(r=>linked.includes(r.host)),deepest=Math.max(...anchors.map(r=>r.depth));
  const donor=anchors.filter(r=>!protectedAnchor(r)&&r.depth<deepest&&r.maxRam>=32).sort((a,b)=>score(a)-score(b)||a.host.localeCompare(b.host))[0];
- const target=fresh.filter(r=>!linked.includes(r.host)&&r.maxRam>=32&&passwords.has(r.host)&&typeof passwords.get(r.host)==='string'&&(r.hasSession===true||r.rooted===true)).sort((a,b)=>score(b)-score(a)||a.host.localeCompare(b.host))[0];
  if(!donor||!target||score(target)<score(donor)+20)return null;
  const a=evidence(donor),b=evidence(target),measured=a?.cashKnown&&b?.cashKnown,delta=measured?b.cashRate-a.cashRate:null;
  if(a?.cashKnown&&a.cashRate>0&&!b?.cashKnown)return null;
  const paybackMs=measured?(delta>0?a.cashRate*60000/delta:a.cashRate>0?Infinity:0):null;
  if(measured&&paybackMs>300000)return null;
- return {source:donor.host,target:target.host,sourceIdentity:anchorIdentity(donor),targetIdentity:anchorIdentity(target),scoreGain:score(target)-score(donor),cacheEconomics:measured?{sourceRate:a.cashRate,targetRate:b.cashRate,transitionMs:60000,paybackMs,horizonMs:600000}:null};
+ return {action:'replace',source:donor.host,target:target.host,sourceIdentity:anchorIdentity(donor),targetIdentity:anchorIdentity(target),scoreGain:score(target)-score(donor),cacheEconomics:measured?{sourceRate:a.cashRate,targetRate:b.cashRate,transitionMs:60000,paybackMs,horizonMs:600000}:null};
 }
 export function advanceAnchorRequest(request,receipt,linked,now){
  if(!request||request.phase==='done'||request.phase==='blocked')return request;
  const matched=receipt?.id===request.id&&receipt.phase===request.phase&&receipt.host===(['prepare','apply'].includes(request.phase)?request.target:request.source)&&receipt.at>=request.at&&receipt.at<=now;
  if(request.phase==='apply'&&linked.includes(request.target)||request.phase==='rollback'&&linked.includes(request.source))return {...request,phase:'done',at:now};
- if(now>request.expiresAt){return {...request,phase:linked.includes(request.source)?'done':request.phase==='rollback'?'blocked':'rollback',expiresAt:now+180000,at:now,reason:'Anchor transaction expired'};}
+ if(now>request.expiresAt){
+  if(request.action==='add')return {...request,phase:'done',expiresAt:now+180000,at:now,reason:'Anchor addition expired'};
+  return {...request,phase:linked.includes(request.source)?'done':request.phase==='rollback'?'blocked':'rollback',expiresAt:now+180000,at:now,reason:'Anchor transaction expired'};
+ }
  if(!matched)return request;
  let phase;
- if(request.phase==='prepare'){if(receipt.success&&now-request.at<35000)return request;phase=receipt.success?'release':'done';}
- if(request.phase==='release')phase=!linked.includes(request.source)?receipt.success?'apply':'rollback':'done';
- if(request.phase==='apply')phase=receipt.success&&linked.includes(request.target)?'done':'rollback';
- if(request.phase==='rollback')phase=linked.includes(request.source)?'done':'blocked';
+ if(request.action==='add'){
+  if(request.phase==='prepare')phase=receipt.success?'apply':'done';
+  else if(request.phase==='apply')phase='done';
+  else phase='done';
+ } else {
+  if(request.phase==='prepare'){if(receipt.success&&now-request.at<35000)return request;phase=receipt.success?'release':'done';}
+  if(request.phase==='release')phase=!linked.includes(request.source)?receipt.success?'apply':'rollback':'done';
+  if(request.phase==='apply')phase=receipt.success&&linked.includes(request.target)?'done':'rollback';
+  if(request.phase==='rollback')phase=linked.includes(request.source)?'done':'blocked';
+ }
  return {...request,phase,at:now,expiresAt:now+180000,reason:receipt.message||phase};
 }
 /** Manager owns the lease. Scouts only execute the current phase on their own host. */

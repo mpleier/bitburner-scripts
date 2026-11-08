@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs';
 import { nextBladeburnerProgressSkill,nextSkill } from '../bladeburner-policy.js';
 import { sleeveCombatCrime,sleeveCombatWorker } from '../sleeve-development-policy.js';
 import { darknetEconomics } from '../darknet-economics-policy.js';
+import { passwordLengthMatches } from '../darknet-solvers.js';
 const read=name=>readFileSync(new URL('../'+name,import.meta.url),'utf8');
 test('Cyber Edge has no fictitious direct chance benefit below or above the native half-stamina threshold',()=>{
  for(const staminaPct of [.1,.49,.5,.59,1]) {
@@ -21,7 +22,7 @@ test('manager and scout saved-password reconnection handle blank credentials, AP
    let auth=0,connect=0;
    const ns={dnet:{connectToSession:()=>{connect++;return {success:scenario!=='rejected'};}}};
    if(scenario==='missing')delete ns.dnet.connectToSession;
-   const reconnect=vm.runInNewContext(source.slice(a,b)+';trySavedPassword',{ns,tryPassword:async()=>{auth++;return {success:true};}});
+   const reconnect=vm.runInNewContext(source.slice(a,b)+';trySavedPassword',{ns,passwordLengthMatches,tryPassword:async()=>{auth++;return {success:true};}});
    const result=await reconnect('target',scenario==='blank'?'':scenario==='long'?'x'.repeat(101):'saved',{isStationary:scenario==='stationary'});
    assert.equal(result.success,true);
    assert.equal(auth,['success','blank'].includes(scenario)?0:1,scenario);

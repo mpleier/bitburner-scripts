@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
-import {casinoOptionsError,casinoHookArgs,casinoWager,casinoRoundDelta,parseDealerRank,blackjackShouldHit,casinoReactHandler,casinoUiEvent,performCasinoUiAction,stopCasinoCompetitors,casinoRetryPending,casinoControlAllowed,reloadCasinoWindow,launchCasinoHook} from '../casino-policy.js';
+import {casinoOptionsError,casinoHookArgs,casinoWager,casinoRoundDelta,parseDealerRank,blackjackShouldHit,casinoReactHandler,casinoUiEvent,performCasinoUiAction,stopCasinoCompetitors,stopCasinoFocusCompetitors,casinoRetryPending,casinoControlAllowed,reloadCasinoWindow,launchCasinoHook} from '../casino-policy.js';
 test('casino wager is a positive affordable integer and never exceeds the game limit',()=>{
  for(const [wallet,expected] of [[0,0],[.9,0],[1,1],[2,1],[100,90],[1e9,100e6],[NaN,0],[Infinity,0]])assert.equal(casinoWager(wallet),expected);
  assert.ok(casinoOptionsError({'save-sleep-time':-1,'click-sleep-time':5,'find-sleep-time':0}));
@@ -36,10 +36,16 @@ test('casino supports current element Fiber props and rejects unrelated ancestor
  button.__reactFiber$x.stateNode={};assert.throws(()=>casinoReactHandler(button,'onClick'));
 });
 test('casino cleanup preserves its own process, its helper, and Remote API connectivity',()=>{
- const killed=[];const processes=[{pid:1,filename:'casino.js'},{pid:2,filename:'Temp/helper.js'},{pid:3,filename:'remote-api-agent.js'},{pid:4,filename:'daemon.js'},{pid:5,filename:'remote-control/job.js'}];
+ const killed=[];const processes=[{pid:1,filename:'casino.js'},{pid:2,filename:'Temp/helper.js'},{pid:3,filename:'remote-api-agent.js'},{pid:4,filename:'daemon.js'},{pid:5,filename:'remote-control/job.js'},{pid:6,filename:'autopilot.js'}];
  const ns={pid:2,ps:()=>processes,kill:pid=>{killed.push(pid);return true;}};
  assert.deepEqual(stopCasinoCompetitors(ns,1),[{pid:4,stopped:true}]);assert.deepEqual(killed,[4]);
  const generated=new Function('ns','pid','return ('+stopCasinoCompetitors.toString()+')(ns,pid)');assert.deepEqual(generated(ns,1),[{pid:4,stopped:true}]);
+});
+test('casino focus cleanup stops only work and daemon while preserving controllers',()=>{
+ const killed=[];const processes=[{pid:1,filename:'casino.js'},{pid:2,filename:'work-for-factions.js'},{pid:3,filename:'daemon.js'},{pid:4,filename:'gangs.js'},{pid:5,filename:'sleeve.js'},{pid:6,filename:'autopilot.js'},{pid:7,filename:'remote-api-agent.js'}];
+ const ns={pid:9,ps:()=>processes,kill:pid=>{killed.push(pid);return true;}};
+ assert.deepEqual(stopCasinoFocusCompetitors(ns,1),[ {pid:2,script:'work-for-factions.js',stopped:true},{pid:3,script:'daemon.js',stopped:true} ]);
+ assert.deepEqual(killed,[2,3]);
 });
 test('casino failure cooldown expires and does not affect the next augmentation reset',()=>{
  const record={mode:'failed',augReset:1,retryAt:200};
@@ -90,7 +96,7 @@ test('completion hooks can release casino RAM through spawn without duplicate la
 test('casino integration cancels lookup retries, bounds modal dismissal and checks actual completion earnings',async()=>{
  const source=await readFile(new URL('../casino.js',import.meta.url),'utf8');
  assert.match(source,/while \(attempts\+\+ < maxRetries\) \{\s*assertControl/);
- assert.match(source,/closed\+\+>=20/);assert.match(source,/casinoEarnings\(\)>1e10 \|\| await checkForKickedOut/);
+ assert.match(source,/closed\+\+>=8/);assert.match(source,/settleUntil=Date.now\(\)\+750/);assert.match(source,/casinoEarnings\(\)>1e10 \|\| await checkForKickedOut|casinoEarnings\(\) >= 1e10/);
  assert.match(source,/e\?\.name==='CasinoControlLost'\|\|!expectFailure/);
 });
 

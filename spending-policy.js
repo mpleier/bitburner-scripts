@@ -82,6 +82,19 @@ export function claimSpending(ns,category,cost,investment=null) {
  if(ns.getPlayer().money<cost+Math.max(0,Number(ns.read('reserve.txt'))||0))return false;
  let plan;try{plan=JSON.parse(ns.read('tasks/spending-plan.json'));}catch{}
  let reset;try{reset=ns.getResetInfo();}catch{}
+ // Sleeve memory is permanent BN10 progress. Never let a short-lived managed
+ // savings/allowance window strand an otherwise affordable upgrade.
+ if(category==='sleeveExpansion')return cost===0||ns.getPlayer().money>=cost+Math.max(0,Number(ns.read('reserve.txt'))||0);
+ try{
+  const p=JSON.parse(ns.read('tasks/sleeve-memory-priority.json')),now=Date.now();
+  if(p?.version===1&&p.nodeReset===reset?.lastNodeReset&&p.augReset===reset?.lastAugReset&&
+   Number.isFinite(p.at)&&p.at<=now&&now-p.at<=2*60*1000&&Number.isFinite(p.expiresAt)&&p.expiresAt>now&&cost>0)return false;
+ }catch{}
+ try{
+  const m=JSON.parse(ns.read('tasks/hacknet-maxout.json')),now=Date.now();
+  if(category==='hacknet'&&m?.version===1&&m.active===true&&m.nodeReset===reset?.lastNodeReset&&m.augReset===reset?.lastAugReset&&
+   Number.isFinite(m.expiresAt)&&m.expiresAt>now)return cost===0||ns.getPlayer().money>=cost;
+ }catch{}
  const fallback=()=>{
   if(cost===0)return true;
   let supervised=plan?.managed===true;try{supervised ||= ns.ps('home').some(p=>p.filename?.replace(/^\//,'')==='autopilot.js');}catch{}
@@ -137,7 +150,10 @@ export function claimSpending(ns,category,cost,investment=null) {
    const accelerated=(saving-money+cost+batch)/(funding.rate+gain)+delay,payback=cost/gain+delay;
    growthException=cost<=money*.01&&payback<=Math.min(900,baseline*.5)&&baseline-accelerated-30>=Math.max(30,baseline*.1);
  }
- const essential=category==='home' &&Number.isFinite(plan.homeRam)&&plan.homeRam<128;
+ const homeRamTarget=Math.max(128,Number(plan.signals?.essentialHomeRam?.target)||0,Number(plan.signals?.fullHomeRam?.target)||0);
+ const bootstrapEssential=category==='home'&&Number.isFinite(plan.homeRam)&&plan.homeRam<128;
+ const capacityEssential=category==='home'&&Number.isFinite(plan.homeRam)&&plan.homeRam<homeRamTarget;
+ const sleeveExpansion=category==='sleeveExpansion';
  // Explicit collection priority may precede ordinary savings, never a reset or timed wait.
  if(category==='gang'&&!resetting&&goal?.source!=='augmentation-wait'&&investment?.kind==='gang-equipment-priority')try{
   const p=JSON.parse(ns.read('tasks/gang-equipment-priority.json')),now=Date.now();
@@ -147,11 +163,24 @@ export function claimSpending(ns,category,cost,investment=null) {
    ns.ps('home').some(s=>s.pid===p.ownerPid&&s.filename?.replace(/^\//,'')==='gangs.js')&&
    Array.isArray(p.orders)&&p.orders.some(o=>o.member===investment.member&&o.equipmentName===investment.equipment&&Number.isFinite(o.cost)&&cost<=o.cost))saving=0;
  }catch{}
- if(category!=='augmentation'&&!essential&&!growthException&&ns.getPlayer().money<cost+Math.max(Number(ns.read('reserve.txt'))||0,saving))return false;
+ // Casino winnings are reserved for the first augmentation basket. Keep this
+ // serialized guard self-contained because native purchase workers call it.
+ let casinoWindfall=0;
+ try{
+  const w=JSON.parse(ns.read('tasks/casino-augmentation-windfall.json')),money=ns.getPlayer().money,now=Date.now();
+  if(w?.version===1&&w.nodeReset===reset.lastNodeReset&&w.augReset===reset.lastAugReset&&Number.isFinite(w.at)&&w.at<=now&&now-w.at<=2*60*60*1000&&Number.isFinite(w.amount)&&w.amount>0)
+   casinoWindfall=Math.min(w.amount,Math.max(0,money));
+ }catch{}
+ // Casino cash may fund gang equipment, but not broad discretionary spending.
+ if(category!=='augmentation'&&category!=='gang'&&!sleeveExpansion&&!bootstrapEssential&&casinoWindfall>0&&ns.getPlayer().money<cost+casinoWindfall)return false;
+ if(category!=='augmentation'&&!sleeveExpansion&&!bootstrapEssential&&!growthException&&ns.getPlayer().money<cost+Math.max(Number(ns.read('reserve.txt'))||0,saving))return false;
 
  let usage;try{usage=JSON.parse(ns.read('tasks/spending-usage.json'));}catch{}
  if(usage?.epoch!==plan.epoch||!usage.spent||typeof usage.spent!=='object'||Array.isArray(usage.spent))usage={epoch:plan.epoch,spent:{},...(lastGrowth?{growthException:lastGrowth}:{})};
  let limit=Number(plan.allowances[category])||0;
+ // Bootstrap home RAM is mandatory to start the enabled manager set. Let it
+ // use cash above the absolute reserve even when discretionary home allowance is zero.
+ if(capacityEssential)limit=Math.max(limit,Math.max(0,ns.getPlayer().money-Math.max(0,Number(ns.read('reserve.txt'))||0)));
  // A cached emergency allowance ends as soon as native RAM reaches its target.
  if(category==='home'&&Number.isFinite(plan.signals?.essentialHomeRam?.target)&&
    ns.getServerMaxRam('home')>=plan.signals.essentialHomeRam.target&&

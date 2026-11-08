@@ -61,7 +61,7 @@ export const evalArithmetic = (expr) => {
     .replaceAll("➕", "+").replaceAll("➖", "-")
     .replaceAll("ns.exit(),", "")
     .split(",")[0].replace(/\s+/g, "");
-  if (!s || !/^[\d+\-*/().]+$/.test(s)) return null;
+  if (!s || !/^[\d+\-*/().^]+$/.test(s)) return null;
   let pos = 0;
   const num = () => {
     const match = s.slice(pos).match(/^(?:\d+(?:\.\d*)?|\.\d+)/);
@@ -75,10 +75,18 @@ export const evalArithmetic = (expr) => {
     if (s[pos] === "+") { pos++; return factor(); }
     return num();
   };
+  const power = () => {
+    const base = factor();
+    if (s[pos] === "^" || s.startsWith("**", pos)) {
+      pos += s[pos] === "^" ? 1 : 2;
+      return Math.pow(base, power());
+    }
+    return base;
+  };
   const term = () => {
-    let v = factor();
+    let v = power();
     while (s[pos] === "*" || s[pos] === "/") {
-      const op = s[pos++]; const r = factor();
+      const op = s[pos++]; const r = power();
       v = op === "*" ? v * r : v / r;
     }
     return v;
@@ -123,6 +131,33 @@ export const permutationsNoLeadingZero = (sorted) => {
   recurse("", chars);
   return [...out];
 };
+
+/** Models whose native input can intentionally differ from passwordLength. */
+export function acceptedPasswordLengths(details) {
+  const length = details?.passwordLength;
+  if (!Number.isInteger(length) || length < 0) return null;
+  return details.modelId === 'Pr0verFl0' && length > 0 ? [length, length * 2] : [length];
+}
+
+export function passwordLengthMatches(details, password) {
+  const lengths = acceptedPasswordLengths(details);
+  return lengths === null || lengths.includes(String(password).length);
+}
+
+/** Conservative candidates explicitly revealed by native hint text. */
+export function passwordHintCandidates(details) {
+  const hint = String(details?.passwordHint ?? '').trim();
+  if (!hint) return [];
+  const found = new Set();
+  const add = value => {
+    const text = String(value ?? '').trim();
+    if (text && text.length <= 64 && !/^(?:not|none|empty|unset|unknown|n['’]?t)$/i.test(text)) found.add(text);
+  };
+  for (const match of hint.matchAll(/["'`]([^"'`]{1,64})["'`]/g)) add(match[1]);
+  for (const match of hint.matchAll(/\b(?:password|passcode|pass phrase|code|pin|key)\s*(?:is\b\s*:?|:)\s*["'`]?([^\s,.;"'`]+)/gi)) add(match[1]);
+  if (/number|digit/i.test(hint)) add(hint.replace(/\D+/g, ''));
+  return [...found];
+}
 
 export function modelCandidates(details) {
   if (isBlankPassword(details)) return [''];
@@ -201,7 +236,15 @@ export async function solveFeedbackPassword(details, authenticate, readLogs, sta
     details.passwordFormat === 'alphabetic' ? 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz' :
     details.passwordFormat === 'alphanumeric' ? '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz' :
     Array.from({ length: 95 }, (_, i) => String.fromCharCode(32 + i)).join('');
-  const probe = async password => {
+  // Numeric feedback solvers work with numbers, but the native password is a
+  // fixed-length string. Normalize here so "5" becomes "05" for length 2.
+  const normalizeNumeric = value => {
+    const text = String(value);
+    return details.passwordFormat === 'numeric' && text.length < length && /^\d+$/.test(text)
+      ? text.padStart(length, '0') : value;
+  };
+  const probe = async rawPassword => {
+    const password = normalizeNumeric(rawPassword);
     if(state.pendingPassword!==undefined && state.pendingPassword!==password)return {success:false,reason:'waiting for pending authentication feedback'};
     if(state.pendingPassword===undefined) {
       const result = await authenticate(password);
@@ -301,8 +344,7 @@ export async function candidatePasswordTurn(details, saved, candidates, state, a
     Object.assign(state,{signature,cursor:0,savedRejected:false});
   }
   if(Number.isFinite(state.completedAt))return {success:false,reason:'cooldown'};
-  const expectedLength=Number.isInteger(details.passwordLength)?details.passwordLength:null;
-  const matchesLength=password=>expectedLength===null||String(password).length===expectedLength;
+  const matchesLength=password=>passwordLengthMatches(details,password);
   let used=0;
   if(typeof saved==='string'&&!state.savedRejected) {
     if(!matchesLength(saved))state.savedRejected=true;

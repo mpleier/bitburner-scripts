@@ -1,6 +1,8 @@
 export function casinoOptionsError(options) {
   for(const name of ['save-sleep-time','click-sleep-time','find-sleep-time'])
     if(!Number.isFinite(options[name])||options[name]<0)return name+' must be a finite nonnegative number.';
+  if(!Number.isSafeInteger(options['save-every-wins'])||options['save-every-wins']<1)return 'save-every-wins must be a positive integer.';
+  if(!Number.isFinite(options['reload-loss-bets'])||options['reload-loss-bets']<1)return 'reload-loss-bets must be a finite positive number.';
   return null;
 }
 export function casinoWager(wallet) {
@@ -77,8 +79,15 @@ export async function performCasinoUiAction(resolve,eventName,value,{assertContr
 /** Self-contained helper: preserve the casino, this helper and the Remote API worker. */
 export function stopCasinoCompetitors(ns,casinoPid) {
   const processes=ns.ps('home').filter(process=>process.pid!==casinoPid&&process.pid!==ns.pid&&
-    !/(^|\/)remote-api-agent\.js$/.test(process.filename)&&!process.filename.startsWith('remote-control/'));
+    !/(^|\/)(?:remote-api-agent|autopilot)\.js$/.test(process.filename)&&!process.filename.startsWith('remote-control/'));
   return processes.map(process=>({pid:process.pid,stopped:ns.kill(process.pid)}));
+}
+
+/** Stop only the workers that can repeatedly steal focus from the casino UI. */
+export function stopCasinoFocusCompetitors(ns,casinoPid) {
+  const focusScripts=new Set(['work-for-factions.js','daemon.js']);
+  return ns.ps('home').filter(process=>process.pid!==casinoPid&&process.pid!==ns.pid&&
+    focusScripts.has(process.filename.replace(/^\//,''))).map(process=>({pid:process.pid,script:process.filename,stopped:ns.kill(process.pid)}));
 }
 
 export function casinoRetryPending(record,augReset,now=Date.now()) {

@@ -16,6 +16,18 @@ test('anchor ranking preserves story, deepest, busy and unobserved anchors',()=>
  for(const patch of [{isStationary:true},{modelId:'(The Labyrinth)'},{busy:true},{caches:1},{contracts:1},{live:false},{at:now-90001}]){const r=rows();Object.assign(r[0],patch);assert.equal(chooseAnchorReplacement(r,['old','deep'],2,new Map([['new','']]),now),null);}
  assert.equal(chooseAnchorReplacement(rows(),['old','deep'],2,new Map(),now),null);assert.equal(chooseAnchorReplacement(rows(),['old'],1,new Map([['new','']]),now),null);
 });
+test('manager fills empty stasis slots and drives the addition through prepare and apply',()=>{
+ const p=chooseAnchorReplacement(rows(),[],2,new Map([['new','']]),now);
+ assert.equal(p.action,'add');assert.equal(p.source,null);assert.equal(p.target,'new');
+ let r={...p,id:'add',phase:'prepare',at:now,expiresAt:now+180000};
+ const receipt=(phase,success=true)=>({id:'add',phase,host:'new',at:now+40000,success});
+ const prepared=advanceAnchorRequest(r,receipt('prepare'),[],now+40000);assert.equal(prepared.phase,'apply');
+ assert.equal(advanceAnchorRequest(prepared,receipt('apply'),['new'],now+40000).phase,'done');
+});
+test('manager never chooses a protected host as a new stasis target',()=>{
+ const r=rows();r[1].isStationary=true; // deepest host protected
+ assert.equal(chooseAnchorReplacement(r,[],2,new Map([['old',''],['new','']]),now).target,'new');
+});
 test('transaction waits for prepare settlement, uses matching receipts and rolls back failed apply',()=>{
  let r={id:'x',source:'old',target:'new',phase:'prepare',at:now,expiresAt:now+180000};
  const receipt=(phase,host,success=true)=>({id:'x',phase,host,at:now+40000,success});

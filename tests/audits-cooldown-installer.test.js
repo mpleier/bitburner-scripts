@@ -1,3 +1,4 @@
+import {coreStartupReservation} from '../core-startup-policy.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
@@ -71,9 +72,9 @@ test('stable uptime, reset, clock rollback and source changes clear crash histor
 test('actual autopilot launcher backs off fast exits but leaves one-shot progression hooks alone',()=>{
  const text=readFileSync(new URL('../autopilot.js',import.meta.url),'utf8'),start=text.indexOf('    function launchScriptHelper('),end=text.indexOf('    let lastStatusLog',start),code=text.slice(start,end);
  let now=100000,pid=0,runs=0;const map=new Map();class Clock extends Date{static now(){return now;}}
- const context={Date:Clock,launchCooldown,recordLaunch,launchCooldownKey,launchHistory:map,launchSourceCache:new Map(),trackedLaunches:new Set(['bladeburner.js']),resetInfo:{lastAugReset:1},options:{'no-tail-windows':true},
+ const context={reclaimStartupHelpers:()=>true,coreStartupReservation,Date:Clock,launchCooldown,recordLaunch,launchCooldownKey,launchHistory:map,launchSourceCache:new Map(),trackedLaunches:new Set(['bladeburner.js']),resetInfo:{lastAugReset:1},options:{'no-tail-windows':true},
   isScriptPaused:()=>false,maintenanceRequested:()=>false,activityBusy:()=>false,getFilePath:x=>x,scriptSignature:()=> 'v1',homeRamReserve:()=>0,reclaimHomeRam:()=>true,log(){},log_once(){},getErrorInfo:String,
-  ns:{getScriptName:()=> 'autopilot.js',getScriptRam:()=>2,isRunning:()=>false,run:()=>{runs++;return ++pid;}}};
+  ns:{ps:()=>[],getServerMaxRam:()=>64,getScriptName:()=> 'autopilot.js',getScriptRam:()=>2,isRunning:()=>false,run:()=>{runs++;return ++pid;}}};
  vm.runInNewContext(code+';globalThis.launch=launchScriptHelper;',context);
  context.launch(context.ns,'bladeburner.js');now+=10000;context.launch(context.ns,'bladeburner.js');now+=10000;assert.equal(context.launch(context.ns,'bladeburner.js'),0);assert.equal(runs,2);
  now+=10000;assert.equal(context.launch(context.ns,'bladeburner.js'),0);now=150000;assert.ok(context.launch(context.ns,'bladeburner.js')>0);

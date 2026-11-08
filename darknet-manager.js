@@ -10,15 +10,19 @@ import {darknetObservationFile,darknetCapabilityContext} from './darknet-observa
 import {beginDarknetRefresh,darknetRefreshEvidence} from './darknet-refresh-policy.js';
 import {darknetContractDisposition} from './darknet-contract-policy.js';
 import { darknetEconomics, recurringPlayerIncome } from './darknet-economics-policy.js';
+import { ensureStanekFirst } from './stanek-first-policy.js';
 import { surveyPrefix, stormRequestFile, stormStateFile, stormResultFile, applyStormReceipt, planStorm,observeStormBlocker } from './darknet-storm-policy.js';
 import {registerAutomation,automationHeartbeat,beginAutomationAction,endAutomationAction,maintenanceRequested} from './runtime-policy.js';
 import { isScriptPaused } from './automation-control.js';
 /** Darknet coordinator. Tries supplied exact-match candidates on discovered servers. */
-import { candidatePasswordTurn, isBlankPassword, solveFeedbackPassword, supportsFeedbackModel, modelCandidates, isStalledScout, dictionaryWords } from './darknet-solvers.js';
+import { candidatePasswordTurn, isBlankPassword, solveFeedbackPassword, supportsFeedbackModel, modelCandidates, isStalledScout, dictionaryWords, passwordLengthMatches } from './darknet-solvers.js';
 import { frontierFile } from './darknet-migration-policy.js';
 export async function main(ns) {
  registerAutomation(ns);
     if (isScriptPaused(ns, ns.getScriptName())) return;
+  // Accept Stanek before labyrinth rewards or augmentation purchases can block the Church.
+  const stanekFirst=ensureStanekFirst(ns);
+  if(stanekFirst.accepted)ns.print("Accepted Stanek's Gift before any other augmentation.");
   // A webstorm deletes/moves most of the network and grants no immediate reward.
   // Keep it opt-in until there is measured stagnation, rather than treating a seed as a reset button.
   const autoStormSeed=(ns.args||[]).includes('--enable-auto-stormseed')||(ns.args||[]).includes('--auto-stormseed');
@@ -64,6 +68,21 @@ export async function main(ns) {
     try { return ns.formatRam(v); } catch {}
     return `${v.toFixed(2)}GB`;
   };
+  /** ns.exec on a darknet host needs both a live session and a direct connection. */
+  const executionState = (host) => {
+    try {
+      const d = ns.dnet.getServerDetails(host);
+      if (d?.isOnline === false) return {ready:false,reason:'offline'};
+      let directHosts=[];try{directHosts=ns.dnet.probe();}catch{}
+      const directlyConnected = d?.hasStasisLink === true || d?.backdoorInstalled === true ||
+        (Array.isArray(directHosts) && directHosts.includes(host));
+      if (!directlyConnected) return {ready:false,reason:'not directly connected'};
+      if (d?.hasSession === false) return {ready:false,reason:'no authenticated session'};
+      return {ready:true,reason:'session ready'};
+    } catch (error) {
+      return {ready:false,reason:'session check unavailable: '+String(error)};
+    }
+  };
 
 
   const parseCandidates = () => [
@@ -77,7 +96,7 @@ export async function main(ns) {
 
   const candidatesFor = (details, words) => {
     const matches = (value) => {
-      if (typeof details.passwordLength === "number" && value.length !== details.passwordLength) return false;
+      if (!passwordLengthMatches(details,value)) return false;
       switch (details.passwordFormat) {
         case "numeric": return /^\d+$/.test(value);
         case "alphabetic": return /^[a-z]+$/i.test(value);
@@ -132,8 +151,8 @@ export async function main(ns) {
   };
   const tryPassword = async (host, password) => {
     try {
-      const length = ns.dnet.getServerDetails(host)?.passwordLength;
-      if (Number.isInteger(length) && String(password).length !== length)
+      const details = ns.dnet.getServerDetails(host);
+      if (!passwordLengthMatches(details, password))
         return {success:false,code:AUTH_FAILURE,message:'Candidate length mismatch'};
     } catch { }
     let result;
@@ -146,7 +165,7 @@ export async function main(ns) {
   };
 
   const trySavedPassword = async (host, password, info) => {
-    if (Number.isInteger(info.passwordLength) && String(password).length !== info.passwordLength)
+    if (!passwordLengthMatches(info, password))
       return {success:false,code:AUTH_FAILURE,message:'Candidate length mismatch'};
     // Native reconnect has no authentication delay. Stationary/story servers retain the normal path.
     if (info.isStationary === false && password.length <= 100) {
@@ -314,6 +333,21 @@ export async function main(ns) {
       const codeSignature = codeFiles.filter(f => fileHashes.has(f)).map(f => fileHashes.get(f)).join('|');
       await ns.write(darknetDeploymentFile,JSON.stringify({version:1,at:Date.now(),files:syncFiles}),'w');
       await refreshDarknetScouts(ns,syncFiles,codeSignature,upgradePending,snapshot.heartbeats);
+      // darkweb is the launchpad into the Dark Net. Refresh its scout when the
+      // manager can actually execute there, otherwise leave the working copy alone.
+      try {
+        if (ns.serverExists('darkweb') && executionState('darkweb').ready) {
+          if (await ns.scp(syncFiles, 'darkweb', 'home')) {
+            for (const process of ns.ps('darkweb')) if (codeFiles.includes(process.filename)) ns.kill(process.pid);
+            const ram = ns.getScriptRam(nodeFile, 'darkweb');
+            const free = ns.getServerMaxRam('darkweb') - ns.getServerUsedRam('darkweb');
+            if (ram > 0 && free >= ram) {
+              if (ns.exec(nodeFile, 'darkweb', 1)) note('darkweb:scout', 'darkweb: scout started with current code.');
+              else note('darkweb:scout', 'darkweb: scout exec rejected after refresh.');
+            } else note('darkweb:scout', `darkweb: scout needs ${fmtRam(ram)} free RAM; ${fmtRam(free)} available.`);
+          }
+        }
+      } catch { /* darkweb is optional until the player can enter the Dark Net. */ }
       // Normal roots come first. Also include any surveyed server that has a
       // reward cache or is a completed labyrinth: those are exactly the hosts
       // the old labyrinth skip used to leave out of the deployment loop.
@@ -347,7 +381,8 @@ export async function main(ns) {
       for (const host of targets) {
         takeAttempt=createAttemptBudget();
         try {
-          const details = ns.dnet.getServerDetails(host);
+          let details;
+          try { details = ns.dnet.getServerDetails(host); } catch { continue; }
           if (details.isOnline === false) continue;
 
           if (!passwords.has(host)) {
@@ -395,8 +430,13 @@ export async function main(ns) {
               // changed; the launch step below starts the new version.
               const oldCode = deployedCode.get(host);
               if (oldCode !== undefined && oldCode !== codeSignature) {
-                if(!await prepareDarknetRollout(ns,host))continue;
-                for (const p of ns.ps(host)) if (codeFiles.includes(p.filename)&&p.filename!=='darknet-maze.js') ns.kill(p.pid);
+                const syncState = executionState(host);
+                if (!syncState.ready) {
+                  note(`${host}:sync`, `${host}: code changed but scout restart deferred (${syncState.reason}).`);
+                } else {
+                  if(!await prepareDarknetRollout(ns,host))continue;
+                  for (const p of ns.ps(host)) if (codeFiles.includes(p.filename)&&p.filename!=='darknet-maze.js') ns.kill(p.pid);
+                }
               }
               if (!(await ns.scp(changedFiles, host, "home"))) {
                 note(`${host}:sync`, `${host}: deployment incomplete; will retry.`);
@@ -410,23 +450,33 @@ export async function main(ns) {
             const scout = ns.ps(host).find(p => p.filename === nodeFile);
             try {
               const status = JSON.parse(ns.read(`tasks/dnet-${encodeURIComponent(host)}.json`) || '{}');
+              const refreshState = executionState(host);
               if (isStalledScout(scout, status) || (scout && status.pid === scout.pid && (status.version !== 3 || status.revision !== codeSignature))) {
-                if(!await prepareDarknetRollout(ns,host))continue;
-                if(!await ns.scp(syncFiles,host,'home'))continue;
-                ns.kill(scout.pid);
-                for (const process of ns.ps(host)) if ([lootFile, stasisFile, cacheFile, watcherFile, 'darknet-promote.js', 'darknet-migrate.js'].includes(process.filename)) ns.kill(process.pid);
-                note(`${host}:restart`, `${host}: refreshing an outdated or stalled scout.`);
+                if (!refreshState.ready) {
+                  note(`${host}:restart`, `${host}: scout refresh deferred (${refreshState.reason}); keeping the existing scout.`);
+                } else {
+                  if(!await prepareDarknetRollout(ns,host))continue;
+                  if(!await ns.scp(syncFiles,host,'home'))continue;
+                  ns.kill(scout.pid);
+                  for (const process of ns.ps(host)) if ([lootFile, stasisFile, cacheFile, watcherFile, 'darknet-promote.js', 'darknet-migrate.js'].includes(process.filename)) ns.kill(process.pid);
+                  note(`${host}:restart`, `${host}: refreshing an outdated or stalled scout.`);
+                }
               }
             } catch { /* missing heartbeat: leave an existing scout running */ }
             const running = ns.ps(host).some((p) => p.filename === nodeFile);
             if (!running) {
               const ram = ns.getScriptRam(nodeFile, host);
               const free = ns.getServerMaxRam(host) - ns.getServerUsedRam(host);
-              if (ram > 0 && free >= ram) {
+              const session = executionState(host);
+              if (!session.ready) {
+                note(`${host}:scout`, `${host}: scout deferred (${session.reason}); ${fmtRam(free)} free, ${fmtRam(ram)} required.`);
+              } else if (ram > 0 && free >= ram) {
                 // One thread: the scout launches the loot helper with the remaining RAM.
                 const pid = ns.exec(nodeFile, host, 1);
-                if (!pid) note(`${host}:scout`, `${host}: scout launch failed; ${fmtRam(free)} free, ${fmtRam(ram)} required.`);
-                else note(`${host}:scout`, `${host}: scout started (${fmtRam(ram)}).`);
+                if (!pid) {
+                  const after = executionState(host);
+                  note(`${host}:scout`, `${host}: scout exec rejected (${after.reason}); ${fmtRam(free)} free, ${fmtRam(ram)} required.`);
+                } else note(`${host}:scout`, `${host}: scout started (${fmtRam(ram)}).`);
               } else {
                 note(`${host}:scout`, `${host}: scout needs ${fmtRam(ram)} free RAM; ${fmtRam(free)} available.`);
               }
@@ -436,8 +486,11 @@ export async function main(ns) {
             if (ns.fileExists(watcherFile, host) && !ns.ps(host).some(p => p.filename === watcherFile)) {
               const watcherRam = ns.getScriptRam(watcherFile, host);
               const watcherFree = ns.getServerMaxRam(host) - ns.getServerUsedRam(host);
-              if (watcherRam > 0 && watcherFree >= watcherRam && !ns.exec(watcherFile, host, 1)) {
-                note(`${host}:cache-watch`, `${host}: cache watcher launch failed.`);
+              const watcherSession = executionState(host);
+              if (!watcherSession.ready) {
+                note(`${host}:cache-watch`, `${host}: cache watcher deferred (${watcherSession.reason}).`);
+              } else if (watcherRam > 0 && watcherFree >= watcherRam && !ns.exec(watcherFile, host, 1)) {
+                note(`${host}:cache-watch`, `${host}: cache watcher exec rejected (${executionState(host).reason}).`);
               }
             }
           }

@@ -58,7 +58,7 @@ test('power mode permits overlap only while another member is actually productiv
  assert.equal(gangAscensionAvailability({...args,allowConcurrent:true,recoveries:{A:{until:11000}}}).allowed,false);
  assert.equal(gangAscensionAvailability({...args,allowConcurrent:true,lastReset:{A:9000}}).allowed,false);
  const trainees=structuredClone(f.members);trainees.B.task='Train Combat';trainees.C.task='Train Combat';
- assert.equal(gangAscensionAvailability({...args,members:trainees,allowConcurrent:true}).allowed,false);
+ assert.equal(gangAscensionAvailability({...args,members:trainees,allowConcurrent:true}).allowed,true);
 });
 test('established power development extends horizon while route, install and reset caps prevail',()=>{
  const args={development:true,powerPriority:true,developmentAgeSeconds:4000,memberCount:12};

@@ -67,7 +67,7 @@ function harness({cancel=false,protectedOnCancel=false,pending=false,blocked=fal
   readAugmentationFundingWork:()=>active?[target]:[],pendingAugmentationFundingWork:async()=>pending?target:null,
   getCurrentWorkInfo:async()=>current,maintainWorkFocus:async()=>{},isValidInterruption:async()=>true,
   detectBestFactionWork:async()=> 'hacking',startWorkForFaction:async()=>{started++;current={type:'FACTION',factionName:'A',factionWorkType:'hacking'};return true;},
-  stop:async()=>{stopped++;current={};},statusUpdateInterval:60000,lastFactionWorkStatus:null,shouldFocus:false,hasFocusPenalty:false,
+  stop:async()=>{stopped++;current={};},statusUpdateInterval:60000,lastFactionWorkStatus:null,shouldFocus:false,hasFocusPenalty:false,focusForWork:()=>false,focusObserved:false,
   formatNumberShort:String,formatDuration:String,log(){},measureFactionRepGainRate:async()=>10,tryBuyReputation:async()=>{},loopSleepInterval:5000};
  vm.runInNewContext(functionSource+';globalThis.run=workForSingleFaction;',context);
  return {run:planned=>context.run(ns,'A',false,false,planned?50:false,planned?target:null),counts:()=>({rep,started,stopped,sleeps})};

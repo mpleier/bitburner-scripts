@@ -363,7 +363,7 @@ export function ascendGangMemberSafely(ns,name,stats,base,spacing,choose,allowed
  const names=ns.gang.getMemberNames(),gang=ns.gang.getGangInformation();
  const results=Object.fromEntries(names.map(n=>[n,ns.gang.getAscensionResult(n)]));
  if(economics){
-  if(economics.aggressive===true){
+  if(economics.aggressive===true&&economics.ignoreReplacementCost!==true){
    if(names.length!==12||gang.territoryWarfareEngaged||gang.territoryClashChance!==0||!Number.isFinite(economics.replacementCash)||economics.replacementCash<0||!Array.isArray(economics.replacementEquipment))return deny('aggressive-context-changed');
    let saved;try{saved=JSON.parse(ns.read('tasks/gang-training.json'));}catch{}
    const reset=ns.getResetInfo();
@@ -1313,7 +1313,8 @@ export function gangAscensionAvailability({name,members,values,lastReset={},epis
   if(other!==name&&elapsed>=0&&elapsed<maximumMs&&(elapsed<2000||member.task?.startsWith('Train ')&&!(values[other]?.value>0)))
    return {allowed:false,reason:'Another member is recovering',member:other};
  }
- const otherProductive=Object.entries(values).some(([other,value])=>other!==name&&value.value>0&&(!allowConcurrent||!members[other]?.task?.startsWith('Train ')&&!(episodes[other]?.until>now)&&!(recoveries[other]?.until>now))&&
+ const otherProductive=Object.entries(values).some(([other,value])=>other!==name&&value.value>0&&
+  (!allowConcurrent||(!(episodes[other]?.until>now)&&!(recoveries[other]?.until>now)))&&
   !(members[other]?.task?.startsWith('Train ')&&now-(lastReset[other]??0)<2000));
  return otherProductive?{allowed:true}:{allowed:false,reason:'Preserve the remaining productive member'};
 }

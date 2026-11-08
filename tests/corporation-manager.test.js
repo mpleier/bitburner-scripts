@@ -190,9 +190,9 @@ test('real manager retains profit while developing and releases dividends after 
 });
 test('real hash worker crosses a retained research threshold, not merely the sticker price',async()=>{
  const target='Exchange for Corporation Research';
- const ready=await cycle({cash:100e9,wallet:1e12,researchPoints:9900,researchCost:5000,hashes:200,hashCosts:{[target]:200}});
+ const ready=await cycle({cash:100e9,wallet:1e12,researchPoints:4900,researchCost:5000,hashes:200,hashCosts:{[target]:200}});
  assert.deepEqual(ready.calls.hashes,[target]);const goal=JSON.parse(ready.files['tasks/corporation-hash-goal.json']);assert.equal(goal.milestone.gap,100);
- const pool=await cycle({cash:100e9,wallet:1e12,researchPoints:4900,researchCost:5000,hashes:200,hashCosts:{[target]:200}});assert.deepEqual(pool.calls.hashes,[]);
+ const pool=await cycle({cash:100e9,wallet:1e12,researchPoints:0,researchCost:5000,hashes:200,hashCosts:{[target]:200}});assert.deepEqual(pool.calls.hashes,[]);
 });
 test('real hash worker can complete a foundation funding gap above its old emergency threshold',async()=>{
  const target='Sell for Corporation Funds';
@@ -372,6 +372,15 @@ test('self-funded corporation creation cannot consume the player reserve',async(
  await assert.rejects(main(ns),e=>e===stop);assert.deepEqual(calls,[]);
 });
 
+test('daemon-only self-funding creates when the wallet covers cost even with a stale managed plan',async()=>{
+ const stop=Error('stop'),calls=[];
+ const ns={pid:1,ps:()=>[],getScriptName:()=> 'corporation-manager.js',getResetInfo:()=>({currentNode:1,ownedSF:new Map([[3,1]])}),
+  read:f=>f==='reserve.txt'?'0':f==='tasks/spending-plan.json'?JSON.stringify({managed:true,expiresAt:1,allowances:{}}):'',
+  write:async()=>{},print:()=>{},tprint:()=>{},disableLog:()=>{},getPlayer:()=>({money:160e9}),sleep:async()=>{throw stop;},
+  corporation:{getConstants:()=>({}),hasCorporation:()=>false,getCorporation:()=>null,canCreateCorporation:self=>self?'Success':'Use seed money outside BN3',createCorporation:()=>calls.push('created')}};
+ await assert.rejects(main(ns),e=>e===stop);assert.deepEqual(calls,['created']);
+});
+
 test('useful automatic upkeep research is bought after TA.II instead of being skipped',async()=>{
  const {calls}=await cycle({upkeepSample:[30000,20000,10000].map(age=>({at:Date.now()-age,tea:15000000,party:0})),office:{size:30,numEmployees:30,avgEnergy:75,avgMorale:75,employeeJobs:{}},researchPoints:100,researchCost:10,researched:['Hi-Tech R&D Laboratory','Market-TA.I','Market-TA.II']});
  assert.ok(calls.research.some(r=>r.name==='AutoBrew'));
@@ -407,7 +416,7 @@ import {readFile} from 'node:fs/promises';
 
 test('upgrade ranking sees storage pressure from every existing division',async()=>{
  const source=await readFile(new URL('../corporation-manager.js',import.meta.url),'utf8');
- assert.ok(source.indexOf('for (const division of divisions().filter')<source.indexOf('if (Date.now() - lastUpgrade >= 30_000)'));
+ assert.ok(source.indexOf('for (const division of divisions().filter')<source.indexOf('if (!criticalOfficeFunding() && Date.now() - lastUpgrade >= 30_000)'));
 });
 
 test('Tobacco starts before Chemical and laboratory research when retained capital is sufficient',async()=>{
@@ -463,7 +472,7 @@ test('extra HQ growth is held when mature products have a confirmed sales backlo
 test('an observed low-quality-cost laboratory unlock need not wait for twice its price',async()=>{
  const {calls}=await cycle({researchPoints:15000,researchCost:10000,scienceFactor:.1,researchSample:{points:14990,spent:0,at:Date.now()-10000}});
  assert.ok(calls.research.some(r=>r.division==='Dining'&&r.name==='Hi-Tech R&D Laboratory'));
- const unknown=await cycle({researchPoints:15000,researchCost:10000,scienceFactor:.1});
+ const unknown=await cycle({researchPoints:9999,researchCost:10000,scienceFactor:.1});
  assert.equal(unknown.calls.research.length,0);
 });
 

@@ -9,7 +9,7 @@ export const automaticManagerScripts=moduleManifest.filter(m=>m.launchOrder).sor
 export function priorityManagerPlan({homeRam=0,sourceFiles={},node=1,options={},bladeburnerRank=1,corporationReady=false,corporationKnown=true,corporationRunning=false,route=null,simulacrum=false},manifest=moduleManifest){
  const enabled=name=>{
   switch(name){
-   case 'remote-api-agent.js':case 'reliability-manager.js':return true;
+   case 'bootstrap-start.js':case 'remote-api-agent.js':case 'reliability-manager.js':return true;
    case 'grafting-manager.js':return homeRam>=64&&!!sourceFiles[10]&&!!sourceFiles[4];
    case 'spend-hacknet-hashes.js':return homeRam>=64&&!!sourceFiles[9];
    // Without The Blade's Simulacrum, Bladeburner actions steal the focus needed for faction work.

@@ -6,6 +6,7 @@ import {readCombatGrowthContext} from './combat-growth-policy.js';
 import {augmentationBatchFunded,captureAugmentationEconomics,augmentationEconomicsChange,invalidateAugmentationFunding} from './augmentation-economics-policy.js';
 import {captureAugmentationOwnership} from './augmentation-ownership-policy.js';
 import {augmentationCashReserve} from './spending-policy.js';
+import {ensureStanekFirst} from './stanek-first-policy.js';
 import {ensureFactionJoinPlan} from './faction-joining.js';
 import {readNodeRoutePlan} from './node-route-policy.js';
 import { augmentationPurchaseBudget,extendNeuroFluxOrder,augmentationStatFilters,factionTerminalOutput,chooseNeuroFluxFaction,augmentationDonationTopUp,augmentationPrerequisiteChain,selectAugmentationBasketDrop,optimizeAugmentationOrder,futureAugmentationBasketCost,pruneAugmentationPrerequisites,neuroFluxLevels,augmentationCountCandidates,selectGangAugmentationGoal,factionJoinAllowed,rankFactionInvites,gangHostPreferences,factionForcedJoins, factionControlAllowed, factionPurchaseBatch } from './faction-policy.js';
@@ -228,10 +229,17 @@ export async function main(ns) {
     }
     await manageUnownedAugmentations(ns, omitAugs);
 
-    if (options.purchase && ownedAugmentations.length <= 1 && 13 in ownedSourceFiles && !ownedAugmentations.includes(staneksGift) && !options['ignore-stanek'])
-        log(ns, `WARNING: You have not yet accepted Stanek's Gift from the church in Chongqing. Purchasing augs will ` +
-            `prevent you from doing so for the rest of this BN. (Run with '--ignore-stanek' to bypass this warning.)`, printToTerminal);
-    else if (options.purchase && purchaseableAugs) {
+    if (options.purchase && 13 in ownedSourceFiles && !ownedAugmentations.includes(staneksGift) && !options['ignore-stanek']) {
+        const first=ensureStanekFirst(ns);
+        if(first.accepted)
+            log(ns, "SUCCESS: Accepted Stanek's Gift before purchasing any other augmentation.",printToTerminal);
+        else if(first.eligible&&first.canAccept) {
+            log(ns, `WARNING: Stanek's Gift could not be accepted (${first.reason}); deferring augmentation purchases.`,printToTerminal);
+            return;
+        } else
+            log(ns, `WARNING: Stanek's Gift is permanently blocked by existing augmentations: ${first.blockers.join(', ')||first.reason}. Continuing with normal purchases.`,printToTerminal);
+    }
+    if (options.purchase && purchaseableAugs) {
         const outcome=await purchaseDesiredAugs(ns);
         await publishAugmentationPurchase(ns,options['purchase-request'],resetInfo,outcome,purchaseableAugs.length);
         ns.write(output_file, "", "w"); // Clear the file so it isn't misinterpreted on next reset.

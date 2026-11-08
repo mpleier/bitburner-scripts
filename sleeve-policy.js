@@ -153,7 +153,8 @@ export function sleeveOptionsError(o) {
  for(const name of ['min-shock-recovery'])if(!Number.isFinite(o[name])||o[name]<0||o[name]>100)return name+' must be between 0 and 100';
  for(const name of ['shock-recovery','homicide-chance-threshold','aug-budget'])if(!Number.isFinite(o[name])||o[name]<0||o[name]>1)return name+' must be between 0 and 1';
  for(const name of ['buy-cooldown','training-cap-seconds','failed-bladeburner-contract-cooldown','train-to-strength','train-to-defense','train-to-dexterity','train-to-agility','study-to-hacking','study-to-charisma'])if(!Number.isFinite(o[name])||o[name]<0)return name+' must be finite and nonnegative';
- for(const name of ['reserve','training-reserve'])if(o[name]!=null&&(!Number.isFinite(o[name])||o[name]<0))return name+' must be finite and nonnegative';
+ for(const name of ['early-money-target','early-money-seconds'])if(o[name]!=null&&(!Number.isFinite(o[name])||o[name]<0))return name+' must be finite and nonnegative';
+ for(const name of ['reserve','training-reserve'])if(o[name]!=null&&(typeof o[name]==='boolean'||o[name]===''||!Number.isFinite(Number(o[name]))||Number(o[name])<0))return name+' must be finite and nonnegative';
  if(!Number.isSafeInteger(o['min-aug-batch'])||o['min-aug-batch']<1)return 'min-aug-batch must be a positive integer';
  return null;
 }
@@ -185,7 +186,7 @@ export function sleeveBladeburnerSupport(sleeves,actualTasks,plan) {
 
 /** Opening milestones take precedence over paid training and optional reputation work. */
 export function sleeveStartupPlan({sleeves=[],tasks=[],crimes={},money=0,casinoPending=true,
-  gangAvailable=false,inGang=false,karma=0,intelligence=0,previousWorkers=[],enabled=true,nodeMultiplier=1,externalKarmaPerSecond=0,recoveryRates=[]}) {
+  gangAvailable=false,inGang=false,karma=0,intelligence=0,previousWorkers=[],enabled=true,nodeMultiplier=1,externalKarmaPerSecond=0,recoveryRates=[],earlyMoneyTarget=0,bitNodeAgeSeconds=0,earlyMoneySeconds=0}) {
   const assignments={},result={stage:'normal',urgent:false,assignments,workers:[]};
   if(!enabled)return result;
   const rate=(s,objective)=>{
@@ -197,6 +198,14 @@ export function sleeveStartupPlan({sleeves=[],tasks=[],crimes={},money=0,casinoP
     for(let i=0;i<sleeves.length;i++)assignments[i]='money';
     result.workers=sleeves.map((_,i)=>i);return result;
   }
+  // Early-node cash bootstrap: casino seeding is only $300k. Keep sleeves on
+  // their best money crime while the player is still building a starting bank.
+  {const target=Number(earlyMoneyTarget),window=Number(earlyMoneySeconds),age=Number(bitNodeAgeSeconds);
+   if(Number.isFinite(target)&&target>0&&Number.isFinite(window)&&window>0&&Number.isFinite(age)&&age>=0&&age<window&&money<target){
+    result.stage='early-money';result.urgent=true;
+    for(let i=0;i<sleeves.length;i++)assignments[i]='money';
+    result.workers=sleeves.map((_,i)=>i);return result;
+   }}
   if(gangAvailable&&!inGang&&karma>-54000){
     result.stage='gang-karma';result.urgent=true;
     const full=sleeves.map(s=>rate(s,'karma'));

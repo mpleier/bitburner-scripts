@@ -37,7 +37,8 @@ test('stock reserve leaves startup cash available before the API unlock',()=>{
 test('autopilot preserves manager ownership, casino priority, Black Ops and purchase retries',async()=>{
  const source=await readFile(new URL('../autopilot.js',import.meta.url),'utf8');
  assert.doesNotMatch(source,/unlockedSFs\[4\] \|\| 0 == 3/);
- assert.match(source,/if \(ns.ps\('home'\).some\(process =>.*casino.*\)\) return true/);
+ assert.match(source,/casinoWatchdogSince/);
+ assert.match(source,/ns\.kill\(casinoProcess\.pid\)/);
  assert.match(source,/pending: reservedPurchase > 0/);
  assert.match(source,/if \(!pid\) return setStatus\(ns, 'Faction manager could not start/);
  assert.match(source,/autopilot-blackop.txt/);
@@ -59,7 +60,7 @@ test('priority installation recognizes both affordable and already queued Simula
 });
 test('autopilot defaults to installing Simulacrum through the guarded reset path',async()=>{
  const source=await readFile(new URL('../autopilot.js',import.meta.url),'utf8');
- assert.ok(source.includes(`['install-for-augs', ["The Red Pill", "The Blade's Simulacrum"]]`));
+ assert.ok(source.includes(`['install-for-augs', ["The Red Pill", "The Blade's Simulacrum", "The W1ngs of Icarus", "The B00ts of Perseus", "The H4mmer of Daedalus", "The St4ff of Asclepius", "The L4w of Bayes", "The B1ade of Solomonoff"]]`));
  assert.ok(source.includes("priorityAugmentationReady(options['install-for-augs'], facman)"));
  assert.ok(source.includes('await shouldDelayInstall(ns, player, facman, speed)'));
 });

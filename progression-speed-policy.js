@@ -197,10 +197,11 @@ export function observeCombatRecovery(saved,{reset,route,now=Date.now()}={}) {
 }
 
 /** Count heuristics request installs; require economic payback or a verified milestone. */
-export function augmentationResetDecision({requested=false,adaptive=true,speed,priority=false,favor=false,countUnlock=false,campaign=false,bn8Quick=false,remainingMs=null,lowerMs=null,waitWindow=null,now=Date.now(),augReset=null,nodeReset=null}={}) {
+export function augmentationResetDecision({requested=false,adaptive=true,speed,priority=false,favor=false,countUnlock=false,campaign=false,bn8Quick=false,gangAggressive=false,remainingMs=null,lowerMs=null,waitWindow=null,now=Date.now(),augReset=null,nodeReset=null}={}) {
  if(!requested)return {allowed:false,reason:'Augmentation threshold not reached'};
  if(!adaptive)return {allowed:true,reason:'Adaptive reset economics explicitly disabled'};
  if(priority||favor||countUnlock||campaign||bn8Quick)return {allowed:true,reason:'Verified augmentation progression milestone'};
+ if(gangAggressive)return {allowed:true,reason:'Established gang supports an earlier player augmentation reset'};
  if(speed?.recoveryBlocked)return {allowed:false,reason:'Still rebuilding pre-install route capability'};
  const paybackLimitMs=augmentationPaybackHorizon(remainingMs,lowerMs);
  if(speed?.resetPaysBack!==true||!Number.isFinite(speed.paybackMs)||speed.paybackMs<0||speed.paybackMs>paybackLimitMs)

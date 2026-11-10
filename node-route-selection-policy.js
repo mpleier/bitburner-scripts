@@ -15,6 +15,16 @@ export function nodeRouteAvailability(reset,sources,options={},state={}) {
    'Bladeburner disabled, paused, or restricted'};
 }
 
+/** Completion first: an effectively unreachable daemon grind must not lock out the other finish line.
+ * The required level is a static fact, so it decides even before fresh XP sampling exists; a measured
+ * ETA beyond the limit decides as well. An unknown Bladeburner forecast is not a reason to idle. */
+export function completionRouteOverride({hacking,requiredLevel,hackingLevel,bladeburnerAvailable=false,disabled=false,limitMs=12*60*60*1000,levelRatio=4}={}) {
+ if(disabled||!bladeburnerAvailable)return undefined;
+ if(Number.isFinite(requiredLevel)&&Number.isFinite(hackingLevel)&&hackingLevel>0&&requiredLevel>hackingLevel*levelRatio)return 'bladeburner';
+ if(!Number.isFinite(hacking?.etaMs)||!Number.isFinite(limitMs)||limitMs<=0)return undefined;
+ return hacking.etaMs>limitMs?'bladeburner':undefined;
+}
+
 /** Unknown forecasts do not win a race. Use a labelled prior until both complete ranges are usable. */
 export function chooseNodeRoute(routes,previous,{now=Date.now(),augReset,nodeReset,node=1,override='auto',adaptive=true,availability={hacking:true,bladeburner:true},milestones={},probeState=null}={}) {
  const preference=bitNodeRoutePreference(node),available=r=>availability[r]!==false;

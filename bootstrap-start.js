@@ -36,18 +36,17 @@ export async function main(ns) {
    const status=await startupControllerTick(ns);
    await ns.write('tasks/bootstrap-start.json',JSON.stringify(status),'w');
    const running=ns.ps('home');
+   const reset=ns.getResetInfo();
+   // Home RAM upgrades must continue even while an activity holds the player: buying RAM never
+   // interrupts work, and the daemon (the other buyer) cannot start without the RAM in the first
+   // place. Leaving this inside the protected-activity guard stranded nodes at 128 GB.
+   try{
+    if(!isScriptPaused(ns,'Tasks/ram-manager.js')&&!reset.bitNodeOptions?.restrictHomePCUpgrade&&achievementActionAllowed(ns,'homeRam')){
+     const cost=ns.singularity.getUpgradeHomeRamCost(),reserve=Math.max(200000,Number(ns.read('reserve.txt'))||0);
+     if(Number.isFinite(cost)&&cost>0&&ns.getServerMoneyAvailable('home')>=cost+reserve&&claimSpending(ns,'home',cost))ns.singularity.upgradeHomeRam();
+    }
+   }catch{/* Singularity may be unavailable. */}
    if(status.state!=='protected-activity'){
-    const reset=ns.getResetInfo();
-    // Home RAM upgrades must continue even while autopilot is alive. The old
-    // guard skipped this path whenever autopilot was running, which could leave
-    // the node permanently stuck at 128 GB with every controller waiting.
-    try{
-     if(!isScriptPaused(ns,'Tasks/ram-manager.js')&&!reset.bitNodeOptions?.restrictHomePCUpgrade&&achievementActionAllowed(ns,'homeRam')){
-      const cost=ns.singularity.getUpgradeHomeRamCost(),reserve=Math.max(200000,Number(ns.read('reserve.txt'))||0);
-      if(Number.isFinite(cost)&&cost>0&&ns.getServerMoneyAvailable('home')>=cost+reserve&&claimSpending(ns,'home',cost))ns.singularity.upgradeHomeRam();
-     }
-    }catch{/* Singularity may be unavailable. */}
-    // Low-RAM fallback earning is only needed when autopilot is not running.
     if(!isScriptPaused(ns,'autopilot.js')&&!running.some(p=>p.filename.replace(/^\//,'')==='autopilot.js')){
      if(!isScriptPaused(ns,'daemon.js')&&achievementActionAllowed(ns,'hacking'))try{
       if(!ns.hasRootAccess('n00dles'))ns.nuke('n00dles');

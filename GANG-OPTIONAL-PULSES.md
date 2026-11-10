@@ -20,6 +20,6 @@ The preparation snapshot reads gang, rival and member information in one native 
 
 ## Rival-cohort diagnostics
 
-`warfareDecision` also estimates net territory per native update across all active rivals at the current power snapshot. It averages the game's random transfer before capping it by remaining rival territory, including the final tiny holdings. `cohortProfitable` and `blockedByWorstOpponent` appear in native decision records. This estimate assumes current powers and does not include future NPC growth, NPC-versus-NPC transfers or a guaranteed completion time. Positive aggregate return does not bypass the ordinary or conditional worst-opponent safety floors.
+`warfareDecision` also estimates net territory per native update across all active rivals at the current power snapshot. It averages the game's random transfer before capping it by remaining rival territory, including the final tiny holdings. `cohortProfitable` and `blockedByWorstOpponent` appear in native decision records. A positive estimate engages warfare on its own once the weakest active matchup is at least 35%, because clashes resolve independently per rival; the routine 75% bar remains the preferred path and the 35% floor only rejects a cohort dominated by one overwhelming rival. This estimate assumes current powers and does not include future NPC growth, NPC-versus-NPC transfers or a guaranteed completion time.
 
 Source: https://github.com/bitburner-official/bitburner-src/blob/dev/src/Gang/Gang.ts

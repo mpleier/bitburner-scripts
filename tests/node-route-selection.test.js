@@ -2,13 +2,27 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import {readFile} from 'node:fs/promises';
-import {bitNodeRoutePreference,nodeRouteAvailability,chooseNodeRoute,routeContinuousXp,routeDevelopment,trainBladeburnerEntrySource,stopBladeburnerEntrySource} from '../node-route-selection-policy.js';
+import {bitNodeRoutePreference,nodeRouteAvailability,chooseNodeRoute,completionRouteOverride,routeContinuousXp,routeDevelopment,trainBladeburnerEntrySource,stopBladeburnerEntrySource} from '../node-route-selection-policy.js';
 import {estimateDaemonRoute,estimateBladeburnerRoute,nodeRouteSnapshotSource,sampleRouteProgress} from '../node-route-policy.js';
 import {autopilotSourceFiles,autopilotOptionsError} from '../autopilot-policy.js';
 
 const trainBladeburnerEntry=vm.runInNewContext('('+trainBladeburnerEntrySource+')'),stopBladeburnerEntry=vm.runInNewContext('('+stopBladeburnerEntrySource+')');
 const context={now:1000000,augReset:10,nodeReset:5,node:9};
 const known=(lowerMs,upperMs)=>({actionable:true,etaMs:(lowerMs+upperMs)/2,lowerMs,upperMs});
+test('completion priority commits to Bladeburner when the daemon grind exceeds the horizon',()=>{
+  assert.equal(completionRouteOverride({hacking:{etaMs:13*3600e3},bladeburnerAvailable:true}),'bladeburner');
+  assert.equal(completionRouteOverride({hacking:{etaMs:2*3600e3},bladeburnerAvailable:true}),undefined);
+  assert.equal(completionRouteOverride({hacking:{etaMs:Infinity},bladeburnerAvailable:true}),undefined);
+  assert.equal(completionRouteOverride({hacking:{etaMs:13*3600e3},bladeburnerAvailable:false}),undefined);
+  assert.equal(completionRouteOverride({hacking:{etaMs:13*3600e3},bladeburnerAvailable:true,disabled:true}),undefined);
+  assert.equal(completionRouteOverride({hacking:{etaMs:13*3600e3},bladeburnerAvailable:true,limitMs:14*3600e3}),undefined);
+  assert.equal(completionRouteOverride({hacking:{etaMs:13*3600e3},bladeburnerAvailable:true,limitMs:NaN}),undefined);
+  // The static requirement decides before any XP sampling exists.
+  assert.equal(completionRouteOverride({requiredLevel:15000,hackingLevel:1184,bladeburnerAvailable:true}),'bladeburner');
+  assert.equal(completionRouteOverride({requiredLevel:3000,hackingLevel:2900,bladeburnerAvailable:true}),undefined);
+  assert.equal(completionRouteOverride({requiredLevel:15000,hackingLevel:1184,bladeburnerAvailable:false}),undefined);
+});
+
 test('all fifteen BN starting preferences match the evaluated policy',()=>{
  const bb=new Set([6,7,9,10,13,14]);
  for(let node=1;node<=15;node++)assert.equal(bitNodeRoutePreference(node).selected,bb.has(node)?'bladeburner':'hacking');

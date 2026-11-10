@@ -986,6 +986,21 @@ async function tryUpgradeMembers(ns, dictMembers) {
         report.orders=collection.orders.filter(o=>!receipts.some(r=>r.success&&r.member===o.member&&r.equipmentName===o.equipmentName));report.at=Date.now();
         await ns.write('tasks/gang-equipment-priority.json',JSON.stringify(report),'w');
         equipmentDiagnostics={mode:'collect-all',remainingCount:report.remainingCount,remainingCost:report.remainingCost,receipts};
+        // This branch owns equipment decisions and bypasses the detailed valuation pass that
+        // normally refreshes tasks/gang-growth.json. Publish a current record so the dashboard
+        // and budget signals do not keep reading a previous augmentation generation.
+        try{
+            const previous=JSON.parse(ns.read('tasks/gang-growth.json'));
+            const sameReset=previous?.nodeReset===resetInfo.lastNodeReset&&previous?.augReset===resetInfo.lastAugReset;
+            await ns.write('tasks/gang-growth.json',JSON.stringify({schemaVersion:2,at:Date.now(),pid:ns.pid,nodeReset:resetInfo.lastNodeReset,augReset:resetInfo.lastAugReset,
+                powerPriority:options['power-focus']===true,powerFocus:sameReset&&previous.powerFocus===true,
+                incomePersistence:sameReset?previous.incomePersistence??null:null,incomeContribution:sameReset?previous.incomeContribution??null:null,
+                incomeFunding:sameReset?previous.incomeFunding??null:null,
+                equipmentFundingQuote:{at:Date.now(),nodeReset:resetInfo.lastNodeReset,augReset:resetInfo.lastAugReset,faction:sameReset?previous.equipmentFundingQuote?.faction??null:null,
+                    members:Object.keys(dictMembers),complete:true,orders:report.orders.map(o=>({member:o.member,equipmentName:o.equipmentName}))},
+                equipmentOpportunity:null,equipmentDiagnostics,horizon:growthHorizon,expectedAscensions:{},wantedPreparation:null,ascension:null,
+                recruitmentSprint:trainingDiagnostics?.recruitmentSprint===true}),'w');
+        }catch{}
         return;
     }
     await ns.write('tasks/gang-equipment-priority.json',JSON.stringify({schemaVersion:1,enabled:false,at:Date.now(),ownerPid:ns.pid,nodeReset:resetInfo.lastNodeReset,augReset:resetInfo.lastAugReset}),'w');
@@ -1248,7 +1263,11 @@ async function enableOrDisableWarfare(ns, myGangInfo) {
     const activeLease=lease?.state==='active'&&lease.nodeReset===resetInfo.lastNodeReset&&lease.augReset===resetInfo.lastAugReset&&lease.ownerPid===ns.pid&&lease.deadline>Date.now()&&!options['disable-attrition'];
     if(activeLease&&!options['disable-attrition'])return;
 
-    let shouldEngage = warfareDecision(myGangInfo,otherGangs,gangWarfareThreshold()).engage;
+    const routineDecision=warfareDecision(myGangInfo,otherGangs,gangWarfareThreshold());
+    // Unreadable rival observations must not silently drop a running engagement: the game keeps
+    // clashing until the controller says otherwise, so a stale read would waste that progress.
+    const decisionUnknown=routineDecision.reason==='invalid-observations';
+    let shouldEngage = routineDecision.engage;
     let history=null;try{history=JSON.parse(ns.read('tasks/gang-attrition-observations.json')||'[]');}catch{}
     const calibration=gangAttritionCalibration(history,{nodeReset:resetInfo.lastNodeReset,augReset:resetInfo.lastAugReset,faction:myGangFaction},Date.now());
     let attempts=null;try{attempts=JSON.parse(ns.read('tasks/gang-attrition-attempts.json')||'[]');}catch{}
@@ -1294,8 +1313,8 @@ async function enableOrDisableWarfare(ns, myGangInfo) {
             }
         }
     }
-    if (shouldEngage != myGangInfo.territoryWarfareEngaged || conditional) {
-        const transition=await getNsDataThroughFile(ns, `(() => {const allowed=(${gangMutationAllowed.toString()})(ns,ns.args[1]);const g=ns.gang.getGangInformation();const decision=(${warfareDecision.toString()})(g,ns.gang.getAllGangInformation(),ns.args[2]);const routine=decision.engage;const proof=ns.args[3]?(${conditional?gangAggressionGuardSource():'()=>({valid:false})'})(ns,ns.args[1],Date.now()):null;const aggressive=proof?.valid===true;const engage=!!(allowed&&ns.args[0]&&(routine||aggressive));if(g.territoryWarfareEngaged!==engage)ns.gang.setTerritoryWarfare(engage);const reset=ns.getResetInfo(),result={at:Date.now(),ownerPid:ns.args[1],nodeReset:reset.lastNodeReset,augReset:reset.lastAugReset,faction:g.faction,requested:ns.args[0],before:g.territoryWarfareEngaged,engaged:ns.gang.getGangInformation().territoryWarfareEngaged,minimum:decision.minimum,expectedTerritoryPerUpdate:decision.expectedTerritoryPerUpdate,cohortProfitable:decision.cohortProfitable,blockedByWorstOpponent:decision.blockedByWorstOpponent,reason:!allowed?'control-blocked':!ns.args[0]?decision.reason:routine?'routine-threshold-met':aggressive?'conditional-approved':proof?.reason||decision.reason};ns.write('tasks/gang-warfare-decision.json',JSON.stringify(result),'w');return result;})()`, '/Temp/gang-warfare-decision.txt',[shouldEngage,ns.pid,gangWarfareThreshold(),conditional]);
+    if (!decisionUnknown && (shouldEngage != myGangInfo.territoryWarfareEngaged || conditional)) {
+        const transition=await getNsDataThroughFile(ns, `(() => {const allowed=(${gangMutationAllowed.toString()})(ns,ns.args[1]);const g=ns.gang.getGangInformation();const decision=(${warfareDecision.toString()})(g,ns.gang.getAllGangInformation(),ns.args[2]);const routine=decision.engage;const proof=ns.args[3]?(${conditional?gangAggressionGuardSource():'()=>({valid:false})'})(ns,ns.args[1],Date.now()):null;const aggressive=proof?.valid===true;const engage=decision.reason==='invalid-observations'?g.territoryWarfareEngaged:!!(allowed&&(routine||ns.args[0]&&aggressive));if(g.territoryWarfareEngaged!==engage)ns.gang.setTerritoryWarfare(engage);const reset=ns.getResetInfo(),result={at:Date.now(),ownerPid:ns.args[1],nodeReset:reset.lastNodeReset,augReset:reset.lastAugReset,faction:g.faction,requested:ns.args[0],before:g.territoryWarfareEngaged,engaged:ns.gang.getGangInformation().territoryWarfareEngaged,minimum:decision.minimum,expectedTerritoryPerUpdate:decision.expectedTerritoryPerUpdate,cohortProfitable:decision.cohortProfitable,blockedByWorstOpponent:decision.blockedByWorstOpponent,reason:!allowed?'control-blocked':decision.reason==='invalid-observations'?'invalid-observations-kept':routine?'routine-threshold-met':aggressive?'conditional-approved':decision.reason};ns.write('tasks/gang-warfare-decision.json',JSON.stringify(result),'w');return result;})()`, '/Temp/gang-warfare-decision.txt',[shouldEngage,ns.pid,gangWarfareThreshold(),conditional]);
         const key=JSON.stringify([transition?.engaged,transition?.reason]);
         if(enableOrDisableWarfare.lastDecision!==key||transition?.before!==transition?.engaged){
             enableOrDisableWarfare.lastDecision=key;

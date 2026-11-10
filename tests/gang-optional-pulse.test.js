@@ -106,12 +106,16 @@ test('live preparation uses an atomic fresh snapshot and excludes mandatory or m
   if(mode==='optional'){assert.equal(applied.traineePulseQuote.name,'M');assert.equal(applied.traineePulseQuote.power,10000);}else assert.equal(applied.traineePulseQuote,null);
  }
 });
-test('positive cohort return cannot bypass a weak-opponent engagement floor',()=>{
+test('positive cohort return engages above the weak-opponent floor and stays parked below it',()=>{
  const rivals=Object.fromEntries([10,10,10,10,10,2/3].map((ratio,i)=>['R'+i,{power:100/ratio,territory:.8/6}]));
  const d=warfareDecision({faction:'Own',power:100,territory:.2},rivals,.7);
- assert.equal(d.minimum,.4);assert.equal(d.engage,false);assert.equal(d.cohortProfitable,true);assert.equal(d.blockedByWorstOpponent,true);
+ assert.equal(d.minimum,.4);assert.equal(d.engage,true);assert.equal(d.reason,'positive-cohort-value');assert.equal(d.cohortProfitable,true);assert.equal(d.blockedByWorstOpponent,false);
  const expected=(5*((10/11)*.0001*(1+Math.log(10)/Math.log(50))-(1/11)*.0001)+(.4*.0001-.6*.0001*(1+Math.log(1.5)/Math.log(50))))/3;
  assert.ok(Math.abs(d.expectedTerritoryPerUpdate-expected)<1e-15);
+ // One overwhelming rival still vetoes a cohort that would otherwise gain land.
+ const dominated=warfareDecision({faction:'Own',power:100,territory:.001},
+  {...Object.fromEntries([0,1,2,3,4].map(i=>['W'+i,{power:10,territory:.1}])),Strong:{power:5000,territory:.1}},.7);
+ assert.ok(dominated.minimum<.35);assert.equal(dominated.cohortProfitable,true);assert.equal(dominated.engage,false);assert.equal(dominated.blockedByWorstOpponent,true);
 });
 test('capped transfer mean matches independent numerical integration at the last sliver',()=>{
  const power=300,other=100,tiny=.0001,own=.9999;

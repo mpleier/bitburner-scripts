@@ -28,6 +28,9 @@ test('shared budget prioritizes the collection and protects it from corporation 
  assert.ok(Object.values(p.allowances).reduce((n,v)=>n+v,0)<=190e9+.01);
  const ram=spendingPlan({...base,homeRam:32,signals:{gangEquipmentPriority:{remainingCount:100,remainingCost:200e9},essentialHomeRam:{target:128}}});assert.ok(ram.allowances.home>=95e9);
  const disabled=spendingPlan({...base,signals:{gangEquipmentPriority:{remainingCount:100,remainingCost:200e9},activeCategories:{gang:false}}});assert.equal(disabled.allowances.gang,0);
+ // An unblocked completion commitment outranks the discretionary all-equipment goal.
+ const completion=spendingPlan({...base,signals:{gangEquipmentPriority:{remainingCount:100,remainingCost:200e9},completionPriority:true}});
+ assert.ok(completion.allowances.gang<100e9);assert.ok(!completion.reasons.some(r=>/collect all gang equipment/.test(r)));
 });
 function fixture(){
  const at=Date.now(),proof={kind:'gang-equipment-priority',ownerPid:8,nodeReset:1,augReset:2,at,cost:10,member:'A',equipment:'Sword'};

@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
 import { modelCandidates, solveFeedbackPassword, evalArithmetic, isStalledScout, passwordLengthMatches, passwordHintCandidates } from '../darknet-solvers.js';
 
 function simulation(modelId, password, feedback, format = 'numeric') {
@@ -16,11 +17,44 @@ function simulation(modelId, password, feedback, format = 'numeric') {
   };
 }
 
+test('CloudBlare derives its numbers-only password from the mixed source data', () => {
+  // "Type the numbers to prove you are human": the data carries the password digits mixed with noise.
+  assert.deepEqual(modelCandidates({modelId: 'CloudBlare(tm)', data: '6╸:[8.6]>\\7', passwordLength: 4, passwordFormat: 'numeric'}), ['6867']);
+  assert.deepEqual(modelCandidates({modelId: 'CloudBlare(tm)', data: 'no digits here'}), []);
+});
+
+test('a hint-only key still yields an exact numeric candidate', () => {
+  const candidates = passwordHintCandidates({passwordHint: 'The key is 253', passwordLength: 3, passwordFormat: 'numeric'});
+  assert.ok(candidates.includes('253'));
+});
+
+test('log-only hint and data are mined once and shared by both solver paths', () => {
+  const src = readFileSync(new URL('../darknet-node.js', import.meta.url), 'utf8');
+  assert.match(src, /if \(!modelUsesPuzzleInput\(info\?\.modelId\)\) return info;/);
+  assert.match(src, /if \(!hint && typeof record\?\.message === 'string' && record\.message\.trim\(\)\) hint = record\.message;/);
+  assert.match(src, /return \{ \.\.\.info, data: needData \? cached\.data : info\.data, passwordHint: needHint \? cached\.hint : info\.passwordHint \};/);
+  assert.match(src, /const informed=await mineDetails\(host,info\);\s*\n\s*if\(informed!==info\)\{info=informed;candidates=candidatesFor\(info,candidates\);\}/);
+});
+
+test('the feedback branch tries a model-derived password before probing for hints', () => {
+  const src = readFileSync(new URL('../darknet-node.js', import.meta.url), 'utf8');
+  assert.match(src, /const minedDigits = String\(info\.data \?\? ''\)\.replace\(\/\\D\+\/g, ''\);/);
+  assert.match(src, /for \(const candidate of preferred\.slice\(0, 4\)\)/);
+  assert.match(src, /derived password matched; saved in credential store\./);
+  assert.match(src, /const ordered = wantsDigits \? \[\.\.\.derived, \.\.\.modelCandidates\(info\)\]/);
+});
+
+test('saved passwords are rejected when they cannot match the server format', () => {
+  const src = readFileSync(new URL('../darknet-node.js', import.meta.url), 'utf8');
+  assert.match(src, /const formatOk = !password \|\| \(\(\) => \{/);
+  assert.match(src, /if \(!passwordLengthMatches\(info, password\) \|\| !formatOk\)/);
+});
+
 test('static decoders are integrated without evaluating injected game hints', () => {
   assert.deepEqual(modelCandidates({ modelId: '110100100', data: '01000001 00110001' }), ['A1']);
   assert.deepEqual(modelCandidates({ modelId: 'BellaCuore', data: 'XIV' }), ['14']);
   assert.deepEqual(modelCandidates({ modelId: 'OctantVoxel', data: '16,FF' }), ['255']);
-  assert.deepEqual(modelCandidates({ modelId: 'Pr0verFl0', passwordLength: 4 }), ['AAAAAAAA']);
+  assert.deepEqual(modelCandidates({ modelId: 'Pr0verFl0', passwordLength: 4 }), ['■■■■■■■■']);
   assert.equal(passwordLengthMatches({ modelId: 'Pr0verFl0', passwordLength: 4 }, 'AAAA'), true);
   assert.equal(passwordLengthMatches({ modelId: 'Pr0verFl0', passwordLength: 4 }, 'AAAAAAAA'), true);
   assert.equal(passwordLengthMatches({ modelId: 'Pr0verFl0', passwordLength: 4 }, 'AAA'), false);
@@ -46,6 +80,26 @@ test('number feedback uses logarithmic search', async () => {
   const result = await solveFeedbackPassword(f.details, f.attempt, f.readLogs);
   assert.equal(result.password, '48753');
   assert.ok(f.guesses.length <= 18);
+});
+
+test('number feedback keeps its bounds when the server reports new feedback data each turn', async () => {
+  const password = '42';
+  const logs = [];
+  const details = {modelId: 'AccountsManager_4.2', passwordLength: 2, passwordFormat: 'numeric', data: 'Higher'};
+  const attempt = async guess => {
+    if (Number(guess) === Number(password)) return {success: true};
+    logs.push(JSON.stringify({code: 401, passwordAttempted: guess, data: Number(guess) > Number(password) ? 'Lower' : 'Higher'}));
+    return {success: false, code: 401};
+  };
+  const readLogs = async () => ({success: true, logs});
+  const state = {};
+  let solved = null;
+  for (let turn = 0; turn < 12 && !solved; turn++) {
+    details.data = logs.length ? (Number(logs[logs.length - 1].passwordAttempted) > Number(password) ? 'Lower' : 'Higher') : 'Higher';
+    const result = await solveFeedbackPassword(details, attempt, readLogs, state);
+    if (result.success) solved = result.password;
+  }
+  assert.equal(solved, password, 'bounds must survive the per-attempt feedback echoed in details.data');
 });
 
 function mastermindFeedback(guess, password) {

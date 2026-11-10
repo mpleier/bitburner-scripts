@@ -1,6 +1,10 @@
-// Built-in dictionaries for Bitburner puzzle models, never external accounts.
+// Dictionaries mirrored exactly from the game's src/DarkNet/models/dictionaryData.ts.
+// These lists are the complete sets the server generator draws from, so adding entries only spends
+// guesses on passwords the game can never produce.
 export const defaultSettingsDictionary = ["admin", "password", "0000", "12345"];
+
 export const dogNameDictionary = ["fido", "spot", "rover", "max"];
+
 export const EUCountries = [
   "Austria",
   "Belgium",
@@ -30,6 +34,7 @@ export const EUCountries = [
   "Spain",
   "Sweden",
 ];
+
 export const commonPasswordDictionary = [
   "123456",
   "password",

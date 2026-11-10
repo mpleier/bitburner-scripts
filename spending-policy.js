@@ -19,7 +19,8 @@ export function spendingPlan({money,reserve=0,homeRam=0,node=1,epoch=Date.now(),
  if(priorities[signals.bottleneck]){for(const [category,factor]of Object.entries(priorities[signals.bottleneck]))weights[category]*=factor;reasons.push('Progression bottleneck: '+signals.bottleneck);}
  for(const [category,active]of Object.entries(signals.activeCategories||{}))if(active===false&&category in weights)weights[category]=0;
  const gear=signals.gangEquipmentPriority;
- const collect=gear&&Number.isFinite(gear.remainingCost)&&gear.remainingCost>0&&Number.isSafeInteger(gear.remainingCount)&&gear.remainingCount>0&&weights.gang>0;
+ // Completion outranks discretionary goals while its finish line is unblocked.
+ const collect=signals.completionPriority!==true&&gear&&Number.isFinite(gear.remainingCost)&&gear.remainingCost>0&&Number.isSafeInteger(gear.remainingCount)&&gear.remainingCount>0&&weights.gang>0;
  if(collect){weights.gang=Math.max(1000,weights.gang);reasons.push('User priority: collect all gang equipment');}
  const total=Object.values(weights).reduce((a,b)=>a+b,0),free=Math.max(0,money-reserve);
  const gangCapital=gangCorporationCapital(signals,free);
@@ -40,6 +41,22 @@ export function spendingPlan({money,reserve=0,homeRam=0,node=1,epoch=Date.now(),
  }
 
  const essentialRam=Number.isFinite(signals.essentialHomeRam?.target)&&signals.essentialHomeRam.target>homeRam&&signals.essentialHomeRam.target<=2**30;
+ // Bootstrap: with no daemon running, the next home RAM doubling is the only purchase that can
+ // start income, so it outranks every discretionary category until the daemon fits.
+ const bootstrapTarget=Number.isFinite(signals.bootstrapRam)&&signals.bootstrapRam>homeRam&&signals.bootstrapRam<=2**30?signals.bootstrapRam:0;
+ if(bootstrapTarget){
+   const desired=Math.max(allowances.home,Math.min(free-startup,free*.5));
+   const others=Object.entries(allowances).filter(([k])=>k!=='home').reduce((sum,[k,v])=>sum+Math.max(0,v-(k==='corporation'?startup:0)),0);
+   const slack=Math.max(0,free-Object.values(allowances).reduce((sum,v)=>sum+v,0));
+   const shift=Math.min(Math.max(0,desired-allowances.home),slack+others);
+   const fromOthers=Math.max(0,shift-slack);
+   if(others>0)for(const k of Object.keys(allowances))if(k!=='home'){
+    const protectedCash=k==='corporation'?startup:0;
+    allowances[k]=protectedCash+(allowances[k]-protectedCash)*(1-fromOthers/others);
+   }
+   allowances.home+=shift;
+   reasons.push('Bootstrap priority: home RAM to '+bootstrapTarget+' GB before discretionary spending');
+ }
  if(signals.route==='bladeburner'||signals.augmentationCashTarget){
   const saving=signals.augmentationCashTarget;
   if(homeRam>=128&&!essentialRam)allowances.home=Math.min(allowances.home,free*.02);
@@ -150,8 +167,11 @@ export function claimSpending(ns,category,cost,investment=null) {
    const accelerated=(saving-money+cost+batch)/(funding.rate+gain)+delay,payback=cost/gain+delay;
    growthException=cost<=money*.01&&payback<=Math.min(900,baseline*.5)&&baseline-accelerated-30>=Math.max(30,baseline*.1);
  }
- const homeRamTarget=Math.max(128,Number(plan.signals?.essentialHomeRam?.target)||0,Number(plan.signals?.fullHomeRam?.target)||0);
- const bootstrapEssential=category==='home'&&Number.isFinite(plan.homeRam)&&plan.homeRam<128;
+ const homeRamTarget=Math.max(128,Number(plan.signals?.essentialHomeRam?.target)||0,Number(plan.signals?.fullHomeRam?.target)||0,Number(plan.signals?.bootstrapRam)||0);
+ // Bootstrap RAM is exempt from savings/reserve gates at any size, not only below 128 GB: while the
+ // daemon has no room to run, no other purchase can generate the money those gates are saving for.
+ const bootstrapEssential=category==='home'&&Number.isFinite(plan.homeRam)&&
+  (plan.homeRam<128||(Number.isFinite(plan.signals?.bootstrapRam)&&plan.signals.bootstrapRam>plan.homeRam));
  const capacityEssential=category==='home'&&Number.isFinite(plan.homeRam)&&plan.homeRam<homeRamTarget;
  const sleeveExpansion=category==='sleeveExpansion';
  // Explicit collection priority may precede ordinary savings, never a reset or timed wait.
@@ -176,7 +196,9 @@ export function claimSpending(ns,category,cost,investment=null) {
  if(category!=='augmentation'&&!sleeveExpansion&&!bootstrapEssential&&!growthException&&ns.getPlayer().money<cost+Math.max(Number(ns.read('reserve.txt'))||0,saving))return false;
 
  let usage;try{usage=JSON.parse(ns.read('tasks/spending-usage.json'));}catch{}
- if(usage?.epoch!==plan.epoch||!usage.spent||typeof usage.spent!=='object'||Array.isArray(usage.spent))usage={epoch:plan.epoch,spent:{},...(lastGrowth?{growthException:lastGrowth}:{})};
+ if(usage?.epoch!==plan.epoch||usage?.nodeReset!==reset.lastNodeReset||usage?.augReset!==reset.lastAugReset||
+   !usage.spent||typeof usage.spent!=='object'||Array.isArray(usage.spent))
+  usage={epoch:plan.epoch,nodeReset:reset.lastNodeReset,augReset:reset.lastAugReset,spent:{},...(lastGrowth?{growthException:lastGrowth}:{})};
  let limit=Number(plan.allowances[category])||0;
  // Bootstrap home RAM is mandatory to start the enabled manager set. Let it
  // use cash above the absolute reserve even when discretionary home allowance is zero.
@@ -189,7 +211,11 @@ export function claimSpending(ns,category,cost,investment=null) {
  if(category==='home'&&plan.signals?.fullHomeRam?.complete===true&&Number.isFinite(plan.signals.fullHomeRam.target)&&
    ns.getServerMaxRam('home')>=plan.signals.fullHomeRam.target&&plan.signals.route==='bladeburner')
   limit=Math.min(limit,Math.max(0,ns.getPlayer().money-Math.max(0,Number(ns.read('reserve.txt'))||0))*.02);
- const spent=Number(usage.spent[category])||0;
+ // A ledger entry from before a reset (or an implausibly large one) must not block this node: the
+ // recorded spend can never exceed the cash that is available right now.
+ const freeCash=Math.max(0,ns.getPlayer().money-Math.max(0,Number(ns.read('reserve.txt'))||0));
+ const spentRaw=Math.max(0,Number(usage.spent[category])||0);
+ const spent=Math.min(spentRaw,freeCash);
  if(cost>limit-spent)return false;
  // This board is advisory: only this call's fresh native quote may consume the grant.
  if(growthException){
@@ -262,6 +288,9 @@ export function adaptiveBudgetSignals(ns,corporationStartup=false){
  const economics=incomeFresh&&speedFresh?{cashRate:observation.cashRate,recoveryMs:speed.recoveryMs,rebuildMs:speed.resetEconomics?.rebuildMs,
   remainingMs:route&&route.augReset===reset.lastAugReset&&route.nodeReset===nodeReset&&route.at<=now&&now-route.at<45000&&ns.isRunning(route.ownerPid)?route?.routes?.[route.committed==='hacking'||route.committed==='bladeburner'?route.committed:route.selected]?.etaMs:null,combat}:null;
  const validRoute=!!route&&route.augReset===ns.getResetInfo().lastAugReset&&route?.nodeReset===nodeReset&&route?.at<=now&&now-route.at<45000&&ns.isRunning(route.ownerPid)?route.committed==='hacking'||route.committed==='bladeburner'?route.committed:route.selected:null;
+ // A committed completion finish line only counts while it is fresh and not blocked.
+ const completionPriority=!!route&&route.completionPriority===true&&route.nodeReset===nodeReset&&route.augReset===reset.lastAugReset&&Number.isFinite(route.at)&&route.at<=now&&now-route.at<=60000&&
+  route.availability?.bladeburner!==false&&ns.isRunning(route.ownerPid);
  const collection=read('tasks/gang-equipment-priority.json');
  const gangEquipmentPriority=collection?.schemaVersion===1&&collection.enabled===true&&collection.nodeReset===nodeReset&&collection.augReset===reset.lastAugReset&&
   Number.isFinite(collection.at)&&collection.at<=now&&now-collection.at<=30000&&Number.isSafeInteger(collection.remainingCount)&&collection.remainingCount>0&&Number.isFinite(collection.remainingCost)&&collection.remainingCost>0&&
@@ -269,11 +298,33 @@ export function adaptiveBudgetSignals(ns,corporationStartup=false){
  const capitalGrowth=fresh(growth)&&growth.schemaVersion===2&&growth.nodeReset===nodeReset&&growth.augReset===reset.lastAugReset&&growth.at>now-30000&&ns.ps('home').some(p=>p.pid===growth.pid&&p.filename?.replace(/^\//,'')==='gangs.js');
  const recoveryHold=read('tasks/gang-ascension-reserve.json');
  const gangRecoveryCash=recoveryHold?.nodeReset===nodeReset&&recoveryHold.augReset===reset.lastAugReset&&recoveryHold.at<=now&&now-recoveryHold.at<=30000&&recoveryHold.expiresAt>now&&ns.ps('home').some(p=>p.pid===recoveryHold.ownerPid&&p.filename?.replace(/^\//,'')==='gangs.js')?recoveryHold.cost:0;
- return {gangRecoveryCash,gangEquipmentPriority,gangCapitalQuote:capitalGrowth?growth.equipmentOpportunity:null,gangCapitalHorizon:capitalGrowth?growth.horizon?.seconds:null,route:validRoute,essentialHomeRam,fullHomeRam,augmentationCashTarget:augmentationCashReserve(ns,true)||augmentationSavingsTarget(snapshot,ns.getResetInfo(),snapshot?ns.getPlayer().money:0,validRoute,now,economics),augmentationFunding,gangEquipmentPayback:fresh(growth)&&growth.schemaVersion===2&&growth.nodeReset===nodeReset&&growth.augReset===ns.getResetInfo().lastAugReset&&growth.equipmentOpportunity?.reason==='production'?growth.equipmentOpportunity.cashPaybackSeconds:null,gangRecruitmentSecondsSaved:fresh(growth)&&growth.schemaVersion===2&&growth.nodeReset===nodeReset&&growth.augReset===ns.getResetInfo().lastAugReset&&growth.equipmentOpportunity?.reason==='recruitment'?growth.equipmentOpportunity.recruitSecondsSaved:null,gangStalled,sleeveShockHigh:items.length>0&&items.reduce((sum,s)=>sum+(Number(s.shock)||0),0)/items.length>25,sleeveExpansionNeeded:items.length>0&&(items.length<8||items.some(s=>s.memory<100)),corporationStartup};
+ return {gangRecoveryCash,gangEquipmentPriority,gangCapitalQuote:capitalGrowth?growth.equipmentOpportunity:null,gangCapitalHorizon:capitalGrowth?growth.horizon?.seconds:null,route:validRoute,completionPriority,essentialHomeRam,fullHomeRam,bootstrapRam:bootstrapRamTarget(ns),augmentationCashTarget:augmentationCashReserve(ns,true)||augmentationSavingsTarget(snapshot,ns.getResetInfo(),snapshot?ns.getPlayer().money:0,validRoute,now,economics),augmentationFunding,gangEquipmentPayback:fresh(growth)&&growth.schemaVersion===2&&growth.nodeReset===nodeReset&&growth.augReset===ns.getResetInfo().lastAugReset&&growth.equipmentOpportunity?.reason==='production'?growth.equipmentOpportunity.cashPaybackSeconds:null,gangRecruitmentSecondsSaved:fresh(growth)&&growth.schemaVersion===2&&growth.nodeReset===nodeReset&&growth.augReset===ns.getResetInfo().lastAugReset&&growth.equipmentOpportunity?.reason==='recruitment'?growth.equipmentOpportunity.recruitSecondsSaved:null,gangStalled,sleeveShockHigh:items.length>0&&items.reduce((sum,s)=>sum+(Number(s.shock)||0),0)/items.length>25,sleeveExpansionNeeded:items.length>0&&(items.length<8||items.some(s=>s.memory<100)),corporationStartup};
 }
 
 /** Self-contained for stock workers. waitGoalOnly returns metadata for the budget planner.
  * Selected wait goals include the entire basket and only additional (not already budgeted) donations. */
+/** While no daemon is running and home is small, the next RAM doubling is the single purchase that
+ * can start income at all, so it is prioritized ahead of every discretionary category. */
+export const BOOTSTRAP_RAM_CEILING = 512;
+export function bootstrapRamTarget(ns) {
+  try {
+    if (ns.ps('home').some(p => p.filename?.replace(/^\//, '') === 'daemon.js')) return 0;
+    const home = Number(ns.getServerMaxRam('home')) || 0;
+    if (!(home > 0) || home >= BOOTSTRAP_RAM_CEILING) return 0;
+    return Math.min(BOOTSTRAP_RAM_CEILING, Math.max(64, home * 2));
+  } catch { return 0; }
+}
+
+/** Cash a RAM-starved node must keep liquid for its next home upgrade. While the daemon is down,
+ * stockmaster would otherwise deploy every spare dollar and the upgrade could never be afforded. */
+export function homeRamCashReserve(ns) {
+  try {
+    if (ns.ps('home').some(p => p.filename?.replace(/^\//, '') === 'daemon.js')) return 0;
+    if (ns.getServerMaxRam('home') >= 2048) return 0;
+    const cost = ns.singularity.getUpgradeHomeRamCost();
+    return Number.isFinite(cost) && cost > 0 ? Math.ceil(cost * 1.05) : 0;
+  } catch { return 0; }
+}
 export function augmentationCashReserve(ns,waitGoalOnly=false) {
  let waitGoal=null;
  try{

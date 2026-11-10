@@ -29,6 +29,21 @@ export function guardGangWarfare(ns,observedAt,now=Date.now(),aggressionGuard=nu
  }
  if(!ns.gang.inGang())return {state:'no-gang'};
  const gang=ns.gang.getGangInformation();
+ // A dominant gang keeps its clashes running through a controller gap (casino phase, augmentation
+ // reload) instead of forfeiting the territory those clashes would take. Weaker or unknown matchups
+ // still suspend, because exposed members can lose ground unattended.
+ let dominantMinimum=null;
+ try{
+  if(['owner-exited','lease-expired'].includes(reason)&&typeof ns.gang.getAllGangInformation==='function'&&Number.isFinite(gang.power)&&gang.power>0){
+   const rivals=Object.entries(ns.gang.getAllGangInformation()).filter(([name,v])=>name!==gang.faction&&v&&v.territory>0);
+   if(rivals.length&&rivals.every(([,v])=>Number.isFinite(v.power)))dominantMinimum=Math.min(...rivals.map(([,v])=>gang.power/(gang.power+Math.max(0,v.power))));
+  }
+ }catch{dominantMinimum=null;}
+ if(gang.territoryWarfareEngaged&&dominantMinimum!==null&&dominantMinimum>=.75){
+  const sustained={state:'sustained',reason:'dominant-clashes',minimum:dominantMinimum,restored:0,residualClashChance:gang.territoryClashChance};
+  if(typeof ns.write==='function')ns.write('tasks/gang-warfare-supervisor.json',JSON.stringify({at:now,nodeReset:reset.lastNodeReset,augReset:reset.lastAugReset,ownerPid:lease?.ownerPid,...sustained}),'w');
+  return sustained;
+ }
  if(gang.territoryWarfareEngaged)ns.gang.setTerritoryWarfare(false);
  // A stale saved ordinary task is less risky than leaving a weak member exposed to residual clashes.
  let restored=0;

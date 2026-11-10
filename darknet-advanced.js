@@ -22,13 +22,28 @@ export function packetCandidates(text, length, hostname = '') {
   return [...candidates].filter(word => word.length === length);
 }
 
-export async function solveAdvancedPassword(details, probe, readLogs, state, readLabReport,readLabRadar) {
+export async function solveAdvancedPassword(details, probe, readLogs, state, readLabReport,readLabRadar, probeMany = null) {
   const length = details.passwordLength;
   if (details.modelId === '(The Labyrinth)') return solveLabyrinth(probe, state, readLabReport,readLabRadar,feedbackTurnBudget(details));
   for (let tries = 0; tries < feedbackTurnBudget(details); tries++) {
     if (details.modelId === 'PHP 5.4') {
       if (length < 5 || length > 32) return { success: false, reason: 'unsupported RMS length' };
       const index = state.rmsDigits?.length || 0;
+      // Every position probe is independent once the baseline is known, so one batch covers them.
+      if (state.rmsBaseline !== undefined && index === 0 && length > 1) {
+        const positions = Array.from({ length }, (_, i) => '0'.repeat(i) + '9' + '0'.repeat(length - i - 1));
+        const results = probeMany ? await probeMany(positions) : null;
+        if (results && results.length === length) {
+          const squared = results.map(result => Number(String(result?.feedback?.data ?? '').match(/RMS Deviation:\s*([\d.]+)$/)?.[1]) ** 2 * length);
+          if (squared.every(Number.isFinite)) {
+            const digits = squared.map(value => (state.rmsBaseline + 81 - Math.round(value)) / 18);
+            if (digits.every(digit => Number.isInteger(digit) && digit >= 0 && digit <= 9)) {
+              state.rmsDigits = digits.map(String);
+              continue;
+            }
+          }
+        }
+      }
       const guess = state.rmsBaseline === undefined ? '0'.repeat(length) :
         index < length ? '0'.repeat(index) + '9' + '0'.repeat(length - index - 1) : state.rmsDigits.join('');
       const result = await probe(guess);
@@ -45,6 +60,42 @@ export async function solveAdvancedPassword(details, probe, readLogs, state, rea
     } else if (details.modelId === 'Factori-Os') {
       state.factorIndex ??= 0; state.factorPower ??= 1n; state.factorProduct ??= 1n;
       const product = String(state.factorProduct);
+      // Divisibility by each prime is independent, so a batch settles eight primes per round
+      // instead of one. Power discovery stays sequential: it depends on the previous answer.
+      if (probeMany) {
+        state.factorPhase ??= 'bulk'; state.factorQueue ??= [...factorPrimes]; state.factorDivisors ??= [];
+        if (state.factorPhase === 'bulk') {
+          if (!state.factorQueue.length) { state.factorPhase = 'powers'; continue; }
+          const batch = state.factorQueue.slice(0, 8);
+          const results = await probeMany(batch.map(String));
+          const answers = results.map(result => result?.feedback?.data);
+          if (answers.every(answer => answer === 'true' || answer === 'false')) {
+            for (let index = 0; index < batch.length; index++) {
+              if (answers[index] !== 'true') continue;
+              state.factorProduct *= BigInt(batch[index]);
+              state.factorDivisors.push({ prime: batch[index], power: BigInt(batch[index]) });
+            }
+            state.factorQueue = state.factorQueue.slice(batch.length);
+            continue;
+          }
+          state.factorPhase = 'powers';
+          continue;
+        }
+        if (state.factorPhase === 'powers') {
+          const entry = state.factorDivisors[0];
+          if (!entry) { state.factorPhase = 'confirm'; continue; }
+          const divisor = entry.power * BigInt(entry.prime);
+          const result = await probe(String(divisor));
+          if (!result.feedback) return result;
+          if (result.feedback.data === 'true') { entry.power = divisor; state.factorProduct *= BigInt(entry.prime); }
+          else if (result.feedback.data === 'false') state.factorDivisors.shift();
+          else return { success: false, reason: 'invalid divisibility feedback' };
+          continue;
+        }
+        const result = await probe(product);
+        if (result.feedback) { state.signature = null; return { success: false, reason: 'factor confirmation failed; resetting progress' }; }
+        return result;
+      }
       if (product.length === length && state.factorConfirmed !== product) {
         const result = await probe(product);
         if (!result.feedback) return result;
@@ -96,6 +147,28 @@ export async function solveAdvancedPassword(details, probe, readLogs, state, rea
       const min = length === 1 ? 0 : 10 ** (length - 1), max = 10 ** length - 1;
       state.hill ??= { cursor: min, bestX: min, bestY: -Infinity, phase: 'scan' };
       const hill = state.hill;
+      // The opening sweep only records the highest sample, so its positions are independent and can
+      // be probed in batches. Refinement depends on each answer and stays sequential.
+      if (hill.phase === 'scan' && probeMany) {
+        const batch = [], step = Math.max(1, width / 2);
+        let reached = false;
+        for (let index = 0; index < 8; index++) {
+          if (hill.cursor > max) { reached = true; break; }
+          const x = Math.round(Math.min(max, hill.cursor));
+          batch.push(String(x));
+          if (x === max) { reached = true; hill.cursor = max + 1; break; }
+          hill.cursor += step;
+        }
+        if (batch.length) {
+          const results = await probeMany(batch);
+          for (let index = 0; index < batch.length; index++) {
+            const altitude = Number(results[index]?.feedback?.data);
+            if (Number.isFinite(altitude) && altitude > hill.bestY) { hill.bestY = altitude; hill.bestX = Number(batch[index]); }
+          }
+          if (reached || hill.cursor > max) { hill.phase = 'refine'; hill.left = Math.max(min, hill.bestX - width); hill.right = Math.min(max, hill.bestX + width); hill.sample = 0; }
+          continue;
+        }
+      }
       let guess;
       if (hill.phase === 'scan') guess = String(Math.round(Math.min(max, hill.cursor)));
       else if (hill.phase === 'refine') guess = String(Math.round(hill.left + (hill.right - hill.left) * (hill.sample === 0 ? 0.382 : 0.618)));

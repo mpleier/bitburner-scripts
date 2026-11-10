@@ -86,7 +86,7 @@ test('gang plans prefer feasibility before profit and reduce infeasible wanted g
 test('recruitment, tasks, ascensions and clashes recheck pause state in generated workers',async()=>{
  const s=await readFile(new URL('../gangs.js',import.meta.url),'utf8');
  assert.ok(s.includes('while (!isScriptPaused(ns,ns.getScriptName()))'));assert.ok(s.includes('if(!await doRecruitMember(ns))await ns.sleep(1000)'));
- assert.ok(s.includes('steps<myGangMembers.length*allTaskNames.length'));assert.ok(s.includes('const engage=!!(allowed&&ns.args[0]&&'));
+ assert.ok(s.includes('steps<myGangMembers.length*allTaskNames.length'));assert.ok(s.includes('const engage=decision.reason===\'invalid-observations\''));assert.ok(s.includes('!!(allowed&&(routine||ns.args[0]&&aggressive))'));
  assert.ok(s.includes('autopilotSourceFiles(resetInfo)'));assert.ok(s.includes('suspendGangWarfare(ns,assignedTasks)'));
 });
 

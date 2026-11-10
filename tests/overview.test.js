@@ -11,7 +11,7 @@ async function overview(overrides={}) {
  vm.runInNewContext(source+`;globalThis.harness={getHudData,getAutomationHudData,optionalHudRead,prepareHudElements,cleanupHudElements,updateHudElement,getFailures:()=>hudReadFailures,set:(d,a,b)=>{doc=d;hook0=a;hook1=b;}};`,context);
  return context.harness;
 }
-function element(){return {children:[],style:{},dataset:{},classList:{add(){},remove(){}},isConnected:true,appendChild(child){child.parent=this;this.children.push(child);},remove(){this.isConnected=false;if(this.parent)this.parent.children=this.parent.children.filter(c=>c!==this);}};}
+function element(){const style={setProperty(name,value){style[name]=value;},getPropertyValue(name){return style[name]??'';}};return {children:[],style,dataset:{},classList:{add(){},remove(){},contains(){return false;}},isConnected:true,appendChild(child){child.parent=this;this.children.push(child);},remove(){this.isConnected=false;if(this.parent)this.parent.children=this.parent.children.filter(c=>c!==this);}};}
 function nsState(files={},processes=[]){return {ps:()=>processes,read:file=>files[file]||''};}
 const row=(rows,name)=>rows.find(r=>r[0]===name);
 
@@ -46,6 +46,26 @@ test('overview cleanup preserves rows owned by stockmaster and avoids duplicate 
  assert.equal(left.children[1].children.length,1);assert.equal(left.children[1].children[0].children.length,2);
  h.cleanupHudElements();assert.equal(left.children.length,1);assert.equal(left.children[0],stock);assert.equal(right.children.length,0);
 });
+
+test('overview tooltips own a fixed pixel box on the body instead of the HUD row',async()=>{
+ const h=await overview(),left=element(),right=element(),body=element();
+ const doc={createElement:()=>element(),body,defaultView:{innerWidth:1280}};
+ h.set(doc,left,right);
+ h.prepareHudElements([['A',true,'1','Multi\nline\ntip']]);
+ // The tooltip is parented by the body, so no HUD flex sizing or game .tooltiptext rule can shrink it.
+ assert.equal(body.children.length,2);
+ for(const tip of body.children){
+  assert.ok(!String(tip.className).includes('tooltiptext'));
+  assert.equal(tip.style.getPropertyValue('width'),'360px');
+  assert.equal(tip.style.getPropertyValue('min-width'),'360px');
+  assert.equal(tip.style.getPropertyValue('max-width'),'360px');
+  assert.equal(tip.style.display,'none');assert.match(tip.style.cssText,/position: fixed/);
+ }
+ const grid=left.children[0],item=grid.children[0];
+ assert.equal(item.children.length,2); // label and value rows; the tooltip is not inside either
+ assert.equal(item.children[0].children.length,1);
+});
+
 
 test('overview optional API failures return their fallback',async()=>{
  const h=await overview({getNsDataThroughFile:async()=>{throw Error('missing Source File');}});

@@ -57,5 +57,5 @@ test('serialized calibration guard is self-contained and restart ownership does 
 test('controller records calibration and gates only the bounded attempt path',()=>{
  const source=readFileSync(new URL('../gangs.js',import.meta.url),'utf8');
  assert.match(source,/calibration.known&&!calibration.suspended&&!shouldEngage/);assert.match(source,/calibrationRequired:true/);assert.match(source,/gangAttritionCalibration.toString/);
- assert.match(source,/gang-attrition-calibration.json/);assert.match(source,/let shouldEngage = warfareDecision/);
+ assert.match(source,/gang-attrition-calibration.json/);assert.match(source,/const routineDecision=warfareDecision/);assert.match(source,/let shouldEngage = routineDecision\.engage/);
 });

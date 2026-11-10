@@ -1,4 +1,4 @@
-import {augmentationCashReserve} from './spending-policy.js';
+import {augmentationCashReserve,homeRamCashReserve} from './spending-policy.js';
 import {stockExitDecision,stockForecastUncertainty,stockHistoryCheckpoint,restoreStockHistory,stockManipulationSnapshot,stockOptionsError,stockReserve,holdYoungStock,stockTradeReceipt,stockControlAllowed,stockCycleAgreement,stockHistoryForecast,stockSnapshotExpression} from './stock-policy.js';
 import {registerAutomation,automationHeartbeat,maintenanceRequested} from './runtime-policy.js';
 import {isScriptPaused} from './automation-control.js';
@@ -137,7 +137,7 @@ export async function main(ns) {
             if(isScriptPaused(ns,ns.getScriptName()))return;automationHeartbeat(ns);
             await ns.sleep(sleepInterval);
             try {
-                const reserve = Math.max(stockReserve(options['reserve'],ns.read('reserve.txt')),augmentationCashReserve(ns));
+                const reserve = Math.max(stockReserve(options['reserve'],ns.read('reserve.txt')),augmentationCashReserve(ns),homeRamCashReserve(ns));
                 player = await getPlayerInfo(ns);
                 success = await tryGetStockMarketAccess(ns, player.money - reserve);
             } catch (err) {
@@ -178,7 +178,7 @@ export async function main(ns) {
         if(maintenanceRequested(ns)){await ns.write("tasks/stock-status.json",JSON.stringify({at:Date.now(),pid:ns.pid,state:"waiting",reason:"Automation maintenance"}),"w");await ns.sleep(sleepInterval);continue;}
         try {
             const playerStats = await getPlayerInfo(ns);
-            const reserve = Math.max(stockReserve(options['reserve'],ns.read('reserve.txt')),augmentationCashReserve(ns));
+            const reserve = Math.max(stockReserve(options['reserve'],ns.read('reserve.txt')),augmentationCashReserve(ns),homeRamCashReserve(ns));
             // Check whether we have 4s access yes (once we do, we can stop checking)
             if (pre4s) pre4s = !(await checkAccess(ns, "has4SDataTixApi"));
             const holdings = await refresh(ns, !pre4s, allStocks, myStocks); // Returns total stock value

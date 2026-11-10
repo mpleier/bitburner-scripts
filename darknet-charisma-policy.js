@@ -2,10 +2,20 @@ export const charismaGoalFile='tasks/dnet-charisma-goal.json',charismaTrainingFi
 const labAugmentOrder=['The Broken Wings','The Boots','The Hammer','The Staff','The Law','The Sword'];
 const labAugmentOrderBn15=['The Broken Wings','The Boots','The Hammer','The Staff','The Red Pill','The Law','The Sword'];
 const labCharismaTargets=[300,600,1500,2500,3000,3500,4000,4000];
+// The game reports the labyrinth rewards by their stylised names, so counting only the readable
+// order names would pin the ladder at index 0 forever.
+const labAugmentNames={
+ 'The Broken Wings':['The Broken Wings','The W1ngs of Icarus'],
+ 'The Boots':['The Boots','The B00ts of Perseus'],
+ 'The Hammer':['The Hammer','The H4mmer of Daedalus'],
+ 'The Staff':['The Staff','The St4ff of Asclepius'],
+ 'The Law':['The Law','The L4w of Bayes'],
+ 'The Sword':['The Sword','The B1ade of Solomonoff'],
+ 'The Red Pill':['The Red Pill']};
 /** The next labyrinth is selected by installed lab augmentations, not by a currently visible host. */
 export function nextLabCharismaTarget(owned=[],bitNode=null){
  const list=Array.isArray(owned)?owned:[],order=Number(bitNode)===15?labAugmentOrderBn15:labAugmentOrder;
- const installed=order.filter(name=>list.includes(name)).length;
+ const installed=order.filter(name=>(labAugmentNames[name]||[name]).some(alias=>list.includes(alias))).length;
  const index=Math.min(installed,labCharismaTargets.length-1);
  return {target:labCharismaTargets[index],labIndex:index};
 }

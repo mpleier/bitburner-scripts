@@ -19,7 +19,9 @@ export function normalizeRamOptions(options) {
 export function purchaseHomeRam(ns,budget,reserveOption,expectedRam,claim,allowed) {
  const stopped=reason=>({purchased:false,reason});
  if(!Number.isFinite(budget)||budget<0||reserveOption!==null&&(!Number.isFinite(reserveOption)||reserveOption<0))return stopped('invalid-budget');
- if(['Tasks/ram-manager.js','/Tasks/ram-manager.js','ram-manager.js'].some(name=>ns.read('remote-control/paused/'+name+'.txt').trim()==='true'))return stopped('paused');
+ // A leading slash here once produced 'remote-control/paused//Tasks/...', an invalid path whose
+ // read threw and aborted the entire purchase. Normalize it and never let the check throw.
+ if(['Tasks/ram-manager.js','/Tasks/ram-manager.js','ram-manager.js'].some(name=>{try{return ns.read('remote-control/paused/'+String(name).replace(/^\/+/,'')+'.txt').trim()==='true';}catch{return false;}}))return stopped('paused');
  try{const m=JSON.parse(ns.read('tasks/automation-maintenance.json'));if(m.expiresAt>Date.now()&&ns.isRunning(m.ownerPid))return stopped('maintenance');}catch{}
  if(!allowed(ns,'homeRam'))return stopped('restricted');
  try {

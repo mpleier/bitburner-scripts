@@ -32,7 +32,7 @@ test('executed dictionary scouts require the grant and count native timeout retr
   const ns={pid:7,getHostname:()=> 'origin',disableLog(){},read:f=>files.get(f)||'',write:async(f,v)=>files.set(f,v),ls:(_h,p='')=>[...files.keys()].filter(f=>f.includes(p)),fileExists:f=>f==='tasks/dnet-maze-leases.json',scp:async()=>true,isRunning:()=>true,ps:()=>[],hasRootAccess:()=>true,getServerMaxRam:()=>16,getServerUsedRam:()=>16,getScriptRam:()=>0,getPlayer:()=>({skills:{charisma:10000}}),print:s=>messages.push(s),sleep:async()=>{throw stop;},
    dnet:{probe:()=>['target'],getServerDetails:h=>h==='target'?{modelId:'dictionary',passwordLength:1,passwordFormat:'numeric',data:'',blockedRam:0,hasSession:false,requiredCharismaSkill:0}:{depth:0,difficulty:0},getStasisLinkedServers:()=>[],getStasisLinkLimit:()=>0,getServerRequiredCharismaLevel:()=>0,heartbleed:async()=>{peeks.push(1);return {success:true,logs:[]};},
     authenticate:async(_h,p)=>{attempts.push(p);return {success:false,code:attempts.length%3?408:401};}}};
-  await assert.rejects(scout(ns),e=>e===stop);assert.equal(attempts.length,granted?8:0);assert.equal(messages.some(s=>/TypeError|ReferenceError/.test(s)),false,messages.join('\n'));
+  await assert.rejects(scout(ns),e=>e===stop);assert.equal(attempts.length,granted?16:0);assert.equal(messages.some(s=>/TypeError|ReferenceError/.test(s)),false,messages.join('\n'));
   assert.equal(peeks.length,granted?1:0);
   if(granted)assert.ok(files.has('tasks/dnet-solver-target.json'));
  }

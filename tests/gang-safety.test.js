@@ -26,6 +26,18 @@ test('expired lease disables warfare and restores only exposed members',()=>{
 test('exited owner is protected immediately without waiting for lease expiration',()=>{
  const f=fixture();f.setProcesses([]);assert.equal(guardGangWarfare(f.ns,99000,f.now).reason,'owner-exited');assert.equal(f.gang.territoryWarfareEngaged,false);
 });
+test('dominant clashes keep running through a controller gap, weak ones do not',()=>{
+ const strong=fixture();strong.gang.power=1000;
+ strong.ns.gang.getAllGangInformation=()=>({'Slum Snakes':{power:1000,territory:.3},Rival:{power:100,territory:.4}});
+ strong.setProcesses([]);
+ const sustained=guardGangWarfare(strong.ns,99000,strong.now);
+ assert.equal(sustained.state,'sustained');assert.equal(sustained.reason,'dominant-clashes');assert.ok(sustained.minimum>=.75);
+ assert.equal(strong.gang.territoryWarfareEngaged,true);assert.deepEqual(strong.events,[]);
+ const weak=fixture();weak.gang.power=100;
+ weak.ns.gang.getAllGangInformation=()=>({'Slum Snakes':{power:100,territory:.3},Rival:{power:900,territory:.4}});
+ weak.setProcesses([]);
+ assert.equal(guardGangWarfare(weak.ns,99000,weak.now).reason,'owner-exited');assert.equal(weak.gang.territoryWarfareEngaged,false);
+});
 test('unmanaged manual warfare and old-reset leases are not claimed',()=>{
  const f=fixture();f.setProcesses([]);f.lease.augReset=1;assert.equal(guardGangWarfare(f.ns,0,f.now).state,'unmanaged');assert.deepEqual(f.events,[]);
 });

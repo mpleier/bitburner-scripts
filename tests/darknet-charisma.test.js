@@ -33,6 +33,10 @@ test('goal selection requires fresh adjacency and native confirmation of the nex
 });
 test('standing charisma targets follow installed lab augments even with no adjacent labyrinth',async()=>{
  assert.equal(nextLabCharismaTarget([]).target,300);assert.equal(nextLabCharismaTarget(['The Broken Wings']).target,600);
+ // The game reports the stylised labyrinth names, so those must advance the ladder too.
+ assert.equal(nextLabCharismaTarget(['The W1ngs of Icarus']).target,600);
+ assert.equal(nextLabCharismaTarget(['The W1ngs of Icarus','The B00ts of Perseus','The H4mmer of Daedalus']).target,2500);
+ assert.equal(nextLabCharismaTarget(['The L4w of Bayes']).target,600);
  assert.equal(nextLabCharismaTarget(['The Broken Wings','The Boots']).target,1500);assert.equal(nextLabCharismaTarget(['The Broken Wings','The Boots','The Hammer','The Staff','The Law','The Sword']).target,4000);
  const redPill=['The Broken Wings','The Boots','The Hammer','The Staff','The Red Pill'];
  assert.equal(nextLabCharismaTarget(redPill,15).target,3500);assert.equal(nextLabCharismaTarget(redPill,11).target,3000);

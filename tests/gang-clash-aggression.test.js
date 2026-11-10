@@ -9,7 +9,11 @@ const members=()=>Array.from({length:12},(_,i)=>({name:'M'+i,def:1e6,upgrades:[]
 function input(){const crew=members();return {w:{active:true,powerPriority:true,power:22000,territory:.2,threshold:.75,engageThreshold:.7,preparation:{enabled:true},rivals:[{name:'R',power:10000,territory:.8,highRate:.0425,samples:4}]},allowTrainingFirst:true,participants:crew.map(m=>m.name),members:crew,powerFraction:1,cumulative:Array.from({length:180},(_,i)=>({at:(i+1)*20,power:22000+(i+1)*100}))};}
 test('routine engagement at seventy percent remains separate from seventy-five-percent preparation',()=>{
  const gang={faction:'Own',power:700,territory:.2,territoryClashChance:0},snapshot={at:100000,faction:'Own',gangs:{Own:{power:700,territory:.2},R:{power:300,territory:.8}}};
- assert.equal(warfareDecision(gang,snapshot.gangs,.7).engage,true);assert.equal(warfareDecision({...gang,power:699},snapshot.gangs,.7).engage,false);
+ const routine=warfareDecision(gang,snapshot.gangs,.7);assert.equal(routine.engage,true);assert.equal(routine.reason,'routine-threshold-met');
+ // Just under the routine threshold the cohort still gains more ground than it loses.
+ const cohort=warfareDecision({...gang,power:699},snapshot.gangs,.7);assert.equal(cohort.engage,true);assert.equal(cohort.reason,'positive-cohort-value');
+ // A gang dominated by its only rival stays parked until it is stronger.
+ assert.equal(warfareDecision({...gang,power:100},snapshot.gangs,.7).engage,false);
  const preparation=gangPreparationStatus(gang,snapshot,.7,100000,true);assert.equal(preparation.target,.75);assert.equal(preparation.active,true);
  const context=gangWarfareContext(gang,snapshot,.7,100000,{trainingFirst:true});assert.equal(context.threshold,.75);assert.equal(context.engageThreshold,.7);
 });

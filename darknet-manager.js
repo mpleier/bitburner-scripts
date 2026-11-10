@@ -38,7 +38,8 @@ export async function main(ns) {
   const stasisFile = "darknet-stasis.js";
   const cacheFile = "darknet-cache.js";
   const watcherFile = "darknet-cache-watch.js";
-  const codeFiles = [nodeFile, lootFile, stasisFile, cacheFile, watcherFile, "darknet-solvers.js", "darknet-throughput-policy.js", "darknet-charisma-policy.js", "darknet-ram-policy.js", "darknet-ram.js", "darknet-credentials.js", "darknet-feedback.js", "darknet-advanced.js", "darknet-labyrinth-policy.js", "darknet-navigator-policy.js", "darknet-maze.js", "darknet-anchor-policy.js", "darknet-development-policy.js", "darknet-dictionaries.js", "darknet-promote.js", "darknet-stock-policy.js", "darknet-migrate.js", "darknet-migration-policy.js", "darknet-storm-policy.js", "darknet-storm.js", "darknet-contract-policy.js", "darknet-reward-policy.js", "tasks/dnet-cache-context.json"];
+  const codeFiles = [nodeFile, lootFile, "darknet-auth.js", "darknet-bleed.js", stasisFile, cacheFile, watcherFile, "darknet-solvers.js", "darknet-throughput-policy.js", "darknet-charisma-policy.js", "darknet-ram-policy.js", "darknet-ram.js", "darknet-credentials.js", "darknet-feedback.js", "darknet-advanced.js", "darknet-labyrinth-policy.js", "darknet-navigator-policy.js", "darknet-maze.js", "darknet-anchor-policy.js", "darknet-development-policy.js", "darknet-dictionaries.js", "darknet-promote.js", "darknet-stock-policy.js", "darknet-migrate.js", "darknet-migration-policy.js", "darknet-storm-policy.js", "darknet-storm.js", "darknet-contract-policy.js", "darknet-reward-policy.js", "tasks/dnet-cache-context.json"];
+  let lastHeartbeatPrune = 0;
   // Every ns call is logged by default (scp, probe, getServerMaxRam...), which
   // buried the useful lines. Keep only what this script prints itself.
   ns.disableLog("ALL");
@@ -333,6 +334,23 @@ export async function main(ns) {
       const codeSignature = codeFiles.filter(f => fileHashes.has(f)).map(f => fileHashes.get(f)).join('|');
       await ns.write(darknetDeploymentFile,JSON.stringify({version:1,at:Date.now(),files:syncFiles}),'w');
       await refreshDarknetScouts(ns,syncFiles,codeSignature,upgradePending,snapshot.heartbeats);
+      // Every scout leaves a per-host heartbeat on home, and dead/renamed hosts leave theirs
+      // behind forever: they are informational copies, so stale ones are pruned within a
+      // bounded per-cycle budget to keep saves and directory scans small.
+      const pruneNow = Date.now();
+      if (pruneNow - lastHeartbeatPrune >= 60000) {
+        lastHeartbeatPrune = pruneNow;
+        let pruned = 0;
+        for (const file of ns.ls('home', 'tasks/dnet-')) {
+          if (pruned >= 1500) break;
+          if (!file.endsWith('.json') || /-(cache|solver|phishing|loot|navigator|anchor|storm)/.test(file)) continue;
+          let record = null;
+          try { record = JSON.parse(ns.read(file)); } catch { continue; }
+          if (record?.host === undefined || !Number.isFinite(record?.at) || record.at > pruneNow - 6 * 3600000) continue;
+          if (ns.rm(file, 'home')) pruned++;
+        }
+        if (pruned) note('dnet-heartbeat-prune', 'Pruned ' + pruned + ' stale darknet heartbeat files.');
+      }
       // darkweb is the launchpad into the Dark Net. Refresh its scout when the
       // manager can actually execute there, otherwise leave the working copy alone.
       try {

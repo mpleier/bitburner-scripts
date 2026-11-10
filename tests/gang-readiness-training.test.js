@@ -72,8 +72,9 @@ test('ready phase releases optional preparation, preserving mandatory and ordina
 });
 test('training-first retains preparation while bounded attrition requires an explicit forecast opt-in',()=>{
  assert.equal(planGangAttrition({w:{preparation:{enabled:true}}}).engage,false);
- assert.equal(warfareDecision({...gang,power:300},snapshot().gangs,.75).engage,true);
- assert.equal(warfareDecision({...gang,power:299},snapshot().gangs,.75).engage,false);
+ assert.equal(warfareDecision({...gang,power:300},snapshot().gangs,.75).reason,'routine-threshold-met');
+ // Below the routine bar the cohort still expects to take ground from a weaker rival.
+ const cohort=warfareDecision({...gang,power:299},snapshot().gangs,.75);assert.equal(cohort.engage,true);assert.equal(cohort.reason,'positive-cohort-value');
  const source=readFileSync(new URL('../gangs.js',import.meta.url),'utf8');assert.match(source,/\['training-first', true\]/);assert.match(source,/allowTrainingFirst:true/);assert.match(source,/released.changed\|\|JSON.stringify/);
  assert.match(source,/activeLease&&!options\['disable-attrition'\]/);assert.match(source,/prepareGangPowerPulse/);assert.match(source,/gangTraineePulse/);assert.match(source,/preparation:preparationFor\(status\)/);
 });

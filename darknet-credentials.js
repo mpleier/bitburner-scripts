@@ -63,6 +63,16 @@ export function createDarknetCredentials(ns) {
     let changed=false;
     for(const name of ns.ls('home',reportPrefix).filter(f=>f.endsWith('.json'))){const text=ns.read(name);if(reports.get(name)===text)continue;try{changed=mergeCredentials(local,decodeCredentials(text))||changed;reports.set(name,text);}catch(error){ns.print('Credential report deferred: '+name+': '+String(error));}}
     if(changed||!localVersion)await commit();
+    // Reports are transport, not storage: after their entries are merged into the published
+    // bundle they are deleted. Otherwise one report per host ever visited accumulates (tens of
+    // thousands of files), and every refresh re-lists and re-reads them while the save grows.
+    // Bounded per refresh so a large backlog cannot stall the manager for one long cycle.
+    let pruned=0;
+    for(const name of ns.ls('home',reportPrefix).filter(f=>f.endsWith('.json'))){
+      if(pruned>=2000)break;
+      if(ns.rm(name,'home')){reports.delete(name);pruned++;}
+    }
+    if(pruned)ns.print('Credentials: pruned '+pruned+' merged report files.');
     // Recover a version publication interrupted after a successful bundle commit.
     if(ns.read(credentialVersion)!==localVersion)await ns.write(credentialVersion,localVersion,'w');
    }else{

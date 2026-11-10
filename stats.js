@@ -49,6 +49,12 @@ export async function main(ns) {
     // Remove only rows owned by this script; stockmaster has its own overview elements.
     ns.atExit(cleanupHudElements);
     addCSS(doc);
+    // A previous instance killed without running atExit leaves its rows and tooltip behind,
+    // which used to stack a second HUD (and a stale, wrongly sized tooltip) on top of this one.
+    try {
+        if (typeof doc.querySelectorAll === 'function')
+            for (const stale of doc.querySelectorAll('[data-bb-stats="true"],[data-bb-tooltip="true"]')) stale.remove();
+    } catch {}
 
     // Main stats update loop
     while (true) {
@@ -69,7 +75,7 @@ export async function main(ns) {
                 const paddedValue = formattedValue == null ? null : ' ' + formattedValue?.trim();
                 updateHudElement(header, show, paddedValue, toolTip)
             }
-            for(const nodes of Object.values(nodeMap))if(nodes[1].style.visibility==='visible')positionOverviewTooltip(nodes[2],nodes[1],doc);
+            for(const nodes of Object.values(nodeMap))if(nodes[1].style.display==='block')positionOverviewTooltip(nodes[2],nodes[1],doc);
         } catch (err) {
             try{const stale=[['HUD Data',true,'Updating','Live readings are temporarily unavailable. Retrying; old values are hidden.']];prepareHudElements(stale);updateHudElement(...stale[0]);}catch{}
             // Might run out of ram from time to time, since we use it dynamically
@@ -83,6 +89,16 @@ export async function main(ns) {
 /** Creates the new UI elements which we will be adding custom HUD data to. 
  * @param {HudRowConfig[]} hudData */
 function prepareHudElements(hudData) {
+    const tooltipWidth = (bitNode) => Math.max(220, Math.min(bitNode ? 680 : 360,
+        ((doc.defaultView && doc.defaultView.innerWidth) || 1024) - 32));
+    const sizeTooltip = (tooltip, bitNode) => {
+        const width = tooltipWidth(bitNode);
+        if (typeof tooltip.style?.setProperty === 'function') {
+            tooltip.style.setProperty('width', width + 'px', 'important');
+            tooltip.style.setProperty('min-width', width + 'px', 'important');
+            tooltip.style.setProperty('max-width', width + 'px', 'important');
+        } else { tooltip.style.width = width + 'px'; tooltip.style.minWidth = width + 'px'; tooltip.style.maxWidth = width + 'px'; }
+    };
     const newline = (id, txt, toolTip = "") => {
         const p = doc.createElement("p");
         p.className = "bb-stats-row hidden";
@@ -90,29 +106,25 @@ function prepareHudElements(hudData) {
         const text = doc.createElement("span");
         text.textContent = txt;
         p.appendChild(text);
-        const tooltip = doc.createElement("span");
-        p.appendChild(tooltip);
+        const isBitNode = id.startsWith("BitNode-");
+        // Own the tooltip from the start. Inside the HUD row the game's .tooltiptext rules and
+        // the row's flex sizing could collapse it to a one-character column, so it lives on the
+        // body and carries explicit pixel dimensions instead of inherited or max-content ones.
+        const tooltip = doc.createElement("div");
+        tooltip.className = "bb-stats-tooltip" + (isBitNode ? " bb-bitnode-tooltip" : "");
         tooltip.textContent = toolTip;
-        tooltip.className = "tooltiptext bb-stats-tooltip"+(id.startsWith("BitNode-")?" bb-bitnode-tooltip":"");
-        const showTip=()=>{
-            doc.body?.appendChild(tooltip);
-            // Some game tooltip rules force a narrow inline box. Use an explicit
-            // fixed width so multi-line overview content cannot collapse.
-            const width = tooltip.classList.contains('bb-bitnode-tooltip') ? 'min(680px, calc(100vw - 32px))' : 'min(360px, calc(100vw - 32px))';
-            tooltip.style.setProperty('display','block','important');
-            tooltip.style.setProperty('width',width,'important');
-            tooltip.style.setProperty('min-width',width,'important');
-            tooltip.style.setProperty('max-width',width,'important');
-            tooltip.style.setProperty('white-space','pre-wrap','important');
-            tooltip.style.setProperty('overflow-wrap','break-word','important');
-            tooltip.style.setProperty('word-break','normal','important');
-            tooltip.style.visibility='visible';
-            positionOverviewTooltip(p,tooltip,doc);
-        };
-        const hideTip=event=>{if(!tooltip.contains?.(event?.relatedTarget))tooltip.style.visibility='hidden';};
-        p.addEventListener?.('pointerenter',showTip);p.addEventListener?.('pointerleave',hideTip);
-        p.addEventListener?.('focusin',showTip);p.addEventListener?.('focusout',hideTip);
-        tooltip.addEventListener?.('pointerleave',event=>{if(!p.contains(event.relatedTarget))tooltip.style.visibility='hidden';});
+        tooltip.dataset.bbTooltip = 'true';
+        tooltip.style.cssText = [
+            'position: fixed', 'left: 0px', 'top: 0px', 'right: auto',
+            'display: none', 'box-sizing: border-box', 'padding: 2px 10px',
+            'text-align: left', 'white-space: pre-wrap', 'overflow-wrap: break-word', 'word-break: normal',
+            'max-height: 65vh', 'overflow-y: auto',
+            'background: #000', 'color: #00ff00', 'border-radius: 6px', 'z-index: 10002',
+            'font-family: monospace', 'font-size: 14px', 'line-height: 1.4'
+        ].join(';') + ';';
+        tooltip.style.display = 'none';
+        sizeTooltip(tooltip, isBitNode);
+        (doc.body || doc.documentElement || doc.head)?.appendChild(tooltip);
         nodeMap[id] = [text, tooltip, p]
         return p;
     }
@@ -134,12 +146,21 @@ function prepareHudElements(hudData) {
         if (!nodeMap[id + '-title']){
             const item=doc.createElement('div');item.className='bb-stats-item';
             item.appendChild(newline(id+'-title',header,toolTip));
-            item.appendChild(newline(id+'-value',value,toolTip));hudGrid.appendChild(item);
+            item.appendChild(newline(id+'-value',value,toolTip));
+            // One tooltip per row: the value element owns it, and the whole row shows it.
+            const tip=nodeMap[id+'-value'][1];
+            const showTip=()=>{ if(item.classList?.contains?.('hidden'))return;
+                sizeTooltip(tip,tip.classList?.contains?.('bb-bitnode-tooltip')===true);
+                tip.style.display='block';positionOverviewTooltip(item,tip,doc); };
+            const hideTip=()=>{ tip.style.display='none'; };
+            item.addEventListener?.('pointerenter',showTip);item.addEventListener?.('pointerleave',hideTip);
+            item.addEventListener?.('focusin',showTip);item.addEventListener?.('focusout',hideTip);
+            hudGrid.appendChild(item);
         }
     }
     // A disappearing optional row must not leave an old value visible.
     for (const [id, nodes] of Object.entries(nodeMap))
-        if (!currentRows.has(id)){nodes[2].classList.add("hidden");nodes[1].style.visibility="hidden";}
+        if (!currentRows.has(id)){nodes[2].classList.add("hidden");nodes[1].style.display="none";}
 }
 
 function makeID(header) {
@@ -176,7 +197,7 @@ function updateHudElement(header, visible, value, toolTip) {
         const warning=header==='Attention'||header==='Automation'&&String(value).trim()==='0 active'||header==='Corp Profit'&&String(value).includes('-');
         nodeMap[valId][2].style.color=warning?'#ffb74d':'';
     } else {
-        nodeMap[titleId][1].style.visibility='hidden';nodeMap[valId][1].style.visibility='hidden';
+        nodeMap[titleId][1].style.display='none';nodeMap[valId][1].style.display='none';
         nodeMap[titleId][2].classList.add("hidden")
         nodeMap[valId][2].classList.add("hidden")
     }
@@ -493,19 +514,14 @@ const css = (rootStyle) => `<style id="statsCSS">
     .bb-stats-item .bb-stats-row:last-child { text-align:right;overflow-wrap:anywhere;min-width:0; }
     .bb-stats-row  { margin: 0; position: relative; }
     .bb-stats-row.hidden { display: none; }
-    .bb-stats-row:hover .tooltiptext { visibility: visible; opacity: 1; }
+    /* The tooltip element is created on the body with explicit pixel dimensions by
+       prepareHudElements; these rules are only a fallback if that styling is stripped. */
     .bb-stats-tooltip {
-        display: block !important;
-        width: min(360px, calc(100vw - 32px)) !important;
-        min-width: min(360px, calc(100vw - 32px)) !important;
-        max-width: min(360px, calc(100vw - 32px)) !important;
-        visibility: hidden; position: fixed; z-index: 10002;box-sizing:border-box;
-        right: 20px; top: 19px; padding: 2px 10px;
-        text-align: left; white-space: pre-wrap; width: max-content; min-width:min(240px,60vw); max-width: min(460px, 75vw); overflow-wrap:break-word; max-height:65vh; overflow-y:auto;
-        border-radius: 6px; border: ${rootStyle?.border || "inherit"};
-        background-color: #000; color: #00ff00; opacity: 1;font-family:monospace;font-size:14px;line-height:1.4;
+        display: none; position: fixed; z-index: 10002; box-sizing: border-box;
+        padding: 2px 10px; text-align: left; white-space: pre-wrap; overflow-wrap: break-word; word-break: normal;
+        max-height: 65vh; overflow-y: auto; border-radius: 6px; border: ${rootStyle?.border || "inherit"};
+        background-color: #000; color: #00ff00; font-family: monospace; font-size: 14px; line-height: 1.4;
     }
-    .bb-stats-tooltip.bb-bitnode-tooltip { width:min(680px,75vw);max-width:75vw; }
     .bb-tooltip-summary,.bb-tooltip-footer { display:block;white-space:pre-wrap; }
     .bb-tooltip-summary { margin-bottom:8px; }
     .bb-tooltip-footer { margin-top:8px; }

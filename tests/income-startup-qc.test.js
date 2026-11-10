@@ -24,7 +24,7 @@ test('RAM purchase refreshes cash and file reserves at mutation time',()=>{
 test('explicit RAM reserve remains enforced',()=>{const f=ramFixture();assert.equal(f.run(200,950).reason,'budget');});
 test('RAM purchase avoids duplicate upgrades after concurrent RAM changes',()=>{const f=ramFixture();f.ram(256);assert.equal(f.run().reason,'ram-changed');assert.equal(f.counts().claims,0);});
 test('RAM purchase respects every supported pause spelling',()=>{
- for(const script of ['Tasks/ram-manager.js','/Tasks/ram-manager.js','ram-manager.js']){const f=ramFixture();f.files['remote-control/paused/'+script+'.txt']='true';assert.equal(f.run().reason,'paused');assert.equal(f.counts().claims,0);}
+ for(const script of ['Tasks/ram-manager.js','/Tasks/ram-manager.js','ram-manager.js']){const f=ramFixture();f.files['remote-control/paused/'+script.replace(/^\/+/,'')+'.txt']='true';assert.equal(f.run().reason,'paused');assert.equal(f.counts().claims,0);}
 });
 test('RAM purchase respects live maintenance and native home upgrade restrictions',()=>{
  const f=ramFixture();f.files['tasks/automation-maintenance.json']=JSON.stringify({ownerPid:2,expiresAt:Date.now()+1000});assert.equal(f.run().reason,'maintenance');

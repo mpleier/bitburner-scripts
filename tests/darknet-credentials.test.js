@@ -43,3 +43,11 @@ test('manual edits are applied without creating legacy files',async()=>{
 test('malformed durable store fails closed without deleting legacy data',async()=>{
  const n=network();n.files('home').set(credentialBundle,'{}');n.files('home').set('darknet-passwords-a.txt','a=value');await assert.rejects(()=>createDarknetCredentials(n.api('home')).refresh());assert.equal(n.events.length,0);
 });
+test('home deletes merged scout reports instead of accumulating one file per host',async()=>{
+ const n=network(),home=n.files('home');
+ for(let i=0;i<5;i++)home.set('tasks/credentials-report-scout'+i+'.json',JSON.stringify({schema:1,version:'v'+i,entries:[['host'+i,'pw'+i,i+1]]}));
+ const map=await createDarknetCredentials(n.api('home')).refresh();
+ assert.equal(map.get('host3'),'pw3');
+ assert.ok(![...home.keys()].some(f=>f.startsWith('tasks/credentials-report-')),'merged reports are transport only');
+ assert.equal(decodeCredentials(home.get(credentialBundle)).size,5);
+});

@@ -91,10 +91,14 @@ test('an expired cooldown still cannot bypass residual chance and invalid bonus 
 });
 test('the actual controller transaction can enable a freshly approved conditional quote',async t=>{
  t.mock.method(Date,'now',()=>now);const f=fixture();f.ns.pid=7;f.ns.print=()=>{};f.g.territoryWarfareEngaged=false;
+ // Cohort engagement covers the plain profitable case now, so this fixture stubs the routine
+ // decision out (self-contained, because the controller serializes it into its worker) and
+ // exercises the conditional-quote transaction itself.
+ const noCohort=(g,o,t)=>({engage:false,minimum:.7,average:.7,finished:false,reason:'stubbed',expectedTerritoryPerUpdate:0,cohortProfitable:false,blockedByWorstOpponent:false});
  f.data.members.forEach(m=>Object.assign(m,{hack:10,str:10,dex:10,agi:10,cha:10}));
  const source=readFileSync(new URL('../gangs.js',import.meta.url),'utf8'),start=source.indexOf('async function enableOrDisableWarfare('),end=source.indexOf('\n// Ram-dodging helper',start);
  const names=f.data.members.map(m=>m.name),members=Object.fromEntries(f.data.members.map(m=>[m.name,m]));
- const run=Function('gangMonitorBackoff','gangAttritionCalibration','warfareDecision','getNsDataThroughFile','planGangAggression','gangAggressionGuardSource','getGangInfoDict','gangWarfareContext','gangWarfarePowerPerTick','gangWarfareMemberEligible',`const resetInfo={lastNodeReset:1,lastAugReset:2},myGangFaction='Own',options={'aggressive-warfare':true,'power-focus':true,manualTasks:{}},myGangMembers=${JSON.stringify(names)},growthHorizon={bonusSeconds:0,seconds:3600};let warfareFinished=false,aggressionQuote=null,nextAggressionQuote=0,nextAttritionQuote=0;const gangWarfareThreshold=()=>.7,gangTrainingFirst=()=>true,memberProtectedTask=()=>null,gangMutationAllowed=()=>true,formatNumberShort=String,log=()=>{},territoryTickDetected=true,lastOtherGangInfo={},territoryTickWaitPadding=200,updateInterval=200,postTickRestoreMs=0,territoryTickTime=20000,territoryNextTick=now+500,incomeFunding=null;const now=100000;return (${source.slice(start,end)});`.replace('territoryNextTick=now+500','territoryNextTick=100500'))(gangMonitorBackoff,gangAttritionCalibration,warfareDecision,async(ns,code,_path,args)=>{
+ const run=Function('gangMonitorBackoff','gangAttritionCalibration','warfareDecision','getNsDataThroughFile','planGangAggression','gangAggressionGuardSource','getGangInfoDict','gangWarfareContext','gangWarfarePowerPerTick','gangWarfareMemberEligible',`const resetInfo={lastNodeReset:1,lastAugReset:2},myGangFaction='Own',options={'aggressive-warfare':true,'power-focus':true,manualTasks:{}},myGangMembers=${JSON.stringify(names)},growthHorizon={bonusSeconds:0,seconds:3600};let warfareFinished=false,aggressionQuote=null,nextAggressionQuote=0,nextAttritionQuote=0;const gangWarfareThreshold=()=>.7,gangTrainingFirst=()=>true,memberProtectedTask=()=>null,gangMutationAllowed=()=>true,formatNumberShort=String,log=()=>{},territoryTickDetected=true,lastOtherGangInfo={},territoryTickWaitPadding=200,updateInterval=200,postTickRestoreMs=0,territoryTickTime=20000,territoryNextTick=now+500,incomeFunding=null;const now=100000;return (${source.slice(start,end)});`.replace('territoryNextTick=now+500','territoryNextTick=100500'))(gangMonitorBackoff,gangAttritionCalibration,noCohort,async(ns,code,_path,args)=>{
   if(code==='ns.gang.getAllGangInformation()')return ns.gang.getAllGangInformation();
   const old=ns.args;ns.args=args;try{return Function('ns','return '+code)(ns);}finally{ns.args=old;}
  },planGangAggression,gangAggressionGuardSource,async()=>members,()=>f.data.w,gangWarfarePowerPerTick,gangWarfareMemberEligible);
@@ -118,7 +122,7 @@ test('ordinary supervisor passes omit the larger aggressive validator',async t=>
 });
 test('controller and supervisor wire independent proof validation and preserve default threshold',()=>{
  const source=readFileSync(new URL('../gangs.js',import.meta.url),'utf8'),supervisor=readFileSync(new URL('../reliability-manager.js',import.meta.url),'utf8');
- assert.match(source,/warfare-win-chance', 0.60/);assert.match(source,/aggressive-warfare', true/);assert.match(source,/expiresAt:at\+5000/);assert.match(source,/adaptiveCooldownRequired:true/);assert.match(source,/routine\|\|aggressive/);assert.match(source,/conditionalAggression:options/);
+ assert.match(source,/warfare-win-chance', 0.60/);assert.match(source,/aggressive-warfare', true/);assert.match(source,/expiresAt:at\+5000/);assert.match(source,/adaptiveCooldownRequired:true/);assert.match(source,/routine\|\|ns\.args\[0\]&&aggressive/);assert.match(source,/conditionalAggression:options/);
  assert.match(supervisor,/gangAggressionGuardSource\(\)/);assert.match(supervisor,/gang-aggression-guard.json/);
 });
 test('strong nine to twelve member crews can use the 65% forecast with unchanged full-tail loss budgets',()=>{

@@ -7,7 +7,7 @@ import { surveyFile, stormRequestFile } from './darknet-storm-policy.js';
 import {serviceDarknetAnchor,anchorRequestFile} from './darknet-anchor-policy.js';
 import {mazeLeaseOwned,readMazeLease,mazeLeaseIdentity} from './darknet-development-policy.js';
 /** Runs on authenticated darknet servers, scouts outward, and tries exact-match candidates. */
-import { candidatePasswordTurn, isBlankPassword, solveFeedbackPassword, supportsFeedbackModel, modelCandidates, isStalledScout, dictionaryWords, passwordLengthMatches, passwordHintCandidates } from './darknet-solvers.js';
+import { candidatePasswordTurn, isBlankPassword, solveFeedbackPassword, supportsFeedbackModel, modelCandidates, isStalledScout, dictionaryWords, passwordLengthMatches, passwordHintCandidates, modelUsesPuzzleInput } from './darknet-solvers.js';
 import { stockSignalFile, chooseStockPromotion } from './darknet-stock-policy.js';
 import { frontierFile, chooseMigrationTarget } from './darknet-migration-policy.js';
 export function createDarknetProgressReporter(publish, now=()=>Date.now()) {
@@ -29,7 +29,7 @@ export async function main(ns) {
   const watcherFile = "darknet-cache-watch.js";
   const promoteFile = 'darknet-promote.js';
   const migrateFile = 'darknet-migrate.js';
-  const codeFiles = [nodeFile, lootFile, stasisFile, cacheFile, "darknet-cache-watch.js", "darknet-solvers.js", "darknet-throughput-policy.js", "darknet-charisma-policy.js", "darknet-ram-policy.js", "darknet-ram.js", "darknet-credentials.js", "darknet-feedback.js", "darknet-advanced.js", "darknet-labyrinth-policy.js", "darknet-navigator-policy.js", "darknet-maze.js", "darknet-anchor-policy.js", "darknet-development-policy.js", "darknet-dictionaries.js", promoteFile, "darknet-stock-policy.js", migrateFile, "darknet-migration-policy.js", "darknet-storm-policy.js", "darknet-storm.js", "darknet-contract-policy.js", "darknet-reward-policy.js", "tasks/dnet-cache-context.json"];
+  const codeFiles = [nodeFile, lootFile, "darknet-auth.js", "darknet-bleed.js", stasisFile, cacheFile, "darknet-cache-watch.js", "darknet-solvers.js", "darknet-throughput-policy.js", "darknet-charisma-policy.js", "darknet-ram-policy.js", "darknet-ram.js", "darknet-credentials.js", "darknet-feedback.js", "darknet-advanced.js", "darknet-labyrinth-policy.js", "darknet-navigator-policy.js", "darknet-maze.js", "darknet-anchor-policy.js", "darknet-development-policy.js", "darknet-dictionaries.js", promoteFile, "darknet-stock-policy.js", migrateFile, "darknet-migration-policy.js", "darknet-storm-policy.js", "darknet-storm.js", "darknet-contract-policy.js", "darknet-reward-policy.js", "tasks/dnet-cache-context.json"];
   let lastMigration = 0;
   let lastLootResize = Date.now();
   const reportedHints = new Map();
@@ -90,11 +90,90 @@ export async function main(ns) {
   };
 
   const reportProgress=createDarknetProgressReporter(async busy=>{await heartbeat();await survey(busy);});
+  // authenticate() and heartbleed() both finish faster with more script threads, and the speed is
+  // the calling script's thread count. This scout stays at one thread so the loot helper keeps its
+  // RAM, so network calls are delegated to a small worker sized to whatever RAM is free right now.
+  const authWorker = 'darknet-auth.js', bleedWorker = 'darknet-bleed.js';
+  let workerSerial = 0;
+  const hostFreeRam = () => { try { const host = ns.getHostname(); return ns.getServerMaxRam(host) - ns.getServerUsedRam(host); } catch { return 0; } };
+  const workerThreads = (file, extraRam = 0) => {
+    try { const ram = ns.getScriptRam(file, ns.getHostname()); const cap = file === authWorker || file === bleedWorker ? 32 : 8; return ram > 0 ? Math.min(cap, Math.floor((hostFreeRam() + extraRam) / ram)) : 0; } catch { return 0; }
+  };
+  const runWorker = async (file, threads, values) => {
+    const output = '/Temp/dnet-call-' + ns.pid + '-' + (++workerSerial) + '.json';
+    let pid = 0;
+    try { pid = ns.exec(file, ns.getHostname(), threads, ...values, output); } catch { return null; }
+    if (!pid) return null;
+    const deadline = Date.now() + 180000;
+    while (Date.now() < deadline && ns.isRunning(pid)) await ns.sleep(20);
+    let result = null;
+    try { result = JSON.parse(ns.read(output) || 'null'); } catch { result = null; }
+    try { ns.rm(output, ns.getHostname()); } catch { }
+    return result;
+  };
+  // Fewer threads than this cannot beat the worker spawn and file handoff.
+  const threadedCall = async (file, values, direct, minimumThreads = 4) => {
+    const threads = workerThreads(file);
+    if (threads < minimumThreads) return direct();
+    const result = await runWorker(file, threads, values);
+    return result || direct();
+  };
+  // A worker's successful authenticate grants the session to the worker, not to this scout.
+  const claimSession = async (host, password) => {
+    try { if (ns.dnet.connectToSession(host, password).success) return { success: true, code: 200, message: 'session claimed' }; } catch { }
+    try { return await ns.dnet.authenticate(host, password); } catch (error) { return { success: false, code: 500, message: String(error) }; }
+  };
+  // A feedback solve issues many authenticate + heartbleed round trips. When borrowing the loot
+  // helper's RAM buys a multi-threaded network call, pause it for this bounded pass and put it
+  // back afterwards; nothing else ever shrinks the helper.
+  const withLootPaused = async fn => {
+    const host = ns.getHostname();
+    let loot = null;
+    try { loot = ns.ps(host).find(p => p.filename === lootFile) || null; } catch { loot = null; }
+    if (!loot) return fn();
+    const helperRam = (loot.threads || 1) * (ns.getScriptRam(lootFile, host) || 0);
+    if (workerThreads(authWorker) >= 4 || workerThreads(authWorker, helperRam) < 4) return fn();
+    let stopped = false;
+    try { stopped = ns.kill(loot.pid); } catch { stopped = false; }
+    if (!stopped) return fn();
+    note(host + ':solve', host + ': loot paused for this solve so authentication can use ' + workerThreads(authWorker) + ' threads.');
+    try { return await fn(); }
+    finally {
+      try { if (!ns.ps(host).some(p => p.filename === lootFile)) ns.exec(lootFile, host, loot.threads || 1); } catch { }
+    }
+  };
+  // Server details can be sparse: for many models the hint and the puzzle data only appear in the
+  // scraped log lines. Mine them once per host and puzzle shape so both the candidate path and the
+  // feedback path receive the same inputs, instead of probing blind (or trying an empty password).
+  const minedDetails = new Map();
+  const mineDetails = async (host, info) => {
+    if (!modelUsesPuzzleInput(info?.modelId)) return info;
+    const needData = !String(info?.data ?? '').trim(), needHint = !String(info?.passwordHint ?? '').trim();
+    if (!needData && !needHint) return info;
+    const key = [host, info?.modelId, info?.passwordLength, info?.passwordFormat].join('|'), now = Date.now();
+    let cached = minedDetails.get(key);
+    if (!cached || now - cached.at > 120000) {
+      let data = '', hint = '';
+      try {
+        const scraped = await readLogs(host, { peek: true, logsToCapture: 20 });
+        for (const line of [...(scraped?.logs || [])].reverse()) {
+          const record = typeof line === 'string' ? JSON.parse(line) : line;
+          if (!data && typeof record?.data === 'string' && record.data.trim()) data = record.data;
+          if (!hint && typeof record?.message === 'string' && record.message.trim()) hint = record.message;
+        }
+      } catch { /* fall back to the server-provided details */ }
+      cached = { at: now, data, hint };
+      minedDetails.set(key, cached);
+    }
+    if (!cached.data && !cached.hint) return info;
+    return { ...info, data: needData ? cached.data : info.data, passwordHint: needHint ? cached.hint : info.passwordHint };
+  };
+
   const targetLogOwned=async host=>{const request=mazeRequests.get(host);return !request||await mazeLeaseOwned(ns,request.scope);};
   const readLogs=async (host,options)=>{
     if(!await targetLogOwned(host))return {success:false,code:409,logs:[],message:'Waiting for target grant'};
     await reportProgress();
-    try { return await ns.dnet.heartbleed(host,options); }
+    try { return await threadedCall(bleedWorker,[host,JSON.stringify(options||{})],()=>ns.dnet.heartbleed(host,options)); }
     finally { await reportProgress(); }
   };
   const readCandidates = () => [...new Set(ns.read(candidateFile).split(/\r?\n/).map(x => x.trim()).filter(x => x && !x.startsWith("#")))];
@@ -124,8 +203,11 @@ export async function main(ns) {
     const counted = info.passwordFormat === "numeric" && info.passwordLength >= 1 && info.passwordLength <= 3
       ? Array.from({ length: 10 ** info.passwordLength }, (_, n) => String(n).padStart(info.passwordLength, "0"))
       : [];
-    return [...new Set([...modelCandidates(info).filter(matches), ...passwordHintCandidates(info).filter(matches),
-      ...derived.filter(matches), ...(clue && matches(clue) ? [clue] : []), ...words.filter(matches), ...counted])];
+    // Digits mined from the hint/data are the deterministic answer for "type the numbers" hosts,
+    // so they lead the list instead of trailing the model's own guess.
+    const ordered = wantsDigits ? [...derived, ...modelCandidates(info)] : [...modelCandidates(info), ...derived];
+    return [...new Set([...ordered.filter(matches), ...passwordHintCandidates(info).filter(matches),
+      ...(clue && matches(clue) ? [clue] : []), ...words.filter(matches), ...counted])];
   };
   // v3 renamed ns.formatRam -> ns.format.ram; use whichever exists.
   const fmtRam = (v) => {
@@ -150,9 +232,11 @@ export async function main(ns) {
   const AUTH_FAILURE = 401;
   const TIMED_OUT = 408;
   const RETRY_AFTER_MS = 10 * 60_000;
-  const tryPassword = async (host, password) => {
+  // The caller already holds fresh server details for this host; re-fetching them per attempt costs
+  // a native round trip on every guess, so reuse the known snapshot whenever it is available.
+  const tryPassword = async (host, password, known) => {
     try {
-      const details = ns.dnet.getServerDetails(host);
+      const details = known ?? ns.dnet.getServerDetails(host);
       if (!passwordLengthMatches(details, password))
         return {success:false,code:AUTH_FAILURE,message:'Candidate length mismatch'};
     } catch { }
@@ -160,28 +244,64 @@ export async function main(ns) {
     for (let tries = 0; tries < 3; tries++) {
       if(!await attemptGuard()||!takeAttempt())return result||{success:false,code:408,message:"Target turn budget reached"};
       await reportProgress();
-      try { result = await ns.dnet.authenticate(host, password); }
+      try {
+        const threads = workerThreads(authWorker);
+        if (threads >= 4) {
+          const delegated = await runWorker(authWorker, threads, [host, password]);
+          result = delegated ? (delegated.success ? await claimSession(host, password) : delegated) : await ns.dnet.authenticate(host, password);
+        } else result = await ns.dnet.authenticate(host, password);
+      }
       finally { await reportProgress(); }
       if (result.success || Number(result.code) !== TIMED_OUT) break;
     }
     return result;
   };
-  const trySavedPassword = async (host, password, info) => {
-    if (!passwordLengthMatches(info, password))
+  // One exec and one file handoff can cover several candidates, which is most of the per-guess
+  // overhead on dictionary hosts. Returns null when a batch would not beat a direct attempt.
+  const tryPasswordBatch = async (host, passwords, info) => {
+    if (!Array.isArray(passwords) || passwords.length < 2) return null;
+    const threads = workerThreads(authWorker);
+    if (threads < 4) return null;
+    let details = info;
+    if (!details) { try { details = ns.dnet.getServerDetails(host); } catch { details = null; } }
+    const batch = passwords.slice(0, 8).filter(password => passwordLengthMatches(details, password));
+    if (batch.length < 2) return null;
+    if (!await attemptGuard()) return null;
+    let granted = 0;
+    for (let i = 0; i < batch.length; i++) if (!takeAttempt()) break; else granted++;
+    if (!granted) return null;
+    const send = batch.slice(0, granted);
+    await reportProgress();
+    const delegated = await runWorker(authWorker, threads, [host, JSON.stringify(send)]);
+    await reportProgress();
+    if (!delegated) return null;
+    if (!delegated.success) return { success: false, code: Number(delegated.code) || AUTH_FAILURE, tried: Number(delegated.tried) || send.length };
+    const password = String(delegated.password ?? send[0]);
+    return await claimSession(host, password);
+  };
+
+  const trySavedPassword = async (host, password, info) => {    const formatOk = !password || (() => {
+      switch (info?.passwordFormat) {
+        case 'numeric': return /^\d+$/.test(password);
+        case 'alphabetic': return /^[a-z]+$/i.test(password);
+        case 'alphanumeric': return /^[a-z0-9]+$/i.test(password);
+        default: return true;
+      }
+    })();
+    if (!passwordLengthMatches(info, password) || !formatOk)
       return {success:false,code:AUTH_FAILURE,message:'Candidate length mismatch'};
     // Native reconnect has no authentication delay. Stationary/story servers retain the normal path.
     if (info.isStationary === false && password.length <= 100) {
       try { if (ns.dnet.connectToSession(host, password).success) return { success: true, code: 200 }; }
       catch { /* Old API or missing access: authenticate normally. */ }
     }
-    return tryPassword(host, password);
+    return tryPassword(host, password, info);
   };
 
   const authenticate = async (host,info,saved,candidates) => {
     attemptGuard=async()=>true;
     if(info.hasSession){charismaBlocked.delete(host);return authenticateTurn(host,info,saved,candidates);}
-    if(info.modelId==='(The Labyrinth)'&&ns.hasRootAccess(host)){mazeRequests.delete(host);charismaBlocked.delete(host);return true;}
-    let scope=null;
+    if(info.modelId==='(The Labyrinth)'&&ns.hasRootAccess(host)){mazeRequests.delete(host);charismaBlocked.delete(host);return true;}    let scope=null;
     try{const c=JSON.parse(ns.read('tasks/dnet-cache-context.json'));if([c.nodeReset,c.augReset].every(Number.isFinite))scope=[c.nodeReset,c.augReset,host,info.modelId,info.passwordLength,info.passwordFormat,info.data];}catch{}
     // Only native wrong-password responses invalidate this puzzle's saved credential.
     if(scope&&!isBlankPassword(info)&&typeof saved==='string'){
@@ -240,6 +360,10 @@ export async function main(ns) {
         checkpointOwnership.set(host,owner);
       }
     }
+    // Only after the target grant is ours: minig hints/data from scraped logs would otherwise
+    // spend a heartbleed capture on a host this scout is not allowed to touch yet.
+    const informed=await mineDetails(host,info);
+    if(informed!==info){info=informed;candidates=candidatesFor(info,candidates);}
     const result=await authenticateTurn(host,info,saved,candidates);
     if(shared&&mazeLeaseIdentity(await readMazeLease(ns,scope))===checkpointOwnership.get(host)){
       if(result){await ns.rm(file);await ns.rm(file,'home');mazeRequests.delete(host);await survey(false);}
@@ -270,7 +394,25 @@ export async function main(ns) {
         note(`${host}:nil`, `${host}: ${info.modelId} solving needs ${info.requiredCharismaSkill} Charisma for Heartbleed.`);
         return false;
       }
-      const solution=await solveFeedbackPassword({...info,hostname:host,probeBudget:8},password=>tryPassword(host,password),()=>readLogs(host,{peek:true,logsToCapture:20}),progress);
+      // Deterministic models derive the password from their own data (for example CloudBlare's
+      // "type the numbers" digits), and authenticate() has already mined log-only hint/data. Try
+      // that derivation before probing: the generic feedback loop has no positional hint to learn
+      // from and would otherwise repeat an unrelated guess (such as a numeric default) forever.
+      const minedDigits = String(info.data ?? '').replace(/\D+/g, '');
+      const preferred = minedDigits && passwordLengthMatches(info, minedDigits)
+        ? [minedDigits, ...candidates.filter(candidate => candidate !== minedDigits)] : candidates;
+      for (const candidate of preferred.slice(0, 4)) {
+        if (candidate === saved || !passwordLengthMatches(info, candidate)) continue;
+        const result = await tryPassword(host, candidate, info);
+        if (result?.success) {
+          await credentials.save(host, candidate);
+          nilProgress.delete(host);
+          note(host + ':derived', host + ': derived password matched; saved in credential store.');
+          return true;
+        }
+        if (Number(result?.code) !== AUTH_FAILURE) return false;
+      }
+      const solution=await withLootPaused(()=>solveFeedbackPassword({...info,hostname:host,probeBudget:8},password=>tryPassword(host,password,info),()=>readLogs(host,{peek:true,logsToCapture:20}),progress,null,null,passwords=>tryPasswordBatch(host,passwords,info)));
       if (!solution.success) {
         note(`${host}:nil`, `${host}: ${info.modelId} waiting: ${solution.reason}${solution.code ? ` (${solution.code})` : ""}.`);
         return false;
@@ -283,7 +425,7 @@ export async function main(ns) {
     }
     if(!attemptedInputs.has(host))attemptedInputs.set(host,{});
     const result=await candidatePasswordTurn({...info,hostname:host},saved,candidates,attemptedInputs.get(host),
-      password=>tryPassword(host,password),password=>trySavedPassword(host,password,info),Date.now(),8,RETRY_AFTER_MS);
+      password=>tryPassword(host,password,info),password=>trySavedPassword(host,password,info),Date.now(),8,RETRY_AFTER_MS,passwords=>tryPasswordBatch(host,passwords,info));
     if(result.success) {
       if(result.saved)return true;
       await credentials.save(host, result.password);
@@ -374,7 +516,7 @@ export async function main(ns) {
       let homeFiles=null;
       try{if(ns.fileExists(darknetDeploymentFile,'home')&&await ns.scp(darknetDeploymentFile,self,'home'))homeFiles=readDarknetDeployment(ns.read(darknetDeploymentFile));}catch{}
       for (const host of prioritizeDarknetTargets(ns.dnet.probe(),targetTurn++,host=>ns.dnet.getServerDetails(host))) {
-        takeAttempt=createAttemptBudget();
+        takeAttempt=createAttemptBudget(16,15000);
         try {
         if (host === self) continue;
         const info = ns.dnet.getServerDetails(host);

@@ -170,9 +170,21 @@ export function modelCandidates(details) {
     case 'EuroZone Free': return [...EUCountries];
     case 'TopPass': return [...commonPasswordDictionary];
     case 'ZeroLogon': return [''];
-    case 'DeskMemo_3.1': value = data; break;
+    case 'DeskMemo_3.1': {
+      // EchoVuln hints end with the password ("The PIN is 85", "Remember to use 482", "It's set
+      // to 71"), and the server ships no hint data, so the trailing token is the answer.
+      value = data;
+      if (!value) {
+        const hint = String(details.passwordHint ?? '').trim();
+        const token = hint.split(/\s+/).filter(Boolean).pop() ?? '';
+        if (token) return [token];
+      }
+      break;
+    }
     case 'CloudBlare(tm)': value = data.replace(/\D/g, ''); break;
-    case 'Pr0verFl0': return Number.isInteger(length) && length > 0 && length <= 64 ? ['A'.repeat(length * 2)] : [];
+    // BufferOverflow: sending the mask character twice the buffer length overwrites the expected
+    // value, so received and expected buffers match. The mask must be the game's own "■" (U+25A0).
+    case 'Pr0verFl0': return Number.isInteger(length) && length > 0 && length <= 64 ? ['■'.repeat(length * 2)] : [];
     case '110100100': if (/^[01]+(?:\s+[01]+)*$/.test(data.trim())) value = decodeBinary(data); break;
     case 'OrdoXenos': value = decodeXor(data); break;
     case 'PrimeTime 2': value = largestPrimeFactor(data); break;
@@ -183,7 +195,9 @@ export function modelCandidates(details) {
       break;
     }
     case 'BellaCuore': if (!data.includes(',') && /^(?:[IVXLCDM]+|nulla)$/i.test(data)) value = romanNumeralDecoder(data.toUpperCase()); break;
-    case 'PHP 5.4': if (/^\d{1,6}$/.test(data)) return permutationsNoLeadingZero(data); break;
+    // PHP 5.4 (SortedEchoVuln) leaks the sorted digits. Length-5 permutations are cheap; longer
+    // puzzles are solved by the RMS-deviation solver, so generating them here would only burn memory.
+    case 'PHP 5.4': if (/^\d{1,6}$/.test(data) && Number.isInteger(length) && length > 0 && length <= 5) return permutationsNoLeadingZero(data); break;
   }
   return value !== null && value !== '' && (typeof value !== 'number' || Number.isFinite(value)) ? [String(value)] : [];
 }
@@ -209,20 +223,33 @@ export function supportsFeedbackModel(details) {
     (details.modelId === 'BellaCuore' && String(details.data).includes(','));
 }
 
+/** Models whose password is derived from the server's data or hint text, so a scraped log line can
+ * supply the missing input. Dictionary and blank models never need one. */
+export const puzzleInputModels = new Set(['CloudBlare(tm)', 'DeskMemo_3.1', '110100100', 'OrdoXenos',
+  'PrimeTime 2', 'MathML', 'OctantVoxel', 'BellaCuore', 'Pr0verFl0', 'AccountsManager_4.2',
+  '2G_cellular', 'RateMyPix.Auth', 'BigMo%od', 'Factori-Os', 'KingOfTheHill', 'OpenWebAccessPoint',
+  '(The Labyrinth)', 'DeepGreen', 'NIL', 'PHP 5.4']);
+export function modelUsesPuzzleInput(modelId) {
+  return puzzleInputModels.has(String(modelId ?? ''));
+}
+
 export function isStalledScout(process, status, now = Date.now()) {
   return !!process && status?.pid === process.pid && Number.isFinite(status.at) && status.at > 0 &&
     now - status.at > 30 * 60_000;
 }
 
 /** Stateful bounded solver; feedback comes from the exact attempt's Heartbleed log. */
-export async function solveFeedbackPassword(details, authenticate, readLogs, state = {}, readLabReport = null,readLabRadar=null) {
+export async function solveFeedbackPassword(details, authenticate, readLogs, state = {}, readLabReport = null,readLabRadar=null,authenticateMany=null) {
   if (isBlankPassword(details)) return authenticateEmptyPassword(authenticate);
   if (feedbackModelId(details) === 'NIL') return solveNilPassword(details, authenticate, readLogs, state);
   if (feedbackModelId(details) === 'DeepGreen') return solveMastermindPassword(details, authenticate, readLogs, state);
   const length = details.passwordLength;
   if (!supportsFeedbackModel(details) || !Number.isInteger(length) || length < 1 || length > 64)
     return { success: false, reason: 'unsupported feedback details' };
-  const signature = JSON.stringify([details.modelId, length, details.passwordFormat, details.data]);
+  // For feedback models the server's data field carries the latest response ("Higher"/"Lower"),
+  // not the puzzle, so including it in the signature would wipe the solver's bounds on every turn.
+  const dataIsFeedback = supportsFeedbackModel(details);
+  const signature = JSON.stringify([details.modelId, length, details.passwordFormat, dataIsFeedback ? null : details.data]);
   if (state.signature !== signature) {
     for (const key of Object.keys(state)) delete state[key];
     Object.assign(state, { signature, prefix: '', index: 0, low: 0, high: 10 ** Math.min(15, length) - 1,
@@ -265,8 +292,28 @@ export async function solveFeedbackPassword(details, authenticate, readLogs, sta
     if(++state.pendingMisses>=3)delete state.pendingPassword;
     return { success: false, reason: 'matching authentication feedback not found; progress retained' };
   };
+  // One worker launch authenticates a batch of independent guesses, then a single Heartbleed
+  // scrape yields the answer for every one of them. Only models whose probes do not depend on each
+  // other's answers use this; adaptive searches stay sequential.
+  const probeMany = authenticateMany ? async rawPasswords => {
+    const passwords = rawPasswords.map(normalizeNumeric);
+    if (!passwords.length) return [];
+    const batch = await authenticateMany(passwords);
+    if (batch?.success) return [{ success: true, password: batch.password ?? passwords[0] }];
+    const scraped = await readLogs();
+    const seen = new Map();
+    for (const line of (scraped?.logs || [])) {
+      try {
+        const record = typeof line === 'string' ? JSON.parse(line) : line;
+        if (Number(record?.code) === 401 && passwords.includes(record.passwordAttempted)) seen.set(record.passwordAttempted, record);
+      } catch { /* unrelated log */ }
+    }
+    return passwords.map(password => seen.has(password)
+      ? { feedback: seen.get(password) }
+      : { success: false, reason: 'matching authentication feedback not found; progress retained' });
+  } : null;
   if (['PHP 5.4', 'Factori-Os', 'KingOfTheHill', 'OpenWebAccessPoint', '(The Labyrinth)'].includes(details.modelId))
-    return solveAdvancedPassword(details, probe, readLogs, state, readLabReport,readLabRadar);
+    return solveAdvancedPassword(details, probe, readLogs, state, readLabReport,readLabRadar,probeMany);
   for (let tries = 0; tries < feedbackTurnBudget(details); tries++) {
     if (['AccountsManager_4.2', 'BellaCuore'].includes(details.modelId)) {
       if (length > 15 || state.low > state.high) return { success: false, reason: 'numeric range exhausted' };
@@ -288,6 +335,25 @@ export async function solveFeedbackPassword(details, authenticate, readLogs, sta
           return final;
         }
       if (!divisor || length > 15) return { success: false, reason: 'modular range exceeds available divisors' };
+      // Each divisor's residue is independent, so the opening round resolves a batch at once and
+      // combines them with the same coprime accumulation used for single probes.
+      if (probeMany && state.primeIndex === 0) {
+        const batch = divisors.slice(0, 8);
+        const results = await probeMany(batch.map(String));
+        const residues = results.map(item => Number(item?.feedback?.data));
+        if (residues.every((value, index) => Number.isInteger(value) && value >= 0 && value < batch[index])) {
+          for (let index = 0; index < batch.length; index++) {
+            const p = BigInt(batch[index]);
+            let multiplier = 0n;
+            while (multiplier < p && (state.residue + state.modulus * multiplier) % p !== BigInt(residues[index])) multiplier++;
+            if (multiplier === p) return { success: false, reason: 'inconsistent modular feedback' };
+            state.residue += state.modulus * multiplier;
+            state.modulus *= p;
+            state.primeIndex++;
+          }
+          continue;
+        }
+      }
       const result = await probe(String(divisor));
       if (!result.feedback) return result;
       const residue = Number(result.feedback.data);
@@ -337,7 +403,7 @@ export function parsePasswordEntries(text) {
 }
 
 /** Resume exact guesses; only a definitive wrong-password response advances the cursor. */
-export async function candidatePasswordTurn(details, saved, candidates, state, authenticate, reconnect=authenticate, now=Date.now(), budget=8, retryAfter=600000) {
+export async function candidatePasswordTurn(details, saved, candidates, state, authenticate, reconnect=authenticate, now=Date.now(), budget=8, retryAfter=600000, authenticateMany=null) {
   const signature=JSON.stringify([details.hostname,details.modelId,details.passwordLength,details.passwordFormat,details.passwordHint,details.data,typeof saved==='string'?saved:null,candidates]);
   if(state.signature!==signature || Number.isFinite(state.completedAt) && (now<state.completedAt || now-state.completedAt>=retryAfter)) {
     for(const key of Object.keys(state))delete state[key];
@@ -345,9 +411,14 @@ export async function candidatePasswordTurn(details, saved, candidates, state, a
   }
   if(Number.isFinite(state.completedAt))return {success:false,reason:'cooldown'};
   const matchesLength=password=>passwordLengthMatches(details,password);
+  // An empty guessed password is only legitimate on a server that documents having none. A stale
+  // saved credential, or a permissive length filter while the details are still sparse, otherwise
+  // sends "" to hosts whose real password is a normal hint-derived value.
+  const blankAllowed=isBlankPassword(details);
+  const acceptable=password=>matchesLength(password)&&(password!==''||blankAllowed);
   let used=0;
   if(typeof saved==='string'&&!state.savedRejected) {
-    if(!matchesLength(saved))state.savedRejected=true;
+    if(!acceptable(saved))state.savedRejected=true;
     else {
       const result=await reconnect(saved);used++;
       if(result?.success)return {success:true,password:saved,saved:true};
@@ -357,8 +428,27 @@ export async function candidatePasswordTurn(details, saved, candidates, state, a
   }
   const limit=feedbackTurnBudget({probeBudget:budget});
   while(state.cursor<candidates.length&&used<limit) {
+    // Try several contiguous candidates in one worker launch when the caller supports it.
+    if(authenticateMany&&used+1<limit){
+      const batch=[];
+      for(let i=state.cursor;i<candidates.length&&batch.length<8&&used+batch.length<limit;i++){
+        const candidate=candidates[i];
+        if(candidate===saved||!acceptable(candidate))break;
+        batch.push(candidate);
+      }
+      if(batch.length>1){
+        const outcome=await authenticateMany(batch);
+        if(outcome){
+          used+=batch.length;
+          if(outcome.success)return {success:true,password:outcome.password??batch[0]};
+          if(Number(outcome.code)!==401)return {success:false,reason:'interrupted',code:outcome.code};
+          state.cursor+=batch.length;
+          continue;
+        }
+      }
+    }
     const password=candidates[state.cursor];
-    if(password===saved||!matchesLength(password)){state.cursor++;continue;}
+    if(password===saved||!acceptable(password)){state.cursor++;continue;}
     const result=await authenticate(password);used++;
     if(result?.success)return {success:true,password,index:state.cursor};
     if(Number(result?.code)!==401)return {success:false,reason:'interrupted',code:result?.code};

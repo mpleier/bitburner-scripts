@@ -25,7 +25,7 @@ function fixture({money=100000,limit=2,maxRam=256,owned={},options={},used=120}=
  const run=()=>purchase(ns,request,claim,cloudCashBudget,cloudCandidates,cloudDemand,homeRamHeadroom);
  return {state,files,calls,claims,ns,request,run};
 }
-function allowance(f,amount,spent=0){const epoch=Date.now();f.files['tasks/spending-plan.json']=JSON.stringify({epoch,expiresAt:epoch+60000,reset:1,ownerPid:1,allowances:{servers:amount}});f.files['tasks/spending-usage.json']=JSON.stringify({epoch,spent:{servers:spent}});}
+function allowance(f,amount,spent=0){const epoch=Date.now();f.files['tasks/spending-plan.json']=JSON.stringify({epoch,expiresAt:epoch+60000,reset:1,ownerPid:1,allowances:{servers:amount}});f.files['tasks/spending-usage.json']=JSON.stringify({epoch,nodeReset:2,augReset:1,spent:{servers:spent}});}
 
 test('cloud buying falls back to the largest size inside the remaining shared allowance',()=>{
  const f=fixture();allowance(f,1000,300);const r=f.run();assert.equal(r.purchased,true);assert.equal(r.ram,64);assert.equal(r.cost,640);

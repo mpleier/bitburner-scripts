@@ -11,7 +11,7 @@ import {managerCapacityPlan,postCasinoInfrastructure} from './manager-capacity-p
 import {priorityManagerPlan,automaticManagerScripts,moduleManifest} from './automation-manifest.js';
 import {collectAutomationPreview,printAutomationPreview,previewOptions,previewRequested} from './automation-preview-policy.js';
 import {observeCasinoReset,forecastCasinoReset} from './casino-reset-policy.js';
-import {chooseNodeRoute,nodeRouteAvailability,routeContinuousXp,routeDevelopment,nodeRouteMilestones,restoreNodeProbe,nodeProbeFile,committedRoute} from './node-route-selection-policy.js';
+import {chooseNodeRoute,nodeRouteAvailability,completionRouteOverride,routeContinuousXp,routeDevelopment,nodeRouteMilestones,restoreNodeProbe,nodeProbeFile,committedRoute} from './node-route-selection-policy.js';
 import {factionWorkerReady} from './early-game-policy.js';
 import {casinoSeedMoney,earnCasinoSeedSource,chooseCasinoSeedCrime,seedSleevesSource,essentialHomeRamSource} from './casino-bootstrap-policy.js';
 import {planRedPill,purchaseRedPillSource} from './red-pill-policy.js';
@@ -22,7 +22,7 @@ import {registerAutomation,automationHeartbeat,maintenanceRequested,scriptSignat
 import {campaignReady,challengeProfile,achievementNode,achievementActionAllowed} from './achievement-policy.js';
 import {achievementWorkerSources} from './achievement-worker-sources.js';
 import { autopilotSourceFiles, installedAugmentationsFromReset, daemonArgumentsChanged, autopilotOptionsError, autopilotStockReserve, priorityAugmentationReady, freshFactionManagerOutput } from './autopilot-policy.js';
-import { spendingPlan,adaptiveBudgetSignals,claimSpending } from './spending-policy.js';
+import { spendingPlan,adaptiveBudgetSignals,claimSpending,bootstrapRamTarget } from './spending-policy.js';
 import { prepareResetBackup } from './reset-backup.js';
 import { maximumSleeves,sleeveCrimeChance } from './sleeve-policy.js';
 import { casinoRetryPending, casinoHookArgs } from './casino-policy.js';
@@ -126,7 +126,7 @@ export async function main(ns) {
     let reservedPurchase = 0; // The amount of player money that has been reserved to purchase augmentations
     let alreadyJoinedDaedalus = false, autoJoinDaedalusUnavailable = false, reservingMoneyForDaedalus = false, disableStockmasterForDaedalus = false; // Flags to indicate that we should be keeping 100b cash on hand to earn an invite to Daedalus
     let prioritizeHackForDaedalus = false, prioritizeHackForWd = false;
-    let routePlan=null, routeObservation=null, routeSnapshotAt=0;
+    let routePlan=null, routeObservation=null, routeSnapshotAt=0, lastCompletionBlock=null, pendingDaemonArgs=null, casinoWatchPid=null, casinoWatchStart=0, casinoLaunchedHere=false, stanekFirstSeenAt=0;
     let xpMeasurementActive=false, redPillLiquidating=false;
     let lastScriptsCheck = 0; // Last time we got a listing of all running scripts
     let homeRam = 0; // Amount of RAM on the home server, last we checked
@@ -301,6 +301,10 @@ export async function main(ns) {
         // A casino started outside autopilot still has first priority, but a
         // modal-stuck process must not permanently kill every controller.
         const casinoProcess = ns.ps('home').find(process => /(^|\/)casino\.js$/.test(process.filename));
+        // A casino that keeps reporting fresh rounds can still run forever: track when this exact
+        // process was first seen so every launch path shares the same absolute ceiling.
+        if (casinoProcess && casinoWatchPid !== casinoProcess.pid) { casinoWatchPid = casinoProcess.pid; casinoWatchStart = Date.now(); }
+        if (!casinoProcess) { casinoWatchPid = null; casinoWatchStart = 0; }
         if (casinoProcess) {
             let casinoStatus; try { casinoStatus = JSON.parse(ns.read('tasks/casino-status.json')); } catch { }
             const observedAt = casinoStatus?.pid === casinoProcess.pid && Number.isFinite(casinoStatus.at) ? casinoStatus.at : 0;
@@ -323,13 +327,14 @@ export async function main(ns) {
                 try{await recordCasinoWindfall(ns,resetInfo,earnings);}catch{}
                 ranCasino=true;casinoWatchdogSince=0;
                 log(ns, `INFO: Casino stopped at the gang equipment target (${formatMoney(target)}).`, false);
-            } else if (Date.now() - casinoWatchdogSince < 10 * 60 * 1000) return true;
+            } else if (Date.now() - casinoWatchdogSince < 10 * 60 * 1000 &&
+                Date.now() - casinoWatchStart < (casinoLaunchedHere ? 60 : 5) * 60 * 1000) return true;
             else {
             ns.kill(casinoProcess.pid);
             await ns.write('tasks/casino-status.json', JSON.stringify({at:Date.now(),pid:casinoProcess.pid,augReset:resetInfo.lastAugReset,
                 mode:'failed',retryAt:Date.now()+10*60*1000,reason:'casino watchdog timeout'}), 'w');
-            casinoWatchdogSince=0;
-            log(ns, 'WARNING: casino.js was stale for ten minutes; stopped it and restored automation.', true, 'warning');
+            casinoWatchdogSince=0;casinoWatchPid=null;casinoWatchStart=0;casinoLaunchedHere=false;
+            log(ns, 'WARNING: casino.js was stale for ten minutes or exceeded the sixty-minute ceiling; stopped it and restored automation.', true, 'warning');
             }
             }
         } else casinoWatchdogSince=0;
@@ -567,11 +572,30 @@ export async function main(ns) {
     }
 
     /** Forecast both routes without mutating native state or depending on the overview. */
+    /** 'auto' is the default route value, not an explicit preference. */
+    const explicitNodeRoute = value => value && value !== 'auto' ? value : null;
     async function updateNodeRoutePlan(ns, stocksValue) {
         if(options['disable-node-route-planner']) {routePlan=null;ns.rm(nodeRouteFile);return;}
         const now=Date.now();if(now-routeSnapshotAt<15000)return;
         routeSnapshotAt=now;
         const probeState=restoreNodeProbe(ns.read(nodeProbeFile),resetInfo,now);
+        // Completion first, even when the native snapshot worker cannot be afforded: the daemon's
+        // required level is a static fact, so an unreachable grind commits to Bladeburner here too
+        // and the entry training can unlock the division instead of idling on the impossible route.
+        let completionOverride, completionUnblocked=false;
+        try {
+            const playerNow=ns.getPlayer();
+            // Completion is only allowed to outrank everything while its finish line is actually
+            // reachable: a paused, disabled, achievement-denied or BN8-blocked division is a block,
+            // and a blocked completion must fall back to ordinary progression instead.
+            const completionAvailability=nodeRouteAvailability(resetInfo,unlockedSFs,options,{paused:isScriptPaused(ns,'bladeburner.js'),allowed:achievementActionAllowed(ns,'bladeburner')});
+            completionUnblocked=completionAvailability.bladeburner===true;
+            completionOverride=completionRouteOverride({requiredLevel:wdHack,hackingLevel:playerNow?.skills?.hacking,
+                bladeburnerAvailable:completionUnblocked,disabled:options['disable-bladeburner']});
+        } catch { completionOverride=undefined; }
+        if(!completionUnblocked)completionOverride=undefined;
+        if(completionOverride&&routePlan?.selected!==completionOverride)
+            log_once(ns,'Completion priority: the daemon requirement is out of reach, so the Bladeburner finish line is committed to.');
         try {
             const singularity=homeRam>=64&&!!unlockedSFs[4],bladeburner=homeRam>=128&&!!(unlockedSFs[6]||unlockedSFs[7]);
             const variants=[{singularity,bladeburner},{singularity,bladeburner:false},{singularity:false,bladeburner:false}].filter((v,i,a)=>a.findIndex(x=>x.singularity===v.singularity&&x.bladeburner===v.bladeburner)===i).map(v=>({...v,source:nodeRouteSnapshotSource(v.singularity,v.bladeburner,bitNodeMults)}));
@@ -585,9 +609,14 @@ export async function main(ns) {
             const routes={hacking:estimateDaemonRoute(s,routeObservation),bladeburner:estimateBladeburnerRoute(s.bb)};
             const old=routePlan?.selected;
             const availability=nodeRouteAvailability(resetInfo,unlockedSFs,options,{paused:isScriptPaused(ns,'bladeburner.js'),allowed:achievementActionAllowed(ns,'bladeburner')});
+            // 'auto' is the default value, not an explicit choice: only a real user preference or the
+            // completion commitment may force a route. Measured ETA evidence joins the static fact above.
+            const explicitRoute=explicitNodeRoute(options['node-route']);
+            const routeOverride=explicitRoute||completionOverride||
+                completionRouteOverride({hacking:routes.hacking,bladeburnerAvailable:availability.bladeburner,disabled:options['disable-bladeburner']});
             const development=routeDevelopment(s,routeObservation),milestones=nodeRouteMilestones(routes,development);
-            routePlan={...chooseNodeRoute(routes,routePlan,{now,augReset:s.augReset,nodeReset:s.nodeReset,node:s.node,override:options['node-route'],adaptive:options['adaptive-node-route'],availability,milestones,probeState}),
-                ownerPid:ns.pid,snapshotRam:s.snapshotRam,simulacrum:s.simulacrum,xpCapacity:s.xpCapacity,sampling:routeObservation.sampling,development,milestones,
+            routePlan={...chooseNodeRoute(routes,routePlan,{now,augReset:s.augReset,nodeReset:s.nodeReset,node:s.node,override:routeOverride,adaptive:options['adaptive-node-route'],availability,milestones,probeState}),
+                ownerPid:ns.pid,snapshotRam:s.snapshotRam,simulacrum:s.simulacrum,xpCapacity:s.xpCapacity,sampling:routeObservation.sampling,development,milestones,completionPriority:!!completionOverride,
                 assumptions:['BitNode preferences are priors, not completion forecasts','Unknown prerequisites never count as zero time',
                     'Bladeburner recovery, chaos and recruitment use a 50 to 100 percent duty range','Full completion switches require a 25 percent advantage for two minutes; milestone probes last at most five minutes with a thirty-minute cooldown']};
             if(!combatRecovery)try{combatRecovery=JSON.parse(ns.read('tasks/combat-recovery.json'));}catch{}
@@ -611,14 +640,21 @@ export async function main(ns) {
             await ns.write(nodeRouteFile,JSON.stringify(routePlan),'w');
             if(old!==routePlan.selected)log(ns,'Node route planner: '+routePlan.reason,false,'info');
         }catch(error) {
-            // Explicit route preference survives missing forecast APIs; inferred priorities do not.
+            // Explicit route preference survives missing forecast APIs; the static completion
+            // requirement does too, so a starved snapshot worker cannot restore an impossible route.
             routeObservation=null;
             routePlan={...chooseNodeRoute({},null,{now,augReset:resetInfo.lastAugReset,nodeReset:resetInfo.lastNodeReset,node:resetInfo.currentNode,
-                override:options['node-route'],adaptive:options['adaptive-node-route'],availability:nodeRouteAvailability(resetInfo,unlockedSFs,options,{paused:isScriptPaused(ns,'bladeburner.js'),allowed:achievementActionAllowed(ns,'bladeburner')}),probeState}),
-                ownerPid:ns.pid,error:'Native route evidence unavailable: '+String(error)};
+                override:explicitNodeRoute(options['node-route'])||completionOverride,adaptive:options['adaptive-node-route'],availability:nodeRouteAvailability(resetInfo,unlockedSFs,options,{paused:isScriptPaused(ns,'bladeburner.js'),allowed:achievementActionAllowed(ns,'bladeburner')}),probeState}),
+                ownerPid:ns.pid,error:'Native route evidence unavailable: '+String(error),completionPriority:!!completionOverride};
             await ns.write(nodeProbeFile,JSON.stringify({at:now,nodeReset:resetInfo.lastNodeReset,augReset:resetInfo.lastAugReset,probe:routePlan.probe||null}),'w');
             await ns.write(nodeRouteFile,JSON.stringify(routePlan),'w');
         }
+        // Make a blocked completion commitment visible once per distinct cause.
+        if(completionOverride&&routePlan?.selected!==completionOverride) {
+            const signature=String(routePlan?.selected)+'|'+String(routePlan?.reason)+'|'+String(routePlan?.error??'');
+            if(lastCompletionBlock!==signature) { lastCompletionBlock=signature;
+                log(ns,'Completion priority blocked: route plan kept '+String(routePlan?.selected)+': '+String(routePlan?.error??routePlan?.reason),false,'warning'); }
+        } else lastCompletionBlock=null;
     }
 
     /** Save native milestone funds and buy TRP alone as soon as the whole transaction is affordable. */
@@ -964,9 +1000,26 @@ export async function main(ns) {
             const stanekPid = launchScriptHelper(ns, 'stanek.js', stanekArgs);
             stanekLaunched = stanekRunning = stanekPid > 0; // Failed launches remain retryable and do not reserve all home RAM.
         }
-        // If stanek is running, tell daemon to reserve all home RAM for it.
-        if (stanekRunning)
-            daemonArgs.push("--reserved-ram", 1E100);
+        // If stanek is running, tell daemon to reserve all home RAM for it -- but only while the
+        // charge pass is making progress. A stalled grid would otherwise starve the daemon forever.
+        if (stanekRunning) {
+            // The charge pass starts with the reset, so the reset timestamp is its true start even
+            // when this autopilot instance only just noticed the process.
+            if (!stanekFirstSeenAt) stanekFirstSeenAt = Number.isFinite(resetInfo?.lastAugReset) && resetInfo.lastAugReset <= Date.now() ? resetInfo.lastAugReset : Date.now();
+            let stanekStatus = null;
+            try { stanekStatus = JSON.parse(ns.read('tasks/stanek-status.json')); } catch { }
+            const stanekProcess = findScript('stanek.js');
+            const noProgress = stanekStatus && stanekProcess && stanekStatus.pid === stanekProcess.pid
+                ? !Number.isFinite(stanekStatus.at) || Date.now() - stanekStatus.at > 10 * 60 * 1000
+                : false;
+            if (noProgress || Date.now() - stanekFirstSeenAt > 30 * 60 * 1000) {
+                try { if (stanekProcess) ns.kill(stanekProcess.pid); } catch { }
+                stanekRunning = false; stanekLaunched = true; stanekFirstSeenAt = 0;
+                log_once(ns, 'WARNING: Stanek charging made no progress or exceeded thirty minutes; stopped it so the hacking daemon can start.', true, 'warning');
+            } else {
+                daemonArgs.push("--reserved-ram", 1E100);
+            }
+        } else stanekFirstSeenAt = 0;
 
         // Launch (or re-launch) daemon if it is not already running with all our desired args.
         // Hack: Ignore numeric arguments in the comparison, since we e.g. tweak --recovery-thread-padding over time
@@ -979,7 +1032,16 @@ export async function main(ns) {
             for(const script of ['stockmaster.js','hacknet-upgrade-manager.js','sleeve.js','sleeve-expansion.js','gangs.js','work-for-factions.js','Tasks/backdoor-all-servers.js','Tasks/tor-manager.js','Tasks/program-manager.js','Tasks/ram-manager.js','host-manager.js','faction-manager.js'])
                 if(!daemonArgs.some((a,i)=>a==='--disable-script'&&daemonArgs[i+1]===getFilePath(script)))daemonArgs.push('--disable-script',getFilePath(script));
         }
-        const launchDaemon = !existingDaemon || daemonArgumentsChanged(existingDaemon.args, daemonArgs);
+        // A relaunch costs a full daemon restart, so it only happens when the new arguments persist.
+        // Flags that toggle between cycles (xp-mode windows, achievement goals, casino seeding) would
+        // otherwise relaunch daemon every loop and fight whoever relaunched it last.
+        const desiredSignature=daemonArgs.join('\u0001');
+        let launchDaemon=!existingDaemon;
+        if(existingDaemon&&daemonArgumentsChanged(existingDaemon.args, daemonArgs)){
+            if(pendingDaemonArgs?.signature!==desiredSignature)pendingDaemonArgs={signature:desiredSignature,at:Date.now()};
+            launchDaemon=Date.now()-pendingDaemonArgs.at>=20000;
+            if(!launchDaemon)daemonRelaunchMessage=undefined; // nothing is relaunched yet, so nothing to announce
+        }else pendingDaemonArgs=null;
         if (launchDaemon) {
             if (existingDaemon) {
                 daemonRelaunchMessage ??= `Relaunching daemon.js with new arguments since the current instance doesn't include all the args we want.`;
@@ -1053,7 +1115,11 @@ export async function main(ns) {
 
         for (const manager of automaticManagerScripts) {
             const status = managerStatus.find(item => item.script === manager);
-            if (status?.state === 'waiting-for-ram' && reclaimHomeRam(ns,status.ram+homeRamReserve(ns)))
+            // The committed completion manager may spend the idle RAM hold; its own launcher keeps
+            // only a minimal headroom so the finish line is not blocked by a 128 GB reservation.
+            const completionManager=manager==='bladeburner.js'&&routePlan?.selected==='bladeburner';
+            const headroom=completionManager?Math.min(16,homeRamReserve(ns)):homeRamReserve(ns);
+            if (status?.state === 'waiting-for-ram' && reclaimHomeRam(ns,status.ram+headroom))
                 launchScriptHelper(ns, manager, manager === 'darknet-manager.js' && options['auto-stormseed'] ? ['--enable-auto-stormseed'] : []);
         }
 
@@ -1111,7 +1177,7 @@ export async function main(ns) {
                         }
                     }
                     if (!existingSpendHashesProc) { // 
-                        log(ns, `Identified that the best hack income server is ${bestServer} worth ${formatMoney(gain)}/sec.`);
+                        log_once(ns, `Identified that the best hack income server is ${bestServer} worth ${formatMoney(gain)}/sec.`);
                         const spendHashesArgs = ["--automatic","--liquidate", "--spend-on-server", bestServer, "--spend-on", "Increase_Maximum_Money"];
                         if (shouldReduceMinSecurity) spendHashesArgs.push("--spend-on", "Reduce_Minimum_Security");
                         launchScriptHelper(ns, 'spend-hacknet-hashes.js', spendHashesArgs);
@@ -1336,11 +1402,12 @@ export async function main(ns) {
         const processes=ns.ps('home'),charging=processes.some(p=>p.filename.replace(/^\//,'')==='stanek.js');
         const disposableCharge=processes.filter(p=>p.filename.replace(/^\//,'')==='Temp/stanek.js.charge.js').reduce((sum,p)=>sum+ns.getScriptRam(p.filename,'home')*p.threads,0);
         const recoveryTarget=charging?startupChargeRamTarget({maximum,used:Math.max(0,ns.getServerUsedRam('home')-disposableCharge),pending,configured:Number(ns.read('home-ram-reserve.txt'))||0}):null;
-        const target=recoveryTarget??128;if(maximum>=target)return;
-        if(!recoveryTarget){if(options['disable-casino'])return;const sources=await getPlayerMoneySources(ns);if((sources.sinceInstall.casino||0)<=1e10)return;}
+        const target=Math.max(recoveryTarget??128,bootstrapRamTarget(ns));if(maximum>=target)return;
+        // Bootstrap RAM is exempt from the casino-earnings gate: with no daemon nothing earns at all.
+        if(!recoveryTarget&&maximum<128){if(options['disable-casino'])return;const sources=await getPlayerMoneySources(ns);if((sources.sinceInstall.casino||0)<=1e10)return;}
         if(!options['disable-adaptive-spending'])await ns.write('tasks/spending-plan.json',JSON.stringify(spendingPlan({money:player.money,
             reserve:Math.max(0,Number(ns.read('reserve.txt'))||0),homeRam:ns.getServerMaxRam('home'),node:resetInfo.currentNode,
-            ownerPid:ns.pid,reset:resetInfo.lastAugReset,signals:{bottleneck:'ram',essentialHomeRam:{target}}})),'w');
+            ownerPid:ns.pid,reset:resetInfo.lastAugReset,signals:{bottleneck:'ram',essentialHomeRam:{target},bootstrapRam:target}})),'w');
         try{await getNsDataThroughFile(ns,`(${essentialHomeRamSource})(ns,ns.args[0],ns.args[1],(${claimSpending.toString()}),(${achievementActionAllowed.toString()}))`,
             '/Temp/essential-home-ram.txt',[ns.pid,target],false,1,0,true);}catch{/* Normal RAM manager retries when its workers fit. */}
     }
@@ -1357,6 +1424,13 @@ export async function main(ns) {
             return;
         }
         const finalEarn=finalCasinoEarnPending(ns);
+        // Bladeburner completion is the committed finish line: a pending final ten-billion pass
+        // would hand the player to the casino for no funding need, so it is dropped.
+        if(finalEarn&&committedRoute(routePlan)==='bladeburner'){
+            await clearFinalCasinoEarn(ns);
+            log_once(ns,'Casino hold: dropped the pending final 10b pass because Bladeburner completion is the priority.');
+            return;
+        }
         let inGang=false;try{inGang=ns.gang.inGang();}catch{}
         if(inGang&&!finalEarn&&options['fully-fund-gang-equipment']!==false){
             const target=gangEquipmentCashTarget(ns);
@@ -1415,16 +1489,26 @@ export async function main(ns) {
 
         const target=finalEarn?null:gangEquipmentCashTarget(ns);
         if(!finalEarn&&target&&player.money>=target){ranCasino=true;return;}
-        const pid = launchScriptHelper(ns, 'casino.js', ['--kill-all-scripts', false, '--on-completion-script', ns.getScriptName()]);
+        // casino.js declares --kill-all-scripts as a boolean flag, so passing an explicit
+        // "false" value still enables it and leaves a stray positional argument. The casino
+        // needs competing scripts stopped (focus stealing) and runs its temp cleanup only in
+        // that mode, so request the flag explicitly and restore the fleet after it finishes.
+        const pid = launchScriptHelper(ns, 'casino.js', ['--kill-all-scripts', '--on-completion-script', ns.getScriptName()]);
+        if (pid) casinoLaunchedHere = true;
         if (pid) {
             // Keep autopilot alive as a watchdog. A modal-stuck casino previously
-            // killed every controller and then sat forever on this screen.
-            const deadline = Date.now() + 10 * 60 * 1000;
-            let targetReached=false;
-            while (ns.isRunning(pid) && Date.now() < deadline) {
+            // killed every controller and then sat forever on this screen. Detect the stall
+            // from the casino's own round reports instead of a fixed ten-minute deadline,
+            // which used to stop healthy but slow runs short of the ten-billion target.
+            const stallMs = 10 * 60 * 1000, hardDeadline = Date.now() + 60 * 60 * 1000;
+            let targetReached=false,stalled=false,lastStatusAt=0,lastProgressAt=Date.now();
+            while (ns.isRunning(pid) && Date.now() < hardDeadline) {
                 const currentTarget=finalEarn?null:(gangEquipmentCashTarget(ns)||target);
                 if(currentTarget&&ns.getPlayer().money>=currentTarget){targetReached=true;break;}
+                let status=null;try{status=JSON.parse(ns.read('tasks/casino-status.json'));}catch{}
+                if(status?.pid===pid&&Number.isFinite(status.at)&&status.at>lastStatusAt){lastStatusAt=status.at;lastProgressAt=Date.now();}
                 await ns.sleep(1000);
+                if(Date.now()-lastProgressAt>=stallMs){stalled=true;break;}
             }
             if(targetReached&&ns.isRunning(pid)){
                 ns.kill(pid);
@@ -1437,8 +1521,9 @@ export async function main(ns) {
             } else if (ns.isRunning(pid)) {
                 ns.kill(pid);
                 await ns.write('tasks/casino-status.json', JSON.stringify({at:Date.now(),pid,augReset:resetInfo.lastAugReset,
-                    mode:'failed',retryAt:Date.now()+10*60*1000,reason:'casino startup/modal timeout'}), 'w');
-                log(ns, 'WARNING: casino.js was stuck for ten minutes; stopped it and restored automation.', true, 'warning');
+                    mode:'failed',retryAt:Date.now()+10*60*1000,reason:stalled?'casino made no progress for ten minutes':'casino exceeded the sixty-minute cap'}), 'w');
+                log(ns, stalled?'WARNING: casino.js stopped reporting progress for ten minutes; stopped it and restored automation.'
+                    :'WARNING: casino.js ran for over sixty minutes; stopped it and restored automation.', true, 'warning');
             } else {
                 const sources=await getPlayerMoneySources(ns),earnings=Number(sources.sinceInstall.casino)||0;
                 if(finalEarn&&earnings>=1e10)await clearFinalCasinoEarn(ns);
@@ -1670,7 +1755,12 @@ export async function main(ns) {
                 equipmentFunding.remainingCount===0;
             const shortCasino=casinoStatus?.mode==='complete'&&casinoStatus.augReset===resetInfo.lastAugReset&&
                 Number.isFinite(casinoStatus.earnings)&&casinoStatus.earnings<1e10;
-            if(!shouldReset&&!finalCasinoEarnPending(ns)&&freshEquipmentComplete&&shortCasino){
+            // A committed Bladeburner finish line must not lose the player to a full ten-billion
+            // casino pass when the next basket is already funded: Black Ops progress is the priority.
+            const completionCasinoHold=committedRoute(routePlan)==='bladeburner'&&player.money>=totalCost;
+            if(completionCasinoHold&&freshEquipmentComplete&&shortCasino&&!finalCasinoEarnPending(ns))
+                log_once(ns,'Casino hold: Bladeburner completion is the priority and the next augmentation basket is already funded; skipping the final 10b pass.');
+            if(!shouldReset&&!finalCasinoEarnPending(ns)&&freshEquipmentComplete&&shortCasino&&!completionCasinoHold){
                 await setFinalCasinoEarn(ns);
                 shouldReset=true;
                 resetStatus=`Final funding loop: running one full 10b casino pass before stopping.\n${resetStatus}`;
@@ -1683,7 +1773,11 @@ export async function main(ns) {
         const wdUpgradePaysBack=pill?.stage==='installed'&&pendingAugCount>0&&speed.gain>=.2&&
             Number.isFinite(speed.paybackMs)&&Number.isFinite(pill.wdResetRecoveryMs)&&Number.isFinite(pill.wdEtaMs)&&
             Math.max(speed.paybackMs,pill.wdResetRecoveryMs)<pill.wdEtaMs*.75;
-        if(pill?.holdResets&&!wdUpgradePaysBack||pill?.allowFavorReset&&pill.worth<pill.postResetBill+totalCost) {
+        // The hold protects hacking progress toward the daemon. Once completion is committed to a
+        // non-hacking finish line (Bladeburner), resetting no longer costs route progress, so the
+        // ordinary augmentation policy applies again.
+        const wdCompletion=committedRoute(routePlan)==='hacking';
+        if(wdCompletion&&(pill?.holdResets&&!wdUpgradePaysBack||pill?.allowFavorReset&&pill.worth<pill.postResetBill+totalCost)) {
             reservedPurchase=0;installCountdown=0;installWindowStarted=0;installCountdownResets=0;
             await ns.write('tasks/augmentation-reset-plan.json',JSON.stringify({pending:false,ownerPid:ns.pid,expiresAt:Date.now()+30000}),'w');
             return setStatus(ns,'Red Pill milestone: '+pill.reason+'; optional augmentation resets are held.');
@@ -1988,7 +2082,11 @@ export async function main(ns) {
             log_once(ns,'INFO: '+baseScriptName+' exited repeatedly; retrying after '+new Date(prior.retryAt).toISOString(),false);return 0;
         }
         const required=ns.getScriptRam(script,'home');
-        const critical=['bootstrap-start.js','reliability-manager.js','casino.js'].includes(baseScriptName.replace(/^\//,''));
+        // Completion outranks the idle RAM hold: once the committed route is Bladeburner, its
+        // controller is as startup-critical as the casino, otherwise the 128 GB headroom would
+        // keep the only finish line's manager from ever starting.
+        const completionManager=baseScriptName.replace(/^\//,'')==='bladeburner.js'&&typeof routePlan!=='undefined'&&routePlan?.selected==='bladeburner';
+        const critical=completionManager||['bootstrap-start.js','reliability-manager.js','casino.js','faction-manager.js','ascend.js'].includes(baseScriptName.replace(/^\//,''));
         const headroom=critical?Math.min(16,homeRamReserve(ns)):homeRamReserve(ns);
         const needed=required+headroom+coreStartupReservation(ns,baseScriptName);
         if(critical&&required>0)reclaimStartupHelpers(ns,needed);

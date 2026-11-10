@@ -1,6 +1,6 @@
 # Rival attrition warfare
 
-The default `--training-first true` policy blocks early attrition while preparing for at least 75% win chance against every active rival. It requests off for an inherited active attrition lease, while existing residual clash probability still decays normally. Use `--training-first false` to restore optional attrition under the guards below; `--disable-attrition` remains an independent opt-out.
+The default `--training-first true` policy blocks early attrition while preparing for at least 75% win chance against every active rival. Preparation no longer vetoes routine warfare: a positive net-territory cohort estimate engages on its own when the weakest matchup is at least 35%. It requests off for an inherited active attrition lease, while existing residual clash probability still decays normally. Use `--training-first false` to restore optional attrition under the guards below; `--disable-attrition` remains an independent opt-out.
 
 ## Mechanics and projection
 

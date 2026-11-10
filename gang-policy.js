@@ -32,8 +32,18 @@ export function warfareDecision(gang,others,threshold=0.75) {
   };
   const expectedTerritoryPerUpdate=!rivals.length?0:rivals.some(([,r])=>gang.power+r.power<=0)?null:
     2/rivals.length*rivals.reduce((sum,[,r],i)=>sum+chances[i].chance*cappedMean(r.territory,gang.power,r.power)-(1-chances[i].chance)*cappedMean(gang.territory,r.power,gang.power),0);
-  return {engage:chances.length>0&&minimum>=threshold,minimum,finished:!rivals.length,reason:!rivals.length?'no-active-rivals':minimum>=threshold?'routine-threshold-met':'below-routine-threshold',
-    expectedTerritoryPerUpdate,cohortProfitable:Number.isFinite(expectedTerritoryPerUpdate)&&expectedTerritoryPerUpdate>0,blockedByWorstOpponent:Number.isFinite(expectedTerritoryPerUpdate)&&expectedTerritoryPerUpdate>0&&minimum<threshold,
+  const cohortProfitable=Number.isFinite(expectedTerritoryPerUpdate)&&expectedTerritoryPerUpdate>0;
+  const routine=chances.length>0&&minimum>=threshold;
+  // A single losing matchup used to veto warfare even when every clash together gained
+  // ground, which left a gang parked in power training with no territory movement. Clashes
+  // are independent per rival, so positive expected territory is the real criterion; the
+  // floor only rejects a cohort dominated by one overwhelmingly stronger rival.
+  // Kept inside the function: this decision is serialized into native workers.
+  const worstCaseFloor=0.35;
+  const cohort=!routine&&chances.length>0&&cohortProfitable&&minimum>=worstCaseFloor;
+  return {engage:routine||cohort,minimum,finished:!rivals.length,
+    reason:!rivals.length?'no-active-rivals':routine?'routine-threshold-met':cohort?'positive-cohort-value':'below-routine-threshold',
+    expectedTerritoryPerUpdate,cohortProfitable,blockedByWorstOpponent:cohortProfitable&&!routine&&!cohort,
     average:chances.length?chances.reduce((s,c)=>s+c.chance,0)/chances.length:0};
 }
 /** Match the live controller's defense protection during active/residual clashes. */

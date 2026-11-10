@@ -68,9 +68,12 @@ test('corrupt preferences fail closed and corrupt expired runtime files do not b
  assert.ok(planGangHost(combat,gangHostPreferences(api({'gangs.js.config.txt':'invalid'}))).error);
  assert.equal(planGangHost(['Slum Snakes'],gangHostPreferences(api({'tasks/gang-host-preferences.json':'invalid','tasks/faction-join-plan.json':'invalid'}))).host,'Slum Snakes');
 });
-test('forced invitations and ordering honor host preference and BN2 karma exemption',()=>{
+test('forced invitations prioritize gang membership at any karma and honor the host preference',()=>{
  assert.deepEqual(factionForcedJoins(null,2,'',true,0),['Slum Snakes','Tetrads','The Syndicate','The Dark Army','Speakers for the Dead']);
- assert.deepEqual(factionForcedJoins(null,9,'',true,0),[]);
+ // Membership is the blocker, and augmentation installs clear it, so the host is forced
+ // whenever no gang exists instead of waiting for karma to approach the creation gate.
+ assert.deepEqual(factionForcedJoins(null,9,'',true,0),['Slum Snakes','Tetrads','The Syndicate','The Dark Army','Speakers for the Dead']);
+ assert.deepEqual(factionForcedJoins(null,9,'',true,0,{'gang-faction':'Speakers for the Dead'}),['Speakers for the Dead']);
  assert.deepEqual(factionForcedJoins(null,9,'',true,-54000,{'gang-type':'hacking'}),['NiteSec','The Black Hand']);
  assert.deepEqual(factionForcedJoins(null,9,'NiteSec',true,-54000),[]);
  assert.deepEqual(rankFactionInvites(['NiteSec','Slum Snakes','Daedalus'],true),['Daedalus','Slum Snakes','NiteSec']);

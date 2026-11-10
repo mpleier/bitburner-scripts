@@ -1,8 +1,12 @@
 import {combatAugmentationValue} from './combat-growth-policy.js';
 import {augmentationReputationForecast} from './augmentation-reputation-policy.js';
-/** Normalize flag values without changing faction names containing spaces. */
-export function factionForcedJoins(value,node,gang,gangAvailable,karma,preferences={}) {
- const names=value==null?[...(node===10?['The Covenant']:[]),...(!gang&&gangAvailable&&(node===2||karma<=-53000)?planGangHost([],preferences).inviteOrder:[])]:[value].flat(Infinity);
+/** Normalize flag values without changing faction names containing spaces.
+ * Gang membership is a prerequisite in its own right: creating a gang requires already
+ * belonging to a gang-capable faction, and installing augmentations clears membership.
+ * So the host faction is forced as soon as it is offered, not only once karma approaches
+ * the -54,000 creation gate. `karma` is retained for callers but no longer gates this. */
+export function factionForcedJoins(value,node,gang,gangAvailable,_karma,preferences={}) {
+ const names=value==null?[...(node===10?['The Covenant']:[]),...(!gang&&gangAvailable?planGangHost([],preferences).inviteOrder:[])]:[value].flat(Infinity);
  return [...new Set(names.filter(n=>typeof n==='string'&&n.trim()).map(n=>n.replaceAll('_',' ').trim()))];
 }
 /** Fresh native checks; serialized workers have no imported dependencies. */

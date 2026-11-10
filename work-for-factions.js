@@ -34,7 +34,6 @@ const argsSchema = [
     ['invites-only', false], // Just work to get invites, don't work for augmentations / faction rep
     ['prioritize-invites', false], // Prioritize working for as many invites as is practical before starting to grind for faction reputation
     ['get-invited-to-every-faction', false], // You want to be in every faction? You got it!
-    ['karma-threshold-for-gang-invites', -40000], // Prioritize working for gang invites once we have this much negative Karma
     ['disable-treating-gang-as-sole-provider-of-its-augs', false], // Set to true if you still want to grind for rep with factions that only have augs your gang provides
     ['no-bladeburner-check', false], // By default, will avoid working if bladeburner is active and "The Blade's Simulacrum" isn't installed
 ];
@@ -139,7 +138,7 @@ let focusOptOut=false, focusObserved=false; // Respect an explicit "Do something
 const focusForWork=()=>shouldFocus===undefined?true:shouldFocus===true&&!focusOptOut;
 // And a bunch of globals because managing state and encapsulation is hard.
 let hasFocusPenalty, hasSimulacrum, favorToDonate, fulcrumHackReq, notifiedAboutDaedalus, playerInBladeburner, wasGrafting, currentBitnode;
-let dictSourceFiles, dictFactionFavors, playerGang, mainLoopStart, scope, numJoinedFactions, lastTravel, crimeCount;
+let dictSourceFiles, dictFactionFavors, playerGang, mainLoopStart, scope, numJoinedFactions, lastTravel, crimeCount, gangInviteMessage;
 let firstFactions, skipFactions, completedFactions, softCompletedFactions, mostExpensiveAugByFaction, mostExpensiveDesiredAugByFaction;
 const companyJobCache = new Map();
 let bitNodeMults = (/**@returns{BitNodeMultipliers}*/() => undefined)(); // Trick to get strong typing in mono
@@ -171,6 +170,7 @@ export async function main(ns) {
     // Reset globals whose value can persist between script restarts in weird situations
     lastTravel = crimeCount = currentBitnode = 0;
     notifiedAboutDaedalus = playerInBladeburner = wasGrafting = false;
+    gangInviteMessage = "";
 
     // Process configuration options
     firstFactions = (options['first'] || []).map(f => f.replaceAll('_', ' ')); // Factions that end up in this list will be prioritized and joined regardless of their augmentations available.
@@ -346,13 +346,17 @@ async function mainLoop(ns) {
             // If we've only just now joined a gang, we have to reload startup data, because the augs offered by our gang faction has now changed.
             if (playerGang) await loadStartupData(ns);
         }
-        if (currentBitnode === 2 || ns.heart.break() <= options['karma-threshold-for-gang-invites']) { // Start trying to earn gang faction invites if we're close to unlocking gangs
-            if (!playerGang) {
-                log(ns, `INFO: We are nearing the Karma required to unlock gangs (${formatNumberShort(ns.heart.break())} / -54K). Prioritize earning gang faction invites.`);
-                const hostPlan=planGangHost((await getPlayerInfo(ns)).factions,gangHostPreferences(ns),options.skip);
-                // Work only on the easiest permitted invitation. Re-plan before seeking anything harder.
-                if(!hostPlan.host&&hostPlan.inviteOrder.length)await earnFactionInvite(ns,hostPlan.inviteOrder[0]);
-            }
+        // Gang membership is a prerequisite in its own right: creating a gang requires belonging to a
+        // gang-capable faction, and every augmentation install clears membership. So the host invitation
+        // stays a priority for as long as no gang exists, instead of waiting for Karma to near -54K.
+        if (!playerGang) {
+            const hostPlan=planGangHost((await getPlayerInfo(ns)).factions,gangHostPreferences(ns),options.skip);
+            const target=hostPlan.host?"":(hostPlan.inviteOrder[0]||"");
+            const message=target?`INFO: No gang host faction joined. Prioritize earning the ${target} invitation.`
+                :`INFO: No gang host faction joined and no eligible host remains; gang creation stays blocked.`;
+            if(message!==gangInviteMessage)log(ns,gangInviteMessage=message);
+            // Work only on the easiest permitted invitation. Re-plan before seeking anything harder.
+            if(target)await earnFactionInvite(ns,target);
         }
     }
     // If something outside of this script is stealing player focus, decide whether to allow it

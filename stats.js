@@ -467,7 +467,13 @@ async function getHudData(ns, bitNode, dictSourceFiles, options, resetInfo) {
             eta={text:label(routePlan.selected)+': '+phase,etaMs:null,tooltip:details};
         }
     }
-    if(Date.now()-etaStatusAt>=5000){etaStatusAt=Date.now();await ns.write('tasks/overview-status.json',JSON.stringify({at:etaStatusAt,pid:ns.pid,nodeEta:eta,routePlan,rates:{xp:rates.xp,rank:rates.rank,windowMs:rates.windowMs,sampling:rates.sampling},hasRedPill:progress?.hasRedPill,wdHack:progress?.wdHack}),'w');}
+    if(Date.now()-etaStatusAt>=5000){
+        etaStatusAt=Date.now();
+        // Labyrinth progress reuses this refresh's Dark Web scan; it is null when that scan is
+        // unavailable or belongs to an earlier reset, so the overview never reports stale counts.
+        const labyrinths=darknetHud&&darknetHud.nodeReset===resetInfo.lastNodeReset&&darknetHud.augReset===resetInfo.lastAugReset?darknetHud.labyrinth:null;
+        await ns.write('tasks/overview-status.json',JSON.stringify({at:etaStatusAt,pid:ns.pid,nodeEta:eta,routePlan,labyrinths,rates:{xp:rates.xp,rank:rates.rank,windowMs:rates.windowMs,sampling:rates.sampling},hasRedPill:progress?.hasRedPill,wdHack:progress?.wdHack}),'w');
+    }
     const unavailable=[...new Set(hudReadFailures)];
     hudData.push(['HUD Data',unavailable.length>0,'Partial',unavailable.join(', ')+' readings unavailable. Other values are still updating.']);
     return hudData
@@ -651,11 +657,11 @@ async function getDarknetHudData(ns,reset){
   ...(cash?['Cache cash: '+formatMoney(cash,3,2)]:[]),
   ...(rewardParts.length?['Rewards: '+rewardParts.join(', ')]:[]),
   ...(labyrinths.size?['Labyrinths: '+solved+'/'+labyrinths.size+' solved']:[]),
-  ...(summaryFresh?'Reward report age: '+formatDuration(now-summary.at):'Reward report: unavailable or stale'),
+  ...[(summaryFresh?'Reward report age: '+formatDuration(now-summary.at):'Reward report: unavailable or stale')],
   ...(storm?['StormSeed: '+storm]:[]),
-  ...(manager?'Manager:\u00a0running':'Manager:\u00a0not\u00a0running')].join('\n');
+  ...[manager?'Manager:\u00a0running':'Manager:\u00a0not\u00a0running']].join('\n');
  const row=['Dark Web',manager||liveHosts>0||openedCaches>0||rewardParts.length>0,value,tooltip];
- darknetHud={nodeReset:reset.lastNodeReset,augReset:reset.lastAugReset,row};darknetHudAt=now;
+ darknetHud={nodeReset:reset.lastNodeReset,augReset:reset.lastAugReset,row,labyrinth:{total:labyrinths.size,solved}};darknetHudAt=now;
  return row;
 }
 

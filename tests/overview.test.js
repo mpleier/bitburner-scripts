@@ -126,3 +126,48 @@ test('Attention exposes current-node completion holds and hides receipts from ea
  const old=h.getAutomationHudData(nsState({[file]:JSON.stringify({nodeReset:99,status:'uncertain'})},[]),null,reset);
  assert.equal(row(old,'Attention')[1],false);
 });
+
+test('overview publishes labyrinth progress from the same Dark Web scan',async()=>{
+ const now=300000,surveys={
+  'tasks/dnet-survey-a.json':JSON.stringify({host:'a',at:now,modelId:'(The Labyrinth)',rooted:true}),
+  'tasks/dnet-survey-b.json':JSON.stringify({host:'b',at:now,modelId:'(The Labyrinth)',rooted:false,caches:0}),
+  'tasks/dnet-survey-c.json':JSON.stringify({host:'c',at:now,modelId:'(Darknet Server)',rooted:true}),
+ };
+ const writes=[];
+ const h=await overview({getNsDataThroughFile:async()=>{throw Error('RAM unavailable');},formatNumberShort:String,formatRam:String,formatDuration:String,homeRamReserve:()=>32,readNodeRoutePlan:()=>null,bitNodeTooltip:()=> 'BitNode info'});
+ h.set({getElementById:()=>null},element(),element());
+ const ns={heart:{break:()=>0},ps:()=>[],read:f=>surveys[f]||'',ls:(host,prefix)=>Object.keys(surveys).filter(f=>f.startsWith(prefix)),write:async(f,content)=>{writes.push([f,content]);}};
+ await h.getHudData(ns,5,{}, {'hide-automation':true,'hide-stocks':true},{lastNodeReset:100000,lastAugReset:200000});
+ const record=JSON.parse(writes.find(([f])=>f==='tasks/overview-status.json')[1]);
+ // A third host is rooted but is not a labyrinth, so it must not inflate the count.
+ assert.deepEqual(record.labyrinths,{total:2,solved:1});
+});
+
+test('Dark Web tooltip keeps whole lines instead of one character per line',async()=>{
+ const now=300000,surveys={'tasks/dnet-survey-a.json':JSON.stringify({host:'a',at:now,modelId:'(The Labyrinth)',rooted:true})};
+ const h=await overview({getNsDataThroughFile:async()=>{throw Error('RAM unavailable');},formatNumberShort:String,formatRam:String,formatDuration:String,homeRamReserve:()=>32,readNodeRoutePlan:()=>null,bitNodeTooltip:()=> 'BitNode info'});
+ h.set({getElementById:()=>null},element(),element());
+ const ns={heart:{break:()=>0},ps:()=>[],read:f=>surveys[f]||'',ls:(host,prefix)=>Object.keys(surveys).filter(f=>f.startsWith(prefix)),write:async()=>{}};
+ const rows=await h.getHudData(ns,5,{}, {'hide-automation':true,'hide-stocks':true},{lastNodeReset:100000,lastAugReset:200000});
+ const lines=row(rows,'Dark Web')[3].split('\n');
+ // Spreading a string into the tooltip array emits one element per character.
+ assert.ok(lines.every(line=>line.length>1),'single-character tooltip lines: '+JSON.stringify(lines.filter(line=>line.length<=1)));
+ assert.ok(lines.includes('Rooted: 1'));
+ assert.ok(lines.some(line=>line.startsWith('Reward report')),'missing reward-report line');
+ assert.ok(lines.some(line=>line.startsWith('Manager:')),'missing manager line');
+});
+
+test('overview does not reuse labyrinth progress cached for another reset',async()=>{
+ let clock=300000,writes=[];
+ const surveys={'tasks/dnet-survey-a.json':JSON.stringify({host:'a',at:300000,modelId:'(The Labyrinth)',rooted:true})};
+ const h=await overview({Date:{now:()=>clock},getNsDataThroughFile:async()=>{throw Error('RAM unavailable');},formatNumberShort:String,formatRam:String,formatDuration:String,homeRamReserve:()=>32,readNodeRoutePlan:()=>null,bitNodeTooltip:()=> 'BitNode info'});
+ h.set({getElementById:()=>null},element(),element());
+ const scanned={heart:{break:()=>0},ps:()=>[],read:f=>surveys[f]||'',ls:(host,prefix)=>Object.keys(surveys).filter(f=>f.startsWith(prefix)),write:async(f,content)=>{writes.push([f,content]);}};
+ const unscanned={heart:scanned.heart,ps:scanned.ps,read:scanned.read,write:scanned.write}; // No ls, so the Dark Web scan is skipped.
+ await h.getHudData(scanned,5,{}, {'hide-automation':true,'hide-stocks':true},{lastNodeReset:100000,lastAugReset:200000});
+ clock=305000;
+ await h.getHudData(unscanned,5,{}, {'hide-automation':true,'hide-stocks':true},{lastNodeReset:100000,lastAugReset:250000});
+ const records=writes.filter(([f])=>f==='tasks/overview-status.json').map(([,content])=>JSON.parse(content));
+ assert.deepEqual(records[0].labyrinths,{total:1,solved:1});
+ assert.deepEqual(records.at(-1).labyrinths,null);
+});

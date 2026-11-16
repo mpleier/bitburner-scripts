@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test",
+    "test": "node --max-old-space-size=2048 --test --test-timeout=120000",
     "check": "npm run check:syntax && node scripts/audit-project.js all",
     "check:game": "node scripts/check-native.js",
     "check:syntax": "node scripts/check-syntax.js",

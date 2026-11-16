@@ -8,7 +8,7 @@ const CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"; // numbers + lettersUpperc
 
 export { isBlankPassword, nilFeedbackFromLogs, solveNilPassword, mastermindFeedbackFromLogs, solveMastermindPassword };
 
-export const romanNumeralDecoder = (input) => {
+const romanNumeralDecoder = (input) => {
   if (!input || String(input).toLowerCase() === "nulla") return 0;
   const map = { I: 1, V: 5, X: 10, L: 50, C: 100, D: 500, M: 1000 };
   let total = 0, prev = 0;
@@ -20,7 +20,7 @@ export const romanNumeralDecoder = (input) => {
   return total;
 };
 
-export const parseBaseN = (numberString, base) => {
+const parseBaseN = (numberString, base) => {
   if (!Number.isFinite(base) || base < 2 || base > 36 || !/^[0-9A-Z]+(?:\.[0-9A-Z]+)?$/.test(numberString) ||
       [...numberString].some(char => char !== '.' && CHARS.indexOf(char) >= base)) return NaN;
   let result = 0, index = 0;
@@ -34,12 +34,12 @@ export const parseBaseN = (numberString, base) => {
   return result;
 };
 
-export const decodeBinary = (encoded) =>
+const decodeBinary = (encoded) =>
   encoded.trim().split(/\s+/)
     .map((b) => String.fromCharCode(parseInt(b, 2)))
     .join("");
 
-export const decodeXor = (data) => {
+const decodeXor = (data) => {
   const text = String(data), separator = text.lastIndexOf(';');
   if (separator < 0) return null;
   const encrypted = text.slice(0, separator), masksStr = text.slice(separator + 1);
@@ -106,7 +106,7 @@ export const evalArithmetic = (expr) => {
 // Trial-divide by all primes <= 97; the game multiplies exactly one largePrime
 // (>= 1069) by a product of small primes, so whatever remains is the answer.
 const SMALL_PRIMES = [2,3,5,7,11,13,17,19,23,29,31,37,41,43,47,53,59,61,67,71,73,79,83,89,97];
-export const largestPrimeFactor = (target) => {
+const largestPrimeFactor = (target) => {
   let n = Number(target);
   if (!Number.isFinite(n) || n < 2) return null;
   for (const p of SMALL_PRIMES) while (n % p === 0) n /= p;
@@ -115,7 +115,7 @@ export const largestPrimeFactor = (target) => {
 
 // Permutations of a sorted digit string, skipping leading zeros (the game's
 // getPassword returns Number(...).toString(), which strips them).
-export const permutationsNoLeadingZero = (sorted) => {
+const permutationsNoLeadingZero = (sorted) => {
   const out = new Set();
   const chars = sorted.split("");
   const recurse = (prefix, rest) => {
@@ -133,7 +133,7 @@ export const permutationsNoLeadingZero = (sorted) => {
 };
 
 /** Models whose native input can intentionally differ from passwordLength. */
-export function acceptedPasswordLengths(details) {
+function acceptedPasswordLengths(details) {
   const length = details?.passwordLength;
   if (!Number.isInteger(length) || length < 0) return null;
   return details.modelId === 'Pr0verFl0' && length > 0 ? [length, length * 2] : [length];
@@ -142,6 +142,20 @@ export function acceptedPasswordLengths(details) {
 export function passwordLengthMatches(details, password) {
   const lengths = acceptedPasswordLengths(details);
   return lengths === null || lengths.includes(String(password).length);
+}
+/** The buffer-overflow mask is deliberately not alphanumeric: sending it twice the buffer length is the
+ * exploit, so the format filter must not discard it before the worker ever tries it. */
+export function passwordFormatMatches(details, password) {
+  const value = String(password ?? '');
+  const length = Number(details?.passwordLength);
+  if (details?.modelId === 'Pr0verFl0' && Number.isInteger(length) && length > 0 && /^■+$/.test(value) && value.length === length * 2) return true;
+  switch (details?.passwordFormat) {
+    case 'numeric': return /^\d+$/.test(value);
+    case 'alphabetic': return /^[a-z]+$/i.test(value);
+    case 'alphanumeric': return /^[a-z0-9]+$/i.test(value);
+    case 'ASCII': return /^[ -~]+$/.test(value);
+    default: return true;
+  }
 }
 
 /** Conservative candidates explicitly revealed by native hint text. */
@@ -225,7 +239,7 @@ export function supportsFeedbackModel(details) {
 
 /** Models whose password is derived from the server's data or hint text, so a scraped log line can
  * supply the missing input. Dictionary and blank models never need one. */
-export const puzzleInputModels = new Set(['CloudBlare(tm)', 'DeskMemo_3.1', '110100100', 'OrdoXenos',
+const puzzleInputModels = new Set(['CloudBlare(tm)', 'DeskMemo_3.1', '110100100', 'OrdoXenos',
   'PrimeTime 2', 'MathML', 'OctantVoxel', 'BellaCuore', 'Pr0verFl0', 'AccountsManager_4.2',
   '2G_cellular', 'RateMyPix.Auth', 'BigMo%od', 'Factori-Os', 'KingOfTheHill', 'OpenWebAccessPoint',
   '(The Labyrinth)', 'DeepGreen', 'NIL', 'PHP 5.4']);

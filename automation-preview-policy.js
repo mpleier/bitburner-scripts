@@ -1,5 +1,5 @@
-import {moduleManifest,priorityManagerPlan} from './automation-manifest.js';
-import {homeRamHeadroom} from './home-ram-policy.js';
+import {moduleManifest,priorityManagerPlan,corporationControllerReady} from './automation-manifest.js';
+import {homeRamHeadroom,homeRamWorkerKind} from './home-ram-policy.js';
 
 /** Honor a saved inspection mode before autopilot can register or persist configuration. */
 export function previewRequested(ns){
@@ -16,7 +16,7 @@ export function previewOptions(ns,schema){
 }
 
 /** Read-only observation. Does not invoke gameplay APIs, claim budgets, launch or write files. */
-export function collectAutomationPreview(ns,options=null,now=Date.now(),manifest=moduleManifest,managerPlan=priorityManagerPlan,headroom=homeRamHeadroom){
+export function collectAutomationPreview(ns,options=null,now=Date.now(),manifest=moduleManifest,managerPlan=priorityManagerPlan,headroom=homeRamHeadroom,workerKind=homeRamWorkerKind,controllerReady=corporationControllerReady){
  const read=file=>{try{return JSON.parse(ns.read(file));}catch{return null;}};
  if(options===null){options=read('autopilot.js.config.txt')||{};if(Array.isArray(options))options=Object.fromEntries(options);if(typeof options!=='object')throw Error('Invalid autopilot configuration');}
  const reset=ns.getResetInfo(),player=ns.getPlayer(),homeRam=ns.getServerMaxRam('home'),homeUsed=ns.getServerUsedRam('home');
@@ -28,13 +28,27 @@ export function collectAutomationPreview(ns,options=null,now=Date.now(),manifest
  if(reset.currentNode>0)sources[reset.currentNode]=Math.max(Number(sources[reset.currentNode])||0,[4,8].includes(reset.currentNode)?3:1);
  for(const [id,level]of entries(reset.bitNodeOptions?.sourceFileOverrides)){if(Number(level)>0)sources[id]=Number(level);else delete sources[id];}
  const corporation=read('tasks/corporation-status.json'),corporationRunning=processes.some(p=>p.filename.replace(/^\//,'')==='corporation-manager.js');
- const corporationReady=!options['disable-corporation']&&!!sources[3]&&reset.bitNodeOptions?.disableCorporation!==true;
+ // Mirror autopilot's launch gate exactly: the ~860 GB controller is only enabled when a corporation exists or
+ // creation is actually funded, so the preview must not advertise it as merely RAM-starved.
+ let corporationHas=false;try{corporationHas=ns.corporation.hasCorporation()===true;}catch{}
+ // The portfolio liquidates at bid, so it counts toward the creation cost exactly as autopilot counts it.
+ let stockValue=0;try{const symbols=ns.stock?.getSymbols?.()||[];for(const symbol of symbols){const position=ns.stock.getPosition(symbol);if(position&&position[0]>0)stockValue+=position[0]*ns.stock.getBidPrice(symbol);}}catch{}
+ const corporationReady=controllerReady({hasCorporation:corporationHas,sourceFiles:sources,node:reset.currentNode,
+  money:player.money,stocks:stockValue,reserve:Number(ns.read('reserve.txt'))||0,planAllowance:NaN,allowed:true,
+  disabled:!!options['disable-corporation'],nodeDisabled:reset.bitNodeOptions?.disableCorporation===true});
  const enabled=new Map(managerPlan({homeRam,sourceFiles:sources,node:reset.currentNode,options,bladeburnerRank:reset.currentNode===8||reset.bitNodeOptions?.disableBladeburner?0:1,
   corporationReady,corporationKnown:true,corporationRunning},manifest).map(p=>[p.name,p.enabled]));
  const maintenance=read('tasks/automation-maintenance.json'),activity=read('tasks/activity-lock.json');
  const maintenanceActive=maintenance?.expiresAt>now&&alive(maintenance.ownerPid);
  const activityActive=activity?.expiresAt>now&&alive(activity.ownerPid);
  const reserve=headroom(homeRam,Number(ns.read('home-ram-reserve.txt'))||0);
+ // RAM held by processes that must keep running; a manager larger than the remainder cannot start here at
+ // any point, which is a home RAM upgrade decision rather than a scheduling one.
+ const protectedRam=processes.reduce((sum,p)=>{
+  if(['share','charge','standalone-hack'].includes(workerKind(p)))return sum; // reclaim cancels only these
+  let ram=0;try{ram=Number(ns.getRunningScript(p.pid)?.ramUsage)||ns.getScriptRam(String(p.filename).replace(/^\//,''),'home');}catch{try{ram=ns.getScriptRam(String(p.filename).replace(/^\//,''),'home');}catch{}}
+  return sum+(Number.isFinite(ram)&&ram>0?ram*(p.threads??1):0);
+ },0);
  let available=Math.max(0,homeRam-homeUsed-reserve);
  const launchPlan=read('tasks/automation-status.json');
  const cooldowns=fresh(launchPlan,30000)&&launchPlan.augReset===reset.lastAugReset&&launchPlan.nodeReset===reset.lastNodeReset&&processes.some(p=>p.pid===launchPlan.ownerPid&&p.filename.replace(/^\//,'')==='autopilot.js')&&Array.isArray(launchPlan.managers)?launchPlan.managers:[];
@@ -47,7 +61,7 @@ export function collectAutomationPreview(ns,options=null,now=Date.now(),manifest
   if(cooling)reason='Repeated early exits; retry at '+new Date(cooling.cooldownUntil).toISOString();
   let state=running?'running':paused?'paused':!(Number.isFinite(ram)&&ram>0)?'missing-or-invalid':
    enabled.get(m.script)===false?'locked-or-disabled':cooling?'restart-cooldown':maintenanceActive?'maintenance':
-   !enabled.has(m.script)?'managed-by-parent':m.script==='work-for-factions.js'&&activityActive?'waiting-for-activity':ram>available?'waiting-for-ram':'would-start';
+   !enabled.has(m.script)?'managed-by-parent':m.script==='work-for-factions.js'&&activityActive?'waiting-for-activity':ram+reserve+protectedRam>homeRam?'needs-home-ram':ram>available?'waiting-for-ram':'would-start';
   if(state==='would-start')available-=ram;
   return {script:m.script,state,ram:Number.isFinite(ram)?ram:0,pid:running?.pid??null,homeOnly:m.homeOnly,reason};
  });
@@ -76,7 +90,7 @@ export function collectAutomationPreview(ns,options=null,now=Date.now(),manifest
   return {script:m.script,host:target?.host??null,ram,state:target?(m.requiresLease?'requires-home-owned-lease':'eligible-remote-worker'):'no-remote-capacity'};
  });
  return {schemaVersion:1,at:now,nodeReset:reset.lastNodeReset,augReset:reset.lastAugReset,readOnly:true,
-  home:{ram:homeRam,used:homeUsed,reserve,available:Math.max(0,homeRam-homeUsed-reserve)},managers,budgets,purchases,placements,cloud:cloudDecision,
+  home:{ram:homeRam,used:homeUsed,reserve,available:Math.max(0,homeRam-homeUsed-reserve),protected:protectedRam},managers,budgets,purchases,placements,cloud:cloudDecision,
   evidence:{budget:validPlan?'current':'unavailable',corporation:fresh(corporation)?'observed':'access-only',networkTruncated:hosts.length>=128},
   limitations:'Launch estimates use current RAM and shared manager gates. Purchases show observed quotes and budget ceilings, not purchase orders. Parent controllers, casino, reset and activity policies still apply. No files, jobs, purchases or processes were changed.'};
 }

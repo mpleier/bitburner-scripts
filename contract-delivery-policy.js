@@ -3,7 +3,7 @@ import {contractKey} from './contract-policy.js';
 const leaseFile='tasks/contracts-active.json';
 const read=(ns,file,fallback=null)=>{try{return JSON.parse(ns.read(file))??fallback;}catch{return fallback;}};
 export function contractReceiptPath(id){if(!/^[a-zA-Z0-9_-]{1,80}$/.test(id))throw Error('Invalid contract job ID');return 'Temp/contracts-inbox/'+id+'.json';}
-export function contractJobCurrent(job,reset,now=Date.now()){
+function contractJobCurrent(job,reset,now=Date.now()){
  return job?.schemaVersion===1&&job.nodeReset===reset.lastNodeReset&&job.augReset===reset.lastAugReset&&
   typeof job.id==='string'&&/^[a-zA-Z0-9_-]{1,80}$/.test(job.id)&&typeof job.host==='string'&&
   Number.isFinite(job.expiresAt)&&job.expiresAt>job.at&&job.expiresAt-job.at<=600000&&

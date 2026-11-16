@@ -154,7 +154,7 @@ export function getFilePath(file) {
 
 /** @param {NS} ns
  *  Use where a function is required to run a script and you have already referenced ns.run in your script **/
-export function getFnRunViaNsRun(ns) { return checkNsInstance(ns, '"getFnRunViaNsRun"').run; }
+function getFnRunViaNsRun(ns) { return checkNsInstance(ns, '"getFnRunViaNsRun"').run; }
 
 /** @param {NS} ns
  *  Use where a function is required to run a script and you have already referenced ns.exec in your script **/
@@ -166,11 +166,11 @@ export function getFnRunViaNsExec(ns, host = "home") {
 
 /** @param {NS} ns
  *  Use where a function is required to run a script and you have already referenced ns.run in your script  */
-export function getFnIsAliveViaNsIsRunning(ns) { return checkNsInstance(ns, '"getFnIsAliveViaNsIsRunning"').isRunning; }
+function getFnIsAliveViaNsIsRunning(ns) { return checkNsInstance(ns, '"getFnIsAliveViaNsIsRunning"').isRunning; }
 
 /** @param {NS} ns
  *  Use where a function is required to run a script and you have already referenced ns.ps in your script  */
-export function getFnIsAliveViaNsPs(ns) {
+function getFnIsAliveViaNsPs(ns) {
     checkNsInstance(ns, '"getFnIsAliveViaNsPs"');
     return function (pid, host) { return ns.ps(host).some(process => process.pid === pid); }
 }
@@ -683,7 +683,7 @@ export async function tryGetBitNodeMultipliers_Custom(ns, fnGetNsDataThroughFile
  * @param {(ns: NS, command: string, fName?: string, args?: any, verbose?: any, maxRetries?: number, retryDelayMs?: number) => Promise<any>} fnGetNsDataThroughFile getActiveSourceFiles Helper that allows the user to pass in their chosen implementation of getNsDataThroughFile to minimize RAM usage
  * @param {number} bnOverride The bitnode for which to retrieve multipliers. Defaults to the current BN if null.
  * @returns {Promise<BitNodeMultipliers>} a mocked BitNodeMultipliers instance with hard-coded values. */
-export async function getHardCodedBitNodeMultipliers(ns, fnGetNsDataThroughFile, bnOverride = null) {
+async function getHardCodedBitNodeMultipliers(ns, fnGetNsDataThroughFile, bnOverride = null) {
     let reset;
     try{reset=await fnGetNsDataThroughFile(ns,'ns.getResetInfo()','/Temp/reset-info.txt');}catch{}
     const bn=bnOverride??reset?.currentNode??1;
@@ -763,7 +763,7 @@ export async function getStocksValue(ns) {
 
 /** Returns a helpful error message if we forgot to pass the ns instance to a function
  *  @param {NS} ns The nestcript instance passed to your script's main entry point */
-export function checkNsInstance(ns, fnName = "this function") {
+function checkNsInstance(ns, fnName = "this function") {
     if (ns === undefined || !ns.print) throw new Error(`The first argument to function ${fnName} should be a 'ns' instance.`);
     return ns;
 }

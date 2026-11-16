@@ -1,7 +1,8 @@
 import {coordinateCharismaGoal,charismaTrainingFile} from './darknet-charisma-policy.js';
 import {ramRecoveryFile,ramRecoveryModel,scheduleRamRecovery} from './darknet-ram-policy.js';
-import {readDarknetReports,prioritizeDarknetTargets,darknetDeploymentFile,readDarknetDeployment,createAttemptBudget} from './darknet-throughput-policy.js';
+import {readDarknetReports,prioritizeDarknetTargets,darknetDeploymentFile,readDarknetDeployment,createAttemptBudget,darknetDirectlyReachable} from './darknet-throughput-policy.js';
 import {createDarknetCredentials} from './darknet-credentials.js';
+import {statedPasswordFromLogs} from './darknet-feedback.js';
 import {refreshDarknetScouts,prepareDarknetRollout} from './darknet-rollout.js';
 import {cacheContextFile,rewardSummaryFile,darknetRewardProductivity} from './darknet-reward-policy.js';
 import {coordinateDarknetAnchors} from './darknet-anchor-policy.js';
@@ -15,7 +16,7 @@ import { surveyPrefix, stormRequestFile, stormStateFile, stormResultFile, applyS
 import {registerAutomation,automationHeartbeat,beginAutomationAction,endAutomationAction,maintenanceRequested} from './runtime-policy.js';
 import { isScriptPaused } from './automation-control.js';
 /** Darknet coordinator. Tries supplied exact-match candidates on discovered servers. */
-import { candidatePasswordTurn, isBlankPassword, solveFeedbackPassword, supportsFeedbackModel, modelCandidates, isStalledScout, dictionaryWords, passwordLengthMatches } from './darknet-solvers.js';
+import { candidatePasswordTurn, isBlankPassword, solveFeedbackPassword, supportsFeedbackModel, modelCandidates, isStalledScout, dictionaryWords, passwordLengthMatches, passwordFormatMatches } from './darknet-solvers.js';
 import { frontierFile } from './darknet-migration-policy.js';
 export async function main(ns) {
  registerAutomation(ns);
@@ -75,9 +76,7 @@ export async function main(ns) {
       const d = ns.dnet.getServerDetails(host);
       if (d?.isOnline === false) return {ready:false,reason:'offline'};
       let directHosts=[];try{directHosts=ns.dnet.probe();}catch{}
-      const directlyConnected = d?.hasStasisLink === true || d?.backdoorInstalled === true ||
-        (Array.isArray(directHosts) && directHosts.includes(host));
-      if (!directlyConnected) return {ready:false,reason:'not directly connected'};
+      if (!darknetDirectlyReachable(host, d, directHosts)) return {ready:false,reason:'not directly connected'};
       if (d?.hasSession === false) return {ready:false,reason:'no authenticated session'};
       return {ready:true,reason:'session ready'};
     } catch (error) {
@@ -95,17 +94,12 @@ export async function main(ns) {
     ),
   ];
 
-  const candidatesFor = (details, words) => {
-    const matches = (value) => {
-      if (!passwordLengthMatches(details,value)) return false;
-      switch (details.passwordFormat) {
-        case "numeric": return /^\d+$/.test(value);
-        case "alphabetic": return /^[a-z]+$/i.test(value);
-        case "alphanumeric": return /^[a-z0-9]+$/i.test(value);
-        case "ASCII": return /^[\x20-\x7e]+$/.test(value);
-        default: return true;
-      }
-    };
+  // Heartbleed log lines can state the password outright; keep them so the solver tries the stated value first.
+  const bleedLogs = new Map();
+  const candidatesFor = (details, words, host = null) => {
+    // Length and format checks live in the policy module so a model-specific exemption (the Pr0verFl0
+    // buffer-overflow mask) cannot be filtered out here before the worker ever tries it.
+    const matches = (value) => passwordLengthMatches(details,value) && passwordFormatMatches(details,value);
     // Servers with no password (hint "There is no password", length 0, or the
     // ZeroLogon model) accept the empty string. The length filter below would
     // otherwise discard every candidate and leave nothing to try.
@@ -120,7 +114,9 @@ export async function main(ns) {
     const counted = details.passwordFormat === "numeric" && details.passwordLength >= 1 && details.passwordLength <= 3
       ? Array.from({ length: 10 ** details.passwordLength }, (_, n) => String(n).padStart(details.passwordLength, "0"))
       : [];
-    return [...new Set([...modelCandidates(details).filter(matches), ...derived.filter(matches), ...(clue && matches(clue) ? [clue] : []), ...words.filter(matches), ...counted])];
+    // A log that states the password outranks every heuristic: it is the server telling us the answer.
+    const stated = statedPasswordFromLogs(host ? bleedLogs.get(host) : null, details);
+    return [...new Set([...(stated ? [stated] : []), ...modelCandidates(details).filter(matches), ...derived.filter(matches), ...(clue && matches(clue) ? [clue] : []), ...words.filter(matches), ...counted])];
   };
 
   const reportedHints = new Map(),managerCharismaBlocked=new Map();
@@ -187,6 +183,15 @@ export async function main(ns) {
 
   const authenticate = async (host, details, saved, candidates) => {
     if (details.hasSession) return true;
+    // Without a direct link the game answers 351 (DirectConnectionRequired) to every candidate, so a host
+    // found by a remote survey cannot be cracked from here — its adjacent worker has to do it. Skip instead
+    // of burning an attempt budget on a guaranteed rejection, and say so once per host.
+    let neighbours = [];
+    try { neighbours = ns.dnet.probe(); } catch { }
+    if (!darknetDirectlyReachable(host, details, neighbours)) {
+      note(host + ':route', `${host}: no direct connection from ${ns.getHostname()}; leaving authentication to the adjacent worker.`);
+      return false;
+    }
     if (!isBlankPassword(details) && supportsFeedbackModel(details)) {
       if (!nilProgress.has(host)) nilProgress.set(host, {});
       const progress = nilProgress.get(host);
@@ -346,7 +351,9 @@ export async function main(ns) {
           if (!file.endsWith('.json') || /-(cache|solver|phishing|loot|navigator|anchor|storm)/.test(file)) continue;
           let record = null;
           try { record = JSON.parse(ns.read(file)); } catch { continue; }
-          if (record?.host === undefined || !Number.isFinite(record?.at) || record.at > pruneNow - 6 * 3600000) continue;
+          // One hour, not six: the darknet survey UI only reads the newest 600 files (stats.js), while a busy
+          // run generates a survey per host per cycle, so a six-hour window parks thousands of stale records.
+          if (record?.host === undefined || !Number.isFinite(record?.at) || record.at > pruneNow - 3600000) continue;
           if (ns.rm(file, 'home')) pruned++;
         }
         if (pruned) note('dnet-heartbeat-prune', 'Pruned ' + pruned + ' stale darknet heartbeat files.');
@@ -412,7 +419,7 @@ export async function main(ns) {
           }
 
           if(details.modelId==='(The Labyrinth)'&&ns.getPlayer().skills.charisma<details.requiredCharismaSkill)managerCharismaBlocked.set(host,{host,modelId:details.modelId,required:details.requiredCharismaSkill,at:Date.now()});else managerCharismaBlocked.delete(host);
-          const hostCandidates = candidatesFor(details, candidates);
+          const hostCandidates = candidatesFor(details, candidates, host);
           const authenticated = await authenticate(host, details, passwords.get(host), hostCandidates);
 
           if (!authenticated) {
@@ -425,7 +432,7 @@ export async function main(ns) {
               try {
                 const result = await nativeCall(host,'darknet-heartbleed',()=>ns.dnet.heartbleed(host, { peek: true, logsToCapture: 8 }));
                 // heartbleed returns { success, code, message, logs: string[] }.
-                if (result?.logs?.length) ns.print(`${host}: heartbleed log clue: ${JSON.stringify(result.logs)}`);
+                if (result?.logs?.length) { bleedLogs.set(host, result.logs.slice(-20)); ns.print(`${host}: heartbleed log clue: ${JSON.stringify(result.logs)}`); }
               } catch (error) {
                 ns.print(`${host}: heartbleed unavailable: ${String(error)}`);
               }
@@ -518,6 +525,19 @@ export async function main(ns) {
       }
 
       await manageStorm(snapshot.surveys);
+      // Coverage is only knowable here: which live hosts hold a session, have a scout, or still
+      // carry cache files. Published so the dashboard stops inferring it from the manager log.
+      try {
+        const now = Date.now(), live = (snapshot.surveys || []).filter(r => r && r.live === true && Number.isFinite(r.at) && r.at <= now && now - r.at <= 90000);
+        let sessioned = 0, covered = 0, rooted = 0, pending = 0;
+        for (const r of live) {
+          pending += Math.max(0, Number(r.caches) || 0);
+          if (r.rooted === true) rooted++;
+          if (r.hasSession === true) sessioned++;
+          try { if (ns.ps(r.host).some(p => p.filename === nodeFile)) covered++; } catch { }
+        }
+        await ns.write('tasks/dnet-coverage.json', JSON.stringify({ at: Date.now(), live: live.length, sessioned, rooted, covered, pending }), 'w');
+      } catch { /* Diagnostic only: never block the pass. */ }
       await ns.sleep(30_000);
     } catch (error) {
       ns.print(`Darknet manager waiting: ${String(error)}`);

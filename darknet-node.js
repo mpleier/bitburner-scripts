@@ -1,7 +1,7 @@
 import {navigatorFile,scheduleNavigator,chooseMazeThreads} from './darknet-navigator-policy.js';
 import {charismaGate} from './darknet-charisma-policy.js';
 import {ramRecoveryFile,ramRecoveryModel,scheduleRamRecovery} from './darknet-ram-policy.js';
-import {prioritizeDarknetTargets,darknetDeploymentFile,readDarknetDeployment,packSolverProgress,restoreSolverProgress,createAttemptBudget,yieldDarknetLoot,readLootYield,clearLootYield,solverProgressFingerprint} from './darknet-throughput-policy.js';
+import {prioritizeDarknetTargets,darknetDeploymentFile,readDarknetDeployment,packSolverProgress,restoreSolverProgress,createAttemptBudget,yieldDarknetLoot,readLootYield,clearLootYield,solverProgressFingerprint,darknetDirectlyReachable} from './darknet-throughput-policy.js';
 import {createDarknetCredentials} from './darknet-credentials.js';
 import { surveyFile, stormRequestFile } from './darknet-storm-policy.js';
 import {serviceDarknetAnchor,anchorRequestFile} from './darknet-anchor-policy.js';
@@ -220,9 +220,7 @@ export async function main(ns) {
       const d = ns.dnet.getServerDetails(host);
       if (d?.isOnline === false) return {ready:false,reason:'offline'};
       let directHosts=[];try{directHosts=ns.dnet.probe();}catch{}
-      const directlyConnected = d?.hasStasisLink === true || d?.backdoorInstalled === true ||
-        (Array.isArray(directHosts) && directHosts.includes(host));
-      if (!directlyConnected) return {ready:false,reason:'not directly connected'};
+      if (!darknetDirectlyReachable(host, d, directHosts)) return {ready:false,reason:'not directly connected'};
       if (d?.hasSession === false) return {ready:false,reason:'no authenticated session'};
       return {ready:true,reason:'session ready'};
     } catch (error) { return {ready:false,reason:'session check unavailable: '+String(error)}; }

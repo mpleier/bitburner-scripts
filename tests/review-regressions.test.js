@@ -36,7 +36,7 @@ test('continuous program buying exits immediately when all programs exist', asyn
 test('continuous program buying retries genuinely missing programs', async () => {
  const owned=new Set(); let affordable=false,sleeps=0;
  await programs({args:['-c'],write(){},getScriptName:()=> 'Tasks/program-manager.js',read:()=>'',getResetInfo:()=>({}),getPlayer:()=>({money:1e9}),fileExists:program=>owned.has(program),singularity:{getDarkwebProgramCost:()=>500000,purchaseProgram:program=>{if(!affordable)return false;owned.add(program);return true;}},toast:()=>{},sleep:async()=>{sleeps++;affordable=true;}});
- assert.equal(sleeps,1); assert.equal(owned.size,5);
+ assert.equal(sleeps,1); assert.equal(owned.size,6); // five openers plus the optional Formulas.exe
 });
 test('explicit sleeve crime overrides survive automatic chance selection', () => {
  assert.equal(chooseSleeveCrime('Mug',1,0.8),'Mug');
@@ -71,4 +71,13 @@ test('supervisors and indirect starts honor persistent pauses', async () => {
  const autopilot=await readFile(new URL('../autopilot.js',import.meta.url),'utf8');
  assert.match(autopilot,/isScriptPaused\(ns, baseScriptName\)/);
  assert.match(autopilot,/isScriptPaused\(ns, "casino\.js"\)/);
+});
+
+test('an achievement profile from another BitNode cannot gate this run', async () => {
+  const {readFileSync} = await import('node:fs');
+  const source=readFileSync(new URL('../achievement-manager.js',import.meta.url),'utf8');
+  // The read is validated against the current node before its active flag or denied actions are used.
+  assert.match(source,/if\(profile&&profile\.nodeReset!==reset\.lastNodeReset\)profile=null;/);
+  assert.ok(source.indexOf('profile.nodeReset!==reset.lastNodeReset')<source.indexOf('achievementGoals({'),
+    'validation must run before the profile feeds the goal planner');
 });

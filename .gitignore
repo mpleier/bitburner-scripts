@@ -5,3 +5,6 @@
 *.ts
 
 node_modules/
+scripts/panel-view-*.html
+scripts/*.snapshot.json
+scripts/progress-history.json

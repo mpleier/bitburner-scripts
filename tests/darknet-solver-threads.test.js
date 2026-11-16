@@ -55,7 +55,7 @@ test('the manager prunes stale darknet heartbeats within a bounded per-cycle bud
   const src = readFileSync(new URL('../darknet-manager.js', import.meta.url), 'utf8');
   assert.match(src, /let lastHeartbeatPrune = 0;/);
   assert.match(src, /if \(pruned >= 1500\) break;/);
-  assert.match(src, /record\.at > pruneNow - 6 \* 3600000/);
+  assert.match(src, /record\.at > pruneNow - 3600000/);
   assert.match(src, /if \(ns\.rm\(file, 'home'\)\) pruned\+\+;/);
   assert.match(src, /"darknet-auth\.js", "darknet-bleed\.js"/);
 });

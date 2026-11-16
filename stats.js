@@ -294,6 +294,28 @@ async function getHudData(ns, bitNode, dictSourceFiles, options, resetInfo) {
         hudData.push(val)
     }
 
+    // Show augmentations installed, awaiting installation and what the current basket costs
+    {
+        const val = ["Augs"];
+        let augs = null;
+        try { augs = JSON.parse(ns.read("/Temp/affordable-augs.txt") || "null"); } catch { }
+        if (augs && Number.isFinite(augs.installed_count)) {
+            const nf = Number(augs.installed_count_nf) || 0;
+            const awaiting = Number(augs.awaiting_install_count) || 0;
+            const awaitingNf = Number(augs.awaiting_install_count_nf) || 0;
+            const affordable = Number(augs.affordable_count) || 0;
+            const basket = (Number(augs.total_aug_cost) || 0) + (Number(augs.total_rep_cost) || 0);
+            const installedFor = Number.isFinite(augs.augReset) ? formatDuration(Math.max(0, Date.now() - augs.augReset)) : null;
+            const detail = [
+                `${Number(augs.installed_count_ex_nf) || 0} unique + ${nf} NeuroFlux` + (installedFor ? ` · installed ${installedFor} ago` : ''),
+                `Awaiting install: ${awaiting}` + (awaitingNf ? ` (${awaitingNf} NeuroFlux)` : '') + ` · affordable now: ${affordable}`,
+                `Basket ${formatMoney(basket)}` + (Number.isFinite(augs.unpurchased_count) ? ` · ${augs.unpurchased_count} unpurchased` : ''),
+            ].join("\n");
+            val.push(true, `${augs.installed_count} installed`, detail);
+        } else val.push(false, "", "No augmentation plan yet: faction-manager writes this once it has quoted a basket.");
+        hudData.push(val);
+    }
+
     // needed for gang and karma
     let gangInfo=false;
     if(2 in dictSourceFiles||bitNode===2)try{gangInfo=await getGangInfo(ns);}catch{}
@@ -304,7 +326,9 @@ async function getHudData(ns, bitNode, dictSourceFiles, options, resetInfo) {
         const val2 = ["Territory"]
         // Gang income is only relevant once gangs are unlocked
         if ((2 in dictSourceFiles || 2 == bitNode) && gangInfo) {
-            // Add Gang Income
+            // Add Gang Income. ns.gang.getGangInformation().moneyGainRate is documented as "money earned per
+            // game cycle" (NetscriptDefinitions.d.ts), and the engine runs five 200 ms cycles per second, so
+            // x5 is the per-second rate. Do not "fix" this to a raw value.
             val1.push(true, formatMoney(gangInfo.moneyGainRate * 5, 3, 2) + '/sec',
                 `Gang (${gangInfo.faction}) income per second while doing tasks.` +
                 `\nIncome: ${formatMoney(gangInfo.moneyGainRate * 5)}/sec (${formatMoney(gangInfo.moneyGainRate)}/tick)` +
@@ -537,7 +561,7 @@ const css = (rootStyle) => `<style id="statsCSS">
 /** Formats milliseconds into a compact human-readable duration for the HUD.
  * @param {number} ms
  * @returns {string} */
-export function formatEta(ms) {
+function formatEta(ms) {
     if (!Number.isFinite(ms) || ms < 0) return 'Unknown';
     if (ms === 0) return '0s';
     const totalSeconds = Math.floor(ms / 1000);
@@ -554,7 +578,7 @@ export function formatEta(ms) {
 /** Estimates the remaining time to complete the current BitNode across completion phases.
  * @param {object} options
  * @returns {{text: string, etaMs: number|null, tooltip: string}} */
-export function estimateNodeCompletion({hasRedPill=false,wdHack=null,currentHack=0,currentExp=0,expRate=0,hackMult=1,
+function estimateNodeCompletion({hasRedPill=false,wdHack=null,currentHack=0,currentExp=0,expRate=0,hackMult=1,
  completedHook=false,departureActive=false,inBladeburner=false,bladeburnerActive=true,remainingBlackOps=null,bladeburnerRank=0,rankRate=0,
  blackOpTimeMs=null,rankGoal=400000,installedAugsCount=0}={}) {
  if(completedHook||departureActive||inBladeburner&&remainingBlackOps===0)return {text:'Ready',etaMs:0,tooltip:'A verified BitNode completion route is ready.'};
@@ -576,7 +600,7 @@ export function estimateNodeCompletion({hasRedPill=false,wdHack=null,currentHack
 }
 
 /** Observed XP/rank gains, reset on progression resets, stat multiplier changes or long observation gaps. */
-export function sampleNodeEtaRates(history,sample){
+function sampleNodeEtaRates(history,sample){
  let samples=Array.isArray(history)?history:[];
  const empty={samples,xp:0,rank:0,windowMs:0,sampling:true};
  if(!sample||!Number.isFinite(sample.at)||!Number.isFinite(sample.exp)||sample.exp<0)return {...empty,samples:[]};
@@ -607,7 +631,7 @@ async function getDarknetHudData(ns,reset){
  const summaryFresh=summary?.nodeReset===reset.lastNodeReset&&summary?.augReset===reset.lastAugReset&&Number.isFinite(summary?.at)&&summary.at<=now&&now-summary.at<=90000;
  const hosts=new Set(),rooted=new Set(),labyrinths=new Map();
  let pending=0;
- for(const file of ns.ls('home','tasks/dnet-survey-')){
+ for(const file of ns.ls('home','tasks/dnet-survey-').slice(-600)){
   if(!file.endsWith('.json'))continue;
   try{
    const report=JSON.parse(ns.read(file));
@@ -640,6 +664,7 @@ async function getDarknetHudData(ns,reset){
   if(value>0)rewardParts.push(`${value} ${label}`);
  }
  let storm='';try{const result=JSON.parse(ns.read('tasks/dnet-storm-result.json'));storm=String(result?.reason||result?.status||'').slice(0,80);}catch{}
+ let coverage=null;try{const c=JSON.parse(ns.read('tasks/dnet-coverage.json'));if(c&&Number.isFinite(c.at)&&c.at<=now&&now-c.at<=90000)coverage=c;}catch{}
  let value;
  if(openedCaches&&pending)value=openedCaches+'c '+pending+'p';
  else if(openedCaches)value=openedCaches+' caches';
@@ -648,6 +673,15 @@ async function getDarknetHudData(ns,reset){
  else if(rewardParts.length)value=rewardParts[0];
  else value=manager?'scouting':'no data';
  const solved=[...labyrinths.values()].filter(Boolean).length;
+ // A labyrinth only appears once an adjacent one is visible, so the Charisma gate is the progress
+ // that is actually knowable between labyrinths. The goal expires on its own if the manager stops.
+ let labyrinthGoal=null;
+ try{
+  const goal=JSON.parse(ns.read('tasks/dnet-charisma-goal.json'));
+  if(goal?.state==='target'&&goal.nodeReset===reset.lastNodeReset&&goal.augReset===reset.lastAugReset&&
+   Number.isFinite(goal.current)&&Number.isFinite(goal.target)&&goal.target>0&&
+   Number.isFinite(goal.at)&&goal.at<=now+5000&&Number.isFinite(goal.expiresAt)&&goal.expiresAt>=now)labyrinthGoal=goal;
+ }catch{}
  const tooltip=['Dark Web progress',
   'Live hosts: '+liveHosts,
   ...(hosts.size?['Surveyed hosts: '+hosts.size]:[]),
@@ -657,7 +691,11 @@ async function getDarknetHudData(ns,reset){
   ...(cash?['Cache cash: '+formatMoney(cash,3,2)]:[]),
   ...(rewardParts.length?['Rewards: '+rewardParts.join(', ')]:[]),
   ...(labyrinths.size?['Labyrinths: '+solved+'/'+labyrinths.size+' solved']:[]),
+  ...(labyrinthGoal?['Next labyrinth: Charisma '+Math.round(labyrinthGoal.current)+'/'+Math.round(labyrinthGoal.target)+(labyrinthGoal.host?' for '+labyrinthGoal.host:'')]:[]),
   ...[(summaryFresh?'Reward report age: '+formatDuration(now-summary.at):'Reward report: unavailable or stale')],
+  ...(summaryFresh&&summary?.coverage&&summary.coverage.complete===false?['Reward coverage incomplete: '+Math.max(0,Number(summary.coverage.pendingHosts)||0)+' host(s) hold an unread cache receipt']:[]),
+  ...(summaryFresh&&summary?.shapes&&Object.keys(summary.shapes).length?['Reward shapes: '+Object.entries(summary.shapes).sort((a,b)=>b[1]-a[1]).slice(0,2).map(([k,v])=>v+'\u00d7 '+k).join(' | ')]:[]),
+  ...(coverage?['Coverage: '+coverage.covered+'/'+coverage.live+' scouting, '+coverage.sessioned+'/'+coverage.live+' sessioned, '+coverage.rooted+' rooted']:[]),
   ...(storm?['StormSeed: '+storm]:[]),
   ...[manager?'Manager:\u00a0running':'Manager:\u00a0not\u00a0running']].join('\n');
  const row=['Dark Web',manager||liveHosts>0||openedCaches>0||rewardParts.length>0,value,tooltip];

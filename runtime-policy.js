@@ -27,7 +27,15 @@ export function beginAutomationAction(ns,kind,expectedMs){
  ns.write('tasks/runtime/'+ns.pid+'.json',JSON.stringify(record),'w');return true;
 }
 export function endAutomationAction(ns){const record=registrations.get(ns.pid);if(!record)return;delete record.action;record.at=Date.now();ns.write('tasks/runtime/'+ns.pid+'.json',JSON.stringify(record),'w');}
-export function maintenanceRequested(ns){try{const r=JSON.parse(ns.read('tasks/automation-maintenance.json'));return r.expiresAt>Date.now()&&ns.isRunning(r.ownerPid);}catch{return false;}}
+export function maintenanceRequested(ns,self=null){try{const r=JSON.parse(ns.read('tasks/automation-maintenance.json'));if(!(r.expiresAt>Date.now()&&ns.isRunning(r.ownerPid)))return false;
+ // The lease lists the scripts it is replacing. A manager whose own file is untouched keeps working; an
+ // unscoped or legacy lease still pauses everything. Derive the caller's own name here so every existing
+ // call site gets the scoped behaviour without threading a second argument through 48 of them.
+ let name=self;
+ if(name===null||name===undefined){try{name=typeof ns.getScriptName==='function'?ns.getScriptName():null;}catch{name=null;}}
+ if(!Array.isArray(r.scripts)||!r.scripts.length||!name)return true;
+ const caller=String(name).replace(/^\/+/,'');
+ return r.scripts.some(s=>String(s).replace(/^\/+/,'')===caller);}catch{return false;}}
 export function recoveryDecision({record,signature,observedAt,now,paused=false,protectedWork=false,attempts=0,statusAt,script,pid}){
  if(paused)return 'paused';
  const startedAt=Number.isFinite(record?.startedAt)&&record.startedAt>0&&record.startedAt<=now?record.startedAt:observedAt;

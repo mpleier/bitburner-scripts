@@ -8,7 +8,7 @@ import { activityRecord, activityBusy, claimActivity, releaseActivity, compatibl
 import { transitionActive, transitionFile } from './progression-coordination.js';
 import { infiltrationRewardFaction, infiltrationInput, chooseInfiltration, findInfiltrationState, selectRewardFaction, selectedRewardFaction, infiltrationUiDetails, enterInfiltration, marketRecoveryDelay, recordInfiltrationOutcome, infiltrationEntryAllowed } from './infiltration-solvers.js';
 
-export const infiltrationStatusFile = 'tasks/infiltration-status.json';
+const infiltrationStatusFile = 'tasks/infiltration-status.json';
 function transitionBusy(ns) {
   let record;
   try { record = JSON.parse(ns.read(transitionFile)); } catch { }

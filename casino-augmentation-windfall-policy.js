@@ -1,7 +1,7 @@
 /** Cash from the 10b casino win is reserved for the first augmentation basket. */
 export const casinoWindfallFile = 'tasks/casino-augmentation-windfall.json';
-export const casinoWindfallAmount = 1e10;
-export const casinoWindfallMaxAgeMs = 2 * 60 * 60 * 1000;
+const casinoWindfallAmount = 1e10;
+const casinoWindfallMaxAgeMs = 2 * 60 * 60 * 1000;
 
 export function casinoWindfallState(ns, reset = ns.getResetInfo(), now = Date.now()) {
   let saved;

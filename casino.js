@@ -1,4 +1,4 @@
-import { casinoOptionsError, casinoHookArgs, casinoWager, casinoRoundDelta, blackjackShouldHit, parseDealerRank, performCasinoUiAction, stopCasinoCompetitors,stopCasinoFocusCompetitors,casinoControlAllowed,reloadCasinoWindow,launchCasinoHook } from './casino-policy.js';
+import { casinoOptionsError, casinoHookArgs, casinoWager, casinoRoundDelta, blackjackShouldHit, parseDealerRank, performCasinoUiAction, stopCasinoCompetitors,stopCasinoFocusCompetitors,casinoStubbornProcesses,casinoControlAllowed,reloadCasinoWindow,launchCasinoHook } from './casino-policy.js';
 import { recordCasinoWindfall } from './casino-augmentation-windfall-policy.js';
 import { isScriptPaused } from './automation-control.js';
 import { beginTransition, endTransition } from './progression-coordination.js';
@@ -473,7 +473,8 @@ export async function main(ns) {
         const receipt = await getNsDataThroughFile(ns,
             `(${stopCasinoCompetitors.toString()})(ns,ns.args[0])`, '/Temp/casino-stop-competitors.txt', [ns.pid]);
         stoppedAutomation = receipt.some(process=>process.stopped);
-        if (receipt.some(process=>!process.stopped)) throw new Error('Some competing scripts could not be stopped.');
+        const stubborn=casinoStubbornProcesses(ns,receipt);
+        if (stubborn.length) throw new Error('Some competing scripts could not be stopped: '+stubborn.join(', ')+'.');
         let pid;
         log(ns, `INFO: Killed other scripts running on home...`, false);
 
@@ -643,7 +644,10 @@ export async function main(ns) {
 
     // Run the program
     try { await start(); }
-    catch(error){if(error?.name==='CasinoUiUnavailable'){failureReason=error.message;ns.print('Casino interface unavailable; stopping safely and allowing a later retry: '+failureReason);}
+    catch(error){if(error?.name==='CasinoUiUnavailable'){failureReason=error.message;
+        // A relabelled casino UI is the one failure that leaves no trace anywhere else: say which control broke.
+        ns.tprint('WARNING: casino.js stopped safely; the casino interface could not be driven: '+failureReason);
+        ns.print('Casino interface unavailable; stopping safely and allowing a later retry: '+failureReason);}
         else if(error?.name!=='CasinoControlLost')throw error;}
     finally {
         if (options && !casinoCompleted && !reloading) {

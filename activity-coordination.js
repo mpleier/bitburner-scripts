@@ -1,6 +1,6 @@
 import {homeRamReserve} from './home-ram-policy.js';
 /** Short-lived UI ownership. Casino and BitNode transitions take priority. */
-export const activityFile = 'tasks/activity-lock.json';
+const activityFile = 'tasks/activity-lock.json';
 export const ramReserveFile = 'tasks/automation-ram-reserve.json';
 const supportFile = script => 'tasks/activity-support-' + script.split('/').pop() + '.json';
 export async function markActivitySupport(ns) {

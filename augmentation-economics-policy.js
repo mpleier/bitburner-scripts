@@ -30,8 +30,13 @@ export function augmentationEconomicsChange(before,after,{allowRepDrift=false,re
   if(!Number.isFinite(before.at)||!Number.isFinite(after.at)||after.at<before.at)return changed('Invalid quote time');
   if(JSON.stringify(before.watch)!==JSON.stringify(after.watch))return changed('Watched catalogue changed');
   const sameNumber=(a,b)=>Number.isFinite(a)&&Number.isFinite(b)&&a>=0&&b>=0&&Math.abs(a-b)<=Math.max(1,Math.abs(a),Math.abs(b))*1e-9;
+  const sameRelative=(a,b,tolerance)=>Number.isFinite(a)&&Number.isFinite(b)&&a>0&&b>0&&Math.abs(a-b)<=Math.max(a,b)*tolerance;
   if(JSON.stringify(before.joined)!==JSON.stringify(after.joined))return changed('Faction membership changed');
-  if(!sameNumber(before.favorToDonate,after.favorToDonate)||!sameNumber(before.repMultiplier,after.repMultiplier))return changed('Donation conversion changed');
+  if(!sameNumber(before.favorToDonate,after.favorToDonate))return changed('Donation conversion changed');
+  // Player multipliers drift continuously whenever Stanek fragments charge or a graft lands, which must not
+  // invalidate an otherwise usable plan. One percent of the reputation multiplier moves a donation bill by
+  // pennies, whereas installing augmentations or changing BitNode moves it by tens of percent.
+  if(!sameRelative(before.repMultiplier,after.repMultiplier,.01))return changed('Donation conversion changed');
   if(JSON.stringify(Object.keys(before.quotes).sort())!==JSON.stringify(Object.keys(after.quotes).sort()))return changed('Augmentation catalogue changed');
   for(const [name,q]of Object.entries(before.quotes)){
    const current=after.quotes[name];if(!current||!sameNumber(q.price,current.price)||!sameNumber(q.rep,current.rep))return changed('Augmentation price or reputation requirement changed: '+name);

@@ -202,6 +202,9 @@ export async function chargeStanekFragments(ns, fragments, host, configuration, 
     let allSuccessful = true;
     for (const fragment of fragments) {
         if (isScriptPaused(ns, ns.getScriptName()) || maintenanceRequested(ns)) return false;
+        // Layout dumps include placeholder/booster entries without a numeric id. Nothing to charge there, and
+        // counting them as failures kept every round "unsuccessful" (1000 ms backoff) while real fragments charged.
+        if (typeof fragment.id !== 'number') continue;
         const live = (await readFragments(ns)).find(f => f.id === fragment.id && f.x === fragment.x && f.y === fragment.y && f.rotation === fragment.rotation);
         if (!live) { allSuccessful = false; continue; }
         const availableRam = ns.getServerMaxRam(host) - ns.getServerUsedRam(host);

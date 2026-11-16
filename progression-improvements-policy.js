@@ -4,15 +4,20 @@ import {combatAugmentationValue} from './combat-growth-policy.js';
 export function adaptiveHgwTiming(previous,telemetry,{now=Date.now(),baseCycleMs=4000,baseQueueMs=100,targetCount=2}={}) {
  const base=Number.isFinite(baseCycleMs)&&baseCycleMs>0?baseCycleMs:4000;
  const counts=telemetry?.counts,operations=counts?.operations,late=counts?.deadlineOverruns;
+ // Overruns the worker already proved unavoidable (RAM-starved legs) are not pacing evidence: lengthening the
+ // cycle cannot schedule a batch the fleet has no free RAM for, and pacing to them pinned the multiplier at its
+ // 4x cap (32 s cycles) with zero clean windows. Tracked per window so escalation can require preventable ones.
+ const unavoidable=counts?.unavoidableOverruns;
  const valid=telemetry&&!telemetry.blocked&&Number.isFinite(telemetry.at)&&telemetry.at<=now&&now-telemetry.at<=15000&&Number.isSafeInteger(operations)&&Number.isSafeInteger(late)&&operations>=0&&late>=0&&late<=operations;
  const same=!!previous&&previous.augReset===telemetry?.augReset&&previous?.nodeReset===telemetry?.nodeReset&&previous.baseCycleMs===base&&previous.at<=now;
  const spacingCounts=Number.isSafeInteger(counts?.spacingSamples)&&Number.isSafeInteger(counts?.spacingRisks)&&counts.spacingSamples>=0&&counts.spacingRisks>=0&&counts.spacingRisks<=counts.spacingSamples;
- let state=same?{...previous}:{augReset:telemetry?.augReset,nodeReset:telemetry?.nodeReset,baseCycleMs:base,multiplier:1,cleanWindows:0,windowAt:now,operations:operations||0,late:late||0,changedAt:0};
+ let state=same?{...previous}:{augReset:telemetry?.augReset,nodeReset:telemetry?.nodeReset,baseCycleMs:base,multiplier:1,cleanWindows:0,windowAt:now,operations:operations||0,late:late||0,unavoidable:Number.isSafeInteger(unavoidable)&&unavoidable>=0?unavoidable:0,changedAt:0};
+ if(!Number.isSafeInteger(state.unavoidable))state.unavoidable=Number.isSafeInteger(unavoidable)&&unavoidable>=0?unavoidable:0;
  if (!Number.isSafeInteger(state.spacingSamples)) state.spacingSamples = spacingCounts ? counts.spacingSamples : 0;
  if (!Number.isSafeInteger(state.spacingRisks)) state.spacingRisks = spacingCounts ? counts.spacingRisks : 0;
  // Keep safety backoff across hot reloads, but never combine clean windows from different owners.
  if(valid&&Number.isSafeInteger(telemetry.ownerPid)&&telemetry.ownerPid>0){
-  if(Number.isSafeInteger(state.ownerPid)&&state.ownerPid!==telemetry.ownerPid){state.windowAt=now;state.operations=operations;state.late=late;state.spacingSamples=counts.spacingSamples||0;state.spacingRisks=counts.spacingRisks||0;state.cleanWindows=0;state.recoveryEvidence=null;}
+  if(Number.isSafeInteger(state.ownerPid)&&state.ownerPid!==telemetry.ownerPid){state.windowAt=now;state.operations=operations;state.late=late;state.unavoidable=Number.isSafeInteger(unavoidable)&&unavoidable>=0?unavoidable:0;state.spacingSamples=counts.spacingSamples||0;state.spacingRisks=counts.spacingRisks||0;state.cleanWindows=0;state.recoveryEvidence=null;}
   state.ownerPid=telemetry.ownerPid;
  }
  if(valid&&now-state.windowAt>=30000){
@@ -24,13 +29,18 @@ export function adaptiveHgwTiming(previous,telemetry,{now=Date.now(),baseCycleMs
   const owner=telemetry.ownerPid,prefix=[telemetry.nodeReset,telemetry.augReset,owner].join(':')+':';
   const ordered=Number.isSafeInteger(owner)&&owner>0?summarizeHgwBatches(telemetry.recent,owner,now).filter(b=>b.state==='ordered'&&b.steps.every(s=>s.firstAt>state.windowAt)&&b.batchId.startsWith(prefix)&&['hack','grow','weaken'].every(tool=>b.steps.some(s=>s.tool===tool))):[];
   const provenClean=spacingComplete&&bad===0&&ordered.length>=3;
-  if(n<0||rawBad<0||bad<0){state.windowAt=now;state.operations=operations;state.late=late;state.spacingSamples=counts?.spacingSamples||0;state.spacingRisks=counts?.spacingRisks||0;}
+  if(n<0||rawBad<0||bad<0){state.windowAt=now;state.operations=operations;state.late=late;state.unavoidable=Number.isSafeInteger(unavoidable)&&unavoidable>=0?unavoidable:0;state.spacingSamples=counts?.spacingSamples||0;state.spacingRisks=counts?.spacingRisks||0;}
   // Three confirmed spacing risks are actionable even when slow operations keep traffic sparse.
   else if(n>=20||n>=8&&now-state.windowAt>=120000||spacingComplete&&n>=3&&risks===n||n>=12&&provenClean){
    const lowTraffic=n<20;
    state.completionsPerSecond=n/Math.max(1,(now-state.windowAt)/1000);
    state.lateFraction=rawBad/n;state.riskFraction=bad/n;state.evidenceMode=spacingComplete?'half-leg-spacing':'deadline-fallback';state.windowOperations=n;
-   if(bad>=3&&bad/n>=.05){state.cleanWindows=0;if(now-state.changedAt>=60000){
+   const unavoidableDelta=Number.isSafeInteger(unavoidable)&&unavoidable>=0?Math.max(0,unavoidable-(Number.isSafeInteger(state.unavoidable)?state.unavoidable:0)):0;
+   const preventable=Math.max(0,rawBad-unavoidableDelta);
+   // RAM-starved overruns dominate this counter (854 of 1014 live); pacing cannot schedule them, so escalating
+   // would only stretch the cycle. Require at least a third of the window's overruns to be preventable.
+   const actionable=rawBad<=0||preventable/Math.max(1,rawBad)>=0.33;
+   if(bad>=3&&bad/n>=.05&&actionable){state.cleanWindows=0;if(now-state.changedAt>=60000){
     state.multiplier=Math.min(4,state.multiplier*1.5);
     // Recent measured delays can exceed the fixed multiplier's safety margin.
     // Require three independent risky completions in this window; lifetime maxima are not evidence.
@@ -43,18 +53,33 @@ export function adaptiveHgwTiming(previous,telemetry,{now=Date.now(),baseCycleMs
      Math.min(base*8,Math.ceil(Math.max(...[...distinct.values()].map(e=>e.lateMs))*4)));
     state.changedAt=now;
    }}
+   else if(bad>=3&&bad/n>=.05){
+    state.cleanWindows=0;
+    // Pacing cannot schedule a leg the fleet cannot start in time, so a cycle stretched by
+    // unavoidable overruns buys nothing and costs throughput. When the window's overruns are not
+    // actionable (almost all unavoidable) recover one bounded step after five minutes of holding,
+    // instead of pinning the stretched cycle forever.
+    if(!actionable&&now-state.changedAt>=300000){
+     state.multiplier=Math.max(1,state.multiplier/1.25);
+     // The learned latency floor is the binding term once the multiplier reaches 1: recover it too, or
+     // the cycle stays stretched by a floor that only reflected the same unavoidable overruns.
+     if(Number.isFinite(state.latencyFloorMs)&&state.latencyFloorMs>0)state.latencyFloorMs=state.latencyFloorMs/1.25;
+     if(state.latencyFloorMs<=base)state.latencyFloorMs=0;
+     state.changedAt=now;state.recoveredNow=true;
+    }
+   } // unavoidable: hold the current cycle instead of escalating
    else if(bad/n<=.05){
     const fastRecovery=provenClean;
     const decay=fastRecovery?1.5:1.25;
     state.recoveryEvidence={batches:ordered.length,decay};
     state.cleanWindows++;if(state.cleanWindows>=(lowTraffic?2:3)&&now-state.changedAt>=120000){state.multiplier=Math.max(1,state.multiplier/decay);state.latencyFloorMs=(state.latencyFloorMs||0)/decay;if(fastRecovery){const recent=telemetry.recent.filter(e=>e.owner===owner&&e.at>state.windowAt&&e.at<=now&&Number.isFinite(e.lateMs)&&e.lateMs>=0);state.latencyFloorMs=Math.max(state.latencyFloorMs,Math.min(base*16,Math.ceil(Math.max(0,...recent.map(e=>e.lateMs))*8)));}if(state.latencyFloorMs<=base)state.latencyFloorMs=0;state.changedAt=now;state.cleanWindows=0;}}
    else state.cleanWindows=0;
-   state.windowAt=now;state.operations=operations;state.late=late;state.spacingSamples=counts?.spacingSamples||0;state.spacingRisks=counts?.spacingRisks||0;
+   state.windowAt=now;state.operations=operations;state.late=late;state.unavoidable=Number.isSafeInteger(unavoidable)&&unavoidable>=0?unavoidable:(state.unavoidable||0);state.spacingSamples=counts?.spacingSamples||0;state.spacingRisks=counts?.spacingRisks||0;
   }
  }
  state.at=now;state.cycleMs=Math.ceil(Math.max(base*state.multiplier,Math.min(base*16,state.latencyFloorMs||0)));state.queueMs=Math.max(baseQueueMs,Math.ceil(baseQueueMs*state.multiplier));
  state.targetCap=Math.max(1,Math.round(Math.max(1,targetCount)/(state.cycleMs/base)));
- state.reason=!valid?'Timing evidence unavailable; retaining the current pacing':state.cycleMs>base?'Back off after sustained late completions; recover gradually after clean windows':'Normal pacing';
+ state.reason=!valid?'Timing evidence unavailable; retaining the current pacing':state.recoveredNow&&state.cycleMs>base?'Recovering cycle: overruns are unavoidable, not schedule-driven':state.cycleMs>base?'Back off after sustained late completions; recover gradually after clean windows':'Normal pacing';
  return state;
 }
 

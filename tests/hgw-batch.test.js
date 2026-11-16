@@ -55,3 +55,15 @@ test('actual workers publish their allocated thread receipts but looping events 
   const e=JSON.parse(queue).recent[0];assert.equal(e.batchId,loop?undefined:b.batchId);if(!loop){assert.equal(e.pieceThreads,2);assert.equal(e.batchStep,step);}
  }
 });
+
+test('a wave launches in scheduled-start order so long legs cannot be pushed past their deadline',()=>{
+ const source=readFileSync(new URL('../daemon.js',import.meta.url),'utf8');
+ // Each leg start is derived from its own duration...
+ assert.match(source,/const t3_fireGrowAt = new Date\(t3_growResolvesAt\.getTime\(\) - growTime\)/);
+ assert.match(source,/const t4_fireSecondWeakenAt = new Date\(t4_secondWeakenResolvesAt\.getTime\(\) - weakenTime\)/);
+ // ...so the dispatch order must be the schedule order, not thread-count order. Live evidence: hack legs
+ // reported 0 unavoidable overruns while grow/weaken reported 95-100% of operations.
+ assert.match(source,/scheduleItems: schedItems\.slice\(\)\.sort\(\(a,b\)=>a\.start-b\.start\|\|a\.end-b\.end\)/);
+ const legs=[{start:30,end:60},{start:10,end:40},{start:20,end:50}].sort((a,b)=>a.start-b.start||a.end-b.end);
+ assert.deepEqual(legs.map(l=>l.start),[10,20,30]);
+});

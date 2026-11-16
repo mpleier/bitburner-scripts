@@ -55,7 +55,7 @@ export function upgradeReturn(name, level, cost, storagePressure) {
   return weight * increment / (1 + Math.max(0, level) * increment) / cost;
 }
 
-export function graftScore(stats, entropyFactor = 1) {
+function graftScore(stats, entropyFactor = 1) {
   const weights = { hacking: 3, hacking_exp: 2, hacking_chance: 1, hacking_speed: 2,
     hacking_money: 3, hacking_grow: 2, faction_rep: 2, company_rep: 1,
     charisma: 1, charisma_exp: 1, strength: 0.3, defense: 0.3, dexterity: 0.3, agility: 0.3 };

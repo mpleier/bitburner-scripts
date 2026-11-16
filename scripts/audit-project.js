@@ -2,8 +2,8 @@ import {auditBindings} from './audit-bindings.js';
 import {readdir,readFile} from 'node:fs/promises';
 import {join,relative} from 'node:path';
 import {auditImports,auditApis,auditDynamicRam,apiReferences,estimateRam} from './audit-core.js';
-export async function projectSources(root=process.cwd()){
- const files=new Map();async function collect(dir){for(const entry of await readdir(dir,{withFileTypes:true})){if(entry.isSymbolicLink())continue;const file=join(dir,entry.name);if(entry.isDirectory()){if(!['node_modules','.git','tests','scripts','tasks','Temp','temp','remote-control','pc-controller'].includes(entry.name))await collect(file);}else if(entry.name.endsWith('.js'))files.set(relative(root,file).replaceAll('\\','/'),await readFile(file,'utf8'));}}
+async function projectSources(root=process.cwd()){
+ const files=new Map();async function collect(dir){for(const entry of await readdir(dir,{withFileTypes:true})){if(entry.isSymbolicLink())continue;const file=join(dir,entry.name);if(entry.isDirectory()){if(!['node_modules','.git','tests','scripts','tasks','Temp','temp','remote-control','pc-controller','manual'].includes(entry.name))await collect(file);}else if(entry.name.endsWith('.js'))files.set(relative(root,file).replaceAll('\\','/'),await readFile(file,'utf8'));}}
  await collect(root);return files;
 }
 if(process.argv[1]?.replaceAll('\\','/').endsWith('/audit-project.js')){

@@ -76,7 +76,7 @@ test('official HP metadata covers all Black Ops and risk quote stays within a 32
  const defs=JSON.parse(readFileSync(new URL('../scripts/api-surface.json',import.meta.url),'utf8')),ram=estimateRam(apiReferences('risk.js',blackOpRiskQuoteSource).references,defs);assert.deepEqual(ram.unknown,[]);assert.equal(ram.ram,31.1);
 });
 test('production preserves regular thresholds, post-stamina native guards and protected Black Ops',()=>{
- const s=readFileSync(new URL('../bladeburner.js',import.meta.url),'utf8');assert.match(s,/const actionThreshold=bestActionName===nextBlackOp&&blackOpRisk.adaptive\?blackOpRisk.threshold:farmTicket\?farmTicket.threshold:options\['success-threshold'\]/);assert.match(s,/ns.args\[0\]==="Black Operations"&&ns.args\[11\]!=="null"/);assert.ok(s.indexOf('if(isBlackOp(observedAction))')<s.indexOf('blackOpRiskQuoteSource,\'/Temp/'));assert.match(s,/observedAction\?\.name!=='Recruitment'/);
+ const s=readFileSync(new URL('../bladeburner.js',import.meta.url),'utf8');assert.match(s,/const actionThreshold=bestActionName===nextBlackOp\?\(blackOpRisk\.adaptive\?blackOpRisk\.threshold:options\['success-threshold'\]\):farmTicket\?farmTicket\.threshold:options\['operation-success-threshold'\]/);assert.match(s,/ns.args\[0\]==="Black Operations"&&ns.args\[11\]!=="null"/);assert.match(s,/\['operation-success-threshold', 0\.5\]/);assert.ok(s.indexOf('if(isBlackOp(observedAction))')<s.indexOf('blackOpRiskQuoteSource,\'/Temp/'));assert.match(s,/observedAction\?\.name!=='Recruitment'/);
 });
 test('adaptive floor option rejects unsupported or malformed probabilities',()=>{
  for(const value of [.89,1.01,NaN,'0.95'])assert.match(optionsError({'black-op-min-success':value}),/black-op-min-success/);

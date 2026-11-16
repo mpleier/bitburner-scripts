@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
-import {casinoOptionsError,casinoHookArgs,casinoWager,casinoRoundDelta,parseDealerRank,blackjackShouldHit,casinoReactHandler,casinoUiEvent,performCasinoUiAction,stopCasinoCompetitors,stopCasinoFocusCompetitors,casinoRetryPending,casinoControlAllowed,reloadCasinoWindow,launchCasinoHook} from '../casino-policy.js';
+import {casinoOptionsError,casinoHookArgs,casinoWager,casinoRoundDelta,parseDealerRank,blackjackShouldHit,casinoReactHandler,casinoUiEvent,performCasinoUiAction,stopCasinoCompetitors,stopCasinoFocusCompetitors,casinoStubbornProcesses,casinoRetryPending,casinoControlAllowed,reloadCasinoWindow,launchCasinoHook} from '../casino-policy.js';
 test('casino wager is a positive affordable integer and never exceeds the game limit',()=>{
  for(const [wallet,expected] of [[0,0],[.9,0],[1,1],[2,1],[100,90],[1e9,100e6],[NaN,0],[Infinity,0]])assert.equal(casinoWager(wallet),expected);
  assert.ok(casinoOptionsError({'save-sleep-time':-1,'click-sleep-time':5,'find-sleep-time':0}));
@@ -40,6 +40,19 @@ test('casino cleanup preserves its own process, its helper, and Remote API conne
  const ns={pid:2,ps:()=>processes,kill:pid=>{killed.push(pid);return true;}};
  assert.deepEqual(stopCasinoCompetitors(ns,1),[{pid:4,stopped:true}]);assert.deepEqual(killed,[4]);
  const generated=new Function('ns','pid','return ('+stopCasinoCompetitors.toString()+')(ns,pid)');assert.deepEqual(generated(ns,1),[{pid:4,stopped:true}]);
+});
+test('remote-control jobs survive cleanup when their filename carries a leading slash',()=>{
+ const killed=[];const processes=[{pid:1,filename:'casino.js'},{pid:2,filename:'/remote-control/job.js'},{pid:3,filename:'/remote-control/results/x.js'},{pid:4,filename:'/remote-api-agent.js'},{pid:5,filename:'/daemon.js'}];
+ const ns={pid:9,ps:()=>processes,kill:pid=>{killed.push(pid);return true;}};
+ assert.deepEqual(stopCasinoCompetitors(ns,1),[{pid:5,stopped:true}]);
+ assert.deepEqual(killed,[5]);
+});
+test('a script that exits between ps and kill does not abort the casino run',()=>{
+ const receipt=[{pid:1,stopped:true},{pid:2,stopped:false},{pid:3,stopped:false}];
+ const ns={isRunning:pid=>pid===3};
+ assert.deepEqual(casinoStubbornProcesses(ns,receipt),[3]);
+ assert.deepEqual(casinoStubbornProcesses(ns,[{pid:2,stopped:false}]),[]);
+ assert.deepEqual(casinoStubbornProcesses(ns,null),[]);
 });
 test('casino focus cleanup stops only work and daemon while preserving controllers',()=>{
  const killed=[];const processes=[{pid:1,filename:'casino.js'},{pid:2,filename:'work-for-factions.js'},{pid:3,filename:'daemon.js'},{pid:4,filename:'gangs.js'},{pid:5,filename:'sleeve.js'},{pid:6,filename:'autopilot.js'},{pid:7,filename:'remote-api-agent.js'}];

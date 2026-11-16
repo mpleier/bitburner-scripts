@@ -114,7 +114,7 @@ function pathJoin(...args) {
 
 /** @param {NS} ns
  * Rewrites a file with path substitions to handle downloading to a subfolder. **/
-export function rewriteFileForSubfolder(ns, path) {
+function rewriteFileForSubfolder(ns, path) {
     ns.write(path, rewriteContentsForSubfolder(ns.read(path), path), 'w');
     return true;
 }

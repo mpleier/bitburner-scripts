@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import {readFile} from 'node:fs/promises';
-import {planGangHost,gangHostPreferences,factionForcedJoins,rankFactionInvites} from '../faction-policy.js';
+import {planGangHost,gangCreationHost,gangHostPreferences,factionForcedJoins,rankFactionInvites,gangStartPhase} from '../faction-policy.js';
 import {gangMutationAllowed} from '../gang-policy.js';
 
 const combat=['Speakers for the Dead','The Dark Army','The Syndicate','Tetrads','Slum Snakes'];
@@ -80,13 +80,27 @@ test('forced invitations prioritize gang membership at any karma and honor the h
  assert.deepEqual(rankFactionInvites(['Slum Snakes','NiteSec','Daedalus'],true,{'gang-type':'hacking'}),['Daedalus','NiteSec','Slum Snakes']);
 });
 
+test('gang start switches from karma grinding to host qualification once the gate is met',()=>{
+ assert.equal(gangStartPhase({karma:0,gangAvailable:true}).phase,'karma');
+ assert.equal(gangStartPhase({karma:-53999,gangAvailable:true}).phase,'karma');
+ const qualify=gangStartPhase({karma:-54000,gangAvailable:true});
+ assert.equal(qualify.phase,'qualify');
+ assert.match(qualify.reason,/qualify for the host faction/i);
+ assert.equal(gangStartPhase({karma:-90000,gangAvailable:true,host:'Speakers for the Dead'}).phase,'create');
+ // BitNode 2 has gang mechanics from the start, so karma never delays qualification.
+ assert.equal(gangStartPhase({karma:0,gangAvailable:true,node:2}).phase,'qualify');
+ assert.equal(gangStartPhase({karma:0,gangAvailable:true,node:2,host:'Slum Snakes'}).phase,'create');
+ // Nothing to prioritize when the gang already exists or mechanics are locked.
+ assert.equal(gangStartPhase({karma:-1e6,gang:true,gangAvailable:true}).phase,'none');
+ assert.equal(gangStartPhase({karma:-54000}).phase,'none');
+});
 async function creationHarness({joined=['Slum Snakes'],preferences={},beforeCreation=()=>{},existing=false,sf4=false}={}) {
  const source=await readFile(new URL('../gangs.js',import.meta.url),'utf8');
  const files={},calls=[],queries=[],done=new Error('INITIALIZATION_OBSERVED');let inGang=existing;
  const ns={...api(files),pid:1,args:[],getScriptName:()=> 'gangs.js',getPlayer:()=>({factions:joined}),heart:{break:()=>-54000},
   disableLog(){},print(){},sleep:async()=>{},write:async(f,s)=>{files[f]=s;},
   gang:{inGang:()=>inGang,createGang:f=>{calls.push(f);inGang=true;return true;}}};
- const context={planGangHost,gangHostPreferences,gangMutationAllowed,automationHeartbeat(){},isScriptPaused:()=>false,log(){},formatNumberShort:String,
+ const context={planGangHost,gangCreationHost,gangHostPreferences,gangMutationAllowed,automationHeartbeat(){},isScriptPaused:()=>false,log(){},formatNumberShort:String,
   getNsDataThroughFile:async(ns,expression,file,args=[])=>{
    assert.ok(args.every(a=>['string','number','boolean'].includes(typeof a)),'Netscript arguments must be primitives');
    queries.push(expression);

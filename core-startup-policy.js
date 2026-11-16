@@ -1,5 +1,5 @@
 import {isScriptPaused} from './automation-control.js';
-export const startupControllers=['bootstrap-start.js','autopilot.js','reliability-manager.js'];
+const startupControllers=['bootstrap-start.js','autopilot.js','reliability-manager.js'];
 /** Small machines must fund controllers before optional resident helpers. */
 export function coreStartupReservation(ns,requester,processes=ns.ps('home')) {
  const name=requester.replace(/^\//,'');

@@ -4,6 +4,16 @@ export function hacknetTierEligible(candidate,money) {
   candidate.payoff<=28800&&candidate.cost<=money*.01||candidate.cost<=money*.001;
 }
 
+/** Free Hacknet spending is only defensible where the BitNode does not penalise Hacknet income.
+ * Both official formulas (calculateMoneyGainRate and calculateHashGainRate) multiply by
+ * BitNodeMultipliers.HacknetNodeMoney, so a node at 0.2 makes the whole fleet a fifth as productive
+ * while augmentations still cost full price. */
+export function hacknetWorthMaxing(bitNodeMults,threshold=0.5) {
+ const value=Number(bitNodeMults?.HacknetNodeMoney);
+ const limit=Number.isFinite(threshold)&&threshold>0?threshold:0.5;
+ return !Number.isFinite(value)||value>=limit;
+}
+
 /** Official production formulas, available without Formulas.exe. */
 export function hacknetProduction(s,servers,multiplier=1) {
  if(servers)return .001*s.level*1.07**Math.log2(s.ram)*(1+(s.cores-1)/5)*Math.max(0,1-(s.ramUsed||0)/s.ram)*multiplier;

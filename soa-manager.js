@@ -5,7 +5,7 @@ import { autopilotSourceFiles } from './autopilot-policy.js';
 import { claimSpending } from './spending-policy.js';
 import { isScriptPaused } from './automation-control.js';
 export function soaCandidates(items,owned,rep) {return rankSoAAugmentations(items,owned,rep);}
-export function soaControlAllowed(ns){return !isScriptPaused(ns,'soa-manager.js')&&!maintenanceRequested(ns)&&achievementActionAllowed(ns,'cashSpending');}
+function soaControlAllowed(ns){return !isScriptPaused(ns,'soa-manager.js')&&!maintenanceRequested(ns)&&achievementActionAllowed(ns,'cashSpending');}
 export function soaTick(ns) {
  const reset=ns.getResetInfo(),sf=autopilotSourceFiles(reset);
  if(!Number(sf[4]))return {status:'unavailable'};

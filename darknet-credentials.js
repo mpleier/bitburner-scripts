@@ -2,7 +2,7 @@
 // Legacy files are archived and verified before removal. Credentials never enter code deployment lists.
 import {parsePasswordEntries} from './darknet-solvers.js';
 export const credentialBundle='tasks/credentials-home.json';
-export const credentialVersion='tasks/credentials-version.txt';
+const credentialVersion='tasks/credentials-version.txt';
 const reportPrefix='tasks/credentials-report-';
 export function decodeCredentials(text) {
  if(!text)return new Map();
@@ -12,7 +12,7 @@ export function decodeCredentials(text) {
  for(const row of data.entries){if(!Array.isArray(row)||row.length!==3||typeof row[0]!=='string'||!row[0]||typeof row[1]!=='string'||!Number.isFinite(row[2])||row[2]<0)throw Error('Invalid credential record');out.set(row[0],{password:row[1],at:row[2]});}
  return out;
 }
-export function mergeCredentials(target,source) {
+function mergeCredentials(target,source) {
  let changed=false;
  for(const [host,r]of source){const prior=target.get(host);if(!prior||r.at>prior.at){target.set(host,r);changed=true;}}
  return changed;
@@ -20,11 +20,18 @@ export function mergeCredentials(target,source) {
 export function createDarknetCredentials(ns) {
  const self=ns.getHostname(),home=self==='home',report=reportPrefix+encodeURIComponent(self)+'.json';
  const file=home?credentialBundle:report,archive='tasks/credential-archive-'+encodeURIComponent(self)+'.json';
- let local=null,shared=new Map(),view=new Map(),dirty=true,serial=0,lastLegacy=-Infinity,lastBase=null,lastVersion='',sent='',localVersion='',lastMap=null;
+ let local=null,shared=new Map(),view=new Map(),dirty=true,serial=0,lastLegacy=-Infinity,lastBase=null,lastVersion='',sent='',localVersion='',lastMap=null,lastCompact=0;
  const reports=new Map();
  const load=()=>{if(local===null){const text=ns.read(file);local=decodeCredentials(text);localVersion=text?JSON.parse(text).version:'';}};
  const payload=()=>JSON.stringify({schema:1,version:Date.now()+':'+ns.pid+':'+(++serial),entries:[...local].map(([h,r])=>[h,r.password,r.at])});
  const commit=async()=>{
+  // Cap by recency at the point of writing. Doing this in refresh() was useless: the home merge of
+  // per-host reports re-added the 49k guessed tokens immediately afterwards, so the 1.87 MB bundle
+  // survived and every darknet host kept copying it (191 MB of a 267 MB save).
+  if(home&&local.size>2000){
+   const keep=[...local.entries()].sort((a,b)=>(b[1]?.at||0)-(a[1]?.at||0)).slice(0,2000);
+   if(keep.length<local.size)local=new Map(keep);
+  }
   const text=payload();await ns.write(file,text,'w');if(ns.read(file)!==text)throw Error('Credential write verification failed');
   localVersion=JSON.parse(text).version;
   if(home)await ns.write(credentialVersion,localVersion,'w');
@@ -84,6 +91,15 @@ export function createDarknetCredentials(ns) {
    if(dirty){view=new Map(shared);mergeCredentials(view,local);lastMap=new Map([...view].map(([h,r])=>[h,r.password]));dirty=false;}
    return lastMap;
   },
-  async save(host,password){load();local.set(host,{password,at:Date.now()});await commit();await publish();},
+  async save(host,password){
+   load();
+   // Only real servers enter the store. Guessed tokens (reversed names, '0', padding) used to be stored
+   // as hosts and grew the bundle to 49,561 entries / 1.87 MB, which then multiplied across every darknet
+   // host that copies it (91 copies = 191 MB) and pushed the save to 267 MB until the game crashed.
+   if(typeof host!=='string'||!host)return;
+   // Reject only when the game says the server does not exist; an absent API (tests, older stubs) is not a rejection.
+   try{if(ns.serverExists(host)===false)return;}catch{}
+   local.set(host,{password,at:Date.now()});await commit();await publish();
+  },
  };
 }

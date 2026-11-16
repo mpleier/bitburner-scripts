@@ -44,5 +44,14 @@ test('actual producer and consumer use reset metadata and a bounded refresh cade
  const read=Function('ns','freshFactionManagerOutput','resetInfo',"const factionManagerOutputFile='/Temp/affordable-augs.txt';"+body);
  assert.equal(read({read:()=>JSON.stringify({...summary,at:Date.now()})},freshFactionManagerOutput,reset).installed_count,1);
  assert.equal(read({read:()=>JSON.stringify({...summary,nodeReset:0})},freshFactionManagerOutput,reset),null);
- assert.ok(source.includes('nextFactionSummaryRefresh=Date.now()+31000'));
+ // The refresh must land inside the economy comparison's 30-second rep-coalescing window, otherwise the
+ // ordinary reputation growth between two summaries reads as a material funding change on every pass.
+ const cadence=Number(source.match(/nextFactionSummaryRefresh=Date\.now\(\)\+(\d+)/)?.[1]);
+ assert.ok(Number.isFinite(cadence)&&cadence>0&&cadence<=30000,'refresh cadence must stay within the coalescing window, got '+cadence);
+});
+
+test('a basket that is already paid for is never requoted into another install window',async()=>{
+ const source=await readFile(new URL('../autopilot.js',import.meta.url),'utf8');
+ assert.match(source,/const basketPays=\(Number\(facman\.total_rep_cost\)\|\|0\)\+\(Number\(facman\.total_aug_cost\)\|\|0\)>0;/);
+ assert.match(source,/if\(change\.changed&&basketPays\)\{/);
 });

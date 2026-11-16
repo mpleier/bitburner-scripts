@@ -254,6 +254,11 @@ test('all hash mutations pass through the common native guard and telemetry job 
  assert.doesNotThrow(()=>new Function(code.replace('export async function','async function')));
  const worker=readFileSync(new URL('../spend-hacknet-hashes.js',import.meta.url),'utf8');assert.match(worker,/requestedCost > capacity/);
  const bb=readFileSync(new URL('../bladeburner.js',import.meta.url),'utf8');assert.match(bb,/nextHashWorkerCheck=Date.now\(\)\+60000/);
+ // The supervised overflow guard must launch bare: reliability-manager only recognises a stopped worker
+ // whose args match its recorded job exactly, so decorated args would leave two untargeted spenders.
+ const ap=readFileSync(new URL('../autopilot.js',import.meta.url),'utf8');
+ assert.match(ap,/launchScriptHelper\(ns, 'spend-hacknet-hashes\.js'\);/);
+ assert.doesNotMatch(ap,/launchScriptHelper\(ns, 'spend-hacknet-hashes\.js', \[/);
 });
 
 test('shared decisions remain usable without direct Bladeburner API access',()=>{

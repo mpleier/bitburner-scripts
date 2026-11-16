@@ -22,7 +22,7 @@ export function stormBlockerDetails(host,report,now=Date.now()){
  }
  return {host,reasons:[...new Set(reasons)],reportAgeMs:Number.isFinite(report?.at)&&report.at<=now?now-report.at:null};
 }
-export function stormBlockerCategories(reasons){
+function stormBlockerCategories(reasons){
  return [...new Set((reasons||[]).map(reason=>/^blocked RAM\b/.test(reason)?'blocked RAM':/^(?:-?\d+ caches|cache count unknown)$/.test(reason)?'caches':/^(?:-?\d+ contracts|contract count unknown)$/.test(reason)?'contracts':reason))];
 }
 export function observeStormBlocker(previous,current,now){

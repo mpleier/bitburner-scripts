@@ -6,6 +6,17 @@ export const statusFiles=Object.fromEntries(moduleManifest.filter(m=>m.statusFil
 export const automaticManagerScripts=moduleManifest.filter(m=>m.launchOrder).sort((a,b)=>a.launchOrder-b.launchOrder).map(m=>m.script);
 
 /** Shared with actual autopilot startup. No API calls or mutations. */
+/** Single source of truth for "is the corporation controller worth its ~860 GB of home RAM?".
+ * Autopilot gates the launch with this and the preview forecasts with it; when they disagreed the dashboard
+ * advertised a controller that autopilot had already disabled. */
+export function corporationControllerReady({hasCorporation=false,sourceFiles={},node=1,money=0,stocks=0,reserve=0,planAllowance=NaN,allowed=true,disabled=false,nodeDisabled=false}={}) {
+  if (disabled || nodeDisabled) return false;
+  if (!(node === 3 || Number(sourceFiles[3]) > 0)) return false;
+  // A stock portfolio is liquidatable at bid, so it counts toward the $150b creation cost.
+  const liquid = Number(money) + Math.max(0, Number(stocks) || 0);
+  const funded = node === 3 || (Number.isFinite(planAllowance) ? planAllowance >= 150e9 : liquid >= 150e9 + Math.max(0, Number(reserve) || 0));
+  return hasCorporation === true || (allowed === true && funded);
+}
 export function priorityManagerPlan({homeRam=0,sourceFiles={},node=1,options={},bladeburnerRank=1,corporationReady=false,corporationKnown=true,corporationRunning=false,route=null,simulacrum=false},manifest=moduleManifest){
  const enabled=name=>{
   switch(name){

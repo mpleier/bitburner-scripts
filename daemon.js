@@ -81,7 +81,7 @@ const argsSchema = [
     ['recovery-thread-padding', 1], // Multiply the number of grow/weaken threads needed by this amount to automatically recover more quickly from misfires.
     ['max-hacking-processes', 2048], // Global live HGW worker cap; threads do not count as processes.
     ['max-batches', 40], // Maximum overlapping cycles to schedule in advance. Note that once scheduled, we must wait for all batches to complete before we can schedule mor
-    ['max-steal-percentage', 0.75], // Don't steal more than this in case something goes wrong with timing or scheduling, it's hard to recover frome
+    ['max-steal-percentage', 0.75], // Don't steal more than this in case something goes wrong with timing or scheduling, it's hard to recover from. Restored to 0.75: the 0.35 cut assumed grow/weaken legs were thread-starved, but home RAM is now abundant (over 30 TB free) and the cut only shrank each wave, so throughput per target fell.
 
     ['looping-mode', false], // Set to true to attempt to schedule perpetually-looping tasks.
 
@@ -479,6 +479,12 @@ export async function main(ns) {
             // Finish the current BitNode through w0r1d_d43m0n as soon as it is hackable.
             { interval: 29000, name: "auto-destroy-world-daemon.js", minRamReq: 8,
                 shouldRun: () => 4 in dictSourceFiles },
+            // Keep the save from re-serialising dead state every cycle: stale per-host credential
+            // archives (26 files, 33.6 MB) and old Temp caches bloated one save to 267 MB and crashed
+            // the renderer. Only runs when more than two archives exist, so it is self-limiting.
+            { interval: 900000, name: "cleanup-leaks.js", minRamReq: 8,
+                args: ['--purge-home-archives'],
+                shouldRun: () => ns.ls('home', 'tasks/credential-archive-').length > 2 },
         ];
         periodicScripts.forEach(tool => tool.ignoreReservedRam = true);
         if (verbose) // In verbose mode, have periodic sripts persist their logs.
@@ -520,7 +526,9 @@ export async function main(ns) {
         // Default the initial maximum number of targets of none was specified.
         if (maxTargets == 0) {
             const networkStats = getNetworkStats();
-            maxTargets = 2 + Math.round(networkStats.totalMaxRam / (500 * 1024));
+            // 500 TB per extra target left a 32 TB home farm running two targets at ~5% RAM. One target per
+            // 2 TB keeps the wave fed; the cap stops the target list from fragmenting into unkillable tails.
+            maxTargets = Math.min(12, 2 + Math.round(networkStats.totalMaxRam / (2 * 1024)));
             log(ns, `Defaulting --initial-max-targets to ${maxTargets} since total ram available is ${formatRam(networkStats.totalMaxRam)}`);
         }
         // XP-only mode has no income target to protect; keep a small multi-target pool available so
@@ -598,9 +606,11 @@ export async function main(ns) {
                 const start = Date.now();
                 const xpTarget = getBestXPFarmTarget();
                 const minCycleTime = xpTarget.timeToWeaken();
+                if (maxXpTime <= 0)
+                    return log(ns, 'INFO: Skipping the startup hack-XP cycle: disabled by --initial-hack-xp-time 0.');
                 if (minCycleTime > maxXpTime * 1000)
-                    return log(ns, `INFO: Skipping XP cycle because the best target (${xpTarget.name}) time to weaken (${formatDuration(minCycleTime)})` +
-                        ` is greater than the configured --initial-hack-xp-time of ${maxXpTime} seconds.`);
+                    return log(ns, `INFO: Skipping the startup hack-XP cycle because the best target (${xpTarget.name}) time to weaken (${formatDuration(minCycleTime)})` +
+                        ` exceeds the configured --initial-hack-xp-time of ${maxXpTime} seconds.`);
                 log(ns, `INFO: Running Hack XP-focused cycles for ${maxXpTime} seconds to further boost hack XP and speed up main hack cycle times. (set --initial-hack-xp-time 0 to disable this step.)`);
                 while (maxXpCycles-- > 0 && Date.now() - start < maxXpTime * 1000) {
  automationHeartbeat(ns);
@@ -741,6 +751,15 @@ export async function main(ns) {
         if (maintenanceRequested(ns)) return blocked('maintenance');
         if (activityBusy(ns) && /(^|\/)(work-for-factions|grafting-manager|infiltration-manager)\.js$/.test(tool.name)) return blocked('activity');
         if (options['disable-script'].includes(tool.name)) { // Ensure the script hasn't been disabled
+            // Autopilot disables the scripts it launches itself, so a disabled entry can still be live.
+            // Report the running process instead of "blocked:disabled": the health record used to claim
+            // running:0 while the engine was mid-game, which is how go.js looked idle during turn 28.
+            const [ownedOn, ownedPid] = whichServerIsRunning(ns, tool.name, false);
+            if (ownedOn != null) {
+                tool.lastOutcome = 'running';
+                if (verbose) log(ns, `INFO: Tool ${tool.name} is running on ${ownedOn} as pid ${ownedPid} (launched outside the daemon).`);
+                return true;
+            }
             if (verbose) log(ns, `Tool ${tool.name} was not launched as it was specified with --disable-script`);
             return blocked('disabled');
         }
@@ -771,9 +790,13 @@ export async function main(ns) {
         if (!lowHomeRam) {
             const targetServer = getServerByName(daemonHost);
             const availableRam = targetServer.ramAvailable(/*ignoreReservedRam:*/true);
-            if (availableRam < tool.cost + coreStartupReservation(ns,tool.name)) {
+            const startupReservation = coreStartupReservation(ns,tool.name);
+            if (availableRam < tool.cost + startupReservation) {
                 if (!tool.ramWaitLogged) {
-                    log(ns, `INFO: Delaying ${tool.name} until enough RAM is free (needs ${formatRam(tool.cost)}, has ${formatRam(availableRam)}).`);
+                    // Report the reservation too: "needs 48.6 GB, has 53.9 GB" looked contradictory while the
+                    // free RAM was really being held back for startup controllers that had not launched yet.
+                    log(ns, `INFO: Delaying ${tool.name} until enough RAM is free (needs ${formatRam(tool.cost)}` +
+                        `${startupReservation > 0 ? ` + ${formatRam(startupReservation)} held for startup controllers` : ''}, has ${formatRam(availableRam)}).`);
                     tool.ramWaitLogged = true;
                 }
                 return blocked('ram');
@@ -1800,7 +1823,11 @@ export async function main(ns) {
             lastFire: batchTiming.lastFire,
             hackEnd: batchTiming.hackEnd,
             batchFinish: hackOnly ? batchTiming.hackEnd : batchTiming.secondWeakenEnd,
-            scheduleItems: schedItems
+            // Launch in scheduled-start order. Each leg's start is derived from its own duration, so the
+            // longest legs (weaken, then grow) must fire first: launching the short hack leg ahead of them
+            // pushed every longer leg past its deadline, which is what the worker then reported as an
+            // unavoidable overrun (hack legs: 0 unavoidable, grow/weaken: 95-100%).
+            scheduleItems: schedItems.slice().sort((a,b)=>a.start-b.start||a.end-b.end)
         };
         return scheduleObject;
     }
@@ -2154,6 +2181,7 @@ export async function main(ns) {
     }
 
     let farmXpReentryLock = []; // A dictionary of server names and whether we're currently scheduling / polling for its cycle to end
+    const xpBasicModeLogged = new Set(); // Announce each target's fallback to grow/weaken XP farming once per boot
     let nextXpCycleEnd = []; // A dictionary of server names and when their next XP farming cycle is expected to end
     let loopsHackThreadsByServer = {}, loopsByServer_Grow = {}, loopsByServer_Weaken = {}; // Tracks active looping scripts
     /** @param {NS} ns
@@ -2204,6 +2232,8 @@ export async function main(ns) {
                 const effectiveHackThreads = Math.ceil(1 / server.percentageStolenPerHackThread()); // Only this many hack threads "count" for stealing/hardening. The rest get a 'free ride'
                 if (!loopRunning && threads <= effectiveHackThreads) {
                     // We don't have enough ram for advanced XP grind (no hack threads would get a 'free ride'). Revert to simple weak/grow farming mode.
+                    // Make the fallback visible with the arithmetic: this costs ~3.2x XP per thread versus hack().
+                    if(!xpBasicModeLogged.has(server.name)){xpBasicModeLogged.add(server.name);log(ns,`INFO: Basic XP farm on ${server.name}: ${threads} threads cannot exceed the ${effectiveHackThreads} threads needed to steal its money, so hack() would drain it to zero and pay 25% XP. Farming grow()/weaken() instead (1 exp per 3.2/4.0 op-times); more farm RAM re-enables hack-based XP.`);}
                     farmXpReentryLock[server.name] = false;
                     return await scheduleHackExpCycle(ns, server, percentOfFreeRamToConsume, verbose, false, allocatedServer, singleServer);
                 }
@@ -2225,9 +2255,15 @@ export async function main(ns) {
                 }
                 // If after making room for recovery threads, we would be scheduling fewer hack threads than effective threads, there's no point in farming in this mode
                 if (threads <= effectiveHackThreads) {
-                    log(ns, `INFO: Cannot farm XP from ${server.name} on ${getStrAllocatedServer()} in advanced mode: Hack threads=${threads} after releasing ` +
-                        `${priorThreads - threads} for ${growThreadsNeeded} grow threads and ${weakenThreadsNeeded} weaken threads required to counter ` +
-                        `${effectiveHackThreads} effective hack threads. Reverting to basic XP farming mode.`);
+                    // Announce this once per target: the shortfall is a property of the server and the RAM it was
+                    // allocated, so repeating it every cycle only buries other messages.
+                    const advancedKey = server.name + ':advanced';
+                    if (!xpBasicModeLogged.has(advancedKey)) {
+                        xpBasicModeLogged.add(advancedKey);
+                        log(ns, `INFO: Cannot farm XP from ${server.name} on ${getStrAllocatedServer()} in advanced mode: Hack threads=${threads} after releasing ` +
+                            `${priorThreads - threads} for ${growThreadsNeeded} grow threads and ${weakenThreadsNeeded} weaken threads required to counter ` +
+                            `${effectiveHackThreads} effective hack threads. Reverting to basic XP farming mode.`);
+                    }
                     farmXpReentryLock[server.name] = false;
                     return await scheduleHackExpCycle(ns, server, percentOfFreeRamToConsume, verbose, false, allocatedServer, singleServer);
                 }

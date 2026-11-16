@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import { modelCandidates, solveFeedbackPassword, evalArithmetic, isStalledScout, passwordLengthMatches, passwordHintCandidates } from '../darknet-solvers.js';
+import { modelCandidates, solveFeedbackPassword, evalArithmetic, isStalledScout, passwordLengthMatches, passwordFormatMatches, passwordHintCandidates } from '../darknet-solvers.js';
 
 function simulation(modelId, password, feedback, format = 'numeric') {
   const logs = [], guesses = [];
@@ -162,4 +162,23 @@ test('numeric range solver resumes across short turns without repeating guesses'
   assert.match(result.reason,/progress retained/);
  }
  assert.equal(result.password,'48753');assert.equal(new Set(f.guesses).size,f.guesses.length);
+});
+
+test('the Pr0verFl0 buffer-overflow mask survives the format filter', () => {
+  const details={modelId:'Pr0verFl0',passwordLength:7,passwordFormat:'alphanumeric',passwordHint:'Warning: password buffer is 7 bytes',data:''};
+  const mask='■'.repeat(14);
+  // The model candidate exists and is the documented exploit: twice the buffer length.
+  assert.deepEqual(modelCandidates(details),[mask]);
+  assert.equal(passwordLengthMatches(details,mask),true);
+  // An alphanumeric-only filter used to drop it, which left the host uncrackable.
+  assert.equal(passwordFormatMatches(details,mask),true);
+  assert.equal(passwordFormatMatches(details,mask.slice(0,7)),false);
+  assert.equal(passwordFormatMatches(details,'zxcvbnm'),true);
+  assert.equal(passwordFormatMatches({...details,passwordFormat:'numeric'},'zxcvbnm'),false);
+});
+
+test('the manager filters candidates through the policy helper, not an inline switch', () => {
+  const source=readFileSync(new URL('../darknet-manager.js',import.meta.url),'utf8');
+  assert.match(source,/const matches = \(value\) => passwordLengthMatches\(details,value\) && passwordFormatMatches\(details,value\);/);
+  assert.doesNotMatch(source,/switch \(details\.passwordFormat\)/);
 });

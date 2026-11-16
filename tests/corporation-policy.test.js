@@ -193,3 +193,15 @@ test('speed-focused development raises source progress while retaining research 
  assert.ok(speed(fast)>speed(normal));assert.ok(fast[4]>=recoveryJobCounts(60,true,false)[4]);
  assert.equal(fast.reduce((a,b)=>a+b,0),60);
 });
+
+test('stock that builds at all lowers the sale markup instead of waiting for two cycles', () => {
+  // Live Tobacco product: selling 97% of production while stored climbed, and the old dead band kept
+  // the markup at 1.0216 because neither the clearing nor the blocked branch applied.
+  const item={productionAmount:0.762,actualSellAmount:0.740,stored:14.85,effectiveRating:49.7,desiredSellPrice:'MP*1.0216'};
+  const stepped=productPriceStep(item,{multiplier:1.0216,rating:49.7},10);
+  assert.ok(stepped.multiplier<1.0216,'accumulating stock must reduce the markup');
+  assert.equal(stepped.high,1.0216);
+  // Selling everything and holding no stock still lets the markup rise.
+  const clearing=productPriceStep({productionAmount:1,actualSellAmount:1,stored:0,effectiveRating:10,desiredSellPrice:'MP'},{multiplier:1,rating:10},10);
+  assert.equal(clearing.multiplier,2);
+});

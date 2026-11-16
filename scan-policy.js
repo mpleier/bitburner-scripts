@@ -34,7 +34,7 @@ export function scanBackdoorEligible(host,server,hacking) {
   return host!=='home'&&!host.startsWith('hacknet-')&&!host.startsWith('dark:')&&server?.hasAdminRights===true&&
     !server.purchasedByPlayer&&!server.backdoorInstalled&&Number.isFinite(server.requiredHackingSkill)&&server.requiredHackingSkill<=hacking;
 }
-export function scanReactProps(element,eventName) {
+function scanReactProps(element,eventName) {
   if(!element||element.isConnected===false)throw new Error('The terminal input is no longer visible.');
   for(const key of Object.keys(element))if(key.startsWith('__reactProps$')&&typeof element[key]?.[eventName]==='function')return element[key];
   for(const key of Object.keys(element))if(key.startsWith('__reactFiber$')) {

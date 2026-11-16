@@ -23,24 +23,38 @@ export async function sampleDarknetObservations(ns,readNative){
  }
  const dispatch=history.lastDispatch;
  const priorRewards=read('tasks/dnet-cache-rewards-summary.json');
- const hosts=[...new Set(reports.filter(r=>r.live).map(r=>r.host))].sort(),cursor=Number.isSafeInteger(priorRewards?.cursor)&&priorRewards.cursor>=0?priorRewards.cursor:0;
+ // Only hosts that can actually hold a receipt are worth a pull: 29 of 32 checks used to look for files that
+ // never existed. A host that reported `missing` stays skipped until its cache count changes or 30 minutes pass.
+ const priorMisses=priorRewards&&typeof priorRewards.pullMisses==='object'&&priorRewards.pullMisses?priorRewards.pullMisses:{};
+ const cacheCount=host=>{const report=reports.find(r=>r.host===host);return report&&Number(report.caches)>0?Number(report.caches):0;};
+ const hosts=[...new Set(reports.filter(r=>r.live).map(r=>r.host))].filter(host=>{
+  if(cacheCount(host)>0)return true;
+  const miss=priorMisses[host];
+  // Re-check an empty host only once its cache count changes or half an hour has passed.
+  return !miss||!Number.isFinite(miss.at)||miss.caches!==cacheCount(host)||now-miss.at>30*60_000;
+ }).sort(),cursor=Number.isSafeInteger(priorRewards?.cursor)&&priorRewards.cursor>=0?priorRewards.cursor:0;
  const selected=Array.from({length:Math.min(32,hosts.length)},(_,i)=>hosts[(cursor+i)%hosts.length]);
  let native=null;
  if(history.active||selected.length){
   native=await readNative(ns,`(async()=>{
-   const rewards=[],pulls={checked:0,missing:0,copied:0,failed:0};
+   const rewards=[],missingHosts=[],pulls={checked:0,missing:0,copied:0,failed:0};
    for(const host of JSON.parse(ns.args[0]))try{
     const file='tasks/dnet-cache-rewards-'+encodeURIComponent(host)+'.json';pulls.checked++;
-    if(!ns.fileExists(file,host))pulls.missing++;
+    if(!ns.fileExists(file,host)){pulls.missing++;missingHosts.push(host);}
     else if(await ns.scp(file,'home',host)){rewards.push({host,cacheRewards:JSON.parse(ns.read(file))});pulls.copied++;}
     else pulls.failed++;
    }catch{pulls.failed++;}
-   return {reset:ns.getResetInfo(),player:ns.getPlayer(),income:ns.getMoneySources().sinceInstall.darknet,rewards,pulls,at:Date.now()};
+   return {reset:ns.getResetInfo(),player:ns.getPlayer(),income:ns.getMoneySources().sinceInstall.darknet,rewards,missingHosts,pulls,at:Date.now()};
   })()`,'/Temp/dnet-observation.txt',[JSON.stringify(selected)]);
   if(native.reset.lastNodeReset!==reset.lastNodeReset||native.reset.lastAugReset!==reset.lastAugReset)return;
   for(const r of native.rewards||[]){const report=reports.find(x=>x.host===r.host);if(report&&r.cacheRewards?.host===r.host&&r.cacheRewards.nodeReset===reset.lastNodeReset&&r.cacheRewards.augReset===reset.lastAugReset){report.cacheRewards=r.cacheRewards;if(Number.isFinite(r.cacheRewards.at))report.lastCacheAt=Math.max(report.lastCacheAt||0,r.cacheRewards.at);}}
  }
  const rewards=mergeDarknetRewards(priorRewards,reports,reset,native?.at??now);rewards.cursor=hosts.length?(cursor+selected.length)%hosts.length:0;rewards.pulls=native?.pulls??null;
+ // Remember the hosts that had no receipt so the next survey does not re-check them for nothing.
+ const pullMisses={...priorMisses};
+ if(native){for(const host of native.missingHosts||[])pullMisses[host]={at:native.at,caches:cacheCount(host)};
+  for(const r of native.rewards||[])delete pullMisses[r.host];}
+ rewards.pullMisses=pullMisses;
  if(reports.length)await ns.write('tasks/dnet-cache-rewards-summary.json',JSON.stringify(rewards),'w');
  if(history.active&&native){
   const lastCacheAt=Math.max(0,...reports.filter(r=>r.live&&Number.isFinite(r.lastCacheAt)&&r.lastCacheAt<=native.at).map(r=>r.lastCacheAt));

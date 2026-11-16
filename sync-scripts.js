@@ -2,7 +2,7 @@ import {discoverScanNetwork} from './scan-policy.js';
 /** Push home scripts to rooted servers. Restart existing instances only with --restart. */
 export function deployableSyncFile(file) {
  const path=String(file).replace(/^\/+/, '');
- return /\.(?:js|ns|script)$/.test(path)&&!/(^|\/)(Temp|tasks|remote-control|tests|scripts|node_modules|\.git)\//.test(path);
+ return /\.(?:js|ns|script)$/.test(path)&&!/(^|\/)(Temp|tasks|remote-control|tests|scripts|manual|node_modules|\.git)\//.test(path);
 }
 export async function main(ns) {
  const options=ns.flags([['restart',false]]);

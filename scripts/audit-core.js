@@ -2,7 +2,7 @@ import ts from 'typescript';
 import {posix} from 'node:path';
 export function parseScript(file,source){return ts.createSourceFile(file,source,ts.ScriptTarget.Latest,true,ts.ScriptKind.JS);}
 function names(node){if(ts.isIdentifier(node))return [node.text];if(ts.isObjectBindingPattern(node)||ts.isArrayBindingPattern(node))return node.elements.flatMap(e=>ts.isBindingElement(e)?names(e.name):[]);return [];}
-export function moduleInfo(file,text){
+function moduleInfo(file,text){
  const source=parseScript(file,text),imports=[],reexports=[],exports=new Set();
  for(const node of source.statements){
   if(ts.isImportDeclaration(node)&&node.moduleSpecifier&&ts.isStringLiteral(node.moduleSpecifier)){
@@ -23,7 +23,7 @@ export function moduleInfo(file,text){
  }
  return {file,source,imports,reexports,exports};
 }
-export function resolveGameImport(file,spec){
+function resolveGameImport(file,spec){
  const path=posix.normalize(spec.startsWith('.')?posix.join(posix.dirname(file),spec):spec.replace(/^\//,''));
  return path==='..'||path.startsWith('../')||path.includes(':')?null:path;
 }

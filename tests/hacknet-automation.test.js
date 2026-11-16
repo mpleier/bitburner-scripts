@@ -2,7 +2,7 @@ import vm from 'node:vm';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
-import {hacknetProduction,hacknetServerMode,hacknetOptionsError,hashOptionsError,hashOverflowBuffer,hashCapacityChoice,hacknetPayoffLimit} from '../hacknet-policy.js';
+import {hacknetProduction,hacknetServerMode,hacknetOptionsError,hashOptionsError,hashOverflowBuffer,hashCapacityChoice,hacknetPayoffLimit,hacknetWorthMaxing} from '../hacknet-policy.js';
 import {upgradeHacknet} from '../hacknet-upgrade-manager.js';
 
 test('production estimates distinguish money nodes, hashes and occupied server RAM',()=>{
@@ -11,6 +11,17 @@ test('production estimates distinguish money nodes, hashes and occupied server R
  assert.equal(hacknetProduction(s,true),.01*1.07**3*1.2*.5);
  assert.equal(hacknetProduction({...s,ramUsed:8},true),0);
  assert.ok(hacknetProduction({...s,ram:16},true)>hacknetProduction(s,true));
+});
+
+test('free Hacknet spending is withheld where the BitNode penalises Hacknet income',()=>{
+ // Both official production formulas multiply by HacknetNodeMoney, so BN5's 0.2 makes a maxed fleet
+ // a fifth as productive while augmentations still cost double there.
+ assert.equal(hacknetWorthMaxing({HacknetNodeMoney:0.2}),false);
+ assert.equal(hacknetWorthMaxing({HacknetNodeMoney:0.05}),false);
+ assert.equal(hacknetWorthMaxing({HacknetNodeMoney:0.5}),true);
+ assert.equal(hacknetWorthMaxing({HacknetNodeMoney:1}),true);
+ assert.equal(hacknetWorthMaxing(undefined),true);
+ assert.equal(hacknetWorthMaxing({},0.25),true);
 });
 
 test('empty Hacknet mode honors current node, overrides and disabled servers',()=>{

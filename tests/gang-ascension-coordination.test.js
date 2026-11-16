@@ -140,3 +140,39 @@ test('purchase timing remains available before full recruitment and with an expl
  assert.equal(result.purchaseTimingContext.factionRep,50);assert.equal(result.purchaseTimingContext.goal.rep,100);
  assert.equal(result.purchaseFocusContext,null);
 });
+
+test('a high-gain ascension is not denied just because another member ranks higher',()=>{
+ const {members}=fixture(),names=Object.keys(members),calls=[];
+ const strong={str:2.5,respect:0};
+ const plan={name:'A',expiresAt:Date.now()+5000,paybackSeconds:0,horizonSeconds:20,model:'high-gain-bypass',economicReview:false,
+  adaptive:true,highGainThreshold:1.05,member:members.A,ascension:strong,crewNames:names,crewSnapshot:structuredClone(members),cashAtQuote:1000};
+ const ns={getServerMoneyAvailable:()=>1000,
+  gang:{getMemberNames:()=>names,getGangInformation:()=>({respect:1000,wantedLevel:1}),
+   getAscensionResult:()=>strong,getMemberInformation:n=>members[n],
+   setTerritoryWarfare:()=>calls.push('warfare'),ascendMember:()=>{calls.push('ascend');return {};},setMemberTask:()=>calls.push('train')}};
+ // Ranking prefers B; A still clears the quoted threshold, so the reset is allowed.
+ const ranking=()=>[{name:'B'},{name:'A'}];
+ assert.ok(ascendGangMemberSafely(ns,'A',['str'],1.05,.05,ranking,()=>true,plan));
+ // A multiplier that no longer clears the quoted threshold is refused as before.
+ const weak={str:1.01,respect:0};
+ ns.gang.getAscensionResult=()=>weak;
+ assert.equal(ascendGangMemberSafely(ns,'A',['str'],1.05,.05,ranking,()=>true,plan),null);
+ // A member that no longer exists is refused too.
+ ns.gang.getAscensionResult=()=>strong;
+ ns.gang.getMemberNames=()=>['B'];
+ assert.equal(ascendGangMemberSafely(ns,'A',['str'],1.05,.05,ranking,()=>true,plan),null);
+});
+
+test('a recovery cap keeps most of the crew producing instead of rebuilding',()=>{
+ const {members}=fixture();
+ const crew={...members,C:{...members.B,name:'C'}};
+ const base={name:'A',members:crew,values:{A:{value:10},B:{value:10},C:{value:10}},lastReset:{B:1000},now:10000,allowConcurrent:true};
+ const recovering={B:{resetAt:1000,until:61000}};
+ // One member already rebuilding fills a cap of one, so the next reset is deferred with a clear reason.
+ assert.equal(gangAscensionAvailability({...base,recoveries:recovering,maxRecovering:1}).reason,'Recovery cap reached');
+ // Under the cap the same request is admitted.
+ assert.equal(gangAscensionAvailability({...base,recoveries:recovering,maxRecovering:2}).allowed,true);
+ // A member's own window is not counted against the cap, but still blocks that member.
+ const own=gangAscensionAvailability({...base,recoveries:{A:recovering.B},maxRecovering:1});
+ assert.equal(own.allowed,false);assert.equal(own.reason,'Candidate recovery in progress');
+});

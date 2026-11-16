@@ -387,7 +387,14 @@ export function ascendGangMemberSafely(ns,name,stats,base,spacing,choose,allowed
   if(reviewed&&(economics.adaptive!==true||economics.model!=='whole-crew'||!economics.gang||!economics.crewSnapshot||!Array.isArray(economics.crewNames)||
     ![economics.trainingSeconds,economics.paybackSeconds,economics.horizonSeconds,economics.netGain].every(Number.isFinite)||economics.trainingSeconds<=0||economics.paybackSeconds<0||economics.horizonSeconds<=0||
     !(economics.netGain>0||economics.powerObjective===true&&Number.isFinite(economics.powerGain)&&economics.powerGain>0)))return deny('economic-proof-invalid');
-  if(!choose(results,gang,names,stats,base,spacing,12,economics.adaptive===true,reviewed,ignoreRespectLoss).some(c=>c.name===name))return deny('eligibility-changed');
+  // The high-gain bypass deliberately quotes a member the ordinary chooser would not rank first, so
+  // re-running the ranking here rejected every attempt as 'eligibility-changed'. Verify what the quote
+  // promised instead: the member still exists and its own multipliers still clear the quoted threshold.
+  if(economics.model==='high-gain-bypass'){
+   const threshold=Number(economics.highGainThreshold);
+   const clears=Number.isFinite(threshold)&&threshold>0&&['hack','str','def','dex','agi','cha'].some(k=>Number(results[name]?.[k])>=threshold);
+   if(!clears||!names.includes(name))return deny('eligibility-changed');
+  }else if(!choose(results,gang,names,stats,base,spacing,12,economics.adaptive===true,reviewed,ignoreRespectLoss).some(c=>c.name===name))return deny('eligibility-changed');
   if(economics.crewNames&&(names.length!==economics.crewNames.length||names.some(n=>!economics.crewNames.includes(n))))return deny('crew-changed');
    if(economics.gang&&(ignoreRespectLoss?['wantedLevel']:['respect','wantedLevel']).some(k=>Math.abs(gang[k]-economics.gang[k])>Math.max(1,Math.abs(economics.gang[k])*.02)))return deny('gang-economy-changed');
    if(!ignoreRespectLoss&&Number.isFinite(economics.respectLoss)&&Math.abs((results[name]?.respect||0)-economics.respectLoss)>Math.max(1,economics.respectLoss*.02))return deny('respect-loss-changed');
@@ -1312,7 +1319,12 @@ export function restoreGangWantedPreparation(saved,reset,names,lastReset={},now=
 }
 
 /** Concurrent screening relies on a later committed crew forecast and retains a productive member. */
-export function gangAscensionAvailability({name,members,values,lastReset={},episodes={},recoveries={},now=Date.now(),maximumMs=200000,allowConcurrent=false}){
+export function gangAscensionAvailability({name,members,values,lastReset={},episodes={},recoveries={},now=Date.now(),maximumMs=200000,allowConcurrent=false,maxRecovering=Infinity}){
+ // Ascension wipes exp and equipment, so every reset costs a rebuild. Cap how much of the crew may be
+ // rebuilding at once: beyond that cap the crew's own production (and money at the territory gate)
+ // shrinks faster than the multipliers compound.
+ if(Number.isFinite(maxRecovering)&&maxRecovering>0&&Object.entries(recoveries).filter(([other,r])=>other!==name&&r?.until>now).length>=maxRecovering)
+  return {allowed:false,reason:'Recovery cap reached'};
  for(const [other,member]of Object.entries(members)){
   if(allowConcurrent&&other===name&&(now-(lastReset[name]??0)<2000||recoveries[name]?.until>now))return {allowed:false,reason:'Candidate recovery in progress'};
   if(allowConcurrent&&other===name&&episodes[name]?.until>now)return {allowed:false,reason:'Candidate training burst in progress'};
@@ -1905,7 +1917,14 @@ export function gangEquipmentReadiness({context,beforeRates,afterRates,afterWork
  const after=gangPurchaseFocus({...context,money:money-cost,rates:afterRates,workFractions:afterWorkFractions??context.workFractions,previous:null});
  if(!after)return {allowed:false,reason:'purchase-makes-augmentation-unreachable',beforeSeconds:before.etaSeconds};
  const allowed=after.etaSeconds<=before.etaSeconds;
- return {allowed,reason:allowed?'preserves-augmentation-readiness':'delays-augmentation',beforeSeconds:before.etaSeconds,afterSeconds:after.etaSeconds,cashFloor:money};
+ if(allowed)return {allowed,reason:'preserves-augmentation-readiness',beforeSeconds:before.etaSeconds,afterSeconds:after.etaSeconds,cashFloor:money};
+ // Collection goals must not stall forever behind an augmentation basket: a quote worth at most 1%
+ // of spendable cash whose readiness delay stays inside 15 minutes creeps forward without moving the
+ // basket's own ETA in any way the planner would notice.
+ const delayMs=(after.etaSeconds-before.etaSeconds)*1000;
+ const creep=cost<=money*.01&&Number.isFinite(delayMs)&&delayMs>=0&&delayMs<=900000;
+ if(creep)return {allowed:true,reason:'bounded-equipment-creep',beforeSeconds:before.etaSeconds,afterSeconds:after.etaSeconds,delaySeconds:delayMs/1000,cashFloor:money};
+ return {allowed,reason:'delays-augmentation',beforeSeconds:before.etaSeconds,afterSeconds:after.etaSeconds,cashFloor:money};
 }
 
 

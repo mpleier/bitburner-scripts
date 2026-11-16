@@ -10,7 +10,7 @@ test('remote script sync handles network cycles and never copies remote files ov
  assert.deepEqual(copies.map(v=>v.host),['a','b']);assert.ok(copies.every(v=>v.source==='home'));assert.deepEqual(copies[0].files,['main.js','Tasks/helper.js']);
 });
 test('sync excludes runtime artifacts while preserving actual Tasks helpers',()=>{
- for(const f of ['Temp/x.js','/Temp/x.js','tasks/x.js','remote-control/job.js','tests/a.js','scripts/check.js','node_modules/a.js','a.cct','a.txt'])assert.equal(deployableSyncFile(f),false);
+ for(const f of ['Temp/x.js','/Temp/x.js','tasks/x.js','remote-control/job.js','tests/a.js','scripts/check.js','manual/dev-console.js','node_modules/a.js','a.cct','a.txt'])assert.equal(deployableSyncFile(f),false);
  assert.equal(deployableSyncFile('Tasks/helper.js'),true);assert.equal(deployableSyncFile('Remote/hack-target.js'),true);
 });
 test('explicit sync restarts preserve threads and arguments and skip unrooted hosts',async()=>{

@@ -66,14 +66,20 @@ test('supervisor sampling continues independently of manager calls and never res
   const h=JSON.parse(f.files.get(darknetObservationFile));assert.equal(h.samples.length,1);assert.equal(h.active,undefined);assert.equal(h.lastDispatch,'id');assert.equal(h.samples[0].prediction.comparable,true);
  }finally{Date.now=original;}
 });
-test('native sampler rotates bounded reward pulls and reads rewards while scout surveys are stale',async()=>{
+test('native sampler rotates bounded reward pulls and stops re-checking empty hosts',async()=>{
  const f=observerFixture(20),original=Date.now;Date.now=()=>f.clock;
  try{
   f.set(300000);const host=f.hosts[0].host,record=recordDarknetCache(null,{success:true,augmentationName:'Aug'},{host,pid:8,at:f.clock,reset});f.remote.get(host).set(cacheRewardFile(host),JSON.stringify(record));
-  await sampleDarknetObservations(f.ns,f.query);f.set(330000);await sampleDarknetObservations(f.ns,f.query);
-  assert.ok(f.selected.every(s=>s.length<=32));assert.equal(new Set(f.selected.flat()).size,20);
-  assert.equal(JSON.parse(f.files.get('tasks/dnet-cache-rewards-summary.json')).totals.augmentations,1);
-  assert.equal(JSON.parse(f.files.get('tasks/dnet-cache-rewards-summary.json')).pulls.checked,20);
+  await sampleDarknetObservations(f.ns,f.query);
+  assert.ok(f.selected.every(s=>s.length<=32));assert.equal(f.selected.at(-1).length,20);
+  let summary=JSON.parse(f.files.get('tasks/dnet-cache-rewards-summary.json'));
+  assert.equal(summary.totals.augmentations,1);assert.equal(summary.pulls.checked,20);
+  // Every other host reported no receipt, so the next survey must not look for those files again.
+  f.set(330000);await sampleDarknetObservations(f.ns,f.query);
+  summary=JSON.parse(f.files.get('tasks/dnet-cache-rewards-summary.json'));
+  assert.ok(!summary.pulls||summary.pulls.checked<=1,'expected at most the receipt host, got '+JSON.stringify(summary.pulls));
+  assert.ok(Object.keys(summary.pullMisses||{}).length>=18);
+  assert.equal(summary.totals.augmentations,1);
  }finally{Date.now=original;}
 });
 test('native sampler rejects a reset that changes while its temporary query runs',async()=>{
@@ -102,4 +108,69 @@ test('cache context is propagated and helper RAM contains no native reset lookup
  for(const value of ['', '{}', JSON.stringify({nodeReset:42,augReset:7}),JSON.stringify({nodeReset:7,augReset:101})])assert.throws(()=>cacheRewardReset(value,100));
  for(const file of ['darknet-loot.js','darknet-cache.js'])assert.doesNotMatch(readFileSync(new URL('../'+file,import.meta.url),'utf8'),/ns\.getResetInfo/);
  for(const file of ['darknet-manager.js','darknet-node.js'])assert.match(readFileSync(new URL('../'+file,import.meta.url),'utf8'),/tasks\/dnet-cache-context\.json/);
+});
+
+test('reward shapes name the fields that made a cache unknown',()=>{
+ const reset={lastNodeReset:1,lastAugReset:2},meta=(at=1000)=>({host:'h',pid:9,at,reset,modelId:'m'});
+ const money=recordDarknetCache(null,{success:true,money:50,message:'$50'},meta());
+ assert.deepEqual(Object.keys(money.shapes),['money,success']);
+ // A result that carries no recognised field keeps its shape, so the unknown bucket is explainable.
+ const empty=recordDarknetCache(money,{success:true,karmaLoss:-2,message:'x'},meta(1001));
+ assert.equal(empty.totals.unknown,1);
+ assert.deepEqual(Object.keys(empty.shapes).sort(),['karmaLoss,success','money,success']);
+ // Same epoch merges the counts instead of replacing them.
+ const again=recordDarknetCache(empty,{success:true,money:5,message:'y'},meta(1002));
+ assert.equal(again.shapes['money,success'],2);
+ // The summary surfaces the shapes it accepted, and drops them with the generation.
+ const report={host:'h',live:true,cacheRewards:again};
+ const summary=mergeDarknetRewards(null,[report],reset,1003);
+ assert.equal(summary.shapes['money,success'],2);
+ assert.equal(mergeDarknetRewards(summary,[report],{...reset,lastAugReset:9},1004).shapes['money,success'],undefined);
+});
+
+test('a heartbleed log that states the password supplies the first candidate', async () => {
+  const {statedPasswordFromLogs} = await import('../darknet-feedback.js');
+  const numeric={passwordLength:3,passwordFormat:'numeric'};
+  assert.equal(statedPasswordFromLogs(['Logs scraped via heartbleed:', 'Hint: The password is 742'],numeric),'742');
+  assert.equal(statedPasswordFromLogs(['password: 5210'],{passwordLength:4,passwordFormat:'numeric'}),'5210');
+  assert.equal(statedPasswordFromLogs(["passcode is 'ab12'"],{passwordLength:4,passwordFormat:'alphanumeric'}),'ab12');
+  // A stated value that violates the server's own length or character set is not a candidate.
+  assert.equal(statedPasswordFromLogs(['Hint: The password is 742'],{passwordLength:4,passwordFormat:'numeric'}),null);
+  assert.equal(statedPasswordFromLogs(['Hint: The password is 742'],{passwordLength:3,passwordFormat:'alphabetic'}),null);
+  // Noise, empty input and missing details stay silent instead of guessing.
+  assert.equal(statedPasswordFromLogs(['nothing to see here'],numeric),null);
+  assert.equal(statedPasswordFromLogs([],numeric),null);
+  assert.equal(statedPasswordFromLogs(null,numeric),null);
+});
+
+test('the darknet manager feeds heartbleed logs into the candidate list', async () => {
+  const source=readFileSync(new URL('../darknet-manager.js',import.meta.url),'utf8');
+  assert.match(source,/import \{statedPasswordFromLogs\} from '\.\/darknet-feedback\.js';/);
+  assert.match(source,/const bleedLogs = new Map\(\);/);
+  assert.match(source,/const stated = statedPasswordFromLogs\(host \? bleedLogs\.get\(host\) : null, details\);/);
+  assert.match(source,/bleedLogs\.set\(host, result\.logs\.slice\(-20\)\)/);
+  assert.match(source,/candidatesFor\(details, candidates, host\)/);
+});
+
+test('reward shapes stay cumulative when a per-host receipt is pruned', () => {
+  const reset={lastNodeReset:1,lastAugReset:2};
+  const totals={money:0,shares:0,programs:0,stockAccess:0,dataFiles:0,contracts:0,augmentations:0,karma:0,unknown:13};
+  const previous={nodeReset:1,augReset:2,at:10,totals,shapes:{'karmaLoss,success':7},seen:{}};
+  // No receipts survive: totals keep the unknown count, so the explanation must survive with them.
+  const merged=mergeDarknetRewards(previous,[],reset,20);
+  assert.equal(merged.totals.unknown,13);
+  assert.deepEqual(merged.shapes,{'karmaLoss,success':7});
+  // A different augmentation generation starts clean instead of inheriting old shapes.
+  const fresh=mergeDarknetRewards(previous,[],{lastNodeReset:1,lastAugReset:3},30);
+  assert.deepEqual(fresh.shapes,{});
+});
+
+test('pull attempts skip hosts already known to hold no receipt', () => {
+  const source=readFileSync(new URL('../darknet-observation-policy.js',import.meta.url),'utf8');
+  assert.match(source,/const priorMisses=priorRewards&&typeof priorRewards\.pullMisses==='object'/);
+  assert.match(source,/if\(cacheCount\(host\)>0\)return true;/);
+  assert.match(source,/miss\.caches!==cacheCount\(host\)\|\|now-miss\.at>30\*60_000/);
+  assert.match(source,/missingHosts\.push\(host\)/);
+  assert.match(source,/for\(const host of native\.missingHosts\|\|\[\]\)pullMisses\[host\]=\{at:native\.at,caches:cacheCount\(host\)\}/);
+  assert.match(source,/rewards\.pullMisses=pullMisses;/);
 });

@@ -157,6 +157,20 @@ test('Dark Web tooltip keeps whole lines instead of one character per line',asyn
  assert.ok(lines.some(line=>line.startsWith('Manager:')),'missing manager line');
 });
 
+test('Dark Web tooltip shows Charisma progress toward the next labyrinth',async()=>{
+ const now=300000,goal={version:1,state:'target',nodeReset:100000,augReset:200000,at:now,expiresAt:now+90000,host:null,target:1500,current:903};
+ const build=async g=>{
+  const h=await overview({getNsDataThroughFile:async()=>{throw Error('RAM unavailable');},formatNumberShort:String,formatRam:String,formatDuration:String,homeRamReserve:()=>32,readNodeRoutePlan:()=>null,bitNodeTooltip:()=> 'BitNode info'});
+  h.set({getElementById:()=>null},element(),element());
+  const ns={heart:{break:()=>0},ps:()=>[],read:f=>f==='tasks/dnet-charisma-goal.json'?JSON.stringify(g):'',ls:()=>[],write:async()=>{}};
+  const rows=await h.getHudData(ns,5,{}, {'hide-automation':true,'hide-stocks':true},{lastNodeReset:100000,lastAugReset:200000});
+  return row(rows,'Dark Web')[3].split('\n');
+ };
+ assert.ok((await build(goal)).includes('Next labyrinth: Charisma 903/1500'));
+ for(const stale of [{...goal,augReset:999},{...goal,nodeReset:999},{...goal,expiresAt:now-1},{...goal,state:'none'}])
+  assert.ok(!(await build(stale)).some(line=>line.startsWith('Next labyrinth')),'stale goal shown: '+JSON.stringify(stale));
+});
+
 test('overview does not reuse labyrinth progress cached for another reset',async()=>{
  let clock=300000,writes=[];
  const surveys={'tasks/dnet-survey-a.json':JSON.stringify({host:'a',at:300000,modelId:'(The Labyrinth)',rooted:true})};

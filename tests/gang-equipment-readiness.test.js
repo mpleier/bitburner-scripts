@@ -94,3 +94,17 @@ test('guarded native batches stop after failure and protect the quoted spendable
  const poor=run({money:99});assert.deepEqual(poor.calls,[]);assert.equal(poor.receipts[0].reason,'readiness-cash-changed');
  const price=run({prices:[11,10]});assert.deepEqual(price.calls,[]);assert.equal(price.receipts[1].reason,'readiness-batch-interrupted');
 });
+
+test('a cheap collection quote creeps forward instead of stalling behind the augmentation basket',()=>{
+ // At most 1% of spendable cash and at most fifteen minutes of readiness delay.
+ const flat=(money,goal,cost)=>gangEquipmentReadiness({context:{goal:{cost:goal,rep:0},money,factionRep:0,respectToRep:1,assignments:{A:'Work'},locked:[],tolerance:0},
+  beforeRates:rates(.2),afterRates:rates(.2),cost,horizon:1e9});
+ const creep=flat(900,1000,9);
+ assert.equal(creep.allowed,true);assert.equal(creep.reason,'bounded-equipment-creep');assert.equal(creep.delaySeconds,9);
+ // Same cash, ten times the price: outside the 1% bound, so the basket still wins.
+ assert.equal(flat(900,1000,90).reason,'delays-augmentation');
+ // Inside the 1% bound but a 9,000 second delay: the horizon guard rejects it.
+ assert.equal(flat(900000,2000000,9000).reason,'delays-augmentation');
+ // Equipment that pays for itself keeps the ordinary reason.
+ assert.equal(check({afterRates:rates(.4)}).reason,'preserves-augmentation-readiness');
+});

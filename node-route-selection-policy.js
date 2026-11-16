@@ -135,7 +135,7 @@ export function nodeRouteMilestones(routes,development){
  if(routes.hacking?.phase==='xp'&&routes.hacking.actionable!==true&&Number.isFinite(routes.hacking.etaMs)&&routes.hacking.etaMs>0)result.hacking={name:'Measure dedicated hacking XP',etaMs:120000};
  return result;
 }
-export function boundedMilestoneRoute(decision,previous,{now,same,comparable,milestones,probeState}){
+function boundedMilestoneRoute(decision,previous,{now,same,comparable,milestones,probeState}){
  const previousProbe=probeState||(same?previous?.probe:null);
  const cooldown=probe=>({...decision,probe:{...probe,status:'cooldown',cooldownUntil:probe.cooldownUntil||probe.until+1800000}});
  if(previousProbe?.status==='active'){

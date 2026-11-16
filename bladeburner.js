@@ -56,7 +56,7 @@ let player = (/**@returns{Player}*/() => undefined)();
 let resetInfo = (/**@returns{ResetInfo}*/() => undefined)(); // Information about the current bitnode
 let options,teamBudget,teamLastTick,lastAssignedCount,ownsRecruitment=false;
 let interruptionWarnings=new Map();
-let rankSamples=[],blackOpRiskHistory=null,blackOpCashHistory=null;
+let rankSamples=[],blackOpRiskHistory=null,blackOpCashHistory=null,blackOpChanceCache=null;
 let cityPlanCache=null,lastCapabilityKey=null;
 let levelPlanCache=null,actionProgress=null,lastStartDeferral=null;
 const teamStatusFile='tasks/bladeburner-team.json';
@@ -74,7 +74,8 @@ const argsSchema = [
     ['recruitment-budget-minutes',10], // At most this many minutes recruiting per rolling hour.
     ['disable-adaptive-farming',false],
     ['farming-min-success',.9], // Minimum conservative chance for costed routine missions; BlackOps remain separate.
-    ['success-threshold', 0.99], // Attempt the best action whose minimum chance of success exceeds this threshold
+    ['success-threshold', 0.99], // Black Ops gate: a failed Black Op costs HP, so it stays strict
+    ['operation-success-threshold', 0.5], // Ordinary operations/contracts: attempt the best action above this
     ['chaos-recovery-threshold', 50], // Prefer to do "Stealth Retirement" operations to reduce chaos when it reaches this number
     ['max-chaos', 100], // If chaos exceeds this amount in every city, we will reluctantly resort to diplomacy to reduce it.
     ['toast-upgrades', false], // Set to true to toast each time a skill is upgraded
@@ -265,7 +266,22 @@ async function mainLoop(ns) {
         try{if(ns.bladeburner.getCurrentAction()?.name===antiChaosOperation)ns.bladeburner.stopBladeburnerAction();}catch{}
         ownsSurplus=false;
     }
-    const rankReserves={stealth:stockReserve,population:options['reserved-action-count'],maxRank:maxRankNeeded,guardReady};
+    // Population reserves keep Tracking/Investigation/Undercover whole so the success-chance estimate can be
+    // sharpened. That is only worth paying while the next Black Op still needs the estimate: once it clears the
+    // threshold, the estimate is redundant and those whole actions are the only rank supply left. Chaos protection
+    // (stealth reserve) is kept either way, because chaos moves the real chance, not just the estimate.
+    let nextBlackOpChanceReady=false;
+    // One RAM-dodged quote per half minute: this loop runs every update-interval, and spawning a temp script
+    // every tick to re-learn the same success chance would cost more than the reserve it saves.
+    if(nextBlackOp&&(!blackOpChanceCache||blackOpChanceCache.name!==nextBlackOp||Date.now()-blackOpChanceCache.at>30000)){
+        try{
+            const chance=await getNsDataThroughFile(ns,'ns.bladeburner.getActionEstimatedSuccessChance(ns.args[0], ns.args[1])',
+                '/Temp/bladeburner-blackop-chance.txt',['Black Operations',nextBlackOp]);
+            blackOpChanceCache={name:nextBlackOp,at:Date.now(),ready:Array.isArray(chance)&&chance.length===2&&chance.every(v=>Number.isFinite(v)&&v>=options['success-threshold'])};
+        }catch{blackOpChanceCache=null;}
+    }
+    nextBlackOpChanceReady=!!blackOpChanceCache&&blackOpChanceCache.name===nextBlackOp&&blackOpChanceCache.ready;
+    const rankReserves={stealth:stockReserve,population:nextBlackOpChanceReady?0:options['reserved-action-count'],maxRank:maxRankNeeded,guardReady};
     const reservedActions=limitedActions.filter(name=>bladeburnerRankSupply(name,getCount(name),rank,rankReserves)===0);
     await ns.write('tasks/bladeburner-rank-reserves.json',JSON.stringify({...rankReserves,at:Date.now(),ownerPid:ns.pid,nodeReset:resetInfo.lastNodeReset,augReset:resetInfo.lastAugReset,guardPid:guardReady?surplusGuardPid:0}),'w');
     if (nextBlackOp && rank < blackOpsRanks[nextBlackOp]) reservedActions.push(nextBlackOp); // Remove blackop from "available actions" if we have insufficient rank.
@@ -703,7 +719,7 @@ async function mainLoop(ns) {
     const bestActionType = nextBlackOp == bestActionName ? "Black Operations" : contractNames.includes(bestActionName) ? "Contracts" :
         operationNames.includes(bestActionName) ? "Operations" : "General";
     const farmTicket=adaptiveFarm?.name===bestActionName&&adaptiveFarm.level===levelPlans[bestActionName]?.level&&reason.startsWith('Risk-adjusted rank farming:')?{...adaptiveFarm,at:Date.now(),ownerPid:ns.pid,nodeReset:resetInfo.lastNodeReset,augReset:resetInfo.lastAugReset,cashRate:adaptiveFarm.cashRate}:null;
-    const actionThreshold=bestActionName===nextBlackOp&&blackOpRisk.adaptive?blackOpRisk.threshold:farmTicket?farmTicket.threshold:options['success-threshold'];
+    const actionThreshold=bestActionName===nextBlackOp?(blackOpRisk.adaptive?blackOpRisk.threshold:options['success-threshold']):farmTicket?farmTicket.threshold:options['operation-success-threshold'];
     const startResult = await getNsDataThroughFile(ns, `(()=>{if(ns.args[13]&&ns.args[13]!=="null"){const b=ns.bladeburner,p=ns.getPlayer(),r=ns.getResetInfo(),ticket=JSON.parse(ns.args[13]),data=JSON.parse(ns.args[8])[ns.args[1]],level=JSON.parse(ns.args[6])?.level??b.getActionCurrentLevel(ns.args[0],ns.args[1]);if(!(${bladeburnerFarmStartAllowed.toString()})(ticket,{name:ns.args[1],type:ns.args[0],at:Date.now(),ownerPid:ns.args[5],nodeReset:r.lastNodeReset,augReset:r.lastAugReset,level,difficulty:data?.base*Math.pow(data?.factor,level-1),hp:p.hp,money:p.money,reserve:Math.max(0,Number(ns.read("reserve.txt"))||0),chance:b.getActionEstimatedSuccessChance(ns.args[0],ns.args[1])},(${blackOpHospitalCost.toString()}),(${farmingDamage.toString()})))return {success:false,reason:"farming-risk-changed"};}if(ns.args[0]==="General"&&ns.args[1]==="Recruitment"&&ns.args[12]&&ns.args[12]!=="null"&&!(${supportReplacementStartAllowed.toString()})(ns,JSON.parse(ns.args[12])))return {success:false,reason:"support-replacement-changed"};if(ns.args[0]==="Black Operations"&&ns.args[11]!=="null"){const ticket=JSON.parse(ns.args[11]),b=ns.bladeburner,p=ns.getPlayer(),r=ns.getResetInfo();let supporting=null;try{supporting=Array.from({length:ns.sleeve.getNumSleeves()},(_,i)=>ns.sleeve.getTask(i)).filter(t=>t?.type==="SUPPORT").length;}catch{}const live={target:ns.args[1],ownerPid:ns.args[5],nodeReset:r.lastNodeReset,augReset:r.lastAugReset,city:b.getCity(),rank:b.getRank(),time:b.getActionTime("Black Operations",ns.args[1]),loss:b.getActionRankLoss("Black Operations",ns.args[1]),hrcTime:b.getActionTime("General","Hyperbolic Regeneration Chamber"),recruit:{time:b.getActionTime("General","Recruitment"),chance:b.getActionEstimatedSuccessChance("General","Recruitment")[0]},team:b.getTeamSize("Black Operations",ns.args[1]),totalTeam:b.getTeamSize(),supporting,hp:p.hp,money:p.money,stamina:b.getStamina(),bonusMs:b.getBonusTime()};live.p=(${bladeburnerStaminaChance.toString()})(b.getActionEstimatedSuccessChance("Black Operations",ns.args[1]),live.stamina,JSON.parse(ns.args[8])[ns.args[1]]?.base)?.[0];if(!(${blackOpRiskStartAllowed.toString()})(ticket,live,Date.now(),(${blackOpBonusComparison.toString()}),(${blackOpHospitalCost.toString()})))return {success:false,reason:"black-op-risk-changed"};}if(ns.args[9]>=0){if(!ns.isRunning(ns.args[10]))return {success:false,reason:"stock-guard-unavailable"};if(Math.floor(ns.bladeburner.getActionCountRemaining("Operations","Stealth Retirement Operation"))<=ns.args[9])return {success:false,reason:"stock-reserved"};}let reason=null;const success=(${startBladeburnerPlannedAction.toString()})(ns.bladeburner,ns.args[0],ns.args[1],JSON.parse(ns.args[6]),ns.args[3],ns.args[2],ns.args[4],()=>ns.isRunning(ns.args[5])&&(ns.args[9]<0||ns.isRunning(ns.args[10])&&Math.floor(ns.bladeburner.getActionCountRemaining("Operations","Stealth Retirement Operation"))>ns.args[9])&&(${bbMutationGuard})&&(()=>{const plan=JSON.parse(ns.args[6]);if(ns.args[0]!=="Operations"||!plan?.team)return true;try{const support=Array.from({length:ns.sleeve.getNumSleeves()},(_,i)=>ns.sleeve.getTask(i)).filter(t=>t?.type==="SUPPORT").length;return plan.team<=Math.max(0,ns.bladeburner.getTeamSize()-support-ns.args[4]);}catch{return false;}})()&&(${bladeburnerWorkAllowed.toString()})({getCurrentWork:()=>ns.singularity.getCurrentWork(),getOwnedAugmentations:q=>ns.singularity.getOwnedAugmentations(q)},ns.args[7]),(${bladeburnerStaminaChance.toString()}),JSON.parse(ns.args[8]),value=>{reason=value;});return {success,reason};})()`,'/Temp/bladeburner-start-action.txt',[bestActionType,bestActionName,blackOpsRanks[bestActionName]||0,actionThreshold,bestActionName==='Recruitment'&&supportReplacement?supportReplacement.totalTarget:Number.isInteger(teamPlan.required)?(teamPlan.trial&&bestActionType==='Operations'?0:teamPlan.required):bestActionType==='Operations'?options['team-cap']:0,ns.pid,JSON.stringify(levelPlans[bestActionName]||null),options['ignore-busy-status'],JSON.stringify({...bladeburnerDifficulty,...Object.fromEntries(Object.entries(blackOpMetadata).map(([name,data])=>[name,{base:data.baseDifficulty,factor:1}]))}),farmSurplus?stockReserve:-1,farmSurplus?surplusGuardPid:0,JSON.stringify(blackOpRisk.adaptive?blackOpRisk:null),JSON.stringify(supportReplacement),JSON.stringify(farmTicket)]);
     const success=startResult===true||startResult?.success===true;
     if(!success){

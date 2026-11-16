@@ -1,7 +1,7 @@
 // Additional solvers for the game's password puzzles. All work is bounded per pass.
 import {feedbackTurnBudget} from './darknet-feedback.js';
 import {observeLabyrinth,nextLabyrinthMove} from './darknet-labyrinth-policy.js';
-export const factorPrimes = [2,3,5,7,11,13,17,19,23,29,31,37,41,43,47,53,59,61,67,71,73,79,83,89,97,
+const factorPrimes = [2,3,5,7,11,13,17,19,23,29,31,37,41,43,47,53,59,61,67,71,73,79,83,89,97,
   1069,1409,1471,1567,1597,1601,1697,1747,1801,1889,1979,1999,2063,2207,2371,2503,2539,2693,2741,
   2753,2801,2819,2837,2909,2939,3169,3389,3571,3761,3881,4217,4289,4547,4729,4789,4877,4943,4951,
   4957,5393,5417,5419,5441,5519,5527,5647,5779,5881,6007,6089,6133,6389,6451,6469,6547,6661,6719,

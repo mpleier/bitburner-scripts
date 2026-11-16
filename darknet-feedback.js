@@ -201,3 +201,29 @@ export async function solveMastermindPassword(details, authenticate, readLogs, s
   }
   return {success:false, reason:'Mastermind probe budget reached; progress retained'};
 }
+
+/** A heartbleed log can state the password outright ("The password is 742"). Those logs are only printed
+ * today, so a server whose hint text is a red herring is cracked by blind enumeration while the answer is
+ * already visible in its log. Return the stated credential when it satisfies the length and character-set
+ * rules the server enforces, so it can be tried first. */
+export function statedPasswordFromLogs(logs, details = {}) {
+  const lines = Array.isArray(logs) ? logs : [];
+  const length = Number(details.passwordLength), format = String(details.passwordFormat || '').toLowerCase();
+  const matches = value => {
+    if (!value) return false;
+    if (Number.isInteger(length) && length > 0 && value.length !== length) return false;
+    switch (format) {
+      case 'numeric': return /^\d+$/.test(value);
+      case 'alphabetic': return /^[a-z]+$/i.test(value);
+      case 'alphanumeric': return /^[a-z0-9]+$/i.test(value);
+      case 'ascii': return /^[ -~]+$/.test(value);
+      default: return true;
+    }
+  };
+  for (const line of lines) {
+    const text = String(line ?? '');
+    const stated = /(?:password|passcode|pass phrase|code|pin)\s*(?:is|=|:)\s*["']?([A-Za-z0-9_-]{1,32})["']?/i.exec(text);
+    if (stated && matches(stated[1])) return stated[1];
+  }
+  return null;
+}

@@ -1,6 +1,6 @@
 /** Stanek's Gift must be accepted before any non-NeuroFlux augmentation is purchased. */
 export const stanekGiftName = "Stanek's Gift - Genesis";
-export const neuroFluxName = 'NeuroFlux Governor';
+const neuroFluxName = 'NeuroFlux Governor';
 
 export function stanekFirstState(ns) {
   const reset = ns.getResetInfo();

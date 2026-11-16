@@ -1,5 +1,5 @@
 /** Bounded beam search; no live grid mutations. */
-export function fragmentCells(f,definition) {
+function fragmentCells(f,definition) {
  if(!definition||!Number.isInteger(f.rotation)||f.rotation<0||f.rotation>3)return [];
  let shape=definition.shape;
  for(let r=0;r<f.rotation;r++)shape=shape[0].map((_,x)=>shape.map((_,y)=>shape[shape.length-1-y][x]));

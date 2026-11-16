@@ -71,7 +71,7 @@ test('actual autopilot wires minimal funding startup before normal managers',asy
  const s=await readFile(new URL('../autopilot.js',import.meta.url),'utf8');
  assert.match(s,/if\(casinoSeedPending\)\{\s*await checkOnRunningScripts\(ns,player,true\)/);
  const bootstrap=s.indexOf('if(bootstrapOnly)return;'),optional=s.indexOf('const priorityManagers =');assert.ok(bootstrap>0&&bootstrap<optional);
- assert.match(s,/bootstrapOnly[\s\S]*--initial-max-targets/);
+ assert.match(s,/bootstrapOnly[\s\S]*--initial-max-targets',\s*3,/);
  assert.match(s,/--initial-study-time',0,'--initial-hack-xp-time',0/);
 });
 

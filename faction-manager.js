@@ -9,7 +9,7 @@ import {augmentationCashReserve} from './spending-policy.js';
 import {ensureStanekFirst} from './stanek-first-policy.js';
 import {ensureFactionJoinPlan} from './faction-joining.js';
 import {readNodeRoutePlan} from './node-route-policy.js';
-import { augmentationPurchaseBudget,extendNeuroFluxOrder,augmentationStatFilters,factionTerminalOutput,chooseNeuroFluxFaction,augmentationDonationTopUp,augmentationPrerequisiteChain,selectAugmentationBasketDrop,optimizeAugmentationOrder,futureAugmentationBasketCost,pruneAugmentationPrerequisites,neuroFluxLevels,augmentationCountCandidates,selectGangAugmentationGoal,factionJoinAllowed,rankFactionInvites,gangHostPreferences,factionForcedJoins, factionControlAllowed, factionPurchaseBatch } from './faction-policy.js';
+import { augmentationPurchaseBudget,extendNeuroFluxOrder,augmentationStatFilters,factionTerminalOutput,chooseNeuroFluxFaction,augmentationDonationTopUp,augmentationPrerequisiteChain,selectAugmentationBasketDrop,optimizeAugmentationOrder,futureAugmentationBasketCost,pruneAugmentationPrerequisites,neuroFluxLevels,augmentationCountCandidates,selectGangAugmentationGoal,factionJoinAllowed,rankFactionInvites,gangHostPreferences,factionForcedJoins, factionControlAllowed, factionPurchaseBatch, augmentationPriceMultiplier, factionJoinOutcome } from './faction-policy.js';
 import { isScriptPaused } from './automation-control.js';
 import { achievementActionAllowed } from './achievement-policy.js';
 import {
@@ -153,7 +153,7 @@ export async function main(ns) {
         log(ns, `WARNING: This script makes heavy use of singularity functions, which are quite expensive before you have SF4.3. ` +
             `Unless you have a lot of free RAM for temporary scripts, you may get runtime errors.`);
     const sf11Level = ownedSourceFiles[11] || 0;
-    augCountMult = 1.9 * [1, 0.96, 0.94, 0.93][sf11Level];
+    augCountMult = augmentationPriceMultiplier(sf11Level);
 
     log(ns, `Player has sf11Level ${sf11Level}, so the multiplier after each aug purchased is ${augCountMult}.`);
 
@@ -635,13 +635,20 @@ async function joinFactions(ns, forceJoinFactions) {
             log(ns, `Deferring ${faction.name}: not in the shared city group.`, printToTerminal);
         else {
             log(ns, `Joining faction ${faction.name} which has ${desiredAugs.length} desired augmentations: ${desiredAugs}`);
-            let response;
-            if (response = await getNsDataThroughFile(ns, `(${factionControlAllowed.toString()})({isRunning:p=>ns.isRunning(p),read:f=>ns.read(f)},ns.args[1],"faction-manager.js")&&(${factionJoinAllowed.toString()})({joined:()=>ns.getPlayer().factions,read:f=>ns.read(f),reset:()=>ns.getResetInfo()},ns.args[0])&&ns.singularity.joinFaction(ns.args[0])`, null, [faction.name,ns.pid])) {
+            const response = await getNsDataThroughFile(ns, `(${factionControlAllowed.toString()})({isRunning:p=>ns.isRunning(p),read:f=>ns.read(f)},ns.args[1],"faction-manager.js")&&(${factionJoinAllowed.toString()})({joined:()=>ns.getPlayer().factions,read:f=>ns.read(f),reset:()=>ns.getResetInfo()},ns.args[0])&&ns.singularity.joinFaction(ns.args[0])`, null, [faction.name,ns.pid]);
+            // joinFaction returns false when we are already a member, which is not a failure: read membership
+            // back before reporting an error, otherwise a real membership stays out of joinedFactions/factionData.
+            let member = false;
+            if (!response) { try { member = (await getPlayerInfo(ns)).factions.includes(faction.name) === true; } catch { } }
+            const outcome = factionJoinOutcome(response, member);
+            if (outcome !== 'failed') {
                 faction.joined = true;
                 faction.augmentations.forEach(aug => accessibleAugmentations.add(aug));
-                joinedFactions.push(faction.name);
-                log(ns, `SUCCESS: Joined faction ${faction.name} (Response: ${response})`, printToTerminal, 'success');
+                if (!joinedFactions.includes(faction.name)) joinedFactions.push(faction.name);
                 joined++;
+                log(ns, outcome === 'joined' ? `SUCCESS: Joined faction ${faction.name} (Response: ${response})`
+                    : `INFO: Already a member of faction ${faction.name}; recording it in the joined list.`,
+                    printToTerminal, outcome === 'joined' ? 'success' : 'info');
             } else
                 log(ns, `ERROR: Error joining faction ${faction.name}. Response: ${response}`, false, 'error');
         }

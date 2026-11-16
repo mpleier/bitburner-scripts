@@ -22,7 +22,11 @@ export async function main(ns) {
   try {
    const owned=await getNsDataThroughFile(ns,'ns.singularity.getUnlockedAchievements()','/Temp/achievement-unlocked.txt');
    if(!Array.isArray(owned))throw new Error('Achievement API returned invalid data');
-   let profile;try{profile=JSON.parse(ns.read('tasks/achievement-profile.json'));}catch{}profile??={active:false};
+   let profile;try{profile=JSON.parse(ns.read('tasks/achievement-profile.json'));}catch{}
+   // A profile written in another BitNode describes a run that ended with that reset; honouring its
+   // active flag or deniedActions would gate this node's work on a challenge that no longer exists.
+   if(profile&&profile.nodeReset!==reset.lastNodeReset)profile=null;
+   profile??={active:false};
    if(profile.kind==='debt'&&owned.includes('MONEY_M1B')){await getNsDataThroughFile(ns,`(${achievementWorkerSources.recoverDebt})(ns)`,'/Temp/achievement-debt-recovery.txt');profile={...profile,active:false,kind:'complete',disabledScripts:[],deniedActions:[]};await ns.write('tasks/achievement-profile.json',JSON.stringify(profile),'w');releaseActivity(ns);}
    let transition;try{transition=JSON.parse(ns.read(transitionFile));}catch{}
    if(transitionActive(transition,ns.ps('home'))){await ns.sleep(1000);continue;}

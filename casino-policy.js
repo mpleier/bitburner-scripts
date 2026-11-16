@@ -78,8 +78,11 @@ export async function performCasinoUiAction(resolve,eventName,value,{assertContr
 }
 /** Self-contained helper: preserve the casino, this helper and the Remote API worker. */
 export function stopCasinoCompetitors(ns,casinoPid) {
+  // Files in a subdirectory carry a leading slash in ns.ps, so normalize before matching: without this the
+  // remote-control jobs are killed despite the intent to preserve Remote API connectivity.
+  const bare=process=>String(process.filename).replace(/^\//,'');
   const processes=ns.ps('home').filter(process=>process.pid!==casinoPid&&process.pid!==ns.pid&&
-    !/(^|\/)(?:remote-api-agent|autopilot)\.js$/.test(process.filename)&&!process.filename.startsWith('remote-control/'));
+    !/(^|\/)(?:remote-api-agent|autopilot)\.js$/.test(process.filename)&&!bare(process).startsWith('remote-control/'));
   return processes.map(process=>({pid:process.pid,stopped:ns.kill(process.pid)}));
 }
 
@@ -92,6 +95,12 @@ export function stopCasinoFocusCompetitors(ns,casinoPid) {
 
 export function casinoRetryPending(record,augReset,now=Date.now()) {
   return record?.mode==='failed'&&record.augReset===augReset&&record.retryAt>now;
+}
+/** A completed run in the current augmentation generation is final. The process-level `ranCasino` latch is
+ * reset by every autopilot restart, so without this a restart inside the 10-minute post-install window replayed
+ * the whole casino phase — 30 minutes of teardown per replay, while hacking kept resetting to 1. */
+export function casinoAlreadyRan(record,augReset) {
+  return !!record&&record.mode==='complete'&&record.augReset===augReset;
 }
 
 export function casinoHookArgs(input) {
@@ -110,6 +119,11 @@ export function casinoControlAllowed(ns,parent) {
  if(!ns.isRunning(parent)||ns.read('remote-control/paused/casino.js.txt').trim()==='true')return false;
  try{const r=JSON.parse(ns.read('tasks/progression-transition.json'));if(r.expiresAt>Date.now()&&r.ownerPid!==parent&&ns.isRunning(r.ownerPid))return false;}catch{}
  return true;
+}
+/** A kill returns false when the script exited on its own between the ps snapshot and ns.kill; that is not a
+ * failure to stop it. Only processes that are genuinely still running block the casino run. */
+export function casinoStubbornProcesses(ns,receipt) {
+  return (Array.isArray(receipt)?receipt:[]).filter(entry=>!entry.stopped&&ns.isRunning(entry.pid)).map(entry=>entry.pid);
 }
 export async function reloadCasinoWindow(ns,win,delay,allowed,maxAttempts=5) {
  const previous=win.onbeforeunload;

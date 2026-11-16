@@ -9,7 +9,7 @@ import {sampleSleeveReputation,observeSleeveReputation,sleeveWorkOutput,planSlee
 import {hashSpendingDecision,spendHashesWithPolicy} from './hash-spending-policy.js';
 import { allocateSleeveAugBudget,sleeveCombatCrime,planSleeveAugPurchase,sleeveAugRecoveryPlan,sleeveCombatWorkers, sleeveRecoveryObservation, sleeveDevelopmentActive } from './sleeve-development-policy.js';
 import {readNodeRoutePlan} from './node-route-policy.js';
-import {registerAutomation,automationHeartbeat,maintenanceRequested} from './runtime-policy.js';
+import {registerAutomation,automationHeartbeat} from './runtime-policy.js';
 import {achievementActionAllowed} from './achievement-policy.js';
 import { augmentationCashReserve,claimSpending } from './spending-policy.js';
 import { chooseSleeveCrime } from './automation-policy.js';
@@ -118,7 +118,9 @@ export async function main(ns) {
     // Start the main loop
     while (!isScriptPaused(ns,ns.getScriptName())) {
  automationHeartbeat(ns);
-        if(maintenanceRequested(ns)){await ns.write('tasks/sleeve-status.json',JSON.stringify({at:Date.now(),pid:ns.pid,state:'waiting',reason:'Automation maintenance'}),'w');await ns.sleep(interval);continue;}
+        // Fleet maintenance restarts managers, which does not conflict with sleeve actions: sleeves work
+        // through ns.sleeve.* and only share money, which augmentationCashReserve already budgets for.
+        // Parking them turned eight healthy sleeves into idle slots every time the supervisor cycled.
         try { await mainLoop(ns); }
         catch (err) {
             await ns.write('tasks/sleeve-status.json',JSON.stringify({at:Date.now(),pid:ns.pid,state:'recovering',error:String(err)}),'w');
@@ -439,7 +441,7 @@ async function mainLoop(ns) {
     const augmentationQuotes=[];
     if(!options['disable-adaptive-augmentations']&&!reset.bitNodeOptions?.disableSleeveExpAndAugmentation&&budget>0){
         for(let i=0;i<numSleeves;i++){
-            if(isScriptPaused(ns,ns.getScriptName())||maintenanceRequested(ns))return;
+            if(isScriptPaused(ns,ns.getScriptName()))return;
             if(sleeveInfo[i].shock!==0)continue;
             const plan=await quoteSleeveAugs(ns,i,budget,augmentationReserve,sleeveInfo[i],actualTasks[i]);
             if(plan?.names?.length)augmentationQuotes.push({index:i,plan});
@@ -447,7 +449,7 @@ async function mainLoop(ns) {
     }
     const augmentationAllocation=allocateSleeveAugBudget(augmentationQuotes,sleeveAugSpendingBudget(ns,budget));
     for (let i = 0; i < numSleeves; i++) {
-        if(isScriptPaused(ns,ns.getScriptName())||maintenanceRequested(ns))return;
+        if(isScriptPaused(ns,ns.getScriptName()))return;
         let sleeve = sleeveInfo[i]; // For convenience, merge all sleeve stats/info into one object
         // Manage sleeve augmentations (if available)
         if (sleeve.shock == 0 && !reset.bitNodeOptions?.disableSleeveExpAndAugmentation) // No augs are available augs until shock is 0

@@ -1,4 +1,4 @@
-export function cloudDecisionDescription(result){
+function cloudDecisionDescription(result){
  if(result.purchased)return (result.upgrade?'Upgraded an existing server':'Purchased a server')+' to add capacity';
  return ({'shared-budget':'Waiting for shared spending allowance','idle-capacity':'Existing usable RAM has spare capacity',
   'reserved-cash':'Cash is reserved for other goals','no-affordable-capacity':'Waiting for an affordable capacity increase',

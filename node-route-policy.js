@@ -147,7 +147,7 @@ export function estimateBladeburnerRoute(bb, threshold=.99) {
 }
 
 /** Require a 25% advantage across estimate ranges for two minutes before a priority switch. */
-export function selectNodeRoute(routes, previous, {now=Date.now(),augReset,nodeReset}={}) {
+function selectNodeRoute(routes, previous, {now=Date.now(),augReset,nodeReset}={}) {
     const same=previous?.augReset===augReset&&previous?.nodeReset===nodeReset&&previous?.at<=now&&now-previous.at<=45000;
     const prior=same?previous:null;
     const known=r=>r?.actionable===true&&finite(r.lowerMs)&&finite(r.upperMs);

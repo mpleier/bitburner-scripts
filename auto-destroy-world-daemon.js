@@ -7,6 +7,8 @@
  * then destroys the BitNode and restarts daemon.js in the next node.
  */
 const target = 'w0r1d_d43m0n';
+/** Last printed completion blocker, so the 29 s check logs a state change instead of repeating itself. */
+let lastBlocker = '';
 
 import { writeSleeveMemoryPriority, clearSleeveMemoryPriority } from './sleeve-memory-priority-policy.js';
 
@@ -67,18 +69,47 @@ function sleeveMemoryList(ns) {
   }
 }
 
+/**
+ * Why the completion gate is closed, in one line. The World Daemon server does not exist until
+ * The Red Pill is INSTALLED (bitburner-src src/Server/ServerHelpers.ts: `Player.hasAugmentation(
+ * AugmentationName.TheRedPill, true) || baseServer.hostname !== SpecialServers.WorldDaemon`), so
+ * "daemon missing" always means the Red Pill is not installed yet, not that the network is misread.
+ */
+function completionBlocker(ns, {daemonExists, hackingLevel}) {
+  if (daemonExists) {
+    const needs = ns.getServerRequiredHackingLevel(target);
+    return `waiting on hacking ${Math.floor(hackingLevel).toLocaleString('en')} of ${needs.toLocaleString('en')} required to hack the World Daemon`;
+  }
+  let rep = null, req = null;
+  try {
+    rep = ns.singularity.getFactionRep('Daedalus');
+    req = ns.singularity.getAugmentationRepReq('The Red Pill');
+  } catch { /* singularity unavailable: fall through to the generic line */ }
+  const repPart = Number.isFinite(rep) && Number.isFinite(req)
+    ? `Daedalus reputation ${Math.floor(rep).toLocaleString('en')} of ${req.toLocaleString('en')}`
+    : 'Daedalus reputation unknown';
+  return `The Red Pill is not installed, so w0r1d_d43m0n does not exist yet (${repPart}; Bladeburner Operation Daedalus also incomplete)`;
+}
+
 export async function main(ns) {
   ns.disableLog('ALL');
   if (typeof ns.singularity?.destroyW0r1dD43m0n !== 'function') return;
 
   const reset = ns.getResetInfo();
   const daemonExists = ns.serverExists(target);
-  const daemonHackable = daemonExists && ns.getHackingLevel() >= ns.getServerRequiredHackingLevel(target);
+  const hackingLevel = ns.getHackingLevel();
+  const daemonHackable = daemonExists && hackingLevel >= ns.getServerRequiredHackingLevel(target);
   const bladeburner = bladeburnerComplete(ns);
   if (!daemonHackable && !bladeburner) {
+    // Print once per distinct blocker instead of returning silently forever: a BitNode that never
+    // finishes looks identical to a broken script unless the gate names itself.
+    const blocker = completionBlocker(ns, {daemonExists, hackingLevel});
+    if (blocker !== lastBlocker) { lastBlocker = blocker; ns.print(`BitNode ${reset.currentNode} not finishable yet: ${blocker}.`); }
     await clearSleeveMemoryPriority(ns);
     return;
   }
+  lastBlocker = '';
+
 
   if (daemonHackable && !ns.hasRootAccess(target)) {
     if (!ns.isRunning('/Tasks/crack-host.js', 'home', target)) {

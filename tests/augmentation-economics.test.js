@@ -19,6 +19,13 @@ test('serialized market capture collects one complete set of native quotes, rep,
  assert.equal(s.complete,true);assert.equal(s.quotes.Target.price,1000);assert.equal(s.factions.A.rep,10000);assert.deepEqual(s.factions.A.thresholds,[100000]);assert.equal(s.repMultiplier,1);
  assert.equal(augmentationEconomicsChange(s,f.capture()).changed,false);
 });
+test('charging-fragment multiplier drift keeps the plan usable but a real install still invalidates it',()=>{
+ const f=fixture(),first=f.capture();
+ f.mult=1.004; // Stanek fragments charge continuously and move player.mults.faction_rep
+ assert.equal(augmentationEconomicsChange(first,f.capture()).changed,false);
+ f.mult=1.5; // An augmentation install or BitNode change moves it by tens of percent
+ assert.deepEqual(augmentationEconomicsChange(first,f.capture()),{changed:true,reason:'Donation conversion changed'});
+});
 test('prices, augmentation requirements, membership, donation factors and favor invalidate immediately',()=>{
  for(const mutate of [f=>f.price++,f=>f.price/=2,f=>f.requirement++,f=>f.joined=[],f=>f.mult=2,f=>f.favor++,f=>f.favorToDonate++]){
   const f=fixture(),before=f.capture();mutate(f);assert.equal(augmentationEconomicsChange(before,f.capture(),{allowRepDrift:true}).changed,true);

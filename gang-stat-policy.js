@@ -65,6 +65,45 @@ export function gangTerritoryDevelopmentFocus(gang,members,desired,options={}) {
  if(gangMoneyAllowed(gang))return desired;
  return members<12||options['no-training']||options['disable-adaptive-growth']||options['reputation-focus']?'respect':'stats';
 }
+/** Compact territory history: keep roughly one sample per five minutes so a trend spans about an
+ *  hour without growing the save. Samples are appended by the controller once per planning pass. */
+export function gangTerritoryTrend(samples,now,{maxSamples=12,minGapMs=300000}={}) {
+ const empty={samples:[],pointsPerHour:null,spanMs:0,flatMs:null};
+ if(!Number.isFinite(now)||!Array.isArray(samples))return empty;
+ const valid=samples.filter(s=>s&&Number.isFinite(s.at)&&s.at<=now&&Number.isFinite(s.territory)&&s.territory>=0&&s.territory<=1)
+  .sort((a,b)=>a.at-b.at);
+ // One sample per bucket keeps the spacing after thinning: the newest value inside each five-minute
+ // window wins, so a rise or fall inside the bucket is not lost and the series stays ordered.
+ const buckets=new Map();
+ for(const sample of valid)buckets.set(Math.floor(sample.at/minGapMs),{at:sample.at,territory:sample.territory});
+ const bounded=[...buckets.entries()].sort((a,b)=>a[0]-b[0]).map(([,sample])=>sample).slice(-Math.max(2,Math.floor(maxSamples)));
+ if(!bounded.length)return empty;
+ const first=bounded[0],last=bounded[bounded.length-1],spanMs=last.at-first.at;
+ const pointsPerHour=spanMs>0?(last.territory-first.territory)/(spanMs/3600000):null;
+ // Flat time starts at the newest sample that still differs from the current territory.
+ let changedAt=bounded[bounded.length-1].at;
+ for(const sample of bounded)if(sample.territory!==last.territory)changedAt=sample.at;
+ return {samples:bounded,pointsPerHour,spanMs,flatMs:now-changedAt};
+}
+/** The `gangMoneyAllowed` gate is a hard constant, which is right while territory compounds: income
+ *  scales with territory^1.5 and a territory penalty exponent, so ninety percent is worth roughly
+ *  fifty times the income at a quarter of the city. It is wrong when that state cannot arrive before
+ *  the committed route ends, or when territory has stopped moving inside a full planning window —
+ *  then the run forgoes every gang pay-out for a gate it will never reach. Release a bounded money
+ *  focus only on those two measured conditions. */
+export function gangIncomeEscape({territory,trend,routeRemainingMs=null,now=Date.now()}={}) {
+ if(!Number.isFinite(territory))return {allowed:false,reason:'Territory unknown'};
+ if(territory>.9)return {allowed:false,reason:'Income already unlocked'};
+ const flatMs=Number.isFinite(trend?.flatMs)?trend.flatMs:null;
+ if(flatMs!==null&&flatMs>=1800000)return {allowed:true,reason:'Territory flat for '+(flatMs/60000).toFixed(0)+' minutes',flatMinutes:flatMs/60000};
+ if(!(Number.isFinite(trend?.spanMs)&&trend.spanMs>=600000))return {allowed:false,reason:'Territory trend is too short'};
+ const rate=trend.pointsPerHour;
+ if(!(Number.isFinite(rate)&&rate>0))return {allowed:true,reason:'Territory is not growing',pointsPerHour:rate??null};
+ if(!(Number.isFinite(routeRemainingMs)&&routeRemainingMs>0))return {allowed:false,reason:'Route horizon unknown',pointsPerHour:rate};
+ const projectedMs=(0.9-territory)/(rate/3600000);
+ if(projectedMs>routeRemainingMs)return {allowed:true,reason:'The 90% gate is beyond the remaining route horizon',projectedHours:projectedMs/3600000,pointsPerHour:rate};
+ return {allowed:false,reason:'The 90% gate is reachable inside the route horizon',projectedHours:projectedMs/3600000,pointsPerHour:rate};
+}
 
 /** Keep a reputation producer available for recruitment and ascension continuity.
  * Money is deliberately excluded from this ranking. */

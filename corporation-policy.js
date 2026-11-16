@@ -19,8 +19,13 @@ export function boostPurchaseBudget(info, reserve, upkeep = 0, cycleSeconds = 10
  // A small startup allowance bootstraps a division before its first sales cycle.
  let allowance = revenue === 0 && expenses === 0 ? Math.min(10e6, cash * 0.01) : Math.max(0, revenue - expenses) * cycleSeconds * 0.5;
  const free=Math.max(0,cash-reserve-upkeep);
+ // The development allowance buys inventory a division has not yet sold. It used to be gated on a cash buffer
+ // alone, which any treasury satisfies when expenses are small: a loss-making corp with $2.5b free was allowed
+ // 2% of that per cycle in boosts, ~1,600x its revenue per cycle, and the funds drained with no P&L record.
+ // Fund discretionary quality spend from earnings instead: a division that does not cover its expenses gets
+ // only the profit-scaled allowance (zero while it is losing money).
  if(developmentSpeed&&[cash,reserve,upkeep,cycleSeconds].every(Number.isFinite)&&cycleSeconds>0&&reserve>=0&&upkeep>=0&&
-  (revenue>=expenses||free>=expenses*cycleSeconds*100))allowance=Math.max(allowance,Math.min(250e6,free*.02));
+  revenue>=expenses&&free>=expenses*cycleSeconds*100)allowance=Math.max(allowance,Math.min(250e6,free*.02));
  return Math.max(0, Math.min(cash * 0.20, free, allowance));
 }
 export function treasuryPolicy(info, cycleSeconds = 10, {developmentSpeed=false}={}) {
@@ -31,6 +36,14 @@ export function treasuryPolicy(info, cycleSeconds = 10, {developmentSpeed=false}
  const spendable = Math.max(0, cash - reserve);
  const profitBudget = Math.max(0, (Number(info.revenue) || 0) - expenses) * cycleSeconds * 0.25;
  return { reserve, recovering, upkeepBudget: recovering ? 0 : Math.min(spendable, cash * 0.02, developmentSpeed?Math.max(profitBudget,spendable*.01):profitBudget) };
+}
+/** Raise the growth bank just far enough to fund one specific office increment. Releasing the whole free
+ * treasury instead let every other growth plan in the same pass spend the cash the office was preserving. */
+export function growthBankForOffice(bank, free, cost) {
+  const b = Number.isFinite(bank) ? Math.max(0, bank) : 0;
+  const f = Number.isFinite(free) ? Math.max(0, free) : 0;
+  const c = Number.isFinite(cost) && cost > 0 ? cost : 0;
+  return Math.max(b, Math.min(f, c));
 }
 export function recoveryJobCounts(employees, products, recovering) {
  const interns = recovering && employees >= 6 ? Math.min(employees - 5, Math.ceil(employees * 0.25)) : 0;
@@ -65,7 +78,10 @@ export function productPriceStep(item,state={},cycleSeconds=10){
  const stalled=produced===0&&stored>0;
  const drainTarget=stored/(Math.max(1,cycleSeconds)*3);
  const clearing=!stalled&&sold>=produced*.98&&stored<=produced*cycleSeconds*.2;
- const blocked=stalled?sold<drainTarget:sold<produced*.9||stored>produced*cycleSeconds*2;
+ // Stock that builds at all is pressure: the old threshold waited for two cycles of production in the
+ // warehouse, so a live product sat at 1.02x markup (sold 0.740/produced 0.762) while inventory grew.
+ const accumulating=!stalled&&sold<produced&&stored>produced*cycleSeconds;
+ const blocked=stalled?sold<drainTarget:sold<produced*.9||accumulating||stored>produced*cycleSeconds*2;
  if(clearing){low=current;if(high&&high<=low)high=null;}
  else if(blocked){high=current;if(low>=high)low=1;}
  else return {...state,multiplier:current,rating};
@@ -169,6 +185,25 @@ export function corporationDevelopmentCity(offices,activeProduct=null){
  return [...offices].sort((a,b)=>corporationOfficeScore([1,1,1,1,1],['Operations','Engineer','Business','Management','Research & Development'].map(k=>Number(b.employeeProductionByJob?.[k])||Number(b.numEmployees)||1),true)-corporationOfficeScore([1,1,1,1,1],['Operations','Engineer','Business','Management','Research & Development'].map(k=>Number(a.employeeProductionByJob?.[k])||Number(a.numEmployees)||1),true)||String(a.city).localeCompare(String(b.city)))[0]?.city||null;
 }
 /** Shared capital planner: score is an estimated fractional benefit per dollar, not a measured payback. */
+/** Core divisions are addressed by name throughout the growth cycle, but a corporation created by hand carries
+ * whatever name the player typed. Resolve each core division by its industry so an existing division is adopted
+ * instead of a second division of the same industry being created (which the game rejects every cycle). */
+/** Imported quality is a weighted average of what the target already stores and what arrives (Division.ts:761-769),
+ *  and market purchases are always quality 1. Shipping material that is not better than the target dilutes it, so a
+ *  route is only worth creating once the source is meaningfully ahead. */
+export function materialExportWorthwhile(sourceQuality, targetQuality, margin = 0.05) {
+  const src = Number(sourceQuality), dst = Number(targetQuality);
+  // An unreadable source quality must not silently disable the supply chain: fail open and let the game average.
+  if (!Number.isFinite(src) || src <= 0) return true;
+  if (!Number.isFinite(dst) || dst <= 0) return true;
+  return src > dst * (1 + Math.max(0, Number(margin) || 0));
+}
+export function coreDivisionName(names, industryOf, industry, fallback) {
+  for (const name of Array.isArray(names) ? names : []) {
+    try { if (industryOf(name) === industry) return name; } catch { }
+  }
+  return fallback;
+}
 export function executeCorporationGrowth(plans,budget,cash,reserve,allowed=()=>true,options={}){
  let remaining=Number.isFinite(budget)?Math.max(0,budget):0,spent=0;const decisions=[],claimedAlternatives=new Set();
  const goal=options.hold;let held=goal?.protect===true&&typeof goal.label==='string'&&Number.isFinite(goal.amount)&&goal.amount>0?Math.min(remaining,goal.amount):0;
@@ -202,6 +237,39 @@ export function productReplacementReady({product,investment,at=0,now=Date.now(),
  const stronger=oldInvestment>0&&investment>=oldInvestment*1.2||baselineResearch>0&&research>=baselineResearch*1.25||baselineEmployees>0&&employees>=baselineEmployees*1.2;
  // Missing historical evidence cannot justify retiring a revenue-producing product.
  return stronger;
+}
+
+/** Product stats scale with science: sciMult = 1 + researchPoints^scienceFactor / 800
+ *  (src/Corporation/Product.ts:147, scienceFactor from src/Corporation/data/IndustryData.ts).
+ *  Ninety research points buy a 1.2% product — the design cheque cannot fix that, so a division whose
+ *  science multiplier is still a rounding error should keep selling materials instead of developing. */
+export function corporationProductScience({points=0,scienceFactor=0.5}={}){
+ const rp=Number.isFinite(points)&&points>0?points:0;
+ // No research is the baseline: 0**0 is 1 in JS, which would otherwise report a free 0.125% bonus.
+ if(!(rp>0))return 1;
+ // Unknown industry data falls back to the common 0.5 factor rather than 0, which would freeze science at 1.
+ const factor=Number.isFinite(scienceFactor)&&scienceFactor>0?scienceFactor:0.5;
+ return 1+Math.pow(rp,factor)/800;
+}
+/** Below this the product is a rounding error on the division's material quality. The engine itself has no
+ *  science floor (src/Corporation/Product.ts createProduct only needs Engineer/Operations/Management), so this
+ *  is a quality heuristic: 1.25 required ~3,833 research points at Tobacco's 0.642 factor and left the division
+ *  selling nothing while it waited, so the bar is 1.15 — ~1,730 points, x1.6 today's level. */
+export const corporationProductScienceMinimum=1.15;
+/** Hopeless science: a product already in development cannot pay back its design investment. */
+export const corporationProductScienceHopeless=1.1;
+
+/** A growth budget below the cheapest expansion is normal for a young corporation, but silence makes it
+ * indistinguishable from a broken manager: report it on a bounded cadence instead of never. */
+export function corporationGrowthStallNotice({lastPurchaseAt=0,lastAlertAt=0,now=Date.now(),graceMs=600000,repeatMs=300000,blocked=[],budget=0}={}){
+ if(!Number.isFinite(now)||!Number.isFinite(lastPurchaseAt)||now-lastPurchaseAt<graceMs)return null;
+ if(Number.isFinite(lastAlertAt)&&lastAlertAt>0&&now-lastAlertAt<repeatMs)return null;
+ const cheapest=[...blocked].filter(p=>p&&Number.isFinite(p.cost)&&p.cost>0).sort((a,b)=>a.cost-b.cost)[0];
+ const at=Number.isFinite(budget)?budget:0,minutes=Math.round((now-lastPurchaseAt)/60000);
+ const cash=v=>!Number.isFinite(v)?'?':v>=1e12?(v/1e12).toFixed(2)+'t':v>=1e9?(v/1e9).toFixed(2)+'b':v>=1e6?(v/1e6).toFixed(2)+'m':String(Math.round(v));
+ return cheapest
+  ?`Corporation growth has bought nothing for ${minutes} min; the cheapest pending plan is ${cheapest.label} at $${cash(cheapest.cost)} against a growth budget of $${cash(at)}.`
+  :`Corporation growth has bought nothing for ${minutes} min and reports no pending plan.`;
 }
 
 export function corporationAdvertBenefit(division,industry,wilson=0){

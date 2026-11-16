@@ -30,6 +30,14 @@ export function rotatedTargets(hosts, turn) {
  const rows=[...hosts];if(!rows.length)return rows;
  const start=turn%rows.length;return rows.slice(start).concat(rows.slice(0,start));
 }
+/** Every darknet call that names a host is resolved against the script's OWN server: without a direct
+ *  link the game answers 351 (DirectConnectionRequired) whatever the password is, so a host discovered
+ *  by a remote survey can only be authenticated by a worker standing next to it. A stasis link or an
+ *  installed backdoor makes a host reachable from anywhere. */
+export function darknetDirectlyReachable(host, details, neighbours) {
+ if (details?.hasStasisLink === true || details?.backdoorInstalled === true) return true;
+ return Array.isArray(neighbours) && neighbours.includes(host);
+}
 /** Keep rotation within each priority class; native sessions deploy immediately.
  *  Locked targets with shorter passwords crack faster, so order them first while
  *  preserving rotation for unknown/equal lengths. */

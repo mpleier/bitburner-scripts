@@ -90,12 +90,13 @@ test('first supervisor observation migrates existing current-run measurements wi
  state.refresh={samples:[{...scope,context:f.context,at:f.start,complete:true,...actual}]};f.files.set('tasks/dnet-storm-state.json',JSON.stringify(state));
  await sampleDarknetObservations(f.ns,f.query);const h=JSON.parse(f.files.get(darknetObservationFile));assert.equal(h.samples.length,1);assert.equal(h.active,undefined);
 });
-test('both cache openers preserve timestamps and publish native reward summaries',async()=>{
- for(const main of [cacheMain,lootMain]){
-  const store=new Map([[cacheContextFile,JSON.stringify({nodeReset:7,augReset:42})]]),stop=Error('stop'),ns={pid:9,disableLog(){},getRunningScript:()=>({threads:1}),getHostname:()=> 'a',getResetInfo:()=>reset,ls:()=>['x.cache'],read:f=>store.get(f)||'',write:async(f,v)=>store.set(f,v),print(){},sleep:async()=>{throw stop;},dnet:{openCache:()=>({success:true,stockShares:5}),phishingAttack:async()=>({success:false})}};
-  if(main===lootMain)await assert.rejects(main(ns),e=>e===stop);else await main(ns);
+test('the thin cache opener preserves timestamps and publishes native reward summaries',async()=>{
+  const store=new Map([[cacheContextFile,JSON.stringify({nodeReset:7,augReset:42})]]),ns={pid:9,disableLog(){},getRunningScript:()=>({threads:1}),getHostname:()=> 'a',getResetInfo:()=>reset,ls:()=>['x.cache'],read:f=>store.get(f)||'',write:async(f,v)=>store.set(f,v),print(){},sleep:async()=>{},dnet:{openCache:()=>({success:true,stockShares:5}),phishingAttack:async()=>({success:false})}};
+  await cacheMain(ns);
   assert.equal(JSON.parse(store.get(cacheRewardFile('a'))).totals.shares,5);assert.ok(JSON.parse(store.get('tasks/dnet-last-cache.json')).at>0);
- }
+  // Opening caches belongs to the one-shot opener only: openCache is 2 GB of per-thread static RAM, and that RAM
+  // is the phishing helper's next thread.
+  assert.doesNotMatch(readFileSync(new URL('../darknet-loot.js',import.meta.url),'utf8'),/ns\.dnet\.openCache/);
 });
 test('supervisor owns observation writes and manager keeps only dispatch/evidence responsibilities',()=>{
  const manager=readFileSync(new URL('../darknet-manager.js',import.meta.url),'utf8'),supervisor=readFileSync(new URL('../reliability-manager.js',import.meta.url),'utf8');

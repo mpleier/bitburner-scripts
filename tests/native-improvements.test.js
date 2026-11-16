@@ -76,7 +76,9 @@ test('economic telemetry and target metadata are integrated without parsing nati
  assert.match(read('darknet-manager.js'),/const sources=ns.getMoneySources\(\).sinceInstall;totalIncome=sources.darknet;playerIncome=recurringPlayerIncome\(sources\)/);
  assert.match(read('darknet-manager.js'),/decision.launch&&!decision.state.economics.allow/);
  assert.match(read('darknet-node.js'),/lastCacheAt/);
- for(const file of ['darknet-loot.js','darknet-cache.js'])assert.match(read(file),/result\?\.success\) await ns.write\('tasks\/dnet-last-cache.json'/);
+ assert.match(read('darknet-cache.js'),/result\?\.success\) await ns.write\('tasks\/dnet-last-cache.json'/);
+ // Only the one-shot opener pays the 2 GB openCache cost; the phishing helper spends its RAM on threads instead.
+ assert.doesNotMatch(read('darknet-loot.js'),/ns\.dnet\.openCache|dnet-last-cache/);
  assert.match(read('bladeburner.js'),/metadata:blackOpMetadata\[nextBlackOp\]/);
  assert.match(read('sleeve.js'),/metadata:record.metadata,player:playerInfo,speedWeight:\.25,levelMultipliers:combatLevelMultipliers/);
 });

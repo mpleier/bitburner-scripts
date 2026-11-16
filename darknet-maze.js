@@ -1,6 +1,30 @@
 import {navigatorReportFile,mazeCheckpointFile,mazeMovementReport,mazeResizePlan} from './darknet-navigator-policy.js';
 import {restoreLabyrinthProgress,packLabyrinthProgress,observeLabyrinth,nextLabyrinthMove,labyrinthRadarDue,recordLabyrinthEdge,labyrinthRouteDistance,mazeRecoveryTransition} from './darknet-labyrinth-policy.js';
 import {readMazeLease} from './darknet-development-policy.js';
+const authWorker='darknet-auth.js';
+/** A move is an authenticate(target, direction) call, and its duration scales with the *calling* script's thread
+ * count — but this navigator is the largest worker on the host, so a move made in-process costs the full
+ * one-thread time. Hand it to the thin 2 GB auth worker with every thread the host can spare instead; the call is
+ * what makes this file expensive, so keeping a second copy here would defeat the point. A missing worker returns
+ * null and the caller retries, which is exactly the state a yielded loot helper needs a moment to leave. */
+export async function threadedMove(ns,target,direction,self,serial){
+ const output='/Temp/dnet-move-'+ns.pid+'-'+serial+'.json';
+ try{
+  const ram=ns.getScriptRam(authWorker,self);
+  const free=ns.getServerMaxRam(self)-ns.getServerUsedRam(self);
+  const threads=ram>0?Math.min(32,Math.floor(free/ram)):0;
+  if(threads<1)return null;
+  const pid=ns.exec(authWorker,self,threads,target,direction,output);
+  if(!pid)return null;
+  // Bounded by iterations as well as by the clock: a leaked pid must never spin this loop forever, and a
+  // harness with a virtual clock would otherwise wait on real time it never advances.
+  for(let wait=0;wait<9000&&ns.isRunning(pid);wait++)await ns.sleep(20);
+  let result=null;try{result=JSON.parse(ns.read(output)||'null');}catch{}
+  try{ns.rm(output,self);}catch{}
+  // The worker answers a batch; a move is the first (and only) entry's receipt.
+  return result?.success||Number.isFinite(result?.code)?result:null;
+ }catch{return null;}
+}
 /** A completed maze can leave reward caches on the labyrinth or the navigating host. */
 export async function claimRewardCaches(ns,target,self){
  const cacheFile='darknet-cache.js';
@@ -17,7 +41,9 @@ export async function claimRewardCaches(ns,target,self){
   if(typeof ns.fileExists==='function'&&ns.fileExists(cacheFile,host)&&typeof ns.exec==='function'){
    try{if(ns.exec(cacheFile,host,1)>0)continue;}catch{}
   }
-  if(host===self)for(const file of caches)try{ns.dnet.openCache(file,true);}catch{}
+  // No local openCache fallback: that call is 2 GB on this file's static RAM and it is what stops the navigator
+  // fitting on a 16 GB host. A cache the opener cannot reach stays put — the scout's loot helper opens caches on
+  // its own host, so nothing is lost, only deferred.
  }
 }
 /** Persistent per-PID navigation. Routine scout rollouts deliberately leave this worker alive. */
@@ -26,6 +52,8 @@ export async function main(ns){
  try{scope=JSON.parse(rawScope);}catch{return;}
  if(!Array.isArray(scope)||scope[2]!==target||scope[3]!=='(The Labyrinth)')return;
  const lastResize=Number(ns.args[2])||Date.now();let nextResizeCheck=lastResize+120000;
+ let moveSerial=0;
+ let moveFailures=0;
  const reportFile=navigatorReportFile(self,target),checkpoint=mazeCheckpointFile(target),threads=ns.getRunningScript()?.threads||1;
  let state={},report=null,owned=false,lastPublish=0,lastSaved='',progressAt=0,moves=0,batchMoves=0,batchAt=Date.now(),lastDuration=10000,lastRadar=-Infinity,radarMoves=-Infinity,lastCheckpointAt=0,savedMoves=0,savedEnd=null,phase='waiting',inFlight=false,expectedMs=0,firstPosition=true,recovery={noRoute:0,loop:0};
  const timing={startedAt:Date.now(),coordinationMs:0,actions:{position:{count:0,ms:0},radar:{count:0,ms:0},move:{count:0,ms:0}},radarCells:0};
@@ -125,7 +153,14 @@ export async function main(ns){
    }
    // A batch limits dispatched moves, never blocks a move because earlier reads were slow.
    if(batchMoves>=8||Date.now()-batchAt>=Math.max(60000,lastDuration*4)){await persist();await ns.sleep(100);batchMoves=0;batchAt=Date.now();}
-   const result=await call('move',()=>ns.dnet.authenticate(target,direction));if(!result){report=null;continue;}
+   const result=await call('move',()=>threadedMove(ns,target,direction,self,++moveSerial));
+   if(!result){
+    // No worker could run the move (no free RAM, or the host changed hands). Retry a few times so a yielding
+    // loot helper can clear, then hand the maze back instead of spinning inside a loop that cannot progress.
+    if(++moveFailures>=5){phase='stalled';await publish(true);break;}
+    await ns.sleep(500);report=null;continue;
+   }
+   moveFailures=0;
    batchMoves++;
    if(result.success){
     if(typeof result.data==='string'){

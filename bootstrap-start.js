@@ -4,11 +4,29 @@ import {activityBusy} from './activity-coordination.js';
 import {maintenanceRequested} from './runtime-policy.js';
 import {achievementActionAllowed} from './achievement-policy.js';
 import {claimSpending} from './spending-policy.js';
-/** Persistent post-reset recovery. Never yield the controller's place to optional helpers. */
+/** Persistent post-reset recovery. Never yield the controller's place to optional helpers.
+ * The Remote API agent is the control channel every other recovery decision is observed through, and nothing else
+ * restores it: autopilot is the only other launcher, so a reset that takes both down leaves the bridge reporting
+ * `connected: true, workerOnline: false` for as long as nobody notices. Ensure it before the protected-activity
+ * guard — a casino or install phase should not be able to hide the agent's absence either. */
+export function ensureRemoteWorker(ns,processes,result) {
+ const name='remote-api-agent.js';
+ const running=processes.find(p=>p.filename.replace(/^\//,'')===name);
+ if(running){result.agent={script:name,pid:running.pid,state:'running'};return;}
+ if(isScriptPaused(ns,name)){result.agent={script:name,state:'paused'};return;}
+ const required=ns.getScriptRam(name,'home');
+ if(!(required>0)||!Number.isFinite(required)){result.agent={script:name,state:'missing-or-uncompiled'};return;}
+ reclaimStartupHelpers(ns,required+16);
+ const free=ns.getServerMaxRam('home')-ns.getServerUsedRam('home');
+ if(required+16>free){result.agent={script:name,state:'waiting-for-ram',required,free};return;}
+ const pid=ns.run(name,1,'--protocol-version',2);
+ result.agent={script:name,pid,state:pid?'starting':'retrying'};
+}
 export async function startupControllerTick(ns) {
  const processes=ns.ps('home'),reset=ns.getResetInfo();
  let transition;try{transition=JSON.parse(ns.read('tasks/progression-transition.json'));}catch{}
  const result={at:Date.now(),ownerPid:ns.pid,nodeReset:reset.lastNodeReset,augReset:reset.lastAugReset,controllers:[]};
+ ensureRemoteWorker(ns,processes,result);
  if(maintenanceRequested(ns)||activityBusy(ns)||transition?.expiresAt>Date.now()&&ns.isRunning(transition.ownerPid)||processes.some(p=>['casino.js','ascend.js'].includes(p.filename.replace(/^\//,''))))
   return {...result,state:'protected-activity'};
  for(const script of ['autopilot.js','reliability-manager.js']){

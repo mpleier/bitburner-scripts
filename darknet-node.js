@@ -488,8 +488,10 @@ export async function main(ns) {
       // scout runs, so keep a watcher instead of relying only on the one-shot
       // check above.
       if (!stasisStarted && ns.fileExists(watcherFile, self) && !procRunning(watcherFile)) {
+        // The loot helper already rescans this host's caches every loop, so a 5.2 GB watcher is pure
+        // duplication wherever phishing is running — and that RAM is another two phishing threads.
         const watcherRam = ns.getScriptRam(watcherFile, self);
-        if (watcherRam > 0 && freeRam() >= watcherRam) ns.exec(watcherFile, self, 1);
+        if (watcherRam > 0 && freeRam() >= watcherRam && !procRunning(lootFile)) ns.exec(watcherFile, self, 1);
       }
       // Give one promotion thread space before allocating the remaining RAM to phishing.
       if (!stasisStarted && !cacheStarted && ns.fileExists(promoteFile, self) && !procRunning(promoteFile)) {

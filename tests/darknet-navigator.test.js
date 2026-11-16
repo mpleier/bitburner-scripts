@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {mazeMovementReport,navigatorFile,navigatorReportFile} from '../darknet-navigator-policy.js';
+import {readFileSync} from 'node:fs';
 import {main as navigate,claimRewardCaches} from '../darknet-maze.js';
 import {electMazeLeases,mazeLeaseFile} from '../darknet-development-policy.js';
 import {readDarknetReports} from '../darknet-throughput-policy.js';
@@ -16,20 +17,32 @@ test('movement responses update position only when native coordinates and local 
 function fixture(clock,pid=43,checkpoint=null){
  const lease=electMazeLeases(null,[{host:'origin',pid,at:clock.now,live:true,navigator:true,neighbours:['lab'],mazeRequests:[{maze:'lab',scope,at:clock.now}]}],{lastNodeReset:1,lastAugReset:2},3,clock.now);
  const files=new Map([[mazeLeaseFile,JSON.stringify(lease)],['tasks/dnet-cache-context.json',JSON.stringify({nodeReset:1,augReset:2})]]);if(checkpoint)files.set('tasks/dnet-maze-lab.json',JSON.stringify(checkpoint));
- const moves=[],reports=[];let x=1;const messages=[];
- const ns={pid,args:['lab',JSON.stringify(scope)],disableLog(){},getHostname:()=> 'origin',getRunningScript:()=>({threads:1}),read:f=>files.get(f)||'',write:async(f,v)=>files.set(f,v),fileExists:f=>files.has(f),scp:async()=>true,rm:f=>files.delete(f),isRunning:()=>true,hasRootAccess:()=>false,getPlayer:()=>({skills:{charisma:1700}}),print:s=>messages.push(s),sleep:async ms=>{clock.now+=ms;},formulas:{dnet:{getAuthenticateTime:()=>12000}},
-  dnet:{probe:()=>['lab'],getServerDetails:()=>({modelId:'(The Labyrinth)',passwordLength:4,passwordFormat:'numeric',data:'',requiredCharismaSkill:1500}),labreport:async()=>{reports.push([x,1]);clock.now+=12000;return {success:true,coords:[x,1],north:false,east:true,south:false,west:x>1};},labradar:async()=>{clock.now+=12000;return {success:false};},authenticate:async(_host,direction)=>{moves.push(direction);clock.now+=12000;x+=2;return x===5?{success:true,code:200,data:'native-password'}:{success:false,code:401,message:'You have moved to '+x+',1.',data:'###\n @ \n###'};}}};
+ const moves=[],reports=[];let x=1;const messages=[];const queue=[];
+ const move=x0=>{moves.push(x0.direction);clock.now+=12000;x+=2;return x===5?{success:true,code:200,data:'native-password'}:{success:false,code:401,message:'You have moved to '+x+',1.',data:'###\n @ \n###'};};
+ const ns={pid,args:['lab',JSON.stringify(scope)],disableLog(){},getHostname:()=> 'origin',getRunningScript:()=>({threads:1}),read:f=>files.get(f)||'',write:async(f,v)=>files.set(f,v),fileExists:f=>files.has(f),scp:async()=>true,rm:f=>files.delete(f),
+  // A move runs in the thin auth worker now: exec queues the call, sleep drains it, and isRunning reports the
+  // worker as alive until its output file exists. Late binding keeps a test's dnet.authenticate override live.
+  isRunning:pid=>pid===5001?queue.length>0:true,
+  exec:(_file,_host,_threads,target,direction,output)=>{queue.push(async()=>{const r=await ns.dnet.authenticate(target,direction);files.set(output,JSON.stringify(r??{success:false,code:500}));});return 5001;},
+  getScriptRam:()=>2,getServerMaxRam:()=>8,getServerUsedRam:()=>1,
+  sleep:async ms=>{clock.now+=ms;if(queue.length)await queue.shift()();},
+  hasRootAccess:()=>false,getPlayer:()=>({skills:{charisma:1700}}),print:s=>messages.push(s),formulas:{dnet:{getAuthenticateTime:()=>12000}},
+  dnet:{probe:()=>['lab'],getServerDetails:()=>({modelId:'(The Labyrinth)',passwordLength:4,passwordFormat:'numeric',data:'',requiredCharismaSkill:1500}),labreport:async()=>{reports.push([x,1]);clock.now+=12000;return {success:true,coords:[x,1],north:false,east:true,south:false,west:x>1};},labradar:async()=>{clock.now+=12000;return {success:false};},authenticate:async(_host,direction)=>move({direction})}};
  return {ns,files,moves,reports,messages};
 }
 test('slow report and radar reads cannot starve a move; successful responses avoid per-move polling',async()=>{
  const original=Date.now,clock={now:1000000};Date.now=()=>clock.now;
  try{const f=fixture(clock);await navigate(f.ns);assert.deepEqual(f.moves,['east','east']);assert.deepEqual(f.reports,[[1,1]]);assert.ok(clock.now>=1036000);assert.equal(JSON.parse(f.files.get(navigatorReportFile('origin','lab'))).phase,'complete');assert.equal(JSON.parse(f.files.get('tasks/credentials-report-navigator-43.json')).entries[0][1],'native-password');assert.equal(f.messages.some(m=>/TypeError|ReferenceError/.test(m)),false,f.messages.join('\n'));}finally{Date.now=original;}
 });
-test('maze completion opens reward caches on the target or navigating host',async()=>{
+test('maze completion opens reward caches with the thin opener and never from the navigator itself',async()=>{
+ // openCache is 2 GB on the navigator's static RAM and it is what stopped the navigator fitting beside a scout
+ // on a 16 GB host: the claim delegates to darknet-cache.js and a cache it cannot reach simply waits.
  const exec=[],ns={ls:host=>host==='lab'?['reward.cache']:[],fileExists:()=>true,exec:(...args)=>{exec.push(args);return 9;}};
  await claimRewardCaches(ns,'lab','origin');assert.deepEqual(exec[0],['darknet-cache.js','lab',1]);
- const opened=[],self={ls:host=>host==='origin'?['self.cache']:[],fileExists:()=>false,dnet:{openCache:file=>opened.push(file)}};
- await claimRewardCaches(self,'lab','origin');assert.deepEqual(opened,['self.cache']);
+ const opened=[],self={ls:host=>host==='origin'?['self.cache']:[],fileExists:()=>false};
+ await claimRewardCaches(self,'lab','origin');assert.deepEqual(opened,[]);
+ const source=readFileSync(new URL('../darknet-maze.js',import.meta.url),'utf8');
+ assert.doesNotMatch(source,/ns\.dnet\.openCache|ns\.dnet\.authenticate/);
 });
 test('a restarted PID resumes map knowledge but reads its own real entrance position',async()=>{
  const original=Date.now,clock={now:2000000};Date.now=()=>clock.now;
@@ -85,7 +98,9 @@ test('navigator publishes separate native action and coordination timings',async
  try{const f=fixture(clock);const scp=f.ns.scp;f.ns.scp=async(...args)=>{clock.now+=2;return scp(...args);};await navigate(f.ns);
  const r=JSON.parse(f.files.get(navigatorReportFile('origin','lab')));
  assert.equal(r.threads,1);assert.equal(r.timing.actions.position.count,1);assert.equal(r.timing.actions.move.count,2);
- assert.equal(r.timing.actions.position.ms,12000);assert.equal(r.timing.actions.move.ms,24000);assert.equal(r.timing.actions.radar.count,0);
+ // Moves run in the thin auth worker, so each one costs the native call plus the poll that notices the worker
+ // exited (20 ms in this harness); the accounting must keep them out of the position/radar buckets.
+ assert.equal(r.timing.actions.position.ms,12000);assert.equal(r.timing.actions.move.ms,24040);assert.equal(r.timing.actions.radar.count,0);
  assert.ok(r.timing.coordinationMs>0);assert.ok(r.timing.coordinationMs<1000);
  }finally{Date.now=original;}
 });

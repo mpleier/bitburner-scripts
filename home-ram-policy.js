@@ -1,12 +1,25 @@
-/** Reserve helper headroom without starving the first small home server. GB throughout. */
+/** Reserve helper headroom without starving the first small home server. GB throughout.
+ * Planned headroom: how large home must be for the configured reserve to fit. Deliberately uncapped — a reserve
+ * larger than the current home is a home-RAM growth target, not an impossible state. Use homeRamLaunchReserve when
+ * deciding what may start right now. */
 export function homeRamHeadroom(maximum,configured=0) {
  if(!Number.isFinite(maximum)||maximum<=0)return 0;
  const adaptive=Math.min(maximum*.25,Math.max(128,Math.min(2048,maximum*.02)));
  return Math.min(maximum,Math.max(adaptive,Number.isFinite(configured)?Math.max(0,configured):0));
 }
+/** RAM actually withheld from a launch: the planned headroom, capped at half the machine. A persisted absolute
+ * reserve outlives a node reset, so a value written for a 128 TB home became 100 % of the 128 GB home it reset
+ * into — the planner saw `available: 0`, every manager read `needs-home-ram`, and nothing could start while home
+ * RAM grew only slowly. The planner keeps using the uncapped value as its growth target; launches get this one. */
+export function homeRamLaunchReserve(maximum,configured=0) {
+ if(!Number.isFinite(maximum)||maximum<=0)return 0;
+ const planned=homeRamHeadroom(maximum,configured);
+ const ceiling=Math.max(homeRamHeadroom(maximum),maximum*.5);
+ return Math.min(planned,ceiling);
+}
 export function homeRamReserve(ns) {
  if(typeof ns.disableLog==='function'){ns.disableLog('disableLog');ns.disableLog('getServerMaxRam');}
- return homeRamHeadroom(ns.getServerMaxRam('home'),Number(ns.read('home-ram-reserve.txt'))||0);
+ return homeRamLaunchReserve(ns.getServerMaxRam('home'),Number(ns.read('home-ram-reserve.txt'))||0);
 }
 /** Identify safe reclamation without canceling a scheduled leg or its recovery. */
 export function homeRamWorkerKind(process) {

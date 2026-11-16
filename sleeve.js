@@ -713,15 +713,42 @@ async function setSleeveTask(ns, i, designatedTask, command, args) {
     let strAction = `Set sleeve ${i} to ${designatedTask}`;
     if (/setToGymWorkout|setToUniversityCourse/.test(command))
         command = `ns.getPlayer().money>Math.max(0,Number(ns.read("reserve.txt"))||0,${trainingReserve})+${12000*numSleeves} ? (${command}) : false`;
+    // Evaluate the same gates in-process before spending a worker on a call that can only answer false. A hold from a
+    // pause flag, a maintenance lease or an achievement challenge used to surface as one "Failed to Set sleeve" ERROR
+    // per sleeve per loop, which read as eight broken sleeves rather than one deliberate hold.
+    const control = sleeveControlAllowed(ns, ns.pid, 'sleeve.js'), achievement = achievementActionAllowed(ns, 'sleeve');
+    let gateDetail = '';
+    if (!control) { // Name which clause of sleeveControlAllowed refused, so a hold is never inferred from the result alone.
+        const pausedFlag = ns.read('remote-control/paused/sleeve.js.txt'), self = ns.isRunning(ns.pid);
+        let maintenance = 'no-file';
+        try { const r = JSON.parse(ns.read('tasks/automation-maintenance.json')); maintenance = `${r.expiresAt > Date.now()}/${ns.isRunning(r.ownerPid)}/${r.ownerPid}`; } catch { }
+        gateDetail = ` self=${self} paused='${pausedFlag}' maintenance=${maintenance}`;
+    }
+    if (!control || !achievement) {
+        // A maintenance lease blocks assigning tasks, not shock recovery: recovery costs no RAM and no money, so the
+        // holder gains nothing by blocking it, and eight sleeves sat at 92% shock for as long as the lease renewed.
+        if (designatedTask === 'recover from shock') {
+            let recovered = false;
+            try { recovered = ns.sleeve.setToShockRecovery(i); } catch (error) { gateDetail += ` directErr='${String(error?.message ?? error).slice(0, 90)}'`; }
+            if (recovered) { task[i] = designatedTask; log(ns, `INFO: Recovered sleeve ${i} directly; control is on hold.`); return true; }
+        }
+        const now = Date.now();
+        if (now - (repContext.sleeveHoldAt || 0) >= 60000) {
+            repContext.sleeveHoldAt = now;
+            log(ns, `WARN: sleeve control is on hold (control=${control} achievement=${achievement} ${gateDetail}); ${strAction} skipped.`, false, 'warning');
+        }
+        return false;
+    }
     const parentIndex=args.length;
     command = `(${sleeveControlAllowed.toString()})(ns,ns.args[${parentIndex}],"sleeve.js")&&(${achievementActionAllowed.toString()})(ns,"sleeve") ? (${command}) : false`;
+    let failure = '';
     try { // Assigning a task can throw an error rather than simply returning false. We must suppress this
         if (await getNsDataThroughFile(ns, command, '/Temp/sleeve-set-task.txt', [...args,ns.pid])) {
             task[i] = designatedTask;
             log(ns, `SUCCESS: ${strAction}`);
             return true;
         }
-    } catch { }
+    } catch (error) { failure = String(error?.message ?? error).slice(0, 160); }
     // If assigning the task failed...
     lastRerollTime[i] = 0;
     // If working for a faction, it's possible he current work isn't supported, so try the next one.
@@ -736,8 +763,13 @@ async function setSleeveTask(ns, i, designatedTask, command, args) {
         workByFaction[faction] = nextWorkIndex;
     } else if (designatedTask.startsWith('Bladeburner')) { // Bladeburner action may be out of operations
         bladeburnerCooldown[i] = Date.now() + waitForContractCooldown;
-    } else
-        log(ns, `ERROR: Failed to ${strAction}`, true, 'error');
+    } else { // Name the cause and keep one line per sleeve per minute, instead of an ERROR flood that hides it.
+        const now = Date.now();
+        if (now - ((repContext.sleeveFailureAt||[])[i] || 0) >= 60000) {
+            (repContext.sleeveFailureAt=repContext.sleeveFailureAt||[])[i] = now;
+            log(ns, `ERROR: Failed to ${strAction}${failure ? ' - ' + failure : ''}`, true, 'error');
+        }
+    }
     return false;
 }
 

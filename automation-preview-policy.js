@@ -1,5 +1,5 @@
 import {moduleManifest,priorityManagerPlan,corporationControllerReady} from './automation-manifest.js';
-import {homeRamHeadroom,homeRamWorkerKind} from './home-ram-policy.js';
+import {homeRamLaunchReserve,homeRamWorkerKind} from './home-ram-policy.js';
 
 /** Honor a saved inspection mode before autopilot can register or persist configuration. */
 export function previewRequested(ns){
@@ -16,7 +16,7 @@ export function previewOptions(ns,schema){
 }
 
 /** Read-only observation. Does not invoke gameplay APIs, claim budgets, launch or write files. */
-export function collectAutomationPreview(ns,options=null,now=Date.now(),manifest=moduleManifest,managerPlan=priorityManagerPlan,headroom=homeRamHeadroom,workerKind=homeRamWorkerKind,controllerReady=corporationControllerReady){
+export function collectAutomationPreview(ns,options=null,now=Date.now(),manifest=moduleManifest,managerPlan=priorityManagerPlan,headroom=homeRamLaunchReserve,workerKind=homeRamWorkerKind,controllerReady=corporationControllerReady){
  const read=file=>{try{return JSON.parse(ns.read(file));}catch{return null;}};
  if(options===null){options=read('autopilot.js.config.txt')||{};if(Array.isArray(options))options=Object.fromEntries(options);if(typeof options!=='object')throw Error('Invalid autopilot configuration');}
  const reset=ns.getResetInfo(),player=ns.getPlayer(),homeRam=ns.getServerMaxRam('home'),homeUsed=ns.getServerUsedRam('home');

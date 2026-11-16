@@ -1,5 +1,5 @@
 import {rankHashMaintenanceRequired} from './bladeburner-rank-support-policy.js';
-import {hashSpendingDecision,spendHashesWithPolicy,fundHashCashGoal} from './hash-spending-policy.js';
+import {hashSpendingDecision,spendHashesWithPolicy,fundHashCashGoal,hashReserveFor} from './hash-spending-policy.js';
 import {readNodeRoutePlan} from './node-route-policy.js';
 import { claimSpending } from './spending-policy.js';
 import { hashOptionsError, hashOverflowBuffer, hashCapacityChoice } from './hacknet-policy.js';
@@ -98,8 +98,24 @@ export async function main(ns) {
 
     let lastHashBalance = -1; // Balance of hashes last time we woke up. If unchanged, we go back to sleep quickly (game hasn't ticked)
     let notifiedMaxCapacity = false; // Flag indicating we've maxed our hash capacity, to avoid repeatedly logging this fact.
+    let lastEmptyHacknetWarnAt = 0; // Throttles the no-nodes notice, which would otherwise print on every 50 ms wake-up.
     // Function determines the current cheapest upgrade of all the upgrades we wish to keep purchasing
     const getMinCost = spendActions => Math.min(...spendActions.map(p => ns.hacknet.hashCost(p)));
+    // Hash buffer that nothing else claims -> coding contracts. Only *asking* for the action is new:
+    // the shared policy still gates it on a verified solver, an empty network backlog and the cash
+    // opportunity cost, so a blocked sink is not requoted more than once every five minutes.
+    const contractAction = 'Generate Coding Contract';
+    let nextContractAsk = 0;
+    const askForContract = () => {
+        const now = Date.now();
+        if (now < nextContractAsk || options.automatic === false || isScriptPaused(ns, ns.getScriptName()) ||
+            maintenanceRequested(ns) || !achievementActionAllowed(ns, 'hashSpending')) return false;
+        nextContractAsk = now + 30000;
+        const receipt = spendHashesWithPolicy(ns, contractAction, undefined, 1, policyOptions, hashSpendingDecision);
+        if (receipt.success) { nextContractAsk = now + 5000; return true; }
+        nextContractAsk = now + (/solver|backlog|cash/i.test(String(receipt.reason || '')) ? 300000 : 60000);
+        return false;
+    };
     // Helper to format hashes in log message
     const formatHashes = (hashes) => formatNumberShort(hashes, 6, 3);
     while (!isScriptPaused(ns,ns.getScriptName())) {
@@ -124,7 +140,12 @@ export async function main(ns) {
             // Compute the total income rate of all hacknet nodes. We have to spend faster than this when near capacity.
             const nodes = ns.hacknet.numNodes();
             if (nodes == 0) {
-                log(ns, 'WARN: Hacknet is empty, no hashes to spend yet...');
+                // A fresh reset starts with no nodes, and this loop wakes every 50 ms: warn once a minute at
+                // most, otherwise the same "waiting for nodes" line fills the whole log buffer.
+                if (Date.now() - lastEmptyHacknetWarnAt > 60000) {
+                    lastEmptyHacknetWarnAt = Date.now();
+                    log(ns, 'INFO: No hacknet nodes yet; hashes will be spent once the first node is purchased.');
+                }
                 continue; // Nothing to do until at least one node is purchased.
             } else if (capacity == 0)
                 return log(ns, 'INFO: You have hacknet nodes, not hacknet servers, so spending hashes is not applicable.');
@@ -141,7 +162,11 @@ export async function main(ns) {
                 const startingHashes = ns.hacknet.numHashes() || 0;
                 capacity = ns.hacknet.hashCapacity() || 0;
                 // Spend every hash we can if so instructed, otherwise, spend only hashes that would be wasted on next tick.
-                let maxHashSpend = () => ns.hacknet.numHashes() - (spendAllHashes ? 0 : Math.max(0, capacity - hashesEarnedNextTick));
+                // A staged corporation milestone holds part of the pool back. Clamp here as well as in the policy:
+                // the policy judges one purchase at a time, so a bulk Sell-for-Money of the whole pool would sit
+                // just inside the reservation guard and leave the corporation nothing to take.
+                const reserve = hashReserveFor(ns);
+                let maxHashSpend = () => ns.hacknet.numHashes() - (spendAllHashes ? 0 : Math.max(0, capacity - hashesEarnedNextTick)) - reserve;
                 let lastPurchaseSucceeded = true; // Additional mechanism to break out of the while loop if any purchase fails
                 // Make purchases in a loop until we hit our purchase-per-loop limit, or we've spent enough to avoid hashes being wasted next tick
                 while (lastPurchaseSucceeded && purchasesThisLoop < maxPurchasesPerLoop && getMinCost(purchases) <= maxHashSpend()) {
@@ -181,6 +206,13 @@ export async function main(ns) {
             if(cashReceipt?.success){purchasesThisLoop+=cashReceipt.quantity;lastDecision=cashReceipt;await report('spending',{cashReceipt});}
             // Spend hashes normally on any/all user-specified purchases
             await fnSpendHashes(toBuy, liquidate);
+            // No worker ever *asks* for contracts, so the best-value hash sink never fires. Ask whenever
+            // this worker's own purchases leave hashes unclaimed; the shared policy still refuses on an
+            // unverified solver, a non-empty backlog or a cash opportunity cost it cannot repay.
+            if(!toBuy.includes(contractAction)&&askForContract()){
+                purchasesThisLoop++;
+                await report('spending',{contractReceipt:{action:contractAction,quantity:1}});
+            }
             currentHashes = lastHashBalance = ns.hacknet.numHashes();
 
             // Determine if we should try to upgrade our hacknet capacity
@@ -203,6 +235,14 @@ export async function main(ns) {
             const capacityNeed=hashSpendingDecision(ns,'__capacity__',policyOptions);
             const explicitNeed=!policyOptions.automatic&&toBuy.some(a=>a!==sellForMoney)&&getMinCost(toBuy)>capacity;
             if(!capacityNeed.allowed&&!explicitNeed){
+                // Nothing needs extra capacity, but the hashes still overflow this tick: convert them to money
+                // instead of parking them at the cap, which is what the old early-continue did (17,020/17,024
+                // hashes idle while production kept running).
+                if (remaining < hashesEarnedNextTick) {
+                    purchasesThisLoop = 0;
+                    await fnSpendHashes([sellForMoney], false);
+                    currentHashes = lastHashBalance = ns.hacknet.numHashes();
+                }
                 await report('saving',{reason:'Overflow becomes cash automatically; no useful purchase needs extra capacity',decision:capacityNeed});continue;
             }
             // If we aren't allowed to purchase capacity upgrades by configuration (or can't afford it),

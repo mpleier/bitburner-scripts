@@ -4,7 +4,7 @@ import {observeFactionMembership,acknowledgeFactionMembership,augmentationFundin
 import {ensureFactionJoinPlan} from './faction-joining.js';
 import {readNodeRoutePlan} from './node-route-policy.js';
 import {gangProviderPreferred} from './faction-policy.js';
-import { factionJoinAllowed,rankFactionInvites,factionControlAllowed,planGangHost,gangHostPreferences } from './faction-policy.js';
+import { factionJoinAllowed,rankFactionInvites,factionControlAllowed,planGangHost,gangHostPreferences,gangStartPhase,measuredWorkType,overgrindTarget } from './faction-policy.js';
 import { isScriptPaused } from './automation-control.js';
 import { registerAutomation, automationHeartbeat, maintenanceRequested } from './runtime-policy.js';
 import {achievementActionAllowed} from './achievement-policy.js';
@@ -138,7 +138,8 @@ let focusOptOut=false, focusObserved=false; // Respect an explicit "Do something
 const focusForWork=()=>shouldFocus===undefined?true:shouldFocus===true&&!focusOptOut;
 // And a bunch of globals because managing state and encapsulation is hard.
 let hasFocusPenalty, hasSimulacrum, favorToDonate, fulcrumHackReq, notifiedAboutDaedalus, playerInBladeburner, wasGrafting, currentBitnode;
-let dictSourceFiles, dictFactionFavors, playerGang, mainLoopStart, scope, numJoinedFactions, lastTravel, crimeCount, gangInviteMessage;
+let dictSourceFiles, dictFactionFavors, playerGang, mainLoopStart, scope, numJoinedFactions, lastTravel, crimeCount, gangInviteMessage, gangPhaseMessage;
+let lastGangHoldAt=0, lastGangHoldHost="";
 let firstFactions, skipFactions, completedFactions, softCompletedFactions, mostExpensiveAugByFaction, mostExpensiveDesiredAugByFaction;
 const companyJobCache = new Map();
 let bitNodeMults = (/**@returns{BitNodeMultipliers}*/() => undefined)(); // Trick to get strong typing in mono
@@ -171,7 +172,7 @@ export async function main(ns) {
     lastTravel = crimeCount = currentBitnode = 0;
     notifiedAboutDaedalus = playerInBladeburner = wasGrafting = false;
     gangInviteMessage = "";
-
+    gangPhaseMessage = "";
     // Process configuration options
     firstFactions = (options['first'] || []).map(f => f.replaceAll('_', ' ')); // Factions that end up in this list will be prioritized and joined regardless of their augmentations available.
     options.skip = (options.skip || []).map(f => f.replaceAll('_', ' '));
@@ -356,7 +357,10 @@ async function mainLoop(ns) {
                 :`INFO: No gang host faction joined and no eligible host remains; gang creation stays blocked.`;
             if(message!==gangInviteMessage)log(ns,gangInviteMessage=message);
             // Work only on the easiest permitted invitation. Re-plan before seeking anything harder.
-            if(target)await earnFactionInvite(ns,target);
+            if(target) {
+                await writeGangQualificationHold(ns, target);
+                await earnFactionInvite(ns, target);
+            }
         }
     }
     // If something outside of this script is stealing player focus, decide whether to allow it
@@ -368,12 +372,32 @@ async function mainLoop(ns) {
         wasGrafting = false;
     }
 
-    // Gang rush waits only for a host of the selected type; a hacking membership cannot block a combat invitation.
-    if (!playerGang && dictSourceFiles[2] && options['crime-focus'] && options['prioritize-invites'] &&
-        achievementActionAllowed(ns,'gang') && planGangHost((await getPlayerInfo(ns)).factions,gangHostPreferences(ns),options.skip).host) {
-        if (currentBitnode!==2 && ns.heart.break()>-54000 && !options['no-crime']) await crimeForKillsKarmaStats(ns,0,54000,0,true);
-        else await ns.sleep(loopSleepInterval);
-        return;
+    // Karma is only the gang gate. Once it is met, host qualification becomes the critical path:
+    // stay on the host invitation instead of drifting into unrelated faction work until it arrives.
+    // A hacking membership cannot block a combat invitation; the host policy decides the target.
+    const gangFocus = !playerGang && dictSourceFiles[2] && options['crime-focus'] && options['prioritize-invites'] && achievementActionAllowed(ns,'gang');
+    const gangPlan = gangFocus ? planGangHost((await getPlayerInfo(ns)).factions,gangHostPreferences(ns),options.skip) : null;
+    const gangPhase = gangPlan ? gangStartPhase({karma:ns.heart.break(),gang:false,gangAvailable:true,host:gangPlan.host,node:currentBitnode}) : null;
+    if (gangPhase) {
+        if (gangPhase.phase === 'qualify' && gangPlan.inviteOrder.length) {
+            // Drive the first host candidate's requirements directly instead of only observing
+            // passive crime. This is what lets the final deficient combat stat hand off to the gym.
+            await writeGangQualificationHold(ns, gangPlan.inviteOrder[0]);
+            if (gangPhase.reason !== gangPhaseMessage) log(ns, gangPhaseMessage = gangPhase.reason);
+            scope = 1;
+            if (!(await earnFactionInvite(ns, gangPlan.inviteOrder[0]))) await ns.sleep(loopSleepInterval);
+            return;
+        }
+        if (gangPhase.phase === 'create') {
+            if (gangPhase.reason !== gangPhaseMessage) log(ns, gangPhaseMessage = gangPhase.reason);
+            await ns.sleep(loopSleepInterval);
+            return;
+        }
+        if (gangPhase.phase === 'karma') {
+            if (!options['no-crime']) await crimeForKillsKarmaStats(ns,0,54000,0,true);
+            else await ns.sleep(loopSleepInterval);
+            return;
+        }
     }
 
     const redPill=readNodeRoutePlan(ns)?.redPill;
@@ -401,6 +425,19 @@ async function mainLoop(ns) {
     if (currentBitnode == 10 && !priorityFactions.includes("The Covenant")) {
         priorityFactions.push("The Covenant");
         ns.print(`We're in BN10, which means we should add The Covenant to our priority faction list, so you can purchase sleeves and sleeve memory.`);
+    }
+
+    // BN15's completion gate is hacking level 2500, which only augmentation multipliers can reach: the
+    // levelling curve is exponential in level/mult, so rep with the factions that sell a hacking
+    // multiplier is worth more than any amount of extra hacking exp. Work them like BN10 works the
+    // Covenant for sleeves.
+    if (currentBitnode == 15) {
+        const hackingMultiplierFactions = ["BitRunners", "Clarke Incorporated", "NWO", "OmniTek Incorporated", "The Covenant"];
+        const added = hackingMultiplierFactions.filter(f => !priorityFactions.includes(f));
+        if (added.length) {
+            priorityFactions.push(...added);
+            ns.print(`BN15: adding hacking-multiplier factions to the work order (${added.join(', ')}); level 2500 is multiplier-bound.`);
+        }
     }
 
     // Strategy 1: Tackle a consolidated list of desired faction order, interleaving simple factions and megacorporations
@@ -474,7 +511,14 @@ async function mainLoop(ns) {
     // Work for the faction we already have the most favor with (to earn stat EXP and rep for additional neuroflux levels)
     if (factionsWeCanWorkFor.length > 0 && !options['crime-focus']) { // Unless we've been asked to prioritize crime (e.g. for Karma)
         let mostFavorFaction = factionsWeCanWorkFor.sort((a, b) => (dictFactionFavors[b] || 0) - (dictFactionFavors[a] || 0))[0];
-        let targetRep = 1000 + (await getFactionReputation(ns, mostFavorFaction)) * 1.05; // Hack: Grow rep by ~5%, plus 1000 incase it's currently 0
+        // The target is fixed per augmentation generation: derived from the live value it recedes as rep grows, so
+        // the ETA never lands and the player's single action stays held by a goal that cannot close.
+        const overgrindReset = await getResetInfoRd(ns), overgrindRep = await getFactionReputation(ns, mostFavorFaction);
+        const overgrindKey = mostFavorFaction + '/' + overgrindReset.lastAugReset;
+        let overgrindRecord = null; try { overgrindRecord = JSON.parse(ns.read('tasks/faction-overgrind.json')); } catch { }
+        let targetRep = overgrindTarget(overgrindRecord, overgrindRep, 1.05, overgrindKey); // Hack: Grow rep by ~5%, plus 1000 incase it's currently 0
+        if (!overgrindRecord || overgrindRecord.key !== overgrindKey || overgrindRecord.target !== targetRep)
+            await ns.write('tasks/faction-overgrind.json', JSON.stringify({ at: Date.now(), key: overgrindKey, faction: mostFavorFaction, target: targetRep, augReset: overgrindReset.lastAugReset }), 'w');
         ns.print(`INFO: All useful work complete. Grinding an additional 5% rep (to ${formatNumberShort(targetRep)}) ` +
             `with highest-favor faction: ${mostFavorFaction} (${(dictFactionFavors[mostFavorFaction] || 0).toFixed(2)} favor)`);
         foundWork = await workForSingleFaction(ns, mostFavorFaction, false, false, targetRep);
@@ -580,7 +624,7 @@ async function earnFactionInvite(ns, factionName) {
     if (doCrime && options['no-crime'])
         return ns.print(`${reasonPrefix} Doing crime to meet faction requirements is disabled. (--no-crime or --no-focus)`);
     if (doCrime)
-        workedForInvite = await crimeForKillsKarmaStats(ns, requiredKillsByFaction[factionName] || 0, requiredKarmaByFaction[factionName] || 0, requiredCombatByFaction[factionName] || 0);
+        workedForInvite = await crimeForKillsKarmaStats(ns, requiredKillsByFaction[factionName] || 0, requiredKarmaByFaction[factionName] || 0, requiredCombatByFaction[factionName] || 0, false, true);
 
     // Study for hack levels if that's what's keeping us
     // Note: Check if we have insuffient hack to backdoor this faction server. If we have sufficient hack, we will "waitForInvite" below assuming an external script is backdooring ASAP
@@ -709,8 +753,10 @@ async function goToCity(ns, cityName) {
     return false;
 }
 
+const combatStats = ["strength", "defense", "dexterity", "agility"];
+
 /** @param {NS} ns */
-export async function crimeForKillsKarmaStats(ns, reqKills, reqKarma, reqStats, doFastCrimesOnly = false) {
+export async function crimeForKillsKarmaStats(ns, reqKills, reqKarma, reqStats, doFastCrimesOnly = false, trainLastStatAtGym = false) {
     const bestCrimesByDifficulty = ["Heist", "Assassination", "Homicide", "Mug"]; // Will change crimes as our success rate improves
     const chanceThresholds = [0.75, 0.9, 0.5, 0]; // Will change crimes once we reach this probability of success for better all-round gains
     doFastCrimesOnly = doFastCrimesOnly || (options ? options['fast-crimes-only'] : false);
@@ -723,11 +769,24 @@ export async function crimeForKillsKarmaStats(ns, reqKills, reqKarma, reqStats, 
         `Str: ${player.skills.strength}, Def: ${player.skills.defense}, Dex: ${player.skills.dexterity}, Agi: ${player.skills.agility})`);
     let anyStatsDeficient = (p) => p.skills.strength < reqStats || p.skills.defense < reqStats ||
         /*                      */ p.skills.dexterity < reqStats || p.skills.agility < reqStats;
-    let crime, lastCrime, crimeTime, lastStatusUpdateTime, needStats;
+    let crime, lastCrime, crimeTime, lastStatusUpdateTime, needStats, gymUnavailable = false;
     while (forever || (needStats = anyStatsDeficient(player)) || player.numPeopleKilled < reqKills || -ns.heart.break() < reqKarma) {
         automationHeartbeat(ns);
         if(isScriptPaused(ns,ns.getScriptName())||maintenanceRequested(ns)||activityBusy(ns))return;
         if (!forever && breakToMainLoop()) return ns.print('INFO: Interrupting crime to check on high-level priorities.');
+        // Once Karma and kills are settled, crime still has to split its gains across every deficient
+        // stat. Gym work trains a single stat at roughly twice crime's per-stat rate, so finish the
+        // last deficient stat there and fall back to crime if the gym cannot be used.
+        if (trainLastStatAtGym && !gymUnavailable && reqStats && player.numPeopleKilled >= reqKills && -ns.heart.break() >= reqKarma) {
+            const deficient = combatStats.filter(stat => player.skills[stat] < reqStats);
+            if (deficient.length === 1) {
+                if (await trainCombatStatAtGym(ns, deficient[0], reqStats)) {
+                    player = await getPlayerInfo(ns);
+                    continue;
+                }
+                gymUnavailable = true;
+            }
+        }
         let crimeChances = await getNsDataThroughFile(ns, `Object.fromEntries(ns.args.map(c => [c, ns.singularity.getCrimeChance(c)]))`, '/Temp/crime-chances.txt', bestCrimesByDifficulty);
         let karma = -ns.heart.break();
         const karmaOnly = reqKills <= 0 && reqKarma > 0 && reqStats <= 0;
@@ -805,29 +864,58 @@ async function study(ns, focus, course, university = null) {
 
 /** @param {NS} ns
  * Helper to wait for studies to be complete */
-async function monitorStudies(ns, stat, requirement) {
+async function monitorStudies(ns, stat, requirement, label = 'Studying') {
     let lastStatusUpdateTime = 0;
     const initialWork = await getCurrentWorkInfo(ns);
     while (!breakToMainLoop()) {
         const currentWork = await getCurrentWorkInfo(ns);
         if (!(currentWork.classType) || currentWork.classType != initialWork.classType) {
-            log(ns, `WARNING: Something interrupted our studies.` +
+            log(ns, `WARNING: Something interrupted our ${label.toLowerCase()}.` +
                 `\nWAS: ${JSON.stringify(initialWork)}\nNOW: ${JSON.stringify(currentWork)}`, false, 'warning');
             return;
         }
         await maintainWorkFocus(ns, currentWork);
         const player = await getPlayerInfo(ns);
         if (player.skills[stat] >= requirement) {
-            log(ns, `SUCCESS: Achieved ${stat} level ${player.skills[stat]} >= ${requirement} while studying`, false, 'info');
+            log(ns, `SUCCESS: Achieved ${stat} level ${player.skills[stat]} >= ${requirement} while ${label.toLowerCase()}`, false, 'info');
             return true;
         }
         if ((Date.now() - lastStatusUpdateTime) > statusUpdateInterval) {
             lastStatusUpdateTime = Date.now();
-            log(ns, `Studying "${currentWork.classType}" at ${currentWork.location} until ${stat} reaches ${requirement}. ` +
+            log(ns, `${label} "${currentWork.classType}" at ${currentWork.location} until ${stat} reaches ${requirement}. ` +
                 `Currently at ${player.skills[stat]}...`, false, 'info'); // TODO: Compute an ETA, and configure training threshold based on ETA
         }
         await ns.sleep(loopSleepInterval);
     }
+}
+
+// Powerhouse Gym has the strongest class-exp multiplier, at the cost of the highest per-second fee.
+const gymLocation = 'Powerhouse Gym', gymCity = 'Sector-12';
+/** Train one combat stat at the gym. Returns false only when the gym could not be started, so callers
+ *  can fall back to crime; an interruption still counts as started and is retried by the outer loop.
+ * @param {NS} ns */
+async function trainCombatStatAtGym(ns, stat, requirement) {
+    if (options['no-studying']) return false;
+    const abbreviation = stat.slice(0, 3);
+    const currentWork = await getCurrentWorkInfo(ns);
+    const alreadyTraining = currentWork.type === 'CLASS' && currentWork.classType === abbreviation &&
+        currentWork.location === gymLocation;
+    if (!alreadyTraining) {
+        const player = await getPlayerInfo(ns);
+        if (player.money < 1e6) { // Travel plus a few minutes of gym fees; otherwise crime is the fallback
+            log(ns, `INFO: Skipping gym training for ${stat}: need ${formatMoney(1e6)}, have ${formatMoney(player.money)}.`, false, 'info');
+            return false;
+        }
+        if (player.city != gymCity && !(await goToCity(ns, gymCity))) return false;
+        if (!(await factionWorkCommand(ns, `ns.singularity.gymWorkout(ns.args[0], ns.args[1], ns.args[2])`,
+            [gymLocation, abbreviation, focusForWork()], true))) {
+            log(ns, `WARNING: Failed to start gym training for ${stat} at ${gymLocation}.`, false, 'warning');
+            return false;
+        }
+        log(ns, `Started training ${stat} at ${gymLocation} until ${requirement}.`, false, 'info');
+    }
+    await monitorStudies(ns, stat, requirement, 'Training');
+    return true;
 }
 
 /** @param {NS} ns */
@@ -957,6 +1045,31 @@ async function pendingAugmentationFundingWork(ns) {
  * @returns {Promise<ResetInfo>} the result of ns.getResetInfo() */
 async function getResetInfoRd(ns) {
     return await getNsDataThroughFile(ns, `ns.getResetInfo()`);
+}
+
+/** Publish a reset-scoped install hold while we qualify for the gang host. Installing now would
+ *  reset the combat stats and kill requirement progress this work is producing. */
+async function writeGangQualificationHold(ns, host) {
+    if (host === lastGangHoldHost && Date.now() - lastGangHoldAt < 60000) return;
+    try {
+        const reset = await getResetInfoRd(ns);
+        // Carry the original start of the hold forward so renewals cannot extend the bounded window forever.
+        let since = Date.now();
+        try {
+            const prior = JSON.parse(ns.read('tasks/gang-qualification-hold.json'));
+            if (prior?.schemaVersion === 2 && prior.nodeReset === reset.lastNodeReset && prior.augReset === reset.lastAugReset) {
+                const carried = Number(prior.since ?? prior.at);
+                if (Number.isFinite(carried) && carried <= Date.now()) since = carried;
+            }
+        } catch { }
+        await ns.write('tasks/gang-qualification-hold.json', JSON.stringify({
+            schemaVersion: 2, at: Date.now(), since, ownerPid: ns.pid,
+            nodeReset: reset.lastNodeReset, augReset: reset.lastAugReset, host }), 'w');
+        lastGangHoldAt = Date.now();
+        lastGangHoldHost = host;
+    } catch (err) {
+        ns.print(`WARNING: Could not publish the gang qualification install hold: ${getErrorInfo(err)}`);
+    }
 }
 
 /** @param {NS} ns
@@ -1218,7 +1331,7 @@ export async function workForSingleFaction(ns, factionName, forceUnlockDonations
             workAssigned = false; // This will force us to redetermine the best faction work.
         // Heads up! Current implementation of "detectBestFactionWork" changes the work currently being done, so we must always re-assign work afterwards
         if (!workAssigned)
-            bestFactionJob = await detectBestFactionWork(ns, factionName);
+            bestFactionJob = await detectBestFactionWork(ns, factionName, currentWork);
         // For purposes of being informative, log a message if the detected "bestFactionJob" is different from what we were previously doing
         if (currentWork.factionName == factionName && factionJob != bestFactionJob) {
             log(ns, `INFO: Detected that "${bestFactionJob}" gives more rep than previous work "${factionJob}". Switching...`);
@@ -1311,8 +1424,9 @@ async function measureCompanyRepGainRate(ns, companyName) {
  * @param {NS} ns
  * @param {string} factionName The name of the faction to work for
  * @returns {Promise<FactionWorkType>} The faction work type measured to give the best reputation gain rate */
-async function detectBestFactionWork(ns, factionName) {
-    let bestWork, bestRepRate = 0;
+async function detectBestFactionWork(ns, factionName, currentWork = null) {
+    const samples = [];
+    let bestRepRate = 0;
     const pill=readNodeRoutePlan(ns)?.redPill;
     const calibrate=factionName==='Daedalus'&&pill?.active&&await claimActivity(ns,'Daedalus work measurement');
     let passiveRate=0,passiveKnown=false;
@@ -1325,17 +1439,21 @@ async function detectBestFactionWork(ns, factionName) {
             continue; // This type of faction work must not be supported
         }
         const currentRepGainRate = calibrate?await timedRate():await measureFactionRepGainRate(ns, factionName);
-
+        samples.push({ work, rate: currentRepGainRate });
         //ns.print(`"${factionName}" work ${work} provides ${formatNumberShort(currentRepGainRate)} rep rate`);
-        if (currentRepGainRate > bestRepRate) {
-            bestRepRate = currentRepGainRate;
-            bestWork = work;
-        }
+        if (Number.isFinite(currentRepGainRate) && currentRepGainRate > bestRepRate) bestRepRate = currentRepGainRate;
     }
-    if (bestWork === undefined) {
+    // A zero sample is a measurement artefact — the probe window is under 450ms while engine lag routinely
+    // exceeds a second — so falling back to the work already running keeps rep flowing instead of throwing a
+    // wrong "faction unsupported" verdict and churning the loop every few seconds.
+    const chosen = measuredWorkType(samples, currentWork);
+    if (!chosen) {
         mainLoopStart = 0; // Force break out of whatever work loop we're in to update info (maybe we formed a gang with the faction we were working for?)
         throw Error(`The faction "${factionName}" does not support any of the known work types. Cannot work for this faction!`);
     }
+    const bestWork = chosen.work;
+    if (!chosen.measured)
+        ns.print(`INFO: No rep-rate sample landed for "${factionName}" (engine lag); keeping "${bestWork}" work.`);
     if(calibrate&&passiveKnown){
         const p=await getPlayerInfo(ns),r=await getResetInfoRd(ns);
         await ns.write('tasks/daedalus-work-rate.json',JSON.stringify({at:Date.now(),pid:ns.pid,augReset:r.lastAugReset,nodeReset:r.lastNodeReset,
@@ -1350,7 +1468,7 @@ async function detectBestFactionWork(ns, factionName) {
  *  @param {Array<string>} megacorpFactionsInPreferredOrder - The list of all corporate factions to work for, sorted in the order they should be worked for
  *  @param {Array<string>} megacorpFactionsInPreferredOrder - The list of all corporate factions, sorted in the order they should be worked for
  * */
-export async function workForAllMegacorps(ns, megacorpFactionsInPreferredOrder, alsoWorkForCompanyFactions, oneCompanyFactionAtATime) {
+async function workForAllMegacorps(ns, megacorpFactionsInPreferredOrder, alsoWorkForCompanyFactions, oneCompanyFactionAtATime) {
     let player = await getPlayerInfo(ns);
     let joinedCompanyFactions = player.factions.filter(f => megacorpFactionsInPreferredOrder.includes(f)); // Company factions we've already joined
     if (joinedCompanyFactions.length > 0)
@@ -1461,7 +1579,7 @@ async function backdoorStatusByServer(ns) {
 }
 
 /** @param {NS} ns */
-export async function workForMegacorpFactionInvite(ns, factionName, waitForInvite) {
+async function workForMegacorpFactionInvite(ns, factionName, waitForInvite) {
     const companyConfig = companySpecificConfigs.find(c => c.name == factionName); // For anything company-specific
     const companyName = companyConfig?.companyName || factionName; // Name of the company that gives the faction (same for all but Fulcrum)
 

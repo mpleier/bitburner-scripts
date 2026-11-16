@@ -1,4 +1,16 @@
 /** Native-safe hash decisions. Self-contained for serialization into low-RAM helpers. */
+/** Hashes a staged corporation funding milestone is holding back right now. `hashSpendingDecision` keeps its own
+ * inline copy of this rule because it is serialized into temp workers, so a test pins the two to the same answer. */
+export function hashReserveFor(ns,now=Date.now()) {
+ try{
+  const read=f=>{try{return JSON.parse(ns.read(f));}catch{return null;}};
+  const reset=ns.getResetInfo(),corporate=read('tasks/corporation-hash-goal.json'),milestone=corporate?.milestone;
+  const fresh=[1,2].includes(corporate?.schemaVersion)&&corporate.priority===true&&ns.read('remote-control/paused/corporation-manager.js.txt').trim()!=='true'&&corporate.nodeReset===reset.lastNodeReset&&corporate.augReset===reset.lastAugReset&&Number.isFinite(corporate.at)&&corporate.at<=now&&now-corporate.at<45000&&
+   ns.ps('home').some(p=>p.pid===corporate.ownerPid&&p.filename.replace(/^\//,'')==='corporation-manager.js');
+  const total=Number(milestone?.totalHashes);
+  return fresh&&milestone?.staged===true&&Number.isFinite(total)&&total>0?total:0;
+ }catch{return 0;}
+}
 export function hashSpendingDecision(ns,action,options={}) {
  const now=Date.now(),read=f=>{try{return JSON.parse(ns.read(f));}catch{return null;}},reset=ns.getResetInfo();
  const processes=ns.ps('home'),alive=pid=>processes.some(p=>p.pid===pid);
@@ -137,7 +149,7 @@ export function hashSpendingDecision(ns,action,options={}) {
  const corporateShape=corporate?.schemaVersion===1?corporatePurchases===1:milestone?.purchases===corporatePurchases&&Number.isFinite(milestone.totalHashes)&&milestone.totalHashes>0&&milestone.totalHashes<=corporateLimit;
  const corporatePriority=corporateFresh&&corporateShape&&corporateRemaining&&corporateReward>0&&milestone.reward===corporateReward&&Number.isFinite(milestone.gap)&&milestone.gap>0&&corporatePurchases<=corporateMaxPurchases&&Number.isFinite(corporateCost)&&corporateCost>0&&Number.isFinite(corporateTotal)&&corporateTotal>0&&corporateTotal<=corporateLimit&&corporateTotal<=hashes&&corporateTotal*cashPerHash<=unreserved*.05;
  if(corporatePriority&&!cashPurchasesNeeded&&!rankGateReady&&route?.routes?.[committedRoute]?.etaMs!==0){preferred=corporateAction;priorityCost=corporateTotal;priorityReason='Fund bounded corporation milestone: '+milestone.label;}
- const cost=action==='__capacity__'?0:costOf(action);
+ const cost=action==='__capacity__'?0:costOf(action,Number.isSafeInteger(options.quantity)&&options.quantity>1?options.quantity:1);
  const common={preferred,cashGoal:cashAllowed?cashGoal:null,cashTarget,cashPurchasesNeeded,rankHashCost,spHashCost,knownMaximumRank:history?.knownMax?Math.max(rankNow||0,history.maxRank):null,priorityCost:Number.isFinite(priorityCost)?priorityCost:null,priorityReason,rankSpGain,probe,rankNow,rankGap,rankSecondsSaved,rankSpSecondsSaved,spSecondsSaved,rankValuePerHash,spValuePerHash,rankGateReady,
   skillGoal:skillGoal?{name:skillGoal.name||null,state:skillGoal.state,cost:skillGoal.cost??null,shortfall:skillShortfall,naturalFundingSeconds:skillGoalEtaSeconds,fundingPlan:skillFundingPlan}:null,
   corporateMilestone:corporatePriority?{key:corporateKey,label:milestone.label,purchases:corporatePurchases,totalHashes:corporateTotal,gap:milestone.gap}:null,
@@ -242,7 +254,7 @@ export function hashSpendingDecision(ns,action,options={}) {
 
 /** Recheck immediately before synchronous mutation and record observed rank/SP yields. */
 export function spendHashesWithPolicy(ns,action,target,quantity=1,options={},decide=hashSpendingDecision) {
- const decision=decide(ns,action,{...options,target});
+ const decision=decide(ns,action,{...options,target,quantity});
  const record={at:Date.now(),pid:options.ownerPid||ns.pid,script:options.script||'hash-worker',action,target:target??null,quantity,...decision};
  const finish=(success,spent=0)=>{
   const receipt={...record,success,spent};

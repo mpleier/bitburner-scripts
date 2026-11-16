@@ -9,6 +9,19 @@ export function factionForcedJoins(value,node,gang,gangAvailable,_karma,preferen
  const names=value==null?[...(node===10?['The Covenant']:[]),...(!gang&&gangAvailable?planGangHost([],preferences).inviteOrder:[])]:[value].flat(Infinity);
  return [...new Set(names.filter(n=>typeof n==='string'&&n.trim()).map(n=>n.replaceAll('_',' ').trim()))];
 }
+
+/** Karma is the gate, qualification is the goal. Once the gate is met the host faction's
+ * invitation requirements become the critical path, so callers must not keep grinding Karma
+ * or drift into unrelated faction work. `karma` uses the native heart.break() convention. */
+export function gangStartPhase({karma,gang=false,gangAvailable=false,host=null,node=0}={}) {
+ if(gang)return {phase:'none',reason:'Already in a gang'};
+ if(!gangAvailable)return {phase:'none',reason:'Gang mechanics are not unlocked'};
+ if(node===2)return host?{phase:'create',reason:'BitNode 2 has gang mechanics unlocked and the host faction is joined'}
+  :{phase:'qualify',reason:'BitNode 2 has gang mechanics unlocked; qualify for the host faction'};
+ if(!Number.isFinite(karma)||karma>-54000)return {phase:'karma',reason:'Karma gate not met'};
+ return host?{phase:'create',reason:'Karma gate met and the host faction is joined'}
+  :{phase:'qualify',reason:'Karma gate met; qualify for the host faction before any other work'};
+}
 /** Fresh native checks; serialized workers have no imported dependencies. */
 export function factionControlAllowed(api,parent,script,focus=false,now=Date.now()) {
  if(!api.isRunning(parent)||api.read('remote-control/paused/'+script+'.txt').trim()==='true')return false;
@@ -48,6 +61,30 @@ export function factionPurchaseBatch(api,orders,allowed,reserve,donations=false,
  return successes;
 }
 
+
+/** A zero rep-rate sample means the probe window missed a game tick (engine lag of a second or more is normal
+ * under a big XP farm), not that the work type is unsupported. Keep the work that is already running rather
+ * than letting a detector whose only success path is `rate > 0` declare the faction unusable. */
+export function measuredWorkType(samples,current) {
+ const best=(Array.isArray(samples)?samples:[]).filter(s=>s&&typeof s.work==='string'&&s.work&&Number.isFinite(s.rate)&&s.rate>0).sort((a,b)=>b.rate-a.rate)[0];
+ if(best)return {work:best.work,measured:true};
+ const running=current&&typeof current.factionWorkType==='string'&&current.factionWorkType?current.factionWorkType:null;
+ return running?{work:running,measured:false}:null;
+}
+/** A "grind 5% more rep" goal recomputed from the live value can never close: rep rises, so the target rises
+ * with it and the ETA never lands. Derive it once per augmentation generation (and per faction), then honour
+ * that fixed target until the next reset. */
+export function overgrindTarget(record,current,ratio=1.05,key=null) {
+ const saved=record&&Number.isFinite(record.target)&&record.target>0&&record.key===key?record.target:null;
+ if(saved)return saved;
+ return Math.ceil(Math.max(1000,(Number.isFinite(current)?current:0)*ratio));
+}
+/** ns.singularity.joinFaction returns false both when we are already a member and when the join is genuinely
+ * rejected. Distinguish the two so an existing membership is recorded instead of being logged as an error. */
+export function factionJoinOutcome(response, isMember) {
+  if (response) return "joined";
+  return isMember === true ? "already-member" : "failed";
+}
 
 /** City membership is a strategic choice shared by all invitation handlers. */
 export function planFactionCityGroup({joined=[],factions={}},preferred=[],skip=[]) {
@@ -114,6 +151,17 @@ export function planGangHost(joined=[], preferences={}, skip=[], metadata={}) {
  const easy=type==='hacking'?['NiteSec','The Black Hand']:['Slum Snakes','Tetrads','The Syndicate','The Dark Army','Speakers for the Dead'];
  return {error:null,type,host:ready[0]||null,ready,inviteOrder:host?candidates:easy.filter(f=>candidates.includes(f))};
 }
+/** Creation must never wait on a pinned host that is not joined: a pinned `gang-faction` that has not
+ * produced an invitation leaves `host` null forever even when another eligible host is already joined,
+ * so creation falls back to a joined host of the same gang type and reports what it fell back from. */
+export function gangCreationHost(joined=[], preferences={}, skip=[], metadata={}) {
+ const plan=planGangHost(joined,preferences,skip,metadata);
+ if(plan.error||plan.host||!preferences['gang-faction'])return plan;
+ const relaxed=planGangHost(joined,{...preferences,'gang-faction':null},skip,metadata);
+ if(!relaxed.host)return plan;
+ return {...relaxed,fallbackFrom:String(preferences['gang-faction']).replaceAll('_',' ').trim()};
+}
+
 
 /** Config is shared even before gangs.js starts; live flags override it while its owner is running. */
 export function gangHostPreferences(ns) {
@@ -186,6 +234,13 @@ export function pruneAugmentationPrerequisites(items,owned=[]) {
  const have=new Set(owned);let result=items.slice(),changed=true;
  while(changed){const names=new Set(result.map(a=>a.name)),next=result.filter(a=>(a.prereqs||[]).every(p=>have.has(p)||names.has(p)));changed=next.length!==result.length;result=next;}
  return result;
+}
+
+/** Augmentation prices rise by 1.9x per purchase, softened by Source-File 11 (levels 0-3). An out-of-range
+ * level used to index past the table and turn the multiplier into NaN, which makes every basket planner throw. */
+export function augmentationPriceMultiplier(sourceFile11Level, base = 1.9) {
+  const level = Number.isFinite(sourceFile11Level) ? Math.max(0, Math.min(3, Math.floor(sourceFile11Level))) : 0;
+  return base * [1, 0.96, 0.94, 0.93][level];
 }
 
 /** Exact minimum-price topological order up to 14 items; larger baskets get bounded valid insertions.

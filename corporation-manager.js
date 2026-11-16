@@ -7,7 +7,8 @@ import {readNodeRoutePlan} from './node-route-policy.js';
 import {registerAutomation,automationHeartbeat,maintenanceRequested} from './runtime-policy.js';
 import {achievementActionAllowed} from './achievement-policy.js';
 import { claimSpending } from './spending-policy.js';
-import { officeOnlyResearchJobs,corporationProductBaseline,observeCorporationUpkeep,corporationUpkeepResearchValues,planCorporationResearchBundles,executeCorporationResearchBundle,corporationResearchRate,corporationResearchDecision,corporationGrowthBudget,corporationOfficeUpkeepNeed,allocateCorporationUpkeep,corporationDevelopmentExpansion,observeCorporationGrowth,scoreCorporationGrowth,treasuryPolicy, recoveryJobCounts, priorSaleMultiplier, partySpendPerEmployee, materialSalePrice, outputBacklog, boostPurchaseBudget, productPriceStep, researchAffordable, salesPotential, formulaSalePrice, inferProductMarkup, supportAdvertLimit, clearCorporationBuyRates, optimizedOfficeJobs, corporationDevelopmentCity, executeCorporationGrowth, productReplacementReady, corporationAdvertBenefit, corporationResearchGoal, corporationCoreFunding, corporationScienceFactor } from './corporation-policy.js';
+import {failureEscalation,failureCleared,persistentFailures} from './failure-escalation-policy.js';
+import { officeOnlyResearchJobs,corporationProductBaseline,observeCorporationUpkeep,corporationUpkeepResearchValues,planCorporationResearchBundles,executeCorporationResearchBundle,corporationResearchRate,corporationResearchDecision,corporationGrowthBudget,corporationOfficeUpkeepNeed,allocateCorporationUpkeep,corporationDevelopmentExpansion,observeCorporationGrowth,scoreCorporationGrowth,treasuryPolicy, recoveryJobCounts, priorSaleMultiplier, partySpendPerEmployee, materialSalePrice, outputBacklog, boostPurchaseBudget, productPriceStep, researchAffordable, salesPotential, formulaSalePrice, inferProductMarkup, supportAdvertLimit, clearCorporationBuyRates, optimizedOfficeJobs, corporationDevelopmentCity, executeCorporationGrowth, productReplacementReady, corporationAdvertBenefit, corporationResearchGoal, corporationCoreFunding, corporationScienceFactor, corporationProductScience, corporationProductScienceMinimum, corporationProductScienceHopeless, corporationGrowthStallNotice, coreDivisionName, growthBankForOffice, materialExportWorthwhile } from './corporation-policy.js';
 import { researchParents, extraResearch, productInvestment, investmentDecision, rescueShareIssue, shareSale, shareBuyback, recipeInputPlan, corporationDividendRate, corporationLiquidityTarget, estimateShareProceeds } from './corporation-lifecycle.js';
 import { getNsDataThroughFile } from './helpers.js';
 import { isScriptPaused } from './automation-control.js';
@@ -31,10 +32,10 @@ export async function main(ns) {
   const c = ns.corporation;
   const cities = ["Sector-12", "Aevum", "Volhaven", "Chongqing", "New Tokyo", "Ishima"];
   const name = "Apex Holdings";
-  const agri = "Agri";
-  const restaurant = "Dining";
-  const chem = "Chem";
-  const tobacco = "Tobacco";
+  let agri = "Agri";
+  let restaurant = "Dining";
+  let chem = "Chem";
+  let tobacco = "Tobacco";
   const CITY_EXPAND_BUFFER = 5e9;
   const WAREHOUSE_BUFFER = 5e9;
   let reserve = 5e9;
@@ -44,6 +45,7 @@ export async function main(ns) {
   let upkeepBudget = 0;
   let upkeepAllocations = new Map();
   let growthBank = null,growthGoal=null,hashMilestone=null,growthPriority=!!options['development-speed'],growthPhase=null;
+  let lastCorpPurchaseAt=Date.now(),lastCorpStallAlertAt=0; // A stalled growth budget is legitimate; silence is not.
   const constants = (() => { try { return c.getConstants(); } catch { return {}; } })();
   const cycleSeconds = Number(constants.secondsPerMarketCycle) || 10;
   const teaCostPerEmployee = Number(constants.teaCostPerEmployee) || 500000;
@@ -92,7 +94,10 @@ export async function main(ns) {
   // ---- Upgrade priority -------------------------------------------------
 
   // ---- Chemical quality loop --------------------------------------------
-  const EXPORT_FORMULA = "(IPROD+IINV/10)*(-1)";
+  // Export an amount per second, not a formula that can go negative: Division.ts computes the rate, clamps it to
+  // stored stock and then skips the route when the value is <= 0, so a negated formula silently exports nothing.
+  // EPROD is this division's production; EINV/10 drains backlog over ten seconds so a full warehouse keeps flowing.
+  const EXPORT_FORMULA = "(EPROD+EINV/10)";
 
   // ---- AdVert budget ----------------------------------------------------
   const ADVERT_SPEND_FRACTION = 0.50;
@@ -140,9 +145,22 @@ export async function main(ns) {
   safeDisableLog("sleep");
   safeDisableLog("corporation.nextUpdate");
 
+  // Optional calls stay non-fatal, but a persistent failure must not look like a quiet cycle: count consecutive
+  // failures per operation, announce the first outage to the terminal, then repeat at most every ten minutes.
+  const safeFailures = new Map();
   const safe = (label, fn) => {
-    try { return fn(); }
-    catch (error) { ns.print(`${label}: ${String(error)}`); return undefined; }
+    try {
+      const value = fn();
+      if (safeFailures.has(label)) safeFailures.set(label, failureCleared(safeFailures.get(label), Date.now()));
+      return value;
+    } catch (error) {
+      const next = failureEscalation(safeFailures.get(label), Date.now());
+      safeFailures.set(label, next);
+      const message = `${label}: ${String(error)}`;
+      if (next.announce) ns.tprint(`WARNING: corporation ${message} (failed ${next.count}x in a row)`);
+      else ns.print(message);
+      return undefined;
+    }
   };
   const corp = () => safe("getCorporation", () => c.getCorporation());
   const funds = () => corp()?.funds ?? 0;
@@ -272,6 +290,47 @@ export async function main(ns) {
     if(priority>=2){const result=executeCorporationGrowth([plan],growthBank,funds,()=>reserve,canManage);growthBank=result.remaining;growthDecisions.push(...result.decisions);return result.decisions.some(d=>d.state==='purchased');}
     growthPlans.set(label,plan);return false;
   };
+  // Cheap rungs on a profitable division: without these the only growth plan is a $9b city expansion,
+  // so a corporation with hundreds of millions sits in budget-wait while its best division stagnates.
+  let lastRungNote='';
+  let lastHashMilestoneNote='';
+  const registerAffordableRungs=()=>{
+    // growthBank is already funds minus the reserve and the held goal; funds()-reserve can be zero while a
+    // city-expansion goal holds every remaining dollar.
+    const spendable=Math.max(0,Number.isFinite(growthBank)?growthBank:funds()-reserve);
+    const quotes=[];let registered=0;
+    for(const division of divisions()){
+      const info=safe('Read rung division',()=>c.getDivision(division));if(!info)continue;
+      if(!(Number(info.lastCycleRevenue)>Number(info.lastCycleExpenses)))continue;
+      // Product divisions already own an office-growth path that respects a confirmed sales backlog;
+      // adding rungs here would grow the office while stock cannot be sold.
+      if(info.makesProducts)continue;
+      for(const city of info.cities||[]){
+        if(safe('Read rung warehouse',()=>c.hasWarehouse(division,city))!==true)continue;
+        const office=safe('Read rung office',()=>c.getOffice(division,city));if(!office)continue;
+        // Another pass may already own this improvement; two upgrades in one cycle would overspend.
+        const claimed=kind=>[...growthPlans.values()].some(p=>p.market&&p.market.division===division&&p.market.city===city&&p.market.kind===kind);
+        const officeCost=Number(safe('Quote rung office',()=>c.getOfficeSizeUpgradeCost(division,city,3)));
+        const officeLabel='Grow office '+division+'/'+city;
+        if(Number.isFinite(officeCost)&&officeCost>0&&!claimed('development')){
+          if(officeCost<=spendable){capitalPurchase(officeLabel,officeCost,()=>c.upgradeOfficeSize(division,city,3),1/officeCost,0,officeCost,{kind:'development',division,city});if(growthPlans.has(officeLabel))registered++;}
+          quotes.push('office '+division+'/'+city+' $'+Math.round(officeCost)+(officeCost<=spendable?'':' over spendable $'+Math.round(spendable)));
+        }
+        // Buying storage a division cannot fill wastes capital: level 2 of an Agri warehouse was purchased at
+        // 2.6% utilisation. Only grow storage once it is actually more than half full.
+        const warehouse=safe('Read rung warehouse level',()=>c.getWarehouse(division,city));
+        const pressure=warehouse&&Number(warehouse.size)>0?Number(warehouse.sizeUsed||0)/Number(warehouse.size):0;
+        const warehouseCost=pressure>0.5?Number(safe('Quote rung warehouse',()=>c.getUpgradeWarehouseCost(division,city,1))):0;
+        const warehouseLabel='Grow warehouse '+division+'/'+city;
+        if(Number.isFinite(warehouseCost)&&warehouseCost>0&&!claimed('storage')){
+          if(warehouseCost<=spendable){capitalPurchase(warehouseLabel,warehouseCost,()=>c.upgradeWarehouse(division,city),1/warehouseCost,0,0,{kind:'storage',division,city});if(growthPlans.has(warehouseLabel))registered++;}
+          quotes.push('warehouse '+division+'/'+city+' $'+Math.round(warehouseCost)+(warehouseCost<=spendable?'':' over spendable $'+Math.round(spendable)));
+        }
+      }
+    }
+    const line=`Growth rungs: ${registered} registered | spendable $${Math.round(spendable)} | ${quotes.join('; ')}`;
+    if(quotes.length&&line!==lastRungNote){lastRungNote=line;ns.print(line);}
+  };
   const advertQueue=new Set(),advertisingCandidates=new Map();
   const expansionFundingActive=()=>!!growthGoal&&/^(Expand |Unlock Warehouse API)/.test(growthGoal.label);
   const hireAdVert=division=>{if(expansionFundingActive())return;advertQueue.add(division);};
@@ -331,10 +390,9 @@ export async function main(ns) {
     if (!PAY_DIVIDENDS) return;
     const info = corp();
     if (!info?.public) return;
-    const wallet = Number(ns.getPlayer().money) || 0;
-    const playerReserve = Math.max(0, Number(ns.read('reserve.txt')) || 0);
     const rate = growthPriority || recovering || Number(info.revenue) <= Number(info.expenses) ? 0 :
-      Math.min(DIVIDEND_MAX, Math.max(dividendRateFor(funds()), (wallet < playerReserve + 1e9 || playerCashBottleneck()) && funds() > reserve * 5 ? 0.2 : 0));
+      // Corporation policy decides the rate; the player's wallet is not a corporation input.
+      Math.min(DIVIDEND_MAX, Math.max(0, dividendRateFor(funds())));
     const actualRate = Number.isFinite(info.dividendRate) ? info.dividendRate : lastDividendRate;
     if (rate === actualRate) { lastDividendRate = rate; return; }
     if (attempt(`Set dividend rate ${(rate * 100).toFixed(0)}%`, () => c.issueDividends(rate)))
@@ -344,11 +402,13 @@ export async function main(ns) {
   // ---- Hash spends ------------------------------------------------------
   const cSafeHashCost=(action,quantity=1)=>{try{return ns.hacknet.hashCost(action,quantity);}catch{return Infinity;}};
   const quoteCorporateHashes=(funding,research=[],limit=5000,maxPurchases=16)=>{
-    const wallet=Math.max(0,ns.getPlayer().money-Math.max(0,Number(ns.read('reserve.txt'))||0));
     let saved;try{saved=JSON.parse(ns.read('tasks/corporation-hash-budget.json'));}catch{}
     const entries=saved?.schemaVersion===1&&saved.nodeReset===resetInfo.lastNodeReset?saved.entries||{}:{};
     return corporationHashMilestone(funding,research,{funds:funds(),reserve,quote:cSafeHashCost,maxPurchases,
-      maxHashes:Math.min(limit,Math.max(0,ns.hacknet.numHashes()),wallet*.05/250000),
+      // Hashes are already owned, so the old wallet*5%/250k term was wrong for this conversion: it capped a
+      // 221k-hash bank to 40 hashes and left a $8.5b corporation funding gap unfundable. Bound by the balance
+      // and the caller's limit only; the purchase count still follows the gap in corporationHashMilestone.
+      maxHashes:Math.min(limit,Math.max(0,ns.hacknet.numHashes())),
       remainingBudget:key=>{const used=entries[key];if(!used&&Object.keys(entries).length>=128)return null;return {purchases:maxPurchases-(used?.purchases||0),hashes:limit-(used?.spent||0)};}});
   };
   // Hashing should first break the one-city expansion deadlock; research can wait a cycle.
@@ -358,6 +418,13 @@ export async function main(ns) {
       const cashGap=Math.max(0,cost-Math.max(0,funds()-reserve));
       return Number.isFinite(cost)&&cost>0&&cashGap>0?{label:'Unlock Warehouse API for expansion',cost,cashGap,priority:3}:null;
     }
+    // The office increment is the rung the growth queue itself names while offices are understaffed, so it has to
+    // be fundable: refusing the funding quote for the same reason that defers the city rung left the corp stuck
+    // between a sub-$1b treasury and a $5.18b office that spare hashes could have paid for.
+    const critical=typeof criticalOfficeFunding==='function'?criticalOfficeFunding():null;
+    if(critical)return critical.kind==='expansion'
+      ?{label:critical.label,cost:critical.cost,cashGap:critical.gap,priority:3}
+      :{label:'Grow '+critical.division+' office in '+critical.city+' to '+(critical.size+3),cost:critical.cost,cashGap:critical.gap,priority:3};
     const officeCost=Number(constants.officeInitialCost)||4e9,warehouseCost=Number(constants.warehouseInitialCost)||5e9;
     const packageCost=officeCost+warehouseCost+20e6;
     for(const division of divisions()){
@@ -394,7 +461,7 @@ export async function main(ns) {
     const expansionFunding=firstExpansionFunding();
     let liveFunding=growthGoal?{...growthGoal,cashGap:Math.max(0,growthGoal.cost-Math.max(0,funds()-reserve))}:expansionFunding;
     // Fund as many complete $1b receipts as the current hash balance can pay for.
-    if(liveFunding&&/^(Expand |Unlock Warehouse API)/.test(liveFunding.label)){
+    if(liveFunding&&/^(Expand |Unlock Warehouse API|Grow )/.test(liveFunding.label)){
       const receiptHashes=Math.max(1,Number(cSafeHashCost('Sell for Corporation Funds',1))||500);
       const receipts=Math.max(1,Math.floor(available/receiptHashes));
       liveFunding={...liveFunding,cashGap:Math.min(liveFunding.cashGap,receipts*1e9),staged:true};
@@ -416,6 +483,11 @@ export async function main(ns) {
         const cost=Number(cSafeHashCost('Exchange for Corporation Research',purchases));
         if(Number.isFinite(cost)&&cost>0&&cost<=available)hashMilestone={action:'Exchange for Corporation Research',label:r.division+': '+r.name,gap,reward:1000,purchases,totalHashes:cost,division:r.division,research:r.name,target:r.cost,staged:true};
       }
+    }
+    const milestoneNote=hashMilestone?hashMilestone.action+' x'+hashMilestone.purchases+' ('+hashMilestone.totalHashes+' hashes) for '+hashMilestone.label:'none';
+    if(milestoneNote!==lastHashMilestoneNote){
+      lastHashMilestoneNote=milestoneNote;
+      ns.print('Corporation hash milestone: '+milestoneNote+' | funding '+(liveFunding?liveFunding.label:'none')+' gap '+(liveFunding?Math.round(liveFunding.cashGap):0)+' | pool '+Math.round(available)+' hashes, budget '+hashBudget);
     }
     await ns.write('tasks/corporation-hash-goal.json',JSON.stringify({schemaVersion:2,at:Date.now(),ownerPid:ns.pid,nodeReset:resetInfo.lastNodeReset,augReset:resetInfo.lastAugReset,priority:growthPriority,milestone:hashMilestone}),'w');
     if(!canManage())return null;
@@ -459,7 +531,11 @@ export async function main(ns) {
     // Hash production is a direct corporation-growth input. While the corporation
     // is in a growth phase, allow a small carve-out from the player reserve so a
     // large reserve cannot make every Hacknet upgrade unaffordable.
-    let growthRemaining = growthPriority && hashMilestone ? Math.max(0, ns.getPlayer().money * HACKNET_GROWTH_CARVEOUT - normalRemaining) : 0;
+    // Hash production is a corporation-growth input, so a staged funding milestone lifts the 5% ration:
+    // spend the wallet on it (keeping a 1e9 reserve for augmentations) instead of gating corporation
+    // progress on how much player cash happens to be spare.
+    let growthRemaining = growthPriority && hashMilestone
+      ? Math.max(0, ns.getPlayer().money - Math.min(playerReserve, 1e9) - normalRemaining) : 0;
     let normalAvailable = normalRemaining;
     const canSpend = cost => Number.isFinite(cost) && cost > 0 &&
       ((cost <= normalAvailable && ns.getPlayer().money >= cost + playerReserve) ||
@@ -555,6 +631,7 @@ export async function main(ns) {
   // route is legal. Routes are cached in exportRoutes so the attempt only
   // happens once per (source, city, target, material) tuple per session.
   const exportRoutes = new Set();
+  const exportQualityNoted = new Set(); // Announce a quality-held route once per target.
   const setupExportChain = (sourceDiv, sourceMat, targetDiv) => {
     const d = safe(`Read ${sourceDiv}`, () => c.getDivision(sourceDiv));
     if (!d?.cities?.length) return;
@@ -566,6 +643,14 @@ export async function main(ns) {
       const material = safe('Read existing export routes', () => c.getMaterial(sourceDiv, city, sourceMat));
       if (Array.isArray(material?.exports)) {
         if (material.exports.some(route => route.division === targetDiv && route.city === city)) continue;
+      }
+      // Imported quality averages with what the target stores, and bought material is always quality 1, so a
+      // route that ships equal-or-worse material only dilutes the downstream division.
+      const targetMaterial = safe('Read target input quality', () => c.getMaterial(targetDiv, city, sourceMat));
+      if (!materialExportWorthwhile(material?.quality, targetMaterial?.quality)) {
+        const note = `export-quality:${sourceDiv}:${targetDiv}:${sourceMat}`;
+        if (!exportQualityNoted.has(note)) { exportQualityNoted.add(note); ns.print(`Holding ${sourceMat} ${sourceDiv}→${targetDiv}: source quality ${Number(material?.quality).toFixed(2)} is not ahead of the target (${Number(targetMaterial?.quality).toFixed(2)}).`); }
+        continue;
       }
       if (attempt(`Export ${sourceMat} → ${targetDiv}`, () =>
         c.exportMaterial(sourceDiv, city, targetDiv, city, sourceMat, EXPORT_FORMULA)))
@@ -665,15 +750,23 @@ export async function main(ns) {
       let achievements;try{achievements=JSON.parse(ns.read('tasks/achievement-goals.json'));}catch{}
       if(achievements?.expiresAt>Date.now()&&achievements.finance&&!achievements.owned?.includes('CORPORATION_EMPLOYEE_3000'))target=Math.max(target,500);
       if (office.size < target) {
+      // Quote the increment the office actually needs: the bank only has to cover this purchase, not every plan.
+      const officeIncrement=()=>{
+        for(const step of [...new Set([Math.max(1,target-office.size),3,1])]){
+          const cost=Number(safe('Quote office increment',()=>c.getOfficeSizeUpgradeCost(division,city,step)));
+          if(Number.isFinite(cost)&&cost>0)return cost;
+        }
+        return 0;
+      };
       if(office.size<9&&options['development-speed']&&!recovering){
         const free=Math.max(0,funds()-reserve);
         // Understaffed offices are the gate for every second-city expansion.
         // Fund them from free cash even before they become product-development
         // offices; otherwise the growth bank can strand an affordable upgrade.
-        growthBank=Math.min(free,Math.max(growthBank,free));
+        growthBank=growthBankForOffice(growthBank,free,officeIncrement());
       } else if(developing&&options['development-speed']&&!recovering){
         const free=Math.max(0,funds()-reserve);
-        growthBank=Math.min(free,Math.max(growthBank,free*.5));
+        growthBank=growthBankForOffice(growthBank,free,officeIncrement());
       }
       let add = target - office.size;
       let cost = safe("Get office size cost", () => c.getOfficeSizeUpgradeCost(division, city, add));
@@ -979,8 +1072,11 @@ export async function main(ns) {
 
   const productMetricsFile='tasks/corporation-product-metrics.json';let productMetrics={},productHistory={};
   try{const saved=JSON.parse(ns.read(productMetricsFile));if(saved.nodeReset===resetInfo.lastNodeReset&&saved.corporation===corp()?.name){productMetrics=saved.divisions||{};productHistory=saved.productsByDivision||{};}}catch{}
+  const productScienceHold=new Set();
   const manageProductDevelopment=division=>{
     const d=safe('Read product cycle',()=>c.getDivision(division));if(!d?.cities?.length||recovering)return;
+    // Science is frozen at creation time (src/Corporation/Product.ts:147): sciMult = 1 + RP^scienceFactor/800.
+    const science=corporationProductScience({points:Number(d.researchPoints)||0,scienceFactor:corporationScienceFactor(safe('Product industry',()=>c.getIndustryData(d.industry)))});
     const offices=d.cities.filter(city=>safe('Development warehouse',()=>c.hasWarehouse(division,city))).map(city=>({...safe('Development office',()=>c.getOffice(division,city)),city}));
     const products=(d.products||[]).map(name=>safe('Read product progress',()=>c.getProduct(division,d.cities[0],name))).filter(Boolean);
     const history=productHistory[division]||{};
@@ -993,10 +1089,22 @@ export async function main(ns) {
     if(pending){
       if(metric.name!==pending.name)productMetrics[division]=history[pending.name]||{name:pending.name,startedAt:Date.now(),observedOnly:true};
       history[pending.name]=productMetrics[division];
+      if(science<corporationProductScienceHopeless){
+        // The remaining development burn is pure loss: the product was priced with science this low.
+        attempt('Discontinue hopeless '+division+'/'+pending.name,()=>c.discontinueProduct(division,pending.name));
+        if(!productScienceHold.has(division+pending.name)){productScienceHold.add(division+pending.name);
+          ns.print('Corporation: discontinued '+division+'/'+pending.name+' — science multiplier '+science.toFixed(3)+
+            ' cannot repay its design investment (needs '+corporationProductScienceMinimum+'+).');}
+      }
       return;
     }
     if(metric.name&&!metric.finishedAt&&products.some(p=>p.name===metric.name)){metric.finishedAt=Date.now();metric.developmentMs=Math.max(0,metric.finishedAt-metric.startedAt);}
     if(criticalOfficeFunding()||expansionFundingActive())return;
+    if(science<corporationProductScienceMinimum){
+      if(!productScienceHold.has(division)){productScienceHold.add(division);
+        ns.print('Corporation: selling materials in '+division+' — product development waits for a science multiplier of '+corporationProductScienceMinimum+'+ (currently '+science.toFixed(3)+', '+Math.round(Number(d.researchPoints)||0)+' research points).');}
+      return;
+    }
     const investment=productInvestment(funds(),reserve,growthBank);if(!(investment>=10e6))return;
     const prefix=division===restaurant?'Apex Dining':division+' Auto',retiring=products.length>=d.maxProducts?chooseRetirement(products,prefix):null;
     const baseline=corporationProductBaseline(history,metric,retiring?.name);
@@ -1145,14 +1253,21 @@ export async function main(ns) {
       inputBudget = available * 0.5;
       if (ACCEPT_INVESTMENT) {
         const offer=safe('Read investment offer',()=>c.getInvestmentOffer());
-        const stageReady=offer?.round<=2?hasDivision(agri)&&safe('Read agricultural reach',()=>c.getDivision(agri))?.cities?.length===6&&safe('Read agricultural warehouses',()=>c.getDivision(agri).cities.every(city=>c.hasWarehouse(agri,city)))===true&&
-          (offer.round===1||hasDivision(chem)||hasDivision(tobacco)):divisions().some(name=>{const d=safe('Read funding product stage',()=>c.getDivision(name));return d?.makesProducts&&d.products?.some(p=>safe('Read funding product',()=>c.getProduct(name,d.cities[0],p))?.developmentProgress>=100);});
+        // Rounds 1-2 used to demand Agriculture in all six cities before releasing capital, so the only money that
+        // could pay for the network was gated behind already having it (a $2.46b offer against a $45.1b stage).
+        // Measure the *next* city instead: a round only has to unlock one step of the ramp.
+        const agriReach=hasDivision(agri)?safe('Read agricultural reach',()=>c.getDivision(agri)):null;
+        const agriWarehoused=Array.isArray(agriReach?.cities)&&agriReach.cities.length>0&&agriReach.cities.every(city=>safe('Read agricultural warehouses',()=>c.hasWarehouse(agri,city))===true);
+        const stageReady=offer?.round<=2?Boolean(agriReach&&agriWarehoused&&(offer.round===1||hasDivision(chem)||hasDivision(tobacco))):divisions().some(name=>{const d=safe('Read funding product stage',()=>c.getDivision(name));return d?.makesProducts&&d.products?.some(p=>safe('Read funding product',()=>c.getProduct(name,d.cities[0],p))?.developmentProgress>=100);});
         let stageCapital=null,stageDivision=null;
         const officeCost=Number(constants.officeInitialCost)||4e9,warehouseCost=Number(constants.warehouseInitialCost)||5e9;
         if(offer?.round<=2&&hasDivision(agri)){
           const reach=safe('Read expansion funding prerequisites',()=>c.getDivision(agri));
           if(reach&&Array.isArray(reach.cities)){
-            stageCapital=cities.filter(city=>!reach.cities.includes(city)).length*(officeCost+warehouseCost+20e6)+reach.cities.filter(city=>safe('Check funding warehouse',()=>c.hasWarehouse(agri,city))!==true).length*warehouseCost;
+            // One city package, not the whole remaining ramp: the round is released when this offer plus the
+            // free treasury covers the next expansion, which is a milestone the corporation can actually reach.
+            const nextCity=reach.cities.length<cities.length?officeCost+warehouseCost+20e6:0;
+            stageCapital=nextCity+reach.cities.filter(city=>safe('Check funding warehouse',()=>c.hasWarehouse(agri,city))!==true).length*warehouseCost;
           }
         }
         // Round two also requires a supply-chain division. The startup sequence creates Chemical
@@ -1175,8 +1290,15 @@ export async function main(ns) {
       growthPlans.clear();growthDecisions=[];marketRows.clear();staffingGoals.clear();researchContexts.clear();upkeepPaid.clear();
       advertQueue.clear();advertisingCandidates.clear();
       exportRoutes.clear(); // Reinspect persistent routes every cycle; deduplicate calls within this pass.
-      storagePressure = false;
-      // Preserve cash for upcoming inputs and salaries before discretionary spending.
+      // A corporation created by hand carries whatever division names the player chose. Adopt the division that
+      // already owns each core industry; otherwise the cycle creates a duplicate division the game rejects and
+      // the player's real division never gets offices, warehouses, inputs or sales.
+      const adoptCore=(industry,current)=>coreDivisionName(divisions(),n=>safe(`Read ${n} industry`,()=>c.getDivision(n))?.industry,industry,current);
+      agri=adoptCore('Agriculture',agri);
+      chem=adoptCore('Chemical',chem);
+      tobacco=adoptCore('Tobacco',tobacco);
+      restaurant=adoptCore('Restaurant',restaurant);
+      storagePressure = false;      // Preserve cash for upcoming inputs and salaries before discretionary spending.
       const boostLocations = [];
 
       createDivision("Agriculture", agri);
@@ -1318,6 +1440,9 @@ export async function main(ns) {
       }
       if(completedCycle)growthMarket=observeCorporationGrowth(growthMarket,{scope:JSON.stringify([resetInfo.lastNodeReset,info.name]),at:Date.now(),rows:[...marketRows.values()]});
       const route=readNodeRoutePlan(ns),remainingMs=route?.routes?.[route.selected]?.etaMs;
+      // Cheap rungs are registered here, after growthBank is computed for this cycle; earlier in the pass it
+      // is still null and every quote would read as unaffordable.
+      safe('Register affordable growth rungs',registerAffordableRungs);
       const delayedGrowth=planCorporationDelayedReturns(scoreCorporationGrowth([...growthPlans.values()],growthMarket),{remainingMs});
       const pricedGrowth=calibrateCorporationGrowth(delayedGrowth,calibrationState,{scope:calibrationScope,at:Date.now()});
       const candidates=pricedGrowth.flatMap(plan=>{
@@ -1367,8 +1492,13 @@ export async function main(ns) {
       await ns.write(otherProductStateFile,JSON.stringify({nodeReset:resetInfo.lastNodeReset,corporation:info.name,divisions:otherProductTimes}),'w');
       await ns.write(financeFile,JSON.stringify({at:Date.now(),pid:ns.pid,nodeReset:resetInfo.lastNodeReset,corporation:info.name,history:financeHistory,lastShareSaleAt,decision:financeDecision&&{accept:financeDecision.accept,holdIPO:financeDecision.holdIPO,reason:financeDecision.reason,capitalBlocked:financeDecision.capitalBlocked,stageFunded:financeDecision.stageFunded,stageCapital:financeDecision.stageCapital,stageDivision:financeDecision.stageDivision}}),'w');
       await ns.write(lifecycleFile, JSON.stringify({nodeReset: resetInfo.lastNodeReset, corporation: info.name, growthBank, lastExpansion, advertisingRecovery:[...advertisingRecovery]}), 'w');
+      const boughtThisCycle=growthDecisions.some(d=>['purchased','ordered'].includes(d.state));
+      if(boughtThisCycle)lastCorpPurchaseAt=Date.now();
+      const stallNotice=corporationGrowthStallNotice({lastPurchaseAt:lastCorpPurchaseAt,lastAlertAt:lastCorpStallAlertAt,now:Date.now(),
+        blocked:growthDecisions.filter(d=>d.state==='budget-wait'),budget:growthBank});
+      if(stallNotice){lastCorpStallAlertAt=Date.now();ns.print('WARNING: '+stallNotice);}
       await ns.write('tasks/corporation-status.json', JSON.stringify({ at: Date.now(), pid: ns.pid, nodeReset:resetInfo.lastNodeReset, augReset:resetInfo.lastAugReset, corporation: info.name,
-        growthBank, growthDecisions, fundingDiagnostics:corporationFundingDiagnostics([...foundationWaits,...rankedGrowth].filter(p=>!growthDecisions.some(d=>d.label===p.label&&['purchased','ordered'].includes(d.state))),liveStatus,reserve,growthBank), researchDecisions, advertisingRecovery:[...advertisingRecovery], calibration:{status:calibrationState.status,pending:calibrationState.pending?.quote?.upgrade||null,learnedUpgrades:Object.values(calibrationState.stats).filter(s=>s.length>=3).length}, productMetrics, staffingGoals:Object.fromEntries(staffingGoals), mode: recovering ? 'cash recovery' : 'growth', funds: funds(), reserve, divisions: divisions(),
+        growthBank, growthDecisions, fundingDiagnostics:corporationFundingDiagnostics([...foundationWaits,...rankedGrowth].filter(p=>!growthDecisions.some(d=>d.label===p.label&&['purchased','ordered'].includes(d.state))),liveStatus,reserve,growthBank), researchDecisions, advertisingRecovery:[...advertisingRecovery], calibration:{status:calibrationState.status,pending:calibrationState.pending?.quote?.upgrade||null,learnedUpgrades:Object.values(calibrationState.stats).filter(s=>s.length>=3).length}, productMetrics, staffingGoals:Object.fromEntries(staffingGoals), mode: recovering ? 'cash recovery' : 'growth', persistentFailures: persistentFailures(safeFailures), funds: funds(), reserve, divisions: divisions(),
         revenue: liveStatus.revenue, expenses: liveStatus.expenses, public: liveStatus.public,
         ownership: liveStatus.totalShares > 0 ? liveStatus.numShares / liveStatus.totalShares : null,
         minOwnership, investmentMinOwnership, growthPriority, growthPhase, growthGoal, hashMilestone, criticalOfficeFunding:criticalOfficeFunding(), liquidityDecision, retainedProfitFraction:1-Number(liveStatus.dividendRate||0), playerCashBottleneck:playerCashBottleneck(), estimatedDividendIncome:corporationDividendRate(liveStatus,cycleSeconds), developmentSpeed:options['development-speed'], financing:financeDecision?.reason, lastShareSaleAt, dividendRate: Math.max(0, lastDividendRate), expandAllIndustries: options['expand-all-industries'],

@@ -80,9 +80,13 @@ export async function performCasinoUiAction(resolve,eventName,value,{assertContr
 export function stopCasinoCompetitors(ns,casinoPid) {
   // Files in a subdirectory carry a leading slash in ns.ps, so normalize before matching: without this the
   // remote-control jobs are killed despite the intent to preserve Remote API connectivity.
+  // reliability-manager is spared for the same reason autopilot is: bootstrap-start refuses to start anything while
+  // casino runs, so without this the fleet spends the whole casino phase with no supervisor — no crash recovery and
+  // a dashboard that goes stale for ten-plus minutes after every install. The supervisor defers its own manager work
+  // while casino holds protection (globalProtection includes casino.js), so sparing it cannot fight the UI.
   const bare=process=>String(process.filename).replace(/^\//,'');
   const processes=ns.ps('home').filter(process=>process.pid!==casinoPid&&process.pid!==ns.pid&&
-    !/(^|\/)(?:remote-api-agent|autopilot)\.js$/.test(process.filename)&&!bare(process).startsWith('remote-control/'));
+    !/(^|\/)(?:remote-api-agent|autopilot|reliability-manager)\.js$/.test(process.filename)&&!bare(process).startsWith('remote-control/'));
   return processes.map(process=>({pid:process.pid,stopped:ns.kill(process.pid)}));
 }
 

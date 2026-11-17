@@ -41,6 +41,17 @@ test('casino cleanup preserves its own process, its helper, and Remote API conne
  assert.deepEqual(stopCasinoCompetitors(ns,1),[{pid:4,stopped:true}]);assert.deepEqual(killed,[4]);
  const generated=new Function('ns','pid','return ('+stopCasinoCompetitors.toString()+')(ns,pid)');assert.deepEqual(generated(ns,1),[{pid:4,stopped:true}]);
 });
+test('casino cleanup spares the supervisor so the fleet is not unsupervised for the whole phase',()=>{
+ // bootstrap-start refuses to start anything while casino runs, so a killed supervisor meant no crash recovery and
+ // a dashboard that went 394 s stale minutes after an install.
+ const killed=[];const processes=[{pid:1,filename:'casino.js'},{pid:2,filename:'reliability-manager.js'},{pid:3,filename:'/reliability-manager.js'},{pid:4,filename:'daemon.js'}];
+ const ns={pid:9,ps:()=>processes,kill:pid=>{killed.push(pid);return true;}};
+ assert.deepEqual(stopCasinoCompetitors(ns,1),[{pid:4,stopped:true}]);
+ assert.deepEqual(killed,[4]);
+ const generated=new Function('ns','pid','return ('+stopCasinoCompetitors.toString()+')(ns,pid)');
+ killed.length=0;assert.deepEqual(generated(ns,1),[{pid:4,stopped:true}]);
+});
+
 test('remote-control jobs survive cleanup when their filename carries a leading slash',()=>{
  const killed=[];const processes=[{pid:1,filename:'casino.js'},{pid:2,filename:'/remote-control/job.js'},{pid:3,filename:'/remote-control/results/x.js'},{pid:4,filename:'/remote-api-agent.js'},{pid:5,filename:'/daemon.js'}];
  const ns={pid:9,ps:()=>processes,kill:pid=>{killed.push(pid);return true;}};

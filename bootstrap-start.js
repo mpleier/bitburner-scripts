@@ -22,12 +22,31 @@ export function ensureRemoteWorker(ns,processes,result) {
  const pid=ns.run(name,1,'--protocol-version',2);
  result.agent={script:name,pid,state:pid?'starting':'retrying'};
 }
+/** The supervisor is what restarts everything else, and casino.js now spares it, so a running casino must not leave
+ * the fleet unsupervised for the whole phase — that cost fourteen managers waiting, no crash recovery and a dashboard
+ * 394 s stale three minutes after an install. ascend.js stays a hard stop: it kills everything but the Remote API
+ * agent, so a supervisor started during it would simply die. */
+export function ensureSupervisor(ns,processes,result) {
+ const name='reliability-manager.js';
+ const running=processes.find(p=>p.filename.replace(/^\//,'')===name);
+ if(running){result.supervisor={script:name,pid:running.pid,state:'running'};return;}
+ if(isScriptPaused(ns,name)){result.supervisor={script:name,state:'paused'};return;}
+ const required=ns.getScriptRam(name,'home');
+ if(!(required>0)||!Number.isFinite(required)){result.supervisor={script:name,state:'missing-or-uncompiled'};return;}
+ reclaimStartupHelpers(ns,required+16);
+ const free=ns.getServerMaxRam('home')-ns.getServerUsedRam('home');
+ if(required+16>free){result.supervisor={script:name,state:'waiting-for-ram',required,free};return;}
+ const pid=ns.run(name,1);
+ result.supervisor={script:name,pid,state:pid?'starting':'retrying'};
+}
 export async function startupControllerTick(ns) {
  const processes=ns.ps('home'),reset=ns.getResetInfo();
  let transition;try{transition=JSON.parse(ns.read('tasks/progression-transition.json'));}catch{}
  const result={at:Date.now(),ownerPid:ns.pid,nodeReset:reset.lastNodeReset,augReset:reset.lastAugReset,controllers:[]};
  ensureRemoteWorker(ns,processes,result);
- if(maintenanceRequested(ns)||activityBusy(ns)||transition?.expiresAt>Date.now()&&ns.isRunning(transition.ownerPid)||processes.some(p=>['casino.js','ascend.js'].includes(p.filename.replace(/^\//,''))))
+ const bare=p=>p.filename.replace(/^\//,''),casino=processes.some(p=>bare(p)==='casino.js'),ascend=processes.some(p=>bare(p)==='ascend.js');
+ if(casino&&!ascend)ensureSupervisor(ns,processes,result);
+ if(maintenanceRequested(ns)||activityBusy(ns)||transition?.expiresAt>Date.now()&&ns.isRunning(transition.ownerPid)||casino||ascend)
   return {...result,state:'protected-activity'};
  for(const script of ['autopilot.js','reliability-manager.js']){
   const running=ns.ps('home').find(p=>p.filename.replace(/^\//,'')===script);

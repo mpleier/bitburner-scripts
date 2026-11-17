@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
 import {ensureRemoteWorker} from '../bootstrap-start.js';
 
 // The Remote API agent is the only channel the automation is observed through, and autopilot is its only other
@@ -47,4 +48,28 @@ test('a host without room reports the shortfall instead of failing silently',()=
  ensureRemoteWorker(f.ns,f.ns.ps('home'),f.result);
  assert.deepEqual(f.result.agent,{script:'remote-api-agent.js',state:'waiting-for-ram',required:15.5,free:1});
  assert.deepEqual(f.run,[]);
+});
+
+test('a running casino still gets a supervisor, but ascend stays a hard stop', async () => {
+  // Live: three minutes after an install the fleet had bootstrap, autopilot and casino — and no supervisor, with 14
+  // managers would-start on 1723 GB free and the dashboard 394 s stale.
+  const {ensureSupervisor} = await import('../bootstrap-start.js');
+  const calls=[];const ns={pid:5,read:()=>'',isRunning:()=>true,ps:()=>[],getServerMaxRam:()=>2048,getServerUsedRam:()=>124,
+   getScriptRam:f=>f==='reliability-manager.js'?23.95:0,run:(...a)=>{calls.push(a);return 77;},kill:()=>true,rsync:()=>true};
+  const result={controllers:[]};
+  ensureSupervisor(ns,[],result);
+  assert.deepEqual(result.supervisor,{script:'reliability-manager.js',pid:77,state:'starting'});
+  assert.deepEqual(calls[0],['reliability-manager.js',1]);
+  // Already running, paused, unreadable and RAM-bound are all reported rather than launched twice.
+  ensureSupervisor(ns,[{filename:'/reliability-manager.js',pid:4}],result);
+  assert.equal(result.supervisor.state,'running');
+  const paused={...ns,read:f=>f==='remote-control/paused/reliability-manager.js.txt'?'true':''};
+  ensureSupervisor(paused,[],result);assert.equal(result.supervisor.state,'paused');
+  const tight={...ns,getServerUsedRam:()=>2030};ensureSupervisor(tight,[],result);
+  assert.equal(result.supervisor.state,'waiting-for-ram');
+  // The guard ordering is what makes this safe: the supervisor call sits before the protected-activity return, and
+  // only casino (not ascend) can reach it.
+  const source = readFileSync(new URL('../bootstrap-start.js', import.meta.url), 'utf8');
+  const at = source.indexOf('if(casino&&!ascend)ensureSupervisor');
+  assert.ok(at > 0 && at < source.indexOf("return {...result,state:'protected-activity'}"), 'the supervisor starts before the guard returns');
 });

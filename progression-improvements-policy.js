@@ -1,5 +1,14 @@
 import {summarizeHgwBatches} from './hgw-batch-policy.js';
 import {combatAugmentationValue} from './combat-growth-policy.js';
+
+/** Lateness at launch, measured by the workers, is the only evidence a start lead time can remove. */
+function measuredStartLag(telemetry,now) {
+ const recent=Array.isArray(telemetry?.recent)?telemetry.recent:[],owner=telemetry?.ownerPid;
+ const lag=recent.filter(e=>e&&Number.isFinite(e.startLateMs)&&e.startLateMs>0&&Number.isFinite(e.at)&&e.at<=now&&now-e.at<=120000&&(!Number.isSafeInteger(owner)||owner<=0||e.owner===owner));
+ // One late spawn is noise; three independent late starts in the two-minute window are a lead-time defect.
+ return lag.length>=3?{samples:lag.length,maxMs:Math.max(...lag.map(e=>e.startLateMs))}:{samples:lag.length,maxMs:0};
+}
+
 /** Decisions driven by recent evidence; no native mutations. */
 export function adaptiveHgwTiming(previous,telemetry,{now=Date.now(),baseCycleMs=4000,baseQueueMs=100,targetCount=2}={}) {
  const base=Number.isFinite(baseCycleMs)&&baseCycleMs>0?baseCycleMs:4000;
@@ -77,7 +86,24 @@ export function adaptiveHgwTiming(previous,telemetry,{now=Date.now(),baseCycleMs
    state.windowAt=now;state.operations=operations;state.late=late;state.unavoidable=Number.isSafeInteger(unavoidable)&&unavoidable>=0?unavoidable:(state.unavoidable||0);state.spacingSamples=counts?.spacingSamples||0;state.spacingRisks=counts?.spacingRisks||0;
   }
  }
- state.at=now;state.cycleMs=Math.ceil(Math.max(base*state.multiplier,Math.min(base*16,state.latencyFloorMs||0)));state.queueMs=Math.max(baseQueueMs,Math.ceil(baseQueueMs*state.multiplier));
+ state.at=now;state.cycleMs=Math.ceil(Math.max(base*state.multiplier,Math.min(base*16,state.latencyFloorMs||0)));
+ // The first cycle of every batch starts at now+queueMs, so the lead time — not the cycle — decides whether the
+ // fleet can launch its legs on time. Live evidence: 1,126 of 1,180 lateness events were late at launch
+ // (unavoidableMs tracking startLateMs) while queueMs sat at a fixed 1 s that nothing measured. Only the drain
+ // after an idle gap waits on it, so a horizontally-quantised lead time costs no steady-state throughput.
+ const baselineQueue=Math.max(baseQueueMs,Math.ceil(baseQueueMs*state.multiplier)),queueCap=Math.max(baselineQueue,Math.ceil(base*2));
+ const startLag=measuredStartLag(telemetry,now),lagging=startLag.samples>=3&&startLag.maxMs>0;
+ const held=previous&&same&&Number.isFinite(previous.queueMs)?Math.min(queueCap,Math.max(baselineQueue,previous.queueMs)):baselineQueue;
+ if(lagging)state.startLagAt=now;
+ else if(same&&Number.isFinite(previous.startLagAt)&&previous.startLagAt>=0&&previous.startLagAt<=now)state.startLagAt=previous.startLagAt;
+ else delete state.startLagAt;
+ const recentLag=Number.isFinite(state.startLagAt)&&now-state.startLagAt<=300000;
+ // One-second steps keep the pacing signature stable for the income and hash-price measurements, and a raised
+ // lead time holds for five minutes after the last late launch so a single quiet window cannot flip it back and
+ // forth. It only falls once the lag has been gone long enough to be a real improvement.
+ state.queueMs=lagging?Math.max(held,Math.min(queueCap,Math.ceil(startLag.maxMs*1.25/1000)*1000)):recentLag?Math.max(baselineQueue,held):baselineQueue;
+ state.startLagMs=startLag.maxMs;state.startLagSamples=startLag.samples;
+ state.queueReason=state.queueMs>baselineQueue?'Start lead time covers the measured launch lag':'Baseline start lead time';
  state.targetCap=Math.max(1,Math.round(Math.max(1,targetCount)/(state.cycleMs/base)));
  state.reason=!valid?'Timing evidence unavailable; retaining the current pacing':state.recoveredNow&&state.cycleMs>base?'Recovering cycle: overruns are unavoidable, not schedule-driven':state.cycleMs>base?'Back off after sustained late completions; recover gradually after clean windows':'Normal pacing';
  return state;
@@ -90,6 +116,8 @@ export function restoreHgwTiming(saved, telemetry, now = Date.now()) {
      !Number.isFinite(saved.multiplier) || saved.multiplier < 1 || saved.multiplier > 4 ||
      !Number.isFinite(saved.baseCycleMs) || saved.baseCycleMs <= 0 ||
      (saved.latencyFloorMs!==undefined&&(!Number.isFinite(saved.latencyFloorMs)||saved.latencyFloorMs<0||saved.latencyFloorMs>saved.baseCycleMs*16)) ||
+     (saved.queueMs!==undefined&&(!Number.isFinite(saved.queueMs)||saved.queueMs<0||saved.queueMs>saved.baseCycleMs*2)) ||
+     (saved.startLagAt!==undefined&&(!Number.isFinite(saved.startLagAt)||saved.startLagAt<0||saved.startLagAt>now)) ||
      !Number.isFinite(saved.windowAt) || saved.windowAt > now || saved.windowAt < 0 ||
      !Number.isFinite(saved.changedAt) || saved.changedAt > now || saved.changedAt < 0 ||
      !Number.isSafeInteger(saved.cleanWindows) || saved.cleanWindows < 0 || saved.cleanWindows > 3 ||

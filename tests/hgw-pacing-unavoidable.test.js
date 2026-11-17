@@ -58,3 +58,48 @@ test('a cycle stretched by unavoidable overruns recovers instead of pinning fore
   const fresh = adaptiveHgwTiming({...stretched, changedAt: t0 - 1000}, snapshot(t0 + 31_000, 100, 88, 86), {now: t0 + 31_000});
   assert.equal(fresh.multiplier, 3.2);
 });
+
+/** Same reset and owner, but the workers report how late each launch was. */
+const launches = (at, lags) => ({
+  at, augReset: 11, nodeReset: 22, ownerPid: 7, blocked: false,
+  counts: {operations: 0, deadlineOverruns: 0, unavoidableOverruns: 0},
+  recent: lags.map((ms, i) => ({at: at - 1000 * (lags.length - i), owner: 7, startLateMs: ms})),
+});
+const PACE = {baseCycleMs: 4000, baseQueueMs: 1000};
+
+test('a measured launch lag raises the start lead time above the baseline', () => {
+  // Live evidence: 1,126 of 1,180 lateness events were already late at launch, and queueMs was a fixed 1 s that
+  // nothing measured. The worst launch in the window decides the lead time, rounded up to a whole second.
+  const state = adaptiveHgwTiming(null, launches(t0, [2600, 1800, 3200]), {now: t0, ...PACE});
+  assert.equal(state.startLagMs, 3200);
+  assert.equal(state.startLagSamples, 3);
+  assert.equal(state.queueMs, 4000, '1.25x the worst launch lag');
+  assert.match(state.queueReason, /launch lag/);
+});
+
+test('the lead time is capped, and a lag the baseline already covers changes nothing', () => {
+  const wild = adaptiveHgwTiming(null, launches(t0, [30_000, 24_000, 41_000]), {now: t0, ...PACE});
+  assert.equal(wild.queueMs, 8000, 'capped at twice the base cycle');
+  const quiet = adaptiveHgwTiming(null, launches(t0, [200, 400, 600]), {now: t0, ...PACE});
+  assert.equal(quiet.queueMs, 1000, 'a sub-second lag rounds down to the fixed lead time');
+});
+
+test('one late launch is not evidence, and stale or foreign events are ignored', () => {
+  const single = adaptiveHgwTiming(null, launches(t0, [9000]), {now: t0, ...PACE});
+  assert.equal(single.queueMs, 1000);
+  assert.equal(single.startLagSamples, 1);
+  const stale = {...launches(t0, []), recent: [0, 1, 2].map(i => ({at: t0 - 200_000 - i, owner: 7, startLateMs: 9000}))};
+  assert.equal(adaptiveHgwTiming(null, stale, {now: t0, ...PACE}).queueMs, 1000, 'events older than the window are not evidence');
+  const foreign = {...launches(t0, []), recent: [0, 1, 2].map(i => ({at: t0 - i, owner: 99, startLateMs: 9000}))};
+  assert.equal(adaptiveHgwTiming(null, foreign, {now: t0, ...PACE}).queueMs, 1000, "another process's lag is not ours");
+});
+
+test('a raised lead time holds through a quiet window, then falls back', () => {
+  const raised = adaptiveHgwTiming(null, launches(t0, [3200, 3200, 3200]), {now: t0, ...PACE});
+  assert.equal(raised.queueMs, 4000);
+  const quiet = adaptiveHgwTiming(raised, snapshot(t0 + 31_000, 0, 0, 0), {now: t0 + 31_000, ...PACE});
+  assert.equal(quiet.queueMs, 4000, 'one quiet window must not flip the lead time back');
+  const settled = adaptiveHgwTiming(quiet, snapshot(t0 + 400_000, 0, 0, 0), {now: t0 + 400_000, ...PACE});
+  assert.equal(settled.queueMs, 1000, 'five quiet minutes restore the baseline');
+});
+

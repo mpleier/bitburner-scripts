@@ -82,3 +82,72 @@ test('planner and matching native receipt preserve recovery history across dispa
  assert.equal(plan.state.lastResult.id,'id');assert.equal(plan.state.refresh.active.id,'id');
  const observed=observeDarknetRefresh(plan.state.refresh,cycle({at:start+30000,receipt:plan.state.lastResult}));assert.equal(observed.active.startedAt,start);
 });
+
+test('refresh evidence names why the sampler is not ready', () => {
+  // The dashboard could only report `samples: 0`, so "the sampler declined" and "nothing was ever measured" read the
+  // same. Each refusal now carries a reason the status payload can show.
+  const empty = darknetRefreshEvidence(null, scope, start);
+  assert.equal(empty.ready, false);
+  assert.equal(empty.reason, 'too-few-samples', 'no history is few samples, not a missing context');
+  assert.equal(darknetRefreshEvidence(null, {...scope, context: ''}, start).reason, 'no-context', 'an empty context is its own reason');
+  const noSamples = darknetRefreshEvidence({samples: []}, scope, start + 100);
+  assert.equal(noSamples.ready, false);
+  assert.equal(noSamples.reason, 'too-few-samples');
+  assert.equal(noSamples.samples, 0);
+  const one = evidenceHistory();
+  one.samples = one.samples.slice(0, 1);
+  assert.equal(darknetRefreshEvidence(one, scope, start + 100).reason, 'too-few-samples');
+  assert.equal(darknetRefreshEvidence(one, scope, start + 100).horizonSamples, 1, 'the horizon count survives the trim');
+  // A row that is present but not finished, and a finished row whose window is impossible, are different failures.
+  const incomplete = evidenceHistory();
+  incomplete.samples[1].complete = false;
+  assert.equal(darknetRefreshEvidence(incomplete, scope, start + 100).reason, 'incomplete-samples');
+  const outOfRange = evidenceHistory();
+  outOfRange.samples[2].windowMs = 5000;
+  const malformed = darknetRefreshEvidence(outOfRange, scope, start + 100);
+  assert.equal(malformed.reason, 'window-out-of-range');
+  assert.equal(malformed.measuredRebuild, true, 'the rebuild duration itself is known; only the profit window is broken');
+  assert.ok(Number.isFinite(malformed.rebuildMs));
+  // Ready rows report readiness, and a suspended forecast is named too.
+  const ready = darknetRefreshEvidence(evidenceHistory(), scope, start + 100);
+  assert.equal(ready.ready, true);
+  assert.equal(ready.reason, 'ready');
+  assert.equal(ready.samples, 3);
+});
+
+test('the scout never lets the cache watcher take the last phishing thread', () => {
+  // Live measurement: on a 16 GB host the scout's 7.55 plus the watcher's 5.20 left 3.25 free, below the 3.95 a
+  // phishing thread costs, so the only online host ran zero threads and `sinceInstall.darknet` stayed 0.
+  const source = readFileSync(new URL('../darknet-node.js', import.meta.url), 'utf8');
+  const block = source.slice(source.indexOf('const watcherRam = ns.getScriptRam(watcherFile, self)'));
+  const guarded = block.slice(0, block.indexOf('ns.exec(watcherFile, self, 1)'));
+  assert.match(guarded, /lootRam/, 'the watcher decision must price the phishing helper beside itself');
+  assert.match(guarded, /roomForLoot\(watcherRam\)/, 'spawning must leave room for a loot thread');
+  assert.match(source, /ns\.kill\(watcherFile, self\)/, 'a resident watcher that denies the thread is reclaimed');
+  assert.doesNotMatch(source, /freeRam\(\) >= watcherRam && !procRunning\(lootFile\)\) ns\.exec\(watcherFile/, 'the old unconditional spawn');
+});
+
+test('only one spend-hacknet-hashes.js may own the hash pool', () => {
+  // Live: pid 40123 with the configured flags ran beside pid 420903 with no arguments. Both compute their budget
+  // from the same numHashes() reading, so a full pool can be debited twice in one pass.
+  const source = readFileSync(new URL('../spend-hacknet-hashes.js', import.meta.url), 'utf8');
+  const guard = source.slice(source.indexOf('const selfName=ns.getScriptName()'));
+  assert.match(guard.slice(0, 600), /copies\.length>1/, 'a second copy must be detected by filename, not by arguments');
+  assert.match(guard.slice(0, 700), /sort\(\(a,b\)=>\(b\.args\?\.length\|\|0\)-\(a\.args\?\.length\|\|0\)/, 'an explicitly configured copy outranks a bare one');
+  assert.match(guard.slice(0, 700), /\|\|a\.pid-b\.pid/, 'ties fall back to the earliest launch');
+  assert.match(guard.slice(0, 600), /ns\.pid!==owner/, 'a newer copy exits');
+  // The guard must sit before the spend loop can act: before the interval and the first spend call.
+  const guardAt = source.indexOf('const selfName=ns.getScriptName()');
+  assert.ok(guardAt < source.indexOf('spendHashesWithPolicy(ns'), 'the guard must precede spending');
+  assert.ok(guardAt < source.indexOf('while (!isScriptPaused'), 'the guard must precede the spend loop');
+});
+
+test('work-for-factions records why it exited early', () => {
+  // "Repeated early exits" parked it in a cooldown with no explanation: the script is not in the watched set, so
+  // its own log lines never reach the dashboard.
+  const source = readFileSync(new URL('../work-for-factions.js', import.meta.url), 'utf8');
+  assert.match(source, /tasks\/work-for-factions-exit\.json/, 'the exit reason must be persisted where the dashboard reads');
+  assert.match(source, /return noteExit\('paused'\)/);
+  assert.match(source, /return noteExit\('invalid-options-or-help'\)/);
+  assert.match(source, /return noteExit\('duplicate-instance'\)/);
+});

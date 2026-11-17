@@ -50,6 +50,17 @@ export async function main(ns) {
       await ns.write("tasks/hacknet-hash-status.json",JSON.stringify(record),"w");await ns.write('tasks/hash-worker-status-'+ns.pid+'.json',JSON.stringify(record),'w'); };
  registerAutomation(ns);
     if(isScriptPaused(ns,ns.getScriptName()))return;
+    // One spender per hash pool. Two instances each read ns.hacknet.numHashes() in the same pass, both pass the
+    // reserve check, and both spend — the pool is debited twice. Live evidence: pid 40123 with the configured
+    // --automatic/--liquidate/--spend-on-server flags beside pid 420903 with no arguments at all. Keep the earliest
+    // launch whatever the arguments were, and let the newer copy say why it left.
+    // Keep the instance that carries an explicit configuration: an argument-less copy spends with defaults
+    // (Sell for Money only) and would silently replace the configured --spend-on-server intent if it won.
+    const selfName=ns.getScriptName(), copies=(typeof ns.ps==='function'?ns.ps('home'):[]).filter(p=>p.filename.replace(/^\//,'')===selfName);
+    if(copies.length>1&&Number.isSafeInteger(ns.pid)){
+        const owner=[...copies].sort((a,b)=>(b.args?.length||0)-(a.args?.length||0)||a.pid-b.pid)[0].pid;
+        if(ns.pid!==owner)return ns.print(`WARN: another spend-hacknet-hashes.js (pid ${owner}) already owns the hash pool; this copy exits.`);
+    }
     const options = getConfiguration(ns, argsSchema);
     if (!options) return; // Invalid options, or ran in --help mode.
     const invalid=hashOptionsError(options);if(invalid)return log(ns,'ERROR: '+invalid,true,'error');

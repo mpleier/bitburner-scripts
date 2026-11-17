@@ -100,6 +100,19 @@ export function maintenanceReloadJobs(ns,jobs,reserve=0,protectedWork=false) {
  return protectedWork?[]:jobs.filter(job=>job.filename.replace(/^\//,'')!=='stats.js'&&automationReloadReady(ns,job,reserve));
 }
 
+/** Decide what the maintenance lease should say, bounded in time. A reload queue that keeps re-arming — a controller
+ * that dies right after its restart, or one that is re-queued every pass — renewed the lease on every pass, and every
+ * consumer that treats maintenance as a hold (sleeve control, manager launches, RAM gates) stayed blocked for as long
+ * as that went on. Demand that has persisted past `maxMs` stops being published, and the caller is told it was
+ * suppressed so it can say why. */
+export function maintenanceLease({ownerPid,scripts=[],startedAt=0,now=Date.now(),holdMs=30000,maxMs=120000}={}) {
+ const pending=Array.isArray(scripts)&&scripts.length>0;
+ if(!pending)return {startedAt:0,lease:null,suppressed:false};
+ const started=Number.isFinite(startedAt)&&startedAt>0&&startedAt<=now?startedAt:now;
+ if(now-started>maxMs)return {startedAt:started,lease:null,suppressed:true};
+ return {startedAt:started,lease:{ownerPid,expiresAt:now+holdMs,scripts},suppressed:false};
+}
+
 /** Only independent controllers may reload during soft protected work. Hard locks remain global. */
 export function controllerReloadBlocked(script,{protectedWork=false,globalProtection=false,drainProtected=false}={}) {
  const name=script.replace(/^\//,'');

@@ -484,14 +484,17 @@ export async function main(ns) {
             note(`${neighbour}:cache`, `${neighbour}: opened ${caches.length} cache file(s) via adjacent scout ${self}.`);
         } catch { /* Neighbour may be offline or not directly executable. */ }
       }
-      // Persistent neighbour cache sweep: edges appear and disappear while this
-      // scout runs, so keep a watcher instead of relying only on the one-shot
-      // check above.
-      if (!stasisStarted && ns.fileExists(watcherFile, self) && !procRunning(watcherFile)) {
-        // The loot helper already rescans this host's caches every loop, so a 5.2 GB watcher is pure
-        // duplication wherever phishing is running — and that RAM is another two phishing threads.
-        const watcherRam = ns.getScriptRam(watcherFile, self);
-        if (watcherRam > 0 && freeRam() >= watcherRam && !procRunning(lootFile)) ns.exec(watcherFile, self, 1);
+      // Persistent neighbour cache sweep: edges appear and disappear while this scout runs, so keep a watcher
+      // instead of relying only on the one-shot check above — but never at the price of the last phishing thread.
+      // On a 16 GB host the scout's 7.55 leaves 8.45 free; the 5.2 watcher took that down to 3.25, below the 3.95 a
+      // phishing thread costs, so the only live host ran zero threads and earned nothing (measure: getMoneySources
+      // sinceInstall.darknet === 0 while a watcher was resident). The scout's own scan below and the adjacent
+      // one-shot above still cover caches, so the watcher is the thing to drop when RAM is short.
+      if (!stasisStarted && typeof ns.getScriptRam === 'function') {
+        const watcherRam = ns.getScriptRam(watcherFile, self), lootRam = ns.getScriptRam(lootFile, self);
+        const roomForLoot = ram => !(lootRam > 0) || freeRam() - ram >= lootRam && !procRunning(lootFile);
+        if (procRunning(watcherFile) && !roomForLoot(0)) ns.kill(watcherFile, self);
+        if (!procRunning(watcherFile) && ns.fileExists(watcherFile, self) && watcherRam > 0 && freeRam() >= watcherRam && roomForLoot(watcherRam)) ns.exec(watcherFile, self, 1);
       }
       // Give one promotion thread space before allocating the remaining RAM to phishing.
       if (!stasisStarted && !cacheStarted && ns.fileExists(promoteFile, self) && !procRunning(promoteFile)) {

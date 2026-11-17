@@ -157,13 +157,17 @@ const breakToMainLoop = () => { if(activeNs)automationHeartbeat(activeNs); retur
 
 /** @param {NS} ns */
 export async function main(ns) {
-    if(isScriptPaused(ns,ns.getScriptName()))return;
+    // "Repeated early exits" parked this script in a restart cooldown with nothing to say why: it is not in the
+    // watched set, so its own lines never reach the dashboard. Record the reason of every early return here instead.
+    const noteExit = reason => { try { ns.write('tasks/work-for-factions-exit.json', JSON.stringify({at:Date.now(), pid:ns.pid, reason, args:ns.args}), 'w'); } catch { } };
+    if(isScriptPaused(ns,ns.getScriptName()))return noteExit('paused');
     activeNs=ns; lastWorkStatusAt=0; lastWorkStatusKey="";
     factionMembershipState=null;lastMembershipProbeAt=0;membershipProbeWarned=false;
     augmentationOwnershipSignature=null;augmentationOwnershipChanged=false;lastOwnershipProbeAt=0;ownershipProbeWarned=false;
     await markActivitySupport(ns);
     const runOptions = getConfiguration(ns, argsSchema);
-    if (!runOptions || await instanceCount(ns) > 1) return; // Prevent multiple instances of this script from being started, even with different args.
+    if (!runOptions) return noteExit('invalid-options-or-help');
+    if (await instanceCount(ns) > 1) return noteExit('duplicate-instance'); // Prevent multiple instances of this script from being started, even with different args.
     options = runOptions; // We don't set the global "options" until we're sure this is the only running instance
     registerAutomation(ns);
     disableLogs(ns, ['sleep']);

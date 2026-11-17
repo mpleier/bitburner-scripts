@@ -146,7 +146,17 @@ export function sleeveReserves(options, globalReserve) {
 
 export function sleeveControlAllowed(ns,parent,script) {
  if(!ns.isRunning(parent)||ns.read('remote-control/paused/'+script+'.txt').trim()==='true')return false;
- try{const r=JSON.parse(ns.read('tasks/automation-maintenance.json'));if(r.expiresAt>Date.now()&&ns.isRunning(r.ownerPid))return false;}catch{}
+ // Honor the lease's scope. It lists the scripts being replaced, so reloading gangs.js or daemon.js must not freeze
+ // sleeve control; a lease that names nothing is a hold on everything. Keeping this function free of module-level
+ // references matters: sleeve.js embeds its source into a remote command.
+ try{
+  const r=JSON.parse(ns.read('tasks/automation-maintenance.json'));
+  if(r.expiresAt>Date.now()&&ns.isRunning(r.ownerPid)){
+   if(!Array.isArray(r.scripts)||!r.scripts.length)return false;
+   const caller=String(script).replace(/^\/+/,'');
+   if(r.scripts.some(s=>String(s).replace(/^\/+/,'')===caller))return false;
+  }
+ }catch{}
  return true;
 }
 export function sleeveOptionsError(o) {

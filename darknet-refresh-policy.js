@@ -35,12 +35,20 @@ if(active.baselineAt===undefined){active.baselineAt=at;active.baselineIncome=inc
  return state;
 }
 export function darknetRefreshEvidence(history,{reset,augReset,context},now=Date.now()) {
- if(typeof context!=='string'||!context)return {ready:false,samples:0};
- const rows=(Array.isArray(history?.samples)?history.samples:[]).filter(s=>s&&s.reset===reset&&s.augReset===augReset&&s.context===context&&Number.isFinite(s.at)&&s.at<=now&&now-s.at<=21600000).slice(-3);
+ if(typeof context!=='string'||!context)return {ready:false,samples:0,reason:'no-context'};
+ const all=(Array.isArray(history?.samples)?history.samples:[]).filter(s=>s&&s.reset===reset&&s.augReset===augReset&&s.context===context&&Number.isFinite(s.at)&&s.at<=now&&now-s.at<=21600000);
+ const rows=all.slice(-3);
  const predictions=(Array.isArray(history?.samples)?history.samples:[]).filter(s=>s&&s.reset===reset&&s.augReset===augReset&&s.context===context&&Number.isFinite(s.at)&&s.at<=now&&now-s.at<=21600000&&s.prediction?.comparable===true).slice(-3);
  const optimistic=predictions.filter(s=>s.prediction.optimistic===true).length,suspended=optimistic>=2;
- const ready=rows.length===3&&rows.every(s=>s.complete===true&&[s.recoveryMs,s.windowMs,s.gain].every(Number.isFinite)&&s.recoveryMs>=30000&&s.recoveryMs<=1800000&&s.windowMs>=600000&&s.windowMs<=690000&&s.gain>=0);
- return ready?{ready:!suspended,suspended,optimisticForecasts:optimistic,measuredReturns:true,measuredRebuild:true,samples:3,rebuildMs:Math.max(...rows.map(s=>s.recoveryMs))*1.25,netRate:Math.min(...rows.map(s=>s.gain/((s.windowMs+s.recoveryMs)/1000)))}:{ready:false,suspended,optimisticForecasts:optimistic,samples:rows.length,measuredRebuild:rows.length>0&&rows.every(s=>s.complete===true&&Number.isFinite(s.recoveryMs)&&s.recoveryMs>=30000&&s.recoveryMs<=1800000),rebuildMs:rows.length?Math.max(...rows.map(s=>s.recoveryMs))*1.25:undefined};
+ // Say why the sampler is not ready, so an empty evidence object is diagnosable instead of merely empty: the
+ // dashboard could only report `samples: 0` and every reader had to guess between "too few", "wrong window" and
+ // "negative gain".
+ const shape=s=>[s.recoveryMs,s.windowMs,s.gain].every(Number.isFinite)&&s.recoveryMs>=30000&&s.recoveryMs<=1800000&&s.windowMs>=600000&&s.windowMs<=690000&&s.gain>=0;
+ const incomplete=rows.filter(s=>s.complete!==true).length,malformed=rows.filter(s=>s.complete===true&&!shape(s)).length;
+ const insufficient=rows.length<3?'too-few-samples':incomplete?'incomplete-samples':malformed?'window-out-of-range':null;
+ const ready=!insufficient;
+ return ready?{ready:!suspended,suspended,optimisticForecasts:optimistic,measuredReturns:true,measuredRebuild:true,samples:3,reason:suspended?'forecast-suspended':'ready',rebuildMs:Math.max(...rows.map(s=>s.recoveryMs))*1.25,netRate:Math.min(...rows.map(s=>s.gain/((s.windowMs+s.recoveryMs)/1000)))}
+  :{ready:false,suspended,optimisticForecasts:optimistic,samples:rows.length,reason:insufficient,horizonSamples:all.length,measuredRebuild:rows.length>0&&rows.every(s=>s.complete===true&&Number.isFinite(s.recoveryMs)&&s.recoveryMs>=30000&&s.recoveryMs<=1800000),rebuildMs:rows.length?Math.max(...rows.map(s=>s.recoveryMs))*1.25:undefined};
 }
 
 /** Compare the same net-return units; a ten-minute observation is not a realized thirty-minute profit. */

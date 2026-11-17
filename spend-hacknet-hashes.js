@@ -56,11 +56,16 @@ export async function main(ns) {
     // launch whatever the arguments were, and let the newer copy say why it left.
     // Keep the instance that carries an explicit configuration: an argument-less copy spends with defaults
     // (Sell for Money only) and would silently replace the configured --spend-on-server intent if it won.
-    const selfName=ns.getScriptName(), copies=(typeof ns.ps==='function'?ns.ps('home'):[]).filter(p=>p.filename.replace(/^\//,'')===selfName);
-    if(copies.length>1&&Number.isSafeInteger(ns.pid)){
-        const owner=[...copies].sort((a,b)=>(b.args?.length||0)-(a.args?.length||0)||a.pid-b.pid)[0].pid;
-        if(ns.pid!==owner)return ns.print(`WARN: another spend-hacknet-hashes.js (pid ${owner}) already owns the hash pool; this copy exits.`);
-    }
+    // Evaluated again inside the loop: the first copy in a generation sees only itself at launch, so a configured
+    // instance that arrives later can only take the pool if the established one re-checks and stands down.
+    const selfName=ns.getScriptName();
+    const poolOwner=()=>{
+        const copies=(typeof ns.ps==='function'?ns.ps('home'):[]).filter(p=>p.filename.replace(/^\//,'')===selfName);
+        if(copies.length<2||!Number.isSafeInteger(ns.pid))return null;
+        return [...copies].sort((a,b)=>(b.args?.length||0)-(a.args?.length||0)||a.pid-b.pid)[0].pid;
+    };
+    const ownerAtStart=poolOwner();
+    if(ownerAtStart!==null&&ns.pid!==ownerAtStart)return ns.print(`WARN: another spend-hacknet-hashes.js (pid ${ownerAtStart}) already owns the hash pool; this copy exits.`);
     const options = getConfiguration(ns, argsSchema);
     if (!options) return; // Invalid options, or ran in --help mode.
     const invalid=hashOptionsError(options);if(invalid)return log(ns,'ERROR: '+invalid,true,'error');
@@ -131,6 +136,13 @@ export async function main(ns) {
     const formatHashes = (hashes) => formatNumberShort(hashes, 6, 3);
     while (!isScriptPaused(ns,ns.getScriptName())) {
  automationHeartbeat(ns);
+        // Stand down mid-loop when a better-configured copy appears: the guard at launch cannot see one that starts
+        // afterwards, and two spenders read the same numHashes() and can both clear the reserve.
+        const currentOwner=poolOwner();
+        if(currentOwner!==null&&ns.pid!==currentOwner){
+            await report('idle',{reason:'Another spend-hacknet-hashes.js owns the hash pool (pid '+currentOwner+')'});
+            return ns.print(`WARN: yielding the hash pool to pid ${currentOwner}; this copy exits.`);
+        }
         if(!options['ignore-route-priority']&&toBuy.every(name=>name==='Exchange for Bladeburner Rank'||name==='Exchange for Bladeburner SP')&&readNodeRoutePlan(ns)?.selected==='hacking') {
             await report('waiting',{reason:'Route planner prioritizes World Daemon; retain hashes for other spenders'});
             await ns.sleep(Math.max(1000,interval));continue;

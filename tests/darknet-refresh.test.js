@@ -132,14 +132,18 @@ test('only one spend-hacknet-hashes.js may own the hash pool', () => {
   // from the same numHashes() reading, so a full pool can be debited twice in one pass.
   const source = readFileSync(new URL('../spend-hacknet-hashes.js', import.meta.url), 'utf8');
   const guard = source.slice(source.indexOf('const selfName=ns.getScriptName()'));
-  assert.match(guard.slice(0, 600), /copies\.length>1/, 'a second copy must be detected by filename, not by arguments');
+  assert.match(guard.slice(0, 600), /copies\.length<2/, 'a second copy must be detected by filename, not by arguments');
   assert.match(guard.slice(0, 700), /sort\(\(a,b\)=>\(b\.args\?\.length\|\|0\)-\(a\.args\?\.length\|\|0\)/, 'an explicitly configured copy outranks a bare one');
   assert.match(guard.slice(0, 700), /\|\|a\.pid-b\.pid/, 'ties fall back to the earliest launch');
-  assert.match(guard.slice(0, 600), /ns\.pid!==owner/, 'a newer copy exits');
+  assert.match(guard.slice(0, 600), /ns\.pid!==ownerAtStart/, 'a newer copy exits at launch');
   // The guard must sit before the spend loop can act: before the interval and the first spend call.
   const guardAt = source.indexOf('const selfName=ns.getScriptName()');
   assert.ok(guardAt < source.indexOf('spendHashesWithPolicy(ns'), 'the guard must precede spending');
   assert.ok(guardAt < source.indexOf('while (!isScriptPaused'), 'the guard must precede the spend loop');
+  // The launch check cannot see a configured copy that starts later, so ownership is re-evaluated every tick.
+  const loopAt = source.indexOf('while (!isScriptPaused');
+  assert.ok(loopAt > 0 && source.indexOf('const currentOwner=poolOwner()') > loopAt, 'ownership is re-checked inside the loop');
+  assert.match(source.slice(loopAt, loopAt + 700), /report\('idle'/, 'the standing-down copy records why it idles');
 });
 
 test('work-for-factions records why it exited early', () => {

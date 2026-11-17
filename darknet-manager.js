@@ -316,11 +316,23 @@ export async function main(ns) {
       ensureDarknetUnlock();
       const passwords = await credentials.refresh();
       const snapshot=await readDarknetReports(ns);
+      // The labyrinth is the BitNode-15 route to The Red Pill: an unsolved maze outranks every other
+      // darknet objective, so it is reported as its own line every cycle and the anchor/migration work
+      // below waits for it. Without this a stalled navigator (0 moves) is invisible until the node ends.
+      const unsolvedMazes=snapshot.navigators.filter(n=>n&&n.phase!=='solved');
+      const labyrinthPending=unsolvedMazes.length>0||snapshot.surveys.some(r=>r&&r.modelId==='(The Labyrinth)'&&!r.rooted);
+      if(labyrinthPending){
+       const maze=unsolvedMazes[0];
+       note('labyrinth:priority','TOP PRIORITY labyrinth: '+(maze?maze.target+' on '+maze.host+', '+maze.phase+', '+(maze.moves||0)+' moves':'maze host known, waiting for a navigator')+'.');
+       const known=maze?.target||snapshot.surveys.find(r=>r&&r.modelId==='(The Labyrinth)'&&!r.rooted)?.host;
+       if(typeof known==='string'&&known)await ns.write('tasks/dnet-labyrinth-target.json',JSON.stringify({schema:1,host:known,at:Date.now(),nodeReset:ns.getResetInfo().lastNodeReset}),'w');
+      }
       for(const n of snapshot.navigators){const moves=Number.isSafeInteger(n.moves)?n.moves:0,position=Array.isArray(n.coords)?n.coords.join(','):'unknown';const t=n.timing,a=t?.actions?.move,radar=t?.actions?.radar;const speed=a?.count>0&&Number.isFinite(a.ms)?'; '+(a.ms/a.count/1000).toFixed(2)+'s/move, '+(n.threads||1)+' threads, '+((radar?.ms||0)/1000).toFixed(1)+'s radar, '+((t.coordinationMs||0)/1000).toFixed(1)+'s coordination':'';note('navigator:'+n.target,'Maze '+n.target+' on '+n.host+': '+n.phase+'; '+moves+' moves; position '+position+speed+'.');}
       if(!maintenanceRequested(ns)){
         const reports=snapshot.surveys;
         const reset=ns.getResetInfo(),values=await coordinateDarknetDevelopment(ns,reports,reset,snapshot.navigators);
-        await coordinateDarknetAnchors(ns,reports,passwords,reset,values);
+        // Anchors/migration are housekeeping: they wait while the labyrinth still needs the world daemon unlocked.
+        if(!labyrinthPending)await coordinateDarknetAnchors(ns,reports,passwords,reset,values);
         const charismaGoal=await coordinateCharismaGoal(ns,[...reports,{live:true,at:Date.now(),neighbours:ns.dnet.probe(),charismaBlocked:[...managerCharismaBlocked.values()]}],reset);
         if(charismaGoal.state==='target'){
           note('charisma-goal','Dark Net Charisma: '+charismaGoal.current+'/'+charismaGoal.target+(charismaGoal.host?' for '+charismaGoal.host:' for the next labyrinth')+'.');
@@ -381,6 +393,24 @@ export async function main(ns) {
         if (!report?.host || report.live === false) continue;
         if (Number(report.caches) > 0 || (report.modelId === '(The Labyrinth)' && report.rooted)) targets.add(report.host);
       }
+      // The labyrinth is the BN15 route to The Red Pill, so an UNSOLVED maze outranks caches: it had no
+      // worker because only rooted labyrinths were ever deployed to, and a maze needs a navigator on an
+      // ADJACENT host. Deploy to the maze and to the host its navigator already occupies.
+      for (const n of snapshot.navigators) {
+        if (typeof n?.target !== 'string' || !n.target) continue;
+        targets.add(n.target);
+        if (typeof n.host === 'string' && n.host) targets.add(n.host);
+      }
+      for (const report of snapshot.surveys) {
+        if (!report?.host || report.live === false) continue;
+        if (report.modelId === '(The Labyrinth)' && !report.rooted) targets.add(report.host);
+      }
+      // The maze host stays a target across manager restarts: a labyrinth sighting is the one fact this
+      // fleet must not lose, because rediscovering it costs a full outward survey.
+      try {
+        const saved = JSON.parse(ns.read('tasks/dnet-labyrinth-target.json'));
+        if (saved?.schema === 1 && saved.nodeReset === ns.getResetInfo().lastNodeReset && typeof saved.host === 'string' && saved.host && Date.now() - saved.at < 21600000) targets.add(saved.host);
+      } catch { }
       // The navigator's completion report is the durable maze-solved marker;
       // it may still be on home after the adjacent navigator process exits.
       for (const file of ns.ls('home', 'tasks/dnet-navigator-')) {

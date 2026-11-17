@@ -325,7 +325,10 @@ export async function main(ns) {
       const source=ns.getHostname(),processes=ns.ps(source);
       if(processes.some(p=>p.filename===navigatorFile&&p.args?.[0]===host&&p.args?.[1]===JSON.stringify(scope))){mazeRequests.delete(host);return false;}
       const ram=ns.getScriptRam(navigatorFile,source),loot=processes.find(p=>p.filename===lootFile);
-      const capacity=ns.getServerMaxRam(source)-ns.getServerUsedRam(source)+(loot?loot.threads*ns.getScriptRam(lootFile,source):0);
+      let capacity=ns.getServerMaxRam(source)-ns.getServerUsedRam(source)+(loot?loot.threads*ns.getScriptRam(lootFile,source):0);
+      // Labyrinth first: when the navigator does not fit, evict the loot collector instead of waiting.
+      // Cache work resumes once the maze is solved, so spending its RAM here is the cheap trade.
+      if(ram>0&&capacity<ram&&loot){try{ns.kill(loot.pid);}catch{}capacity=ns.getServerMaxRam(source)-ns.getServerUsedRam(source);}
       if(!(ram>0)||capacity<ram){mazeRequests.delete(host);note(host+':maze-ram',host+': waiting for a navigator source with enough RAM.');return false;}
       const grant=await readMazeLease(ns,scope);
       let expectedMs=null;

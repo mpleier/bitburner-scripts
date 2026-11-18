@@ -155,3 +155,16 @@ test('work-for-factions records why it exited early', () => {
   assert.match(source, /return noteExit\('invalid-options-or-help'\)/);
   assert.match(source, /return noteExit\('duplicate-instance'\)/);
 });
+
+test('adjacent scout claims a session before opening a neighbour cache', () => {
+  const source = readFileSync(new URL('../darknet-node.js', import.meta.url), 'utf8');
+  const start = source.indexOf("if (!stasisStarted && typeof ns.dnet?.probe === 'function')");
+  assert.ok(start > 0, 'the adjacent cache sweep must still be present');
+  const block = source.slice(start, source.indexOf('const watcherRam = ns.getScriptRam(watcherFile, self)', start));
+  assert.match(block, /credentials\.refresh\(\)/, 'the saved passwords must be available to the sweep');
+  assert.match(block, /getServerDetails\(neighbour\)\?\.hasSession/, 'an existing session must be reused');
+  assert.match(block, /claimSession\(neighbour, password\)/, 'a missing session must be claimed with the saved password');
+  assert.match(block, /if \(!sessioned\) continue/, 'an unclaimed cache must never be exec-ed blindly');
+  const execAt = block.indexOf('ns.exec(cacheFile, neighbour');
+  assert.ok(execAt > block.indexOf('claimSession(neighbour, password)'), 'exec must follow the session claim');
+});

@@ -476,16 +476,31 @@ export async function main(ns) {
       }
       // A completed labyrinth can leave its cache on a directly connected server. The
       // navigator may already have exited, so let an adjacent scout open it from here.
-      if (!stasisStarted && typeof ns.dnet?.probe === 'function') for (const neighbour of ns.dnet.probe()) {
-        try {
-          const caches = ns.ls(neighbour, '.cache');
-          if (!caches.length || ns.ps(neighbour).some(p => p.filename === cacheFile)) continue;
-          const deploy = [cacheFile, 'darknet-reward-policy.js', ...(ns.fileExists('tasks/dnet-cache-context.json', self) ? ['tasks/dnet-cache-context.json'] : [])];
-          if (!ns.fileExists(cacheFile, neighbour) && !await ns.scp(deploy, neighbour, self)) continue;
-          const ram = ns.getScriptRam(cacheFile, neighbour);
-          if (ram > 0 && ns.getServerMaxRam(neighbour) - ns.getServerUsedRam(neighbour) >= ram && ns.exec(cacheFile, neighbour, 1) > 0)
-            note(`${neighbour}:cache`, `${neighbour}: opened ${caches.length} cache file(s) via adjacent scout ${self}.`);
-        } catch { /* Neighbour may be offline or not directly executable. */ }
+      // The opener on the neighbour cannot authenticate itself: without a session
+      // claim in this process the exec fails silently and the cache stays pending
+      // forever (the Labyrinth reward-cache gap). Credentials are already cached by
+      // refresh(), so this adds no file traffic on every scout pass.
+      if (!stasisStarted && typeof ns.dnet?.probe === 'function') {
+        const known = await credentials.refresh();
+        for (const neighbour of ns.dnet.probe()) {
+          try {
+            const caches = ns.ls(neighbour, '.cache');
+            if (!caches.length || ns.ps(neighbour).some(p => p.filename === cacheFile)) continue;
+            let sessioned = false;
+            try { sessioned = ns.dnet.getServerDetails(neighbour)?.hasSession === true; } catch { }
+            if (!sessioned) {
+              const password = known.get(neighbour);
+              if (typeof password !== 'string' || !password) continue;
+              sessioned = (await claimSession(neighbour, password))?.success === true;
+            }
+            if (!sessioned) continue;
+            const deploy = [cacheFile, 'darknet-reward-policy.js', ...(ns.fileExists('tasks/dnet-cache-context.json', self) ? ['tasks/dnet-cache-context.json'] : [])];
+            if (!ns.fileExists(cacheFile, neighbour) && !await ns.scp(deploy, neighbour, self)) continue;
+            const ram = ns.getScriptRam(cacheFile, neighbour);
+            if (ram > 0 && ns.getServerMaxRam(neighbour) - ns.getServerUsedRam(neighbour) >= ram && ns.exec(cacheFile, neighbour, 1) > 0)
+              note(`${neighbour}:cache`, `${neighbour}: opened ${caches.length} cache file(s) via adjacent scout ${self}.`);
+          } catch { /* Neighbour may be offline or not directly executable. */ }
+        }
       }
       // Persistent neighbour cache sweep: edges appear and disappear while this scout runs, so keep a watcher
       // instead of relying only on the one-shot check above — but never at the price of the last phishing thread.

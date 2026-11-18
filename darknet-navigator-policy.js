@@ -20,7 +20,13 @@ export async function scheduleNavigator(ns,target,scope,leasePid=null){
  const ram=ns.getScriptRam(navigatorFile,self);if(!(ram>0))return 0;
  const loot=ns.ps(self).find(p=>p.filename==='darknet-loot.js');
  const reclaimable=loot?loot.threads*ns.getScriptRam('darknet-loot.js',self):0;
- const available=Math.min(64,Math.floor((ns.getServerMaxRam(self)-ns.getServerUsedRam(self)+reclaimable)/ram));
+ // Each move needs a darknet-auth.js worker. When more than one navigator thread fits, hold one
+ // thread's worth of RAM back for that worker; with only one thread's room, launch anyway and let
+ // threadedMove's in-process fallback handle the moves.
+ const authRam=ns.getScriptRam('darknet-auth.js',self)||0;
+ const baseAvailable=Math.floor((ns.getServerMaxRam(self)-ns.getServerUsedRam(self)+reclaimable)/ram);
+ const usable=Math.max(0,ns.getServerMaxRam(self)-ns.getServerUsedRam(self)+reclaimable-authRam);
+ const available=baseAvailable>1?Math.min(64,Math.floor(usable/ram)):Math.min(64,Math.max(0,baseAvailable));
  const threads=chooseMazeThreads(available,n=>ns.formulas.dnet.getAuthenticateTime(ns.dnet.getServerDetails(target),n,ns.getPlayer()));
  if(threads>0&&!await yieldDarknetLoot(ns,ram*threads,'navigator'))return 0;
  if(threads<1)return 0;

@@ -4,18 +4,21 @@ import {readMazeLease} from './darknet-development-policy.js';
 const authWorker='darknet-auth.js';
 /** A move is an authenticate(target, direction) call, and its duration scales with the *calling* script's thread
  * count — but this navigator is the largest worker on the host, so a move made in-process costs the full
- * one-thread time. Hand it to the thin 2 GB auth worker with every thread the host can spare instead; the call is
- * what makes this file expensive, so keeping a second copy here would defeat the point. A missing worker returns
- * null and the caller retries, which is exactly the state a yielded loot helper needs a moment to leave. */
+ * one-thread time. Prefer the thin 2 GB auth worker with every thread the host can spare; when no worker
+ * can be started (no free RAM, or the script is absent), fall back to the in-process call instead of
+ * stalling the navigator. */
 export async function threadedMove(ns,target,direction,self,serial){
  const output='/Temp/dnet-move-'+ns.pid+'-'+serial+'.json';
  try{
   const ram=ns.getScriptRam(authWorker,self);
   const free=ns.getServerMaxRam(self)-ns.getServerUsedRam(self);
   const threads=ram>0?Math.min(32,Math.floor(free/ram)):0;
-  if(threads<1)return null;
-  const pid=ns.exec(authWorker,self,threads,target,direction,output);
-  if(!pid)return null;
+  const pid=threads>0?ns.exec(authWorker,self,threads,target,direction,output):0;
+  if(!pid){
+   // No worker could be launched: no free RAM, or the worker script is absent on this host.
+   // The in-process call costs one thread's time, but a stalled navigator never finishes.
+   try{return await ns.dnet.authenticate(target,direction);}catch{return null;}
+  }
   // Bounded by iterations as well as by the clock: a leaked pid must never spin this loop forever, and a
   // harness with a virtual clock would otherwise wait on real time it never advances.
   for(let wait=0;wait<9000&&ns.isRunning(pid);wait++)await ns.sleep(20);
@@ -127,7 +130,12 @@ export async function main(ns){
    if(Date.now()>=nextResizeCheck&&typeof ns.spawn==='function'){
     nextResizeCheck=Date.now()+120000;
     try{
-     const ram=ns.getScriptRam('darknet-maze.js',self),available=Math.min(64,Math.floor((ns.getServerMaxRam(self)-ns.getServerUsedRam(self)+ram*threads)/ram));
+     const ram=ns.getScriptRam('darknet-maze.js',self),authRam=ns.getScriptRam('darknet-auth.js',self)||0;
+     // Reserve one thread for the auth worker except when only one navigator thread fits at all,
+     // in which case the in-process fallback in threadedMove keeps the maze moving.
+     const freeRam=Math.max(0,ns.getServerMaxRam(self)-ns.getServerUsedRam(self)+ram*threads);
+     const baseAvailable=Math.floor(freeRam/ram);
+     const available=baseAvailable>1?Math.min(64,Math.floor((freeRam-authRam)/ram)):Math.min(64,baseAvailable);
      const frontier=Object.keys(state.labMap||{}).filter(k=>!state.labVisited?.has(k)).length;
      let remainingMoves=0;
      if(state.labEnd){const end=state.labEnd.split(',').map(Number),knownRemaining=labyrinthRouteDistance(state,report.coords.join(','),state.labEnd);remainingMoves=Number.isInteger(knownRemaining)&&knownRemaining>0?knownRemaining:Math.ceil((Math.abs(end[0]-report.coords[0])+Math.abs(end[1]-report.coords[1]))/2);}

@@ -42,7 +42,9 @@ test('maze completion opens reward caches with the thin opener and never from th
  const opened=[],self={ls:host=>host==='origin'?['self.cache']:[],fileExists:()=>false};
  await claimRewardCaches(self,'lab','origin');assert.deepEqual(opened,[]);
  const source=readFileSync(new URL('../darknet-maze.js',import.meta.url),'utf8');
- assert.doesNotMatch(source,/ns\.dnet\.openCache|ns\.dnet\.authenticate/);
+ assert.doesNotMatch(source,/ns\.dnet\.openCache/);
+ // The navigator only calls authenticate itself when no auth worker could be started at all.
+ assert.match(source,/if\(!pid\)\{[\s\S]*ns\.dnet\.authenticate/);
 });
 test('a restarted PID resumes map knowledge but reads its own real entrance position',async()=>{
  const original=Date.now,clock={now:2000000};Date.now=()=>clock.now;
@@ -117,7 +119,7 @@ test('live thread resize checkpoints before spawning and refuses to restart if c
  f.ns.spawn=(file,options,...args)=>{const checkpoint=JSON.parse(f.files.get('tasks/dnet-maze-lab.json'));assert.equal(checkpoint.entrance,'1,1');spawned.push({file,options,args});};
  await navigate(f.ns);
  if(failCopy){assert.equal(spawned.length,0);assert.deepEqual(f.moves,['east','east']);}
- else{assert.equal(spawned.length,1);assert.equal(spawned[0].options.threads,8);assert.equal(spawned[0].options.spawnDelay,100);assert.equal(spawned[0].args.at(-1),43);assert.deepEqual(f.moves,[]);}
+ else{assert.equal(spawned.length,1);assert.equal(spawned[0].options.threads,7);assert.equal(spawned[0].options.spawnDelay,100);assert.equal(spawned[0].args.at(-1),43);assert.deepEqual(f.moves,[]);}
  }}finally{Date.now=original;}
 });
 

@@ -68,8 +68,12 @@ export function labyrinthRadarDue(state,coords,now,lastRadar,movesSinceRadar=Inf
 /** Count only confirmed native movement edges. Repeated non-progress requests refresh position. */
 export function recordLabyrinthEdge(state,from,to,direction){
  state.labEdgeCounts??={};const k=key(...from)+':'+direction;state.labEdgeCounts[k]=Math.min(1000000,(state.labEdgeCounts[k]||0)+1);
- const history=state.labRecentEdges??=[];history.push({k,moved:from.some((n,i)=>n!==to[i])});if(history.length>16)history.shift();
- const repeated=history.filter(r=>r.k===k).length,stuck=history.slice(-2).length===2&&history.slice(-2).every(r=>r.k===k&&!r.moved);
+ const moved=from.some((n,i)=>n!==to[i]);
+ const history=state.labRecentEdges??=[];history.push({k,moved});if(history.length>16)history.shift();
+ // A maze legitimately revisits the same room and direction many times while exploring. Counting confirmed
+ // movement toward `repeated` made any four successful moves trigger a position refresh, which discarded the
+ // authoritative coordinates from the movement receipt and sent the navigator through the same move forever.
+ const repeated=history.filter(r=>r.k===k&&!r.moved).length,stuck=history.slice(-2).length===2&&history.slice(-2).every(r=>r.k===k&&!r.moved);
  return {refresh:stuck||repeated>=4,repeated};
 }
 

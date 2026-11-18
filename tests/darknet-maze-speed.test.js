@@ -10,9 +10,10 @@ test('radar skips known exits, cooldown, too few moves and completely mapped nei
  const s={labMap:{},labEnd:null};assert.equal(labyrinthRadarDue(s,[3,3],40000,0,3),true);assert.equal(labyrinthRadarDue(s,[3,3],20000,0,3),false);assert.equal(labyrinthRadarDue(s,[3,3],40000,0,2),false);
  for(let x=1;x<=5;x+=2)for(let y=1;y<=5;y+=2)s.labMap[x+','+y]=0;assert.equal(labyrinthRadarDue(s,[3,3],40000,0,3),false);s.labEnd='9,9';assert.equal(labyrinthRadarDue(s,[9,9],40000,0,3),false);
 });
-test('repeated blocked moves refresh while distinct successful edges continue',()=>{
+test('repeated blocked moves refresh while successful edges continue',()=>{
  const s={};assert.equal(recordLabyrinthEdge(s,[1,1],[1,1],'east').refresh,false);assert.equal(recordLabyrinthEdge(s,[1,1],[1,1],'east').refresh,true);
- const t={};for(let i=0;i<3;i++)assert.equal(recordLabyrinthEdge(t,[1,1],[3,1],'east').refresh,false);assert.equal(recordLabyrinthEdge(t,[1,1],[3,1],'east').refresh,true);
+ // Revisiting a room through a known passage is normal maze exploration, not a lost navigator.
+ const t={};for(let i=0;i<8;i++)assert.equal(recordLabyrinthEdge(t,[1,1],[3,1],'east').refresh,false);
 });
 test('thread tuning respects available RAM, diminishing returns and unavailable formulas',()=>{
  assert.equal(chooseMazeThreads(8,n=>10000/n),8);assert.equal(chooseMazeThreads(2,n=>10000/n),2);assert.equal(chooseMazeThreads(8,()=>10000),1);assert.equal(chooseMazeThreads(8,()=>{throw Error('unavailable');}),1);assert.equal(chooseMazeThreads(0,()=>1),0);

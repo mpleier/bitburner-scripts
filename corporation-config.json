@@ -13,7 +13,6 @@
     "expandAllIndustries": false,
     "allowDivisionSale": false,
     "warehouseFullThreshold": 0.7,
-    "expediteStagedExpansion": true,
     "initialOfficeSize": 9,
     "setupReserve": 20000000,
     "materialCashFraction": 0.05
@@ -43,24 +42,15 @@
     "starvationTicks": 3
   },
   "finance": {
-    "minOwnership": 0.5,
-    "investmentMinOwnership": 0.1,
-    "acceptInvestment": true,
-    "ipoValuationFloor": 10000000000,
-    "ipoShares": 0,
-    "payDividends": true,
-    "dividendTiers": [[1e21, 0.2], [1e18, 0.1], [1e15, 0.05], [1e13, 0.02]],
-    "manageShares": true,
-    "bribeFactions": true
+    "acceptInvestment": false,
+    "payDividends": false,
+    "manageShares": false
   },
   "market": {
     "advertSpendFraction": 0.5,
     "maxAdVerts": { "materials": 8, "products": 20 },
     "advertPaybackSeconds": 21600,
-    "boostWarehouseFraction": 0.6,
-    "exportQualityMargin": 0.05,
-    "priceCeiling": 1000000,
-    "throttleProductionOnBacklog": false
+    "boostWarehouseFraction": 0.6
   },
   "budgets": {
     "reserveFloor": 1000000,

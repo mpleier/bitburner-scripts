@@ -234,6 +234,33 @@ export function creationPlan(snapshot, config) {
 const decision = (fields) => ({ state: 'ready', cost: 0, detail: '', ...fields });
 
 /**
+ * What the *next* cycle will do once the corporation exists (spec §9.5, B4). A fresh save has no
+ * corporation, so the planner can only name the creation; a dry-run plan that stops there is
+ * useless to the operator planning the handover. The projection re-plans against a corporation
+ * that exists with the funds creation would leave behind (seed funding credits the corporation,
+ * self-funding does not).
+ */
+export function projectCreationFollowUp(snapshot, config, creation = null, options = {}) {
+  const funds = creation?.mode === 'seed' ? finite(options.seedFunds, 150e9) : 0;
+  const projected = {
+    ...snapshot,
+    hasCorporation: true,
+    corp: { funds, expenses: 0, revenue: 0, divisions: [] },
+    divisions: [],
+    warehouses: {},
+    warehouseInfo: {},
+    offices: {},
+  };
+  const plan = bootstrapDecisions(projected, config, { reserve: options.reserve, allowCreate: false });
+  return (plan.decisions || []).slice(0, 8).map((item) => ({
+    label: item.label,
+    state: item.state,
+    cost: item.cost,
+    detail: item.detail,
+  }));
+}
+
+/**
  * Ordered bootstrap decisions for the current snapshot.
  * Returns `{state, terminal, reason, reserve, decisions, blockedBy, progress}`.
  */
@@ -244,6 +271,11 @@ export function bootstrapDecisions(snapshot, config, options = {}) {
     return { ...base, terminal: true, blockedBy: [{ code: gate.code, detail: gate.reason, gap: 0 }] };
   }
   if (!snapshot.hasCorporation) {
+    // `allowCreate: false` is the recursion guard used after a creation succeeds (and by callers
+    // that must not found a corporation); without it the option was accepted and ignored (F7).
+    if (options.allowCreate === false) {
+      return { ...base, blockedBy: [{ code: 'bootstrap.createDisabled', detail: 'creation is disabled for this call', gap: 0 }] };
+    }
     const creation = creationPlan(snapshot, config);
     if (creation.action === 'create') {
       return {
@@ -506,7 +538,7 @@ export function runBootstrap(api, config, options = {}) {
 
   let snapshot = readBootstrapSnapshot(api, config, options.context || {});
   errors.push(...snapshot.errors);
-  const plan = bootstrapDecisions(snapshot, config, { reserve: options.reserve });
+  const plan = bootstrapDecisions(snapshot, config, { reserve: options.reserve, allowCreate: options.allowCreate !== false });
   if (plan.terminal) {
     log('warn', plan.reason, { code: plan.blockedBy[0]?.code });
     return { state: plan.state, terminal: true, reason: plan.reason, actions, errors, blockedBy: plan.blockedBy, funds: snapshot.corp?.funds ?? 0, reserve: plan.reserve, dryRun, progress: plan.progress };
@@ -530,6 +562,11 @@ export function runBootstrap(api, config, options = {}) {
     if (item.kind === 'create') {
       if (dryRun) {
         record(item.label, 'dry-run', `${item.mode} funding`);
+        // A fresh save plans exactly one action otherwise; publish what the next cycle will do
+        // as soon as the corporation exists (spec §9.5, B4).
+        for (const next of projectCreationFollowUp(snapshot, config, item, { reserve: options.reserve })) {
+          record(next.label, next.state === 'ready' ? 'planned' : 'blocked', `after creation: ${next.detail || `cost $${Math.round(next.cost)}`}`);
+        }
         continue;
       }
       executed++;

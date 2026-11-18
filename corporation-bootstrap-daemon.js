@@ -37,16 +37,31 @@ function safeCall(fn, fallback) {
   }
 }
 
-/** `--ticks=N --interval=ms --dry-run --quiet` (config flags are parsed by corporation-config). */
+/**
+ * `--ticks=N --interval=ms --dry-run --quiet` (config flags are parsed by corporation-config).
+ *
+ * `ticks` is `null` when the flag is absent, which is the only case that means "run until
+ * stopped". A supplied value that is not a positive integer (`--ticks=0`, `-3`, `abc`) is a
+ * mistyped bound, not a request for an unbounded loop: it falls back to one tick and reports
+ * `config.invalidTicks` (B8).
+ */
 export function parseDaemonArgs(argv = []) {
   const args = Array.isArray(argv) ? argv.map(String) : [];
-  const options = { ticks: 0, interval: 0, dryRun: false, quiet: false };
+  const options = { ticks: null, interval: 0, dryRun: false, quiet: false, issues: [] };
   for (let index = 0; index < args.length; index++) {
     const token = args[index];
     const [flag, inline] = token.split('=');
     const value = inline ?? args[index + 1];
     const takeValue = inline === undefined && value !== undefined && !String(value).startsWith('--') ? (index++, value) : inline;
-    if (flag === '--ticks' || flag === '--cycles') options.ticks = Math.max(0, Math.floor(finite(Number(takeValue), 0)));
+    if (flag === '--ticks' || flag === '--cycles') {
+      const parsed = Number(takeValue);
+      if (takeValue === undefined || !Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed < 1) {
+        options.issues.push({ code: 'config.invalidTicks', value: takeValue === undefined ? '' : String(takeValue), detail: '--ticks must be a positive integer; running one cycle instead' });
+        options.ticks = 1;
+      } else {
+        options.ticks = parsed;
+      }
+    }
     else if (flag === '--interval') options.interval = Math.max(0, Math.floor(finite(Number(takeValue), 0)));
     else if (flag === '--dry-run') options.dryRun = takeValue === undefined ? true : takeValue !== 'false';
     else if (flag === '--quiet') options.quiet = true;
@@ -264,7 +279,9 @@ export async function runBootstrapExpansionCycle(ns, options = {}) {
     const status = buildStatusDocument(report, { ns, config, reset, now, bootstrap, expansion });
     writeFile(ns, options.statusFile || BOOTSTRAP_STATUS_FILE, status);
     report.status = status;
-    if (dryRun) writeFile(ns, DRY_RUN_FILE, buildDryRunDocument(report, now));
+    // One writer per document: the integrated daemon owns `tasks/corporation-dry-run.json`
+    // (`options.dryRunFile === null`), so the structural half does not overwrite its plan (B6).
+    if (dryRun && options.dryRunFile !== null) writeFile(ns, options.dryRunFile || DRY_RUN_FILE, buildDryRunDocument(report, now));
   }
   return report;
 }
@@ -364,6 +381,7 @@ export async function main(ns) {
   }
 
   safeCall(() => ns.tprint(`Corporation bootstrap ${dryRun ? '(dry run) ' : ''}starting with ${config.bootstrap.industryChain.join(' → ')} across ${config.bootstrap.cities.length} cities.`));
+  for (const issue of options.issues || []) safeCall(() => ns.tprint(`${issue.code}: ${issue.detail}`));
   const reset = readResetContext(ns);
   const gate = corporationGate({
     apiAvailable: !!ns.corporation,

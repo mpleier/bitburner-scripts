@@ -43,7 +43,7 @@ async function advance(game, cycles) {
   return game;
 }
 
-const purchases = new Set(['createCorporation', 'expandIndustry', 'expandCity', 'purchaseWarehouse', 'purchaseUnlock', 'makeProduct', 'upgradeWarehouse']);
+const purchases = new Set(['createCorporation', 'expandIndustry', 'expandCity', 'purchaseWarehouse', 'purchaseUnlock', 'makeProduct', 'upgradeWarehouse', 'upgradeOfficeSize']);
 
 test('one cycle takes a fresh save from no corporation to a staffed first city and runs the optimiser', async () => {
   const game = daemonGame();
@@ -150,16 +150,45 @@ test('a pending city package keeps a claim on free cash, structural before discr
 test('a peer corporation controller makes the daemon report-only with zero mutations', async () => {
   const game = daemonGame({ processes: [{ filename: DAEMON, pid: 4242 }, { filename: 'corporation-manager.js', pid: 99 }] });
   await advanceWithPeers(game);
+  const mark = game.mark();
   const report = await runCorporationCycle(game.ns, CYCLE);
+  const fresh = game.mutationsSince(mark);
 
   assert.equal(report.state, 'REPORT_ONLY');
   assert.equal(report.guards.finance.owner, 'corporation-manager.js');
   assert.equal(report.guards.finance.delegated, true);
   assert.equal(report.actions.every((action) => action.state === 'skipped'), true);
-  assert.equal(game.calls.mutations.filter((call) => call.at >= 0).length, game.calls.mutations.length);
+  // B1: a report-only cycle must not touch the corporation at all — the peer owns the buy rates.
+  assert.equal(fresh.length, 0, `report-only cycle mutated: ${fresh.map((call) => call.operation).join(', ')}`);
   const status = JSON.parse(game.files[DAEMON_STATUS_FILE]);
   assert.equal(status.mode, 'report-only');
   assert.deepEqual(status.guards.peers, ['corporation-manager.js']);
+});
+
+test('a report-only cycle leaves the peer controller buy rates untouched (B1)', async () => {
+  const game = daemonGame({ processes: [{ filename: DAEMON, pid: 4242 }, { filename: 'corporation-manager.js', pid: 99 }] });
+  await advanceWithPeers(game);
+
+  // The peer's live rates, as corporation-manager.js leaves them (measured 6/3/6/4 in the save).
+  const rates = { Water: 6, Chemicals: 3, 'Real Estate': 6, Hardware: 4 };
+  const warehouses = Object.keys(game.state.warehouses);
+  assert.ok(warehouses.length > 0, 'the fixture has warehouses to seed');
+  for (const key of warehouses) {
+    const [division, city] = key.split('/');
+    for (const [material, rate] of Object.entries(rates)) game.api.buyMaterial(division, city, material, rate);
+  }
+
+  const mark = game.mark();
+  const report = await runCorporationCycle(game.ns, CYCLE);
+
+  assert.equal(report.state, 'REPORT_ONLY');
+  assert.deepEqual(game.mutationsSince(mark), [], 'report-only issued no write at all');
+  for (const key of warehouses) {
+    const [division, city] = key.split('/');
+    for (const [material, rate] of Object.entries(rates)) {
+      assert.equal(game.api.getMaterial(division, city, material).buyAmount, rate, `${key} ${material} rate was changed by a report-only cycle`);
+    }
+  }
 });
 
 async function advanceWithPeers(game) {

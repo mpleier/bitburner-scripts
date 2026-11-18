@@ -81,15 +81,20 @@ export const DEFAULT_CONFIG = {
     starvationTicks: 3,
   },
   finance: {
+    // No finance module is wired into the daemon (see §4.4), so the switches that would make
+    // the corporation take investor money, pay dividends or trade shares default OFF. A save
+    // whose owner performs the documented handover would otherwise be silently committed to
+    // equity nobody repurchases. Every `finance.*` leaf is `reserved` below: setting it warns
+    // (`config.ignoredKey`) instead of pretending it drives something.
     minOwnership: 0.5,
     investmentMinOwnership: 0.1,
-    acceptInvestment: true,
+    acceptInvestment: false,
     ipoValuationFloor: 1e10,
     ipoShares: 0,
-    payDividends: true,
+    payDividends: false,
     dividendTiers: [[1e21, 0.2], [1e18, 0.1], [1e15, 0.05], [1e13, 0.02]],
-    manageShares: true,
-    bribeFactions: true,
+    manageShares: false,
+    bribeFactions: false,
   },
   market: {
     advertSpendFraction: 0.5,
@@ -200,7 +205,7 @@ const SCHEMA = {
   'bootstrap.expandAllIndustries': { kind: 'boolean' },
   'bootstrap.allowDivisionSale': { kind: 'boolean' },
   'bootstrap.warehouseFullThreshold': { kind: 'number', min: 0, max: 1 },
-  'bootstrap.expediteStagedExpansion': { kind: 'boolean' },
+  'bootstrap.expediteStagedExpansion': { kind: 'boolean', reserved: true },
   'bootstrap.initialOfficeSize': { kind: 'number', min: 1, max: 120, integer: true },
   'bootstrap.setupReserve': { kind: 'number', min: 0, max: 1e12 },
   'bootstrap.materialCashFraction': { kind: 'number', min: 0, max: 1 },
@@ -220,23 +225,23 @@ const SCHEMA = {
   'people.upgradePaybackCycles': { kind: 'number', min: 0, max: 100000 },
   'people.storageUpgradeFraction': { kind: 'number', min: 0, max: 1 },
   'people.starvationTicks': { kind: 'number', min: 1, max: 100, integer: true },
-  'finance.minOwnership': { kind: 'number', min: 0.01, max: 1 },
-  'finance.investmentMinOwnership': { kind: 'number', min: 0.01, max: 1 },
+  'finance.minOwnership': { kind: 'number', min: 0.01, max: 1, reserved: true },
+  'finance.investmentMinOwnership': { kind: 'number', min: 0.01, max: 1, reserved: true },
   'finance.acceptInvestment': { kind: 'boolean' },
-  'finance.ipoValuationFloor': { kind: 'number', min: 1e9, max: 1e18 },
-  'finance.ipoShares': { kind: 'number', min: 0, max: 1e6, integer: true },
+  'finance.ipoValuationFloor': { kind: 'number', min: 1e9, max: 1e18, reserved: true },
+  'finance.ipoShares': { kind: 'number', min: 0, max: 1e6, integer: true, reserved: true },
   'finance.payDividends': { kind: 'boolean' },
-  'finance.dividendTiers': { kind: 'tiers' },
+  'finance.dividendTiers': { kind: 'tiers', reserved: true },
   'finance.manageShares': { kind: 'boolean' },
-  'finance.bribeFactions': { kind: 'boolean' },
+  'finance.bribeFactions': { kind: 'boolean', reserved: true },
   'market.advertSpendFraction': { kind: 'number', min: 0, max: 1 },
   'market.maxAdVerts.materials': { kind: 'number', min: 0, max: 1000, integer: true },
   'market.maxAdVerts.products': { kind: 'number', min: 0, max: 1000, integer: true },
   'market.advertPaybackSeconds': { kind: 'number', min: 0, max: 1e9 },
   'market.boostWarehouseFraction': { kind: 'number', min: 0, max: 1 },
-  'market.exportQualityMargin': { kind: 'number', min: 0, max: 1 },
-  'market.priceCeiling': { kind: 'number', min: 1, max: 1e12 },
-  'market.throttleProductionOnBacklog': { kind: 'boolean' },
+  'market.exportQualityMargin': { kind: 'number', min: 0, max: 1, reserved: true },
+  'market.priceCeiling': { kind: 'number', min: 1, max: 1e12, reserved: true },
+  'market.throttleProductionOnBacklog': { kind: 'boolean', reserved: true },
   'budgets.reserveFloor': { kind: 'number', min: 0, max: 1e15 },
   'budgets.reserveCap': { kind: 'number', min: 0, max: 1e18 },
   'budgets.reserveCashFraction': { kind: 'number', min: 0, max: 1 },
@@ -263,6 +268,22 @@ const BRANCHES = new Set();
 for (const path of Object.keys(SCHEMA)) {
   const keys = path.split('.');
   for (let index = 1; index < keys.length; index++) BRANCHES.add(keys.slice(0, index).join('.'));
+}
+
+/**
+ * Leaves that are documented and validated but wired to nothing yet (spec §8, README §Corporation
+ * automation). They are accepted so an existing config keeps working, and reported as
+ * `config.ignoredKey` so a caller never believes a knob has an effect it does not have.
+ */
+export const RESERVED_CONFIG_PATHS = Object.freeze(
+  Object.entries(SCHEMA).filter(([, rule]) => rule.reserved === true).map(([path]) => path),
+);
+
+const RESERVED_MESSAGE = (path) =>
+  `"${path}" is reserved: it is validated and reported but no code reads it yet, so this value has no effect`;
+
+function reservedIssue(rule, path) {
+  return rule?.reserved === true ? { code: 'config.ignoredKey', path, message: RESERVED_MESSAGE(path) } : null;
 }
 
 function checkValue(rule, value) {
@@ -381,6 +402,8 @@ function validateCore(raw) {
       continue;
     }
     setConfigPath(config, path, cloneConfig(value));
+    const reserved = reservedIssue(rule, path);
+    if (reserved) issues.push(reserved);
   }
   unknownKeys(input, '', issues);
   return { config, issues };
@@ -489,8 +512,11 @@ function applyPathFlags(config, flags, issues) {
       issues.push({ code: 'config.unknownFlag', path });
       continue;
     }
-    if (checkValue(SCHEMA[path], value)) setConfigPath(config, path, cloneConfig(value));
-    else issues.push({ code: 'config.invalidField', path, detail: `flag value ${JSON.stringify(value)} rejected`, value });
+    if (checkValue(SCHEMA[path], value)) {
+      setConfigPath(config, path, cloneConfig(value));
+      const reserved = reservedIssue(SCHEMA[path], path);
+      if (reserved) issues.push(reserved);
+    } else issues.push({ code: 'config.invalidField', path, detail: `flag value ${JSON.stringify(value)} rejected`, value });
   }
   return config;
 }
@@ -508,10 +534,10 @@ export function validateConfig(raw, { flags = {}, flagErrors = [] } = {}) {
   return {
     config,
     errors: issues
-      .filter((issue) => issue.code !== 'config.unknownKey')
+      .filter((issue) => !['config.unknownKey', 'config.ignoredKey'].includes(issue.code))
       .map(({ code, path, detail, flag }) => ({ code, ...(path ? { path } : {}), ...(detail ? { detail } : {}), ...(flag ? { flag } : {}) })),
     warnings: issues
-      .filter((issue) => issue.code === 'config.unknownKey')
+      .filter((issue) => ['config.unknownKey', 'config.ignoredKey'].includes(issue.code))
       .map(({ code, path, message }) => ({ code, ...(path ? { path } : {}), ...(message ? { message } : {}) })),
   };
 }
@@ -543,9 +569,9 @@ export function validateCorporationConfig(raw) {
   const warnings = [];
   const report = [];
   for (const issue of issues) {
-    if (issue.code === 'config.unknownKey') {
+    if (issue.code === 'config.unknownKey' || issue.code === 'config.ignoredKey') {
       warnings.push({ path: issue.path, message: issue.message });
-      report.push(`config.unknownKey:${issue.path}`);
+      report.push(`${issue.code}:${issue.path}`);
       continue;
     }
     errors.push({ path: issue.path || '', message: messageFor(issue) });

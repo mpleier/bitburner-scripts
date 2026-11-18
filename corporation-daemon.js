@@ -56,8 +56,12 @@ export const DAEMON_STATUS_SCHEMA_VERSION = 2;
 export const MAX_STATUS_ACTIONS = 40;
 export const MAX_LOG_LINES = 60;
 export const MAX_FAILURES = 16;
+export const MAX_DECISIONS = 128;
+export const MAX_FINDINGS = 32;
 export const CRASH_BACKOFF_CYCLES = 5;
 export const CRASH_BACKOFF_MS = 600000;
+/** A persistent failure count at or above this pauses the loop instead of retrying every tick. */
+export const PERSISTENT_FAILURE_BACKOFF = 5;
 
 /** Scripts that also write corporation state. While one runs, this daemon only reports. */
 export const PEER_WRITER_SCRIPTS = Object.freeze(['autopilot.js', 'corporation-manager.js', 'corporation-bootstrap-daemon.js']);
@@ -75,6 +79,36 @@ export const FINANCE_ACTIONS = Object.freeze([
 const finite = (value, fallback = 0) => (typeof value === 'number' && Number.isFinite(value) ? value : fallback);
 const text = (error) => String(error?.message || error).slice(0, 240);
 
+/** Flags this entrypoint consumes itself; the config loader must not report them as unknown. */
+export const DAEMON_ONLY_FLAGS = Object.freeze(['--ticks', '--cycles', '--interval', '--quiet']);
+
+/**
+ * Drop the entrypoint's own flags (and their separate values) before handing argv to the config
+ * loader, so a normal `--ticks=5` run does not publish `config.unknownFlag` in the status document.
+ */
+export function configArgv(argv = []) {
+  const args = Array.isArray(argv) ? argv.map(String) : [];
+  const kept = [];
+  for (let index = 0; index < args.length; index++) {
+    const [flag, inline] = args[index].split('=');
+    if (!DAEMON_ONLY_FLAGS.includes(flag)) {
+      kept.push(args[index]);
+      continue;
+    }
+    // A separate value is the next token unless it is itself a flag.
+    if (inline === undefined && args[index + 1] !== undefined && !String(args[index + 1]).startsWith('--')) index++;
+  }
+  return kept;
+}
+
+/** Owned share of the corporation, or `null` when the snapshot does not expose a share count. */
+function ownershipFraction(info) {
+  const total = finite(info?.totalShares, 0);
+  const owned = finite(info?.numShares, 0);
+  if (!(total > 0)) return null;
+  return Math.max(0, Math.min(1, owned / total));
+}
+
 function safeCall(fn, fallback) {
   try {
     const value = fn();
@@ -84,8 +118,16 @@ function safeCall(fn, fallback) {
   }
 }
 
+/**
+ * Compare two `ns.ps('home')` filenames by basename. `ps` mixes both forms — a script in
+ * home's root is bare (`autopilot.js`), anything under a subdirectory keeps its path
+ * (`/Remote/grow-target.js`) — so comparing the raw strings silently reports "no peer" (B11).
+ */
 function normalizeScriptName(name) {
-  return String(name || '').replace(/^\//, '');
+  const text = String(name || '').trim();
+  if (!text) return '';
+  const parts = text.replace(/\\/g, '/').split('/').filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : '';
 }
 
 function writeFile(ns, path, value) {
@@ -199,6 +241,27 @@ export function warehousesTouched(before, after) {
   return touched;
 }
 
+/**
+ * Offices the structural phase grew this cycle (N1). The bootstrap grows every warehouse-backed
+ * office to `bootstrap.initialOfficeSize` in 3-seat steps and the people module grows it again
+ * from the budget ladder, so without this guard one cycle buys two increments for the same
+ * office — the same defect the warehouse guard was added for.
+ */
+export function officesTouched(before, after) {
+  if (!after || !Array.isArray(after.divisions)) return [];
+  const previous = new Map();
+  for (const key of Object.keys(before?.offices || {})) previous.set(key, finite(before.offices[key]?.size, 0));
+  const touched = [];
+  for (const division of after.divisions) {
+    for (const city of division.cities || []) {
+      const key = `${division.name}/${city}`;
+      const size = finite(after.offices?.[key]?.size, 0);
+      if (!previous.has(key) || size > finite(previous.get(key), 0)) touched.push(key);
+    }
+  }
+  return touched;
+}
+
 /** Fresh daemon state; `schemaVersion`/identity decide whether a persisted file is reused. */
 export function defaultDaemonState() {
   return {
@@ -307,7 +370,7 @@ export async function runCorporationCycle(ns, options = {}) {
   const argv = options.argv ?? (Array.isArray(ns?.args) ? ns.args : []);
   const configResult = options.config
     ? { config: options.config, errors: [], warnings: [] }
-    : loadConfig(ns, { argv });
+    : loadConfig(ns, { argv: configArgv(argv) });
   // `--dry-run` must reach the optimiser too: it reads `config.dryRun`, while bootstrap and
   // expansion take the flag as an option. Clone so the caller's config is never mutated.
   const config = options.dryRun === true ? { ...configResult.config, dryRun: true } : configResult.config;
@@ -318,6 +381,8 @@ export async function runCorporationCycle(ns, options = {}) {
   const reset = readResetContext(ns);
   const context = cycleContext(ns, reset);
   const api = ns?.corporation || null;
+  // One read: the status document reports profit per market cycle, not per arbitrary tick (B12).
+  const marketCycleSeconds = Math.max(1, finite(safeCall(() => api?.getConstants?.()?.secondsPerMarketCycle, 10), 10));
   const script = options.script || safeCall(() => ns.getScriptName(), 'corporation-daemon.js');
   const allowed = safeCall(() => (typeof options.isAllowed === 'function' ? options.isAllowed() !== false : true), true);
   const peers = options.peers ?? detectPeerWriters(ns, { script });
@@ -337,17 +402,31 @@ export async function runCorporationCycle(ns, options = {}) {
     divisions: [],
     structural: null,
     optimizer: null,
+    optimizerDecisions: [],
+    findings: [],
     actions: [],
     errors: [],
     blockedBy: [],
     quotes: [],
-    guards: { peers, finance, claim: null, skipWarehouse: [] },
+    guards: { peers, finance, claim: null, skipWarehouse: [], skipOffice: [] },
     progress: null,
     cooldowns: options.cooldowns || {},
     persistentFailures: mergeFailures(options.failures),
     configErrors: configResult.errors || [],
     configWarnings: configResult.warnings || [],
     cyclesManaged: finite(options.cyclesManaged, 0),
+    nodeReset: reset.lastNodeReset,
+    augReset: reset.lastAugReset,
+    marketCycleSeconds,
+    // `finance.*` is unowned (spec §4.4): the status document reports the floor it *would* use,
+    // so a reader never has to guess whether a share action happened.
+    financeConfig: {
+      minOwnership: finite(config?.finance?.minOwnership, 0.5),
+      acceptInvestment: config?.finance?.acceptInvestment === true,
+      payDividends: config?.finance?.payDividends === true,
+      manageShares: config?.finance?.manageShares === true,
+    },
+    lastActionAt: 0,
     logger,
     log,
   };
@@ -359,11 +438,11 @@ export async function runCorporationCycle(ns, options = {}) {
     return finalize({ ...baseReport, state: 'SUSPENDED', phase: 'GUARD', reason: 'automation paused, maintenance requested or achievement-locked' }, options, ns);
   }
 
-  // Guard 1 — one writer per corporation.
+  // Guard 1 — one writer per corporation. Report-only touches nothing: the peer owns the buy
+  // rates too, so zeroing them here disarmed the controller this daemon defers to (B1).
   if (peers.length) {
     const names = [...new Set(peers.map((peer) => peer.script))];
-    safeCall(() => clearCorporationBuyRates(api));
-    log('warn', `Corporation daemon is standing down: ${names.join(', ')} already drives this corporation. Report-only cycle, no purchases.`);
+    log('warn', `Corporation daemon is standing down: ${names.join(', ')} already drives this corporation. Report-only cycle, no purchases, buy rates left untouched.`);
     const info = safeCall(() => api?.getCorporation(), null);
     return finalize(
       {
@@ -396,6 +475,9 @@ export async function runCorporationCycle(ns, options = {}) {
       logger,
       now,
       statusFile: options.bootstrapStatusFile,
+      // The daemon publishes the integrated dry-run plan; the structural half must not also
+      // write `tasks/corporation-dry-run.json` (B6, one writer per document).
+      dryRunFile: null,
     });
   } catch (error) {
     structural = {
@@ -417,16 +499,17 @@ export async function runCorporationCycle(ns, options = {}) {
 
   const claim = structuralClaim(structural, { config });
   const skipWarehouse = warehousesTouched(before, after);
+  const skipOffice = officesTouched(before, after);
   const corporationExists = after?.hasCorporation === true || ['BOOTSTRAP', 'READY', 'EXPANDING'].includes(structural.state);
 
   // Optimiser phase — only with a corporation and a readable state snapshot.
   let tick = null;
   if (corporationExists) {
     try {
-      const optimizer = options.optimizer || buildOptimizer(ns, { api, config, context, reset, dryRun, claim, skipWarehouse, options });
+      const optimizer = options.optimizer || buildOptimizer(ns, { api, config, context, reset, dryRun, claim, skipWarehouse, skipOffice, options, logger });
       if (options.optimizer) {
         safeCall(() => options.optimizer.configure(config));
-        safeCall(() => options.optimizer.setCycleGuards({ reserveFloor: claim.claim, skipWarehouse }));
+        safeCall(() => options.optimizer.setCycleGuards({ reserveFloor: claim.claim, skipWarehouse, skipOffice }));
       }
       tick = optimizer.tick();
     } catch (error) {
@@ -488,7 +571,10 @@ export async function runCorporationCycle(ns, options = {}) {
     valuation: finite(info?.valuation),
     sharePrice: finite(info?.sharePrice),
     public: info?.public === true,
+    ownership: ownershipFraction(info),
+    dividendRate: finite(info?.dividendRate),
     growthBank: finite(tick?.telemetry?.growthBank),
+    corporation: info?.name ?? null,
     structural: {
       state: structural.state,
       reason: structural.reason || null,
@@ -499,13 +585,20 @@ export async function runCorporationCycle(ns, options = {}) {
           state: tick.state,
           decisions: tick.decisions.length,
           findings: tick.findings.length,
+          findingsList: tick.findings.slice(0, MAX_FINDINGS),
           budgets: tick.telemetry?.budgets || null,
+          lastActionAt: finite(tick.telemetry?.lastActionAt, 0),
         }
       : null,
+    optimizerDecisions: tick ? tick.decisions.slice(0, MAX_DECISIONS) : [],
+    divisionMetrics: tick?.telemetry?.divisions || [],
+    offices: tick?.telemetry?.offices || [],
+    findings: tick ? tick.findings.slice(0, MAX_FINDINGS) : [],
+    lastActionAt: finite(tick?.telemetry?.lastActionAt, 0),
     actions,
     blockedBy: [...(structural.blockedBy || [])],
     quotes: structural.quotes || [],
-    guards: { peers, finance, claim, skipWarehouse },
+    guards: { peers, finance, claim, skipWarehouse, skipOffice },
     progress: structural.progress || null,
     cooldowns: structural.cooldowns || options.cooldowns || {},
     persistentFailures,
@@ -514,8 +607,11 @@ export async function runCorporationCycle(ns, options = {}) {
 }
 
 /** Build a one-cycle optimiser restored from its state file. */
-function buildOptimizer(ns, { api, config, context, reset, dryRun, claim, skipWarehouse, options }) {
+function buildOptimizer(ns, { api, config, context, reset, dryRun, claim, skipWarehouse, skipOffice, options, logger = null }) {
   const stateFile = config.telemetry?.stateFile || 'tasks/corporation-optimizer.json';
+  // The cycle's own logger, so a standalone `runCorporationCycle` keeps the optimiser's action
+  // lines in `status.log` and the tail window instead of dropping them (B10).
+  const cycleLog = logger?.log || options.logger?.log || (() => {});
   return createCorporationOptimizer({
     api,
     config,
@@ -525,9 +621,10 @@ function buildOptimizer(ns, { api, config, context, reset, dryRun, claim, skipWa
     state: readJsonFile(ns, stateFile),
     identity: { nodeReset: reset.lastNodeReset, augReset: reset.lastAugReset, corporation: null },
     isAllowed: () => safeCall(() => (typeof options.isAllowed === 'function' ? options.isAllowed() !== false : true), true),
-    log: options.logger?.log || (() => {}),
+    log: cycleLog,
     reserveFloor: claim.claim,
     skipWarehouse,
+    skipOffice,
   });
 }
 
@@ -547,6 +644,10 @@ function finalize(report, options, ns) {
  * Status document (spec §9.1 key set, plus the integration sections). It is deliberately *not*
  * `tasks/corporation-status.json`: that file belongs to the legacy controller, and this daemon
  * may later give way to it (guard 1). One file per writer.
+ *
+ * Every §9.1 key is present. Keys this daemon cannot support (finance is unowned, there is no
+ * hash module) are published as `null`/`[]` **and** named in `unsupported` with the reason, so a
+ * dashboard never has to guess whether a zero means "fine" or "not measured".
  */
 export function buildDaemonStatus(report) {
   const now = Date.now();
@@ -556,10 +657,72 @@ export function buildDaemonStatus(report) {
     detail: action.detail ? String(action.detail).slice(0, 200) : '',
     at: finite(action.at, 0),
   }));
+  const decisions = (report.optimizerDecisions || []).slice(0, MAX_DECISIONS).map((row) => ({
+    kind: row.kind,
+    label: row.label,
+    state: row.state,
+    cost: finite(row.cost, 0),
+    target: row.target ?? null,
+    reason: row.reason ? String(row.reason).slice(0, 160) : null,
+  }));
+  const ofKind = (...kinds) => decisions.filter((row) => kinds.includes(row.kind));
+  const quotes = (report.quotes || []).map((quote) => ({
+    label: quote.label ?? `${quote.division || '?'}/${quote.city || '?'}`,
+    division: quote.division ?? null,
+    city: quote.city ?? null,
+    cost: finite(quote.cost, 0),
+    gap: finite(quote.gap, 0),
+    etaSeconds: quote.etaSeconds ?? null,
+    longWait: quote.longWait === true,
+    reason: quote.reason ?? null,
+  }));
+  const growthDecisions = [...quotes.map((quote) => ({ label: quote.label, state: 'staged', cost: quote.cost, gap: quote.gap })), ...ofKind('city', 'industry', 'warehouse', 'product')];
+  const divisionMetrics = report.divisionMetrics || [];
+  const offices = (report.offices || []).map((office) => ({
+    division: office.division,
+    city: office.city,
+    size: finite(office.size, 0),
+    employees: finite(office.employees, 0),
+    energy: finite(office.energy, 0),
+    morale: finite(office.morale, 0),
+    starvation: office.starvation === true,
+  }));
+  const productSlotsPerDivision = Object.fromEntries(
+    divisionMetrics.filter((division) => division.productSlots).map((division) => [division.name, division.productSlots]),
+  );
+  const productMetrics = Object.fromEntries(
+    divisionMetrics.map((division) => [division.name, {
+      researchPoints: finite(division.researchPoints, 0),
+      slots: division.productSlots || null,
+      products: (division.products || []).map((product) => ({
+        name: product.name,
+        progress: finite(product.progress, 0),
+        rating: finite(product.rating, 0),
+        stored: finite(product.stored, 0),
+      })),
+    }]),
+  );
+  const growthGoal = quotes[0] || null;
+  const findings = (report.findings || []).slice(0, MAX_FINDINGS).map((finding) => ({
+    kind: finding.kind,
+    label: finding.label,
+    division: finding.division ?? null,
+    city: finding.city ?? null,
+    reason: finding.reason ? String(finding.reason).slice(0, 200) : null,
+  }));
+  const unsupported = [];
+  if (report.public !== true) unsupported.push({ key: 'estimatedDividendIncome', reason: 'private corporation: no dividend is paid' });
+  else unsupported.push({ key: 'estimatedDividendIncome', reason: 'no finance module measures dividend income (spec §4.4)' });
+  unsupported.push({ key: 'hashMilestone', reason: 'no hash module is wired into the daemon (spec §6.6)' });
+  unsupported.push({ key: 'shareActions', reason: 'finance is unowned: investment, IPO, dividends and buyback belong to corporation-manager.js or to nobody' });
+  if (report.dividendRate === undefined || report.dividendRate === null) unsupported.push({ key: 'dividendRate', reason: 'the corporation snapshot did not expose a dividend rate' });
   return {
     schemaVersion: DAEMON_STATUS_SCHEMA_VERSION,
     at: now,
     pid: finite(report.pid, 0),
+    nodeReset: report.nodeReset ?? null,
+    augReset: report.augReset ?? null,
+    corporation: report.corporation ?? null,
     // Legacy keys dashboards read (README-AUTOMATION.md:223-225).
     mode: report.state === 'UNAVAILABLE' ? 'unavailable' : report.state === 'REPORT_ONLY' ? 'report-only' : report.phase === 'OPTIMIZE' ? 'optimize' : 'bootstrap',
     state: report.state,
@@ -570,28 +733,54 @@ export function buildDaemonStatus(report) {
     reserve: finite(report.reserve),
     revenue: finite(report.revenue),
     expenses: finite(report.expenses),
-    profitPerCycle: (finite(report.revenue) - finite(report.expenses)) * 10,
+    // Profit per corporation market cycle (`constants.secondsPerMarketCycle`), not a magic ×10 (B12).
+    profitPerCycle: (finite(report.revenue) - finite(report.expenses)) * Math.max(1, finite(report.marketCycleSeconds, 10)),
     valuation: finite(report.valuation),
     sharePrice: finite(report.sharePrice),
     public: report.public === true,
+    ownership: report.ownership ?? null,
+    minOwnership: finite(report.financeConfig?.minOwnership, 0.5),
+    dividendRate: report.dividendRate ?? null,
+    estimatedDividendIncome: null,
     divisions: report.divisions || [],
     growthPriority: report.phase === 'BOOTSTRAP',
     phase: report.phase,
     growthBank: finite(report.growthBank),
+    growthGoal,
+    growthDecisions: growthDecisions.slice(0, MAX_DECISIONS),
+    fundingDiagnostics: quotes,
+    researchDecisions: ofKind('research'),
+    productMetrics,
+    productSlotsPerDivision,
+    staffingGoals: offices.map((office) => ({ division: office.division, city: office.city, size: office.size, employees: office.employees, starvation: office.starvation })),
+    offices,
+    upgradeDecisions: ofKind('upgrade', 'advert'),
+    shareActions: [],
+    hashMilestone: null,
+    bootstrap: {
+      state: report.structural?.state ?? null,
+      phase: report.phase,
+      complete: report.progress?.complete === true,
+      checks: report.progress?.checks || [],
+    },
     structural: report.structural,
     optimizer: report.optimizer,
+    findings,
+    unsupported,
     guards: {
       peers: (report.guards?.peers || []).map((peer) => peer.script),
       finance: report.guards?.finance || null,
       structuralClaim: report.guards?.claim || null,
       skipWarehouse: report.guards?.skipWarehouse || [],
+      skipOffice: report.guards?.skipOffice || [],
     },
     blockedBy: report.blockedBy || [],
-    stagedExpansion: report.quotes || [],
+    stagedExpansion: quotes,
     actions,
     persistentFailures: report.persistentFailures || [],
     configErrors: report.configErrors || [],
     configWarnings: report.configWarnings || [],
+    lastActionAt: finite(report.lastActionAt, 0),
     cyclesManaged: finite(report.cyclesManaged),
     log: (report.logger?.lines || []).slice(-MAX_LOG_LINES),
   };
@@ -614,6 +803,10 @@ export function buildDaemonDryRun(report) {
     stagedExpansion: report.quotes || [],
     guards: report.guards || null,
     optimizerPlans: actions.filter((action) => action.state === 'planned').length,
+    // A fresh save plans creation plus the projected next steps (B4); findings[] is the bounded
+    // list the status document publishes instead of a bare count (B5).
+    findings: (report.findings || []).slice(0, MAX_FINDINGS),
+    unsupported: report.state === 'NO_CORP' ? ['no corporation yet: growth, offices and products are planned for the next cycle'] : [],
   };
 }
 
@@ -633,7 +826,7 @@ async function safeSleep(ns, ms) {
 export async function main(ns) {
   const args = Array.isArray(ns.args) ? ns.args : [];
   const options = parseDaemonArgs(args);
-  const configResult = loadConfig(ns, { argv: args });
+  const configResult = loadConfig(ns, { argv: configArgv(args) });
   const config = configResult.config;
   const dryRun = options.dryRun === true || config.dryRun === true;
   for (const label of ['sleep', 'corporation.nextUpdate', 'getServerMoneyAvailable', 'getServerUsedRam']) safeCall(() => ns.disableLog(label));
@@ -664,6 +857,7 @@ export async function main(ns) {
   }
 
   const logger = createDaemonLogger(ns, { quiet: options.quiet, debug: config.telemetry?.debug === true });
+  for (const issue of options.issues || []) logger.log('warn', `${issue.code}: ${issue.detail}`);
   for (const warning of configResult.warnings) logger.log('warn', `config: ${warning.code}${warning.path ? ` (${warning.path})` : ''}`);
   for (const error of configResult.errors) logger.log('warn', `config: ${error.code}${error.path ? ` (${error.path})` : ''}`);
   safeCall(() => ns.tprint(`Corporation daemon ${dryRun ? '(dry run) ' : ''}starting: ${config.bootstrap.industryChain.join(' → ')} across ${config.bootstrap.cities.length} cities, ${CONFIG_PATH}.`));
@@ -674,10 +868,28 @@ export async function main(ns) {
   let failures = mergeFailures(persisted.failures);
   let cooldowns = {};
   let cycles = 0;
-  let crashStreak = 0;
+  // Restored, not zeroed: an in-memory streak let every relaunch reset the 10-minute backoff, so
+  // a cycle that crashes on start crashed again in a tight loop (B2, spec §9.4).
+  let crashStreak = Math.max(0, finite(persisted.crashStreak, 0));
   let lastState = persisted.lastState || null;
   const statePath = DAEMON_STATE_FILE;
-  const maxCycles = options.ticks > 0 ? options.ticks : Infinity;
+  const maxCycles = Number.isFinite(options.ticks) && options.ticks > 0 ? options.ticks : Infinity;
+
+  const persistState = (overrides = {}) =>
+    writeFile(ns, statePath, {
+      ...persisted,
+      schemaVersion: DAEMON_SCHEMA_VERSION,
+      nodeReset: reset.lastNodeReset,
+      augReset: reset.lastAugReset,
+      corporation: safeCall(() => ns.corporation?.getCorporation()?.name, null) ?? persisted.corporation ?? null,
+      cyclesManaged: cycles,
+      lastState,
+      lastAt: Date.now(),
+      failures,
+      finance: overrides.finance ?? persisted.finance ?? null,
+      guards: overrides.guards ?? persisted.guards ?? null,
+      crashStreak,
+    });
 
   // One optimiser for the whole run: it keeps research samples, pricing brackets and failure
   // counters instead of restoring them from disk every cycle.
@@ -712,10 +924,13 @@ export async function main(ns) {
         statusFile: DAEMON_STATUS_FILE,
       });
     } catch (error) {
-      // Never let a cycle kill the loop: log, back off, retry.
+      // Never let a cycle kill the loop: log, persist the streak, back off, retry.
       crashStreak++;
       logger.log('error', `Corporation cycle crashed (${crashStreak}×): ${text(error)}`);
       safeCall(() => ns.tprint(`Corporation daemon cycle crashed: ${text(error)}`));
+      // The write used to be after the catch, so the crash path exited the iteration without
+      // persisting anything and every restart began again at streak 1 (B2).
+      persistState();
       await safeSleep(ns, crashStreak >= CRASH_BACKOFF_CYCLES ? CRASH_BACKOFF_MS : Math.max(options.interval, 60000));
       continue;
     }
@@ -726,20 +941,14 @@ export async function main(ns) {
       logger.log('info', `corporation state: ${report.state} (${report.phase})${report.reason ? ` — ${report.reason}` : ''}`);
       lastState = report.state;
     }
-    writeFile(ns, statePath, {
-      ...persisted,
-      schemaVersion: DAEMON_SCHEMA_VERSION,
-      nodeReset: reset.lastNodeReset,
-      augReset: reset.lastAugReset,
-      corporation: safeCall(() => ns.corporation?.getCorporation()?.name, null) ?? persisted.corporation ?? null,
-      cyclesManaged: cycles,
-      lastState: report.state,
-      lastAt: Date.now(),
-      failures,
-      finance: report.guards?.finance || null,
-      guards: report.guards || null,
-      crashStreak,
-    });
+    persistState({ finance: report.guards?.finance || null, guards: report.guards || null });
+    // A call that has failed five times in a row will not succeed because the loop retried in
+    // two seconds: back off like a crash instead of burning a cycle per tick (B2, spec §9.3).
+    const worstFailure = Math.max(0, ...(report.persistentFailures || []).map((failure) => finite(failure.count, 0)));
+    const persistentBackoff = worstFailure >= PERSISTENT_FAILURE_BACKOFF;
+    if (persistentBackoff) {
+      logger.log('warn', `${worstFailure} consecutive failures on one operation; backing off ${Math.round(CRASH_BACKOFF_MS / 60000)} minutes.`);
+    }
 
     if (report.terminal) {
       safeCall(() => ns.tprint(`Corporation daemon terminal state ${report.state}: ${report.reason || 'no reason given'}`));
@@ -747,6 +956,10 @@ export async function main(ns) {
     }
     if (report.state === 'NO_CORP') {
       await safeSleep(ns, Math.max(options.interval, 60000));
+      continue;
+    }
+    if (persistentBackoff) {
+      await safeSleep(ns, CRASH_BACKOFF_MS);
       continue;
     }
     try {

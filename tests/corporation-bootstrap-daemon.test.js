@@ -25,9 +25,35 @@ function readStatus(game, path = BOOTSTRAP_STATUS_FILE) {
 }
 
 test('daemon flags parse without swallowing the next flag', () => {
-  assert.deepEqual(parseDaemonArgs(['--ticks=5', '--interval', '250', '--dry-run']), { ticks: 5, interval: 250, dryRun: true, quiet: false });
-  assert.deepEqual(parseDaemonArgs(['--ticks', '3', '--quiet']), { ticks: 3, interval: 0, dryRun: false, quiet: true });
-  assert.deepEqual(parseDaemonArgs(['--dry-run', 'false']), { ticks: 0, interval: 0, dryRun: false, quiet: false });
+  const five = parseDaemonArgs(['--ticks=5', '--interval', '250', '--dry-run']);
+  assert.equal(five.ticks, 5);
+  assert.equal(five.interval, 250);
+  assert.equal(five.dryRun, true);
+  assert.equal(five.quiet, false);
+  assert.deepEqual(five.issues, []);
+
+  const three = parseDaemonArgs(['--ticks', '3', '--quiet']);
+  assert.equal(three.ticks, 3);
+  assert.equal(three.interval, 0);
+  assert.equal(three.dryRun, false);
+  assert.equal(three.quiet, true);
+
+  const bare = parseDaemonArgs(['--dry-run', 'false']);
+  assert.equal(bare.ticks, null, 'no --ticks at all is the only "run until stopped"');
+  assert.equal(bare.interval, 0);
+  assert.equal(bare.dryRun, false);
+  assert.equal(bare.quiet, false);
+});
+
+test('a mistyped --ticks bound never turns into an unbounded run (B8)', () => {
+  for (const value of ['0', '-3', 'abc', '1.5', '']) {
+    const options = parseDaemonArgs([`--ticks=${value}`]);
+    assert.equal(options.ticks, 1, `--ticks=${value} must bound the run to one cycle`);
+    assert.equal(options.issues.length, 1);
+    assert.equal(options.issues[0].code, 'config.invalidTicks');
+  }
+  assert.equal(parseDaemonArgs(['--ticks']).ticks, 1, 'a flag with no value is not an unbounded run');
+  assert.equal(parseDaemonArgs(['--cycles=4']).ticks, 4, '--cycles is still an alias');
 });
 
 test('reset context tolerates a Map and a plain object for ownedSF', () => {

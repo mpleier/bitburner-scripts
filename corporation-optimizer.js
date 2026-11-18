@@ -195,6 +195,8 @@ export function readCorporationSnapshot(api, { catalog = RESEARCH_PRIORITY } = {
  * @param {number} [options.reserveFloor] cash the structural phase has claimed this cycle
  * @param {string[]|Set<string>} [options.skipWarehouse] `Division/City` keys the structural phase
  *        already upgraded (or bought) this cycle; upgrading them again would be a duplicate purchase
+ * @param {string[]|Set<string>} [options.skipOffice] `Division/City` keys whose office the structural
+ *        phase already grew this cycle; growing it again would be a second increment (N1)
  */
 export function createCorporationOptimizer({
   api,
@@ -209,21 +211,25 @@ export function createCorporationOptimizer({
   identity = null,
   reserveFloor = 0,
   skipWarehouse = null,
+  skipOffice = null,
 } = {}) {
   let settings = config;
   let structuralReserve = Math.max(0, num(reserveFloor));
   const skipWarehouses = new Set(skipWarehouse instanceof Set ? skipWarehouse : Array.isArray(skipWarehouse) ? skipWarehouse : []);
+  const skipOffices = new Set(skipOffice instanceof Set ? skipOffice : Array.isArray(skipOffice) ? skipOffice : []);
 
   /**
    * Per-cycle guards from the daemon. `reserveFloor` is cash a structural purchase has
-   * already claimed (cities/industries); `skipWarehouse` names `Division/City` warehouses the
+   * already claimed (cities/industries); `skipWarehouse`/`skipOffice` name the objects the
    * structural phase touched this cycle, so one cycle never buys the same upgrade twice.
    */
-  const setCycleGuards = ({ reserveFloor: floor = structuralReserve, skipWarehouse: skip = null } = {}) => {
+  const setCycleGuards = ({ reserveFloor: floor = structuralReserve, skipWarehouse: skip = null, skipOffice: offices = null } = {}) => {
     structuralReserve = Math.max(0, num(floor));
     skipWarehouses.clear();
     for (const key of skip instanceof Set ? skip : Array.isArray(skip) ? skip : []) skipWarehouses.add(String(key));
-    return { reserveFloor: structuralReserve, skipWarehouse: [...skipWarehouses] };
+    skipOffices.clear();
+    for (const key of offices instanceof Set ? offices : Array.isArray(offices) ? offices : []) skipOffices.add(String(key));
+    return { reserveFloor: structuralReserve, skipWarehouse: [...skipWarehouses], skipOffice: [...skipOffices] };
   };
   let optimizerState = restoreOptimizerState(state, identity || {});
   if (identity) {
@@ -381,6 +387,12 @@ export function createCorporationOptimizer({
             autoTea: division.autoTea, autoParty: division.autoParty,
           });
           const label = `Staff ${division.name}/${row.city}`;
+          const officeKey = `${division.name}/${row.city}`;
+          if (skipOffices.has(officeKey) && plan.sizeUpgrade) {
+            // The structural phase grew this office in the same cycle: one increment per cycle (N1).
+            record('people', `Grow office ${officeKey}`, 'blocked', { reason: 'the structural phase already grew this office this cycle' });
+            plan.sizeUpgrade = null;
+          }
           if (plan.starvation) {
             const key = `${division.name}/${row.city}`;
             optimizerState.starvation[key] = num(optimizerState.starvation[key]) + 1;
@@ -537,7 +549,9 @@ export function createCorporationOptimizer({
           record('buy', `Inputs ${division.name}/${row.city}`, 'blocked', { reason: inputs.reason });
         }
         if (snapshot.unlocks.smartSupply && !dryRun && !recovering && inputs.mode === 'smart') {
-          safe(() => api.setSmartSupply(division.name, row.city, true));
+          // `allowed()` carries both the dry-run switch and the mid-tick pause guard; testing
+          // `!dryRun` alone wrote to the game while automation was paused (B9).
+          if (allowed()) safe(() => api.setSmartSupply(division.name, row.city, true));
         }
 
         const boosts = planBoosts({
@@ -643,6 +657,8 @@ export function createCorporationOptimizer({
       revenue: num(info?.revenue),
       expenses: num(info?.expenses),
       profitPerCycle: (num(info?.revenue) - num(info?.expenses)) * cycleSeconds,
+      cycleSeconds,
+      lastActionAt: num(optimizerState.lastActionAt),
       valuation: num(info?.valuation),
       sharePrice: num(info?.sharePrice),
       public: info?.public === true,

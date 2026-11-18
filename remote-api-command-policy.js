@@ -1,7 +1,7 @@
 // Import-free module registry and command validation shared with the local listener.
 export const commandFile = 'remote-control/request.json';
 export const heartbeatFile = 'remote-control/heartbeat.json';
-export const commandPolicyVersion = 31;
+export const commandPolicyVersion = 33;
 export const resultFile = id => 'remote-control/results/' + id + '.json';
 // Authoritative module metadata lives beside import-free command validation so the local
 // listener can hot-reload both together without stale dependency caches.
@@ -43,7 +43,7 @@ export const moduleManifest=Object.freeze([
 ]);
 export const managedScripts=moduleManifest.filter(m=>m.remoteControl).map(m=>m.script);
 export const diagnosticScripts=moduleManifest.filter(m=>m.diagnostic).map(m=>m.script);
-const queries = new Set(['getPlayer','getMoneySources','getResetInfo','ps','scan','getServer','getScriptRam','cloud.getServerNames','getPurchasedServers','ls','singularity.getCurrentWork','singularity.getOwnedAugmentations','corporation.hasCorporation','corporation.getCorporation','corporation.getDivision','corporation.getOffice','corporation.getWarehouse','corporation.getProduct','corporation.getInvestmentOffer','corporation.getMaterial','sleeve.getNumSleeves','sleeve.getSleeve','gang.inGang','gang.getGangInformation','gang.getMemberNames','gang.getAllGangInformation','gang.getMemberInformation','gang.getAscensionResult','gang.getTaskStats','gang.getBonusTime','bladeburner.inBladeburner','bladeburner.getCurrentAction','dnet.connectToSession','scp','exec']);
+const queries = new Set(['getPlayer','getMoneySources','getResetInfo','ps','scan','getServer','getScriptRam','cloud.getServerNames','getPurchasedServers','ls','read','singularity.getCurrentWork','singularity.getOwnedAugmentations','corporation.hasCorporation','corporation.getCorporation','corporation.getDivision','corporation.getOffice','corporation.getWarehouse','corporation.getProduct','corporation.getInvestmentOffer','corporation.getMaterial','sleeve.getNumSleeves','sleeve.getSleeve','gang.inGang','gang.getGangInformation','gang.getMemberNames','gang.getAllGangInformation','gang.getMemberInformation','gang.getAscensionResult','gang.getTaskStats','gang.getBonusTime','bladeburner.inBladeburner','bladeburner.getCurrentAction','bladeburner.getRank','bladeburner.getCity','bladeburner.getStamina','bladeburner.getTeamSize','bladeburner.getBonusTime','bladeburner.getSkillNames','bladeburner.getSkillLevel','bladeburner.getSkillPoints','bladeburner.getBlackOpNames','bladeburner.getBlackOpRank','bladeburner.getActionCountRemaining','bladeburner.getActionCurrentLevel','bladeburner.getActionMaxLevel','bladeburner.getActionEstimatedSuccessChance','bladeburner.getActionTime','bladeburner.getActionRepGain','bladeburner.getActionSuccesses','bladeburner.getCityChaos','bladeburner.getCityEstimatedPopulation','dnet.connectToSession','scp','exec']);
 export function validateCommand(command, now = Date.now()) {
  if (!command || !/^[a-zA-Z0-9_-]{1,80}$/.test(command.id || '')) throw new Error('Invalid command ID');
  if (!Number.isFinite(command.expiresAt) || command.expiresAt <= now) throw new Error('Command expired');

@@ -8,6 +8,10 @@ const files = [];
 async function collect(directory) {
     for (const entry of await readdir(directory, { withFileTypes: true })) {
         if (entry.isDirectory()) {
+            // Hidden directories (.git, .worktrees, .cache, ...) hold tooling and transient
+            // agent worktrees, never deployable sources: walking them multiplies the file count
+            // several times over and reports failures no deployable file can cause.
+            if (entry.name.startsWith('.')) continue;
             if (!ignoredDirectories.has(entry.name)) await collect(join(directory, entry.name));
         } else if (entry.isFile() && /\.(?:c?js)$/.test(entry.name)) {
             files.push(join(directory, entry.name));

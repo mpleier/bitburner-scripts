@@ -1,0 +1,76 @@
+{
+  "schemaVersion": 1,
+  "enabled": true,
+  "dryRun": false,
+  "corporation": {
+    "name": "Apex Holdings",
+    "selfFund": true,
+    "seedFirst": true
+  },
+  "bootstrap": {
+    "industryChain": ["Agriculture", "Chemical", "Tobacco"],
+    "cities": ["Sector-12", "Aevum", "Volhaven", "Chongqing", "New Tokyo", "Ishima"],
+    "expandAllIndustries": false,
+    "allowDivisionSale": false,
+    "warehouseFullThreshold": 0.7,
+    "initialOfficeSize": 9,
+    "setupReserve": 20000000,
+    "materialCashFraction": 0.05
+  },
+  "product": {
+    "scienceFloor": 1.15,
+    "scienceAbandonFloor": 1.1,
+    "allowProductRetirement": false,
+    "developmentSpeed": true,
+    "maxProductsPerDivision": null,
+    "minimumInvestment": 10000000,
+    "investmentCashFraction": 0.02
+  },
+  "people": {
+    "officeTargets": {
+      "materials": [3, 9, 15, 20, 30, 45, 60],
+      "products": [30, 60, 80, 100, 120]
+    },
+    "cashTiers": {
+      "materials": [1000000000, 10000000000, 100000000000, 1000000000000, 5000000000000, 10000000000000],
+      "products": [1000000000000, 10000000000000, 100000000000000, 1000000000000000]
+    },
+    "teaThreshold": 2,
+    "upgradeFraction": 0.2,
+    "upgradePaybackCycles": 600,
+    "storageUpgradeFraction": 0.35,
+    "starvationTicks": 3
+  },
+  "finance": {
+    "acceptInvestment": false,
+    "payDividends": false,
+    "manageShares": false
+  },
+  "market": {
+    "advertSpendFraction": 0.5,
+    "maxAdVerts": { "materials": 8, "products": 20 },
+    "advertPaybackSeconds": 21600,
+    "boostWarehouseFraction": 0.6
+  },
+  "budgets": {
+    "reserveFloor": 1000000,
+    "reserveCap": 5000000000,
+    "reserveCashFraction": 0.1,
+    "reserveExpenseCycles": 2,
+    "growthFraction": 0.25,
+    "developmentGrowthFraction": 0.75,
+    "upkeepCashFraction": 0.02,
+    "boostCashFraction": 0.2,
+    "inputCashFraction": 0.5,
+    "officeCashFraction": 0.1,
+    "recoveryMarginCycles": 10,
+    "structuralClaimFraction": 0.5
+  },
+  "research": { "affordableFraction": 0.2, "optionalAutomation": false, "developmentReserveCycles": 5 },
+  "telemetry": {
+    "statusFile": "tasks/corporation-status.json",
+    "stateFile": "tasks/corporation-optimizer.json",
+    "cadenceMs": 60000,
+    "debug": false
+  }
+}

@@ -23,13 +23,24 @@
     "scienceAbandonFloor": 1.1,
     "allowProductRetirement": false,
     "developmentSpeed": true,
-    "maxProductsPerDivision": null
+    "maxProductsPerDivision": null,
+    "minimumInvestment": 10000000,
+    "investmentCashFraction": 0.02
   },
   "people": {
-    "officeTargets": { "materials": [3, 9, 15, 20, 30, 45, 60], "products": [30, 60, 80, 100, 120] },
+    "officeTargets": {
+      "materials": [3, 9, 15, 20, 30, 45, 60],
+      "products": [30, 60, 80, 100, 120]
+    },
+    "cashTiers": {
+      "materials": [1000000000, 10000000000, 100000000000, 1000000000000, 5000000000000, 10000000000000],
+      "products": [1000000000000, 10000000000000, 100000000000000, 1000000000000000]
+    },
     "teaThreshold": 2,
     "upgradeFraction": 0.2,
-    "storageUpgradeFraction": 0.35
+    "upgradePaybackCycles": 600,
+    "storageUpgradeFraction": 0.35,
+    "starvationTicks": 3
   },
   "finance": {
     "minOwnership": 0.5,
@@ -38,12 +49,14 @@
     "ipoValuationFloor": 10000000000,
     "ipoShares": 0,
     "payDividends": true,
-    "dividendTiers": [[1000000000000000000000, 0.2], [1000000000000000000, 0.1], [1000000000000000, 0.05], [10000000000000, 0.02]],
+    "dividendTiers": [[1e21, 0.2], [1e18, 0.1], [1e15, 0.05], [1e13, 0.02]],
     "manageShares": true,
     "bribeFactions": true
   },
   "market": {
     "advertSpendFraction": 0.5,
+    "maxAdVerts": { "materials": 8, "products": 20 },
+    "advertPaybackSeconds": 21600,
     "boostWarehouseFraction": 0.6,
     "exportQualityMargin": 0.05,
     "priceCeiling": 1000000,
@@ -58,8 +71,15 @@
     "developmentGrowthFraction": 0.75,
     "upkeepCashFraction": 0.02,
     "boostCashFraction": 0.2,
-    "recoveryMarginCycles": 30
+    "inputCashFraction": 0.5,
+    "officeCashFraction": 0.1,
+    "recoveryMarginCycles": 10
   },
-  "research": { "affordableFraction": 0.2, "optionalAutomation": false },
-  "telemetry": { "statusFile": "tasks/corporation-status.json", "cadenceMs": 60000, "debug": false }
+  "research": { "affordableFraction": 0.2, "optionalAutomation": false, "developmentReserveCycles": 5 },
+  "telemetry": {
+    "statusFile": "tasks/corporation-status.json",
+    "stateFile": "tasks/corporation-optimizer.json",
+    "cadenceMs": 60000,
+    "debug": false
+  }
 }

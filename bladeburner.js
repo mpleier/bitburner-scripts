@@ -21,7 +21,7 @@ import {blackOpMetadata,bladeburnerDifficulty,bladeburnerXpWeights} from './blad
 import {trainBladeburnerEntrySource,stopBladeburnerEntrySource} from './node-route-selection-policy.js';
 import {readNodeRoutePlan} from './node-route-policy.js';
 import {registerAutomation,automationHeartbeat,maintenanceRequested} from './runtime-policy.js';
-import {bladeburnerSkillContext,bladeburnerSurplusAvailable,bladeburnerStockGuard,readBladeburnerMaintenance,probeBladeburnerCities,chooseBladeburnerCity,bladeburnerRecoveryTarget,bladeburnerSkillGoal,bladeburnerStaminaChance,bladeburnerActionCandidates,bladeburnerPlanCacheValid,bladeburnerActionCompleted,bladeburnerTrainingProgress,isBlackOp,nextSkill,nextBladeburnerProgressSkill,bladeburnerDevelopmentAction,raidCities,recoveryRequired,optionsError,requiredBladeburnerTeam,prepareBladeburnerTeam,bladeburnerTeamPreparationWindow,bladeburnerRecruitmentBudget,bladeburnerRankRate,rankBladeburnerActions,spendBladeburnerSkills,bladeburnerRecruitmentDecision,bladeburnerRecruitmentTiming,planBladeburnerLevels,planBladeburnerTeams,startBladeburnerPlannedAction,bladeburnerWorkAllowed} from './bladeburner-policy.js';
+import {bladeburnerSkillContext,bladeburnerSurplusAvailable,bladeburnerStockGuard,readBladeburnerMaintenance,probeBladeburnerCities,chooseBladeburnerCity,bladeburnerRecoveryTarget,bladeburnerSkillGoal,bladeburnerStaminaChance,bladeburnerActionCandidates,bladeburnerPlanCacheValid,bladeburnerActionCompleted,bladeburnerActionInterrupted,bladeburnerTrainingProgress,isBlackOp,nextSkill,nextBladeburnerProgressSkill,bladeburnerDevelopmentAction,raidCities,recoveryRequired,optionsError,requiredBladeburnerTeam,prepareBladeburnerTeam,bladeburnerTeamPreparationWindow,bladeburnerRecruitmentBudget,bladeburnerRankRate,rankBladeburnerActions,spendBladeburnerSkills,bladeburnerRecruitmentDecision,bladeburnerRecruitmentTiming,planBladeburnerLevels,planBladeburnerTeams,startBladeburnerPlannedAction,bladeburnerWorkAllowed} from './bladeburner-policy.js';
 import {isScriptPaused} from './automation-control.js';
 import {achievementActionAllowed} from './achievement-policy.js';
 import { activityBusy, markActivitySupport, activityGuard, claimActivity, releaseActivity } from './activity-coordination.js';
@@ -109,6 +109,7 @@ export async function main(ns) {
     ownsRecruitment=false;ownsSurplus=false;surplusGuardPid=0;surplusGuardAttemptAt=0;lastStartDeferral=null;cityPlanCache=null;lastCapabilityKey=null;levelPlanCache=null;actionProgress=null;nextHashWorkerCheck=0;hashWorkerStatus='';
     options = runOptions; // We don't set the global "options" until we're sure this is the only running instance
     disableLogs(ns, ['sleep'])
+    log(ns, 'INFO: Bladeburner ETA-aware interruption guard active (scheduled completion is not an interruption).');
     player = await getNsDataThroughFile(ns, 'ns.getPlayer()');
     resetInfo = await getNsDataThroughFile(ns, 'ns.getResetInfo()');
     let savedTeamBudget;try{savedTeamBudget=JSON.parse(ns.read(teamStatusFile));}catch{}
@@ -650,8 +651,8 @@ async function mainLoop(ns) {
     const farmSurplus=surplusSelected&&bestActionName===antiChaosOperation;
     // Special case: If the user has manually kicked off the last BlackOps, don't interrupt it, let it be our last task
     if(isBlackOp(currentAction)){lastAssignedTask=currentAction.name;return;}
-    // Warn the user if it looks like a task was interrupted by something else (user activity or bladeburner automation). Ignore if our last assigned task has run out of actions.
-    if (lastAssignedTask && lastAssignedTask != currentAction?.name && getCount(lastAssignedTask) > 0 && !(lastAssignedTask===antiChaosOperation&&!currentAction?.name&&Math.floor(getCount(antiChaosOperation))<=stockReserve)) {
+    // Warn only when an assigned action switches before its ETA elapses; a normal completion goes idle on schedule. Ignore if our last assigned task has run out of actions.
+    if (bladeburnerActionInterrupted(lastAssignedTask,currentAction?.name,getCount(lastAssignedTask),currentTaskEndTime,Date.now()) && !(lastAssignedTask===antiChaosOperation&&!currentAction?.name&&Math.floor(getCount(antiChaosOperation))<=stockReserve)) {
         const key=lastAssignedTask+'->'+(currentAction?.name||'idle'),now=Date.now();
         if(!interruptionWarnings.has(key)||now-interruptionWarnings.get(key)>=60000){
             log(ns, `WARNING: Bladeburner action "${lastAssignedTask}" changed unexpectedly to "${currentAction?.name||'idle'}". Reselecting an action; another player activity or native automation may have interrupted it.`,false,'warning');

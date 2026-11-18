@@ -583,6 +583,12 @@ export function bladeburnerActionCompleted(previous,current) {
   Number.isFinite(previous.progress)&&Number.isFinite(current.progress)&&current.progress<previous.progress;
 }
 
+/** An action that ran for its whole ETA and then went idle completed normally; only an early switch is an interruption. */
+export function bladeburnerActionInterrupted(lastTask,currentName,remaining,expectedEndAt,now) {
+ if(!lastTask||lastTask===currentName||!(remaining>0))return false;
+ return !(Number.isFinite(expectedEndAt)&&Number.isFinite(now)&&now>=expectedEndAt);
+}
+
 /** Lower-bound chance after native stamina deduction; ignore future regeneration conservatively.
  * Capped native chance hides surplus competence, so this deliberately never increases the estimate. */
 export function bladeburnerStaminaChance(chance,stamina,difficulty) {

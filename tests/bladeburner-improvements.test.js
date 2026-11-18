@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
-import {readBladeburnerMaintenance,bladeburnerStaminaChance,bladeburnerRankRate,planBladeburnerLevels,bladeburnerPlanCacheValid,bladeburnerActionCompleted,startBladeburnerPlannedAction} from '../bladeburner-policy.js';
+import {readBladeburnerMaintenance,bladeburnerStaminaChance,bladeburnerRankRate,planBladeburnerLevels,bladeburnerPlanCacheValid,bladeburnerActionCompleted,bladeburnerActionInterrupted,startBladeburnerPlannedAction} from '../bladeburner-policy.js';
 import {sleeveBladeburnerTasks} from '../sleeve-policy.js';
 import {bladeburnerDifficulty} from '../bladeburner-action-data.js';
 
@@ -40,6 +40,15 @@ test('contracts and general actions detect accelerated completion without a coun
   assert.equal(bladeburnerActionCompleted(previous,{...previous,name:'Y',progress:0}),false);
  }
  assert.equal(bladeburnerActionCompleted(null,{}),false);
+});
+
+test('a bladeburner action finishing on schedule is not an interruption',()=>{
+ assert.equal(bladeburnerActionInterrupted('Tracking','idle',4,Date.UTC(2026,0,1,0,0,2),Date.UTC(2026,0,1,0,0,1)),true);
+ assert.equal(bladeburnerActionInterrupted('Tracking','idle',4,Date.UTC(2026,0,1,0,0,2),Date.UTC(2026,0,1,0,0,3)),false);
+ assert.equal(bladeburnerActionInterrupted('Tracking','Retirement',4,Date.UTC(2026,0,1,0,0,2),Date.UTC(2026,0,1,0,0,3)),false);
+ assert.equal(bladeburnerActionInterrupted('Tracking','idle',0,Date.UTC(2026,0,1,0,0,2),Date.UTC(2026,0,1,0,0,1)),false);
+ assert.equal(bladeburnerActionInterrupted(null,'idle',4,Date.UTC(2026,0,1,0,0,2),Date.UTC(2026,0,1,0,0,1)),false);
+ assert.equal(bladeburnerActionInterrupted('Tracking','idle',4,NaN,Date.now()),true);
 });
 
 const sleeves=Array.from({length:4},()=>({shock:0,sync:100}));

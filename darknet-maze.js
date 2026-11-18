@@ -1,32 +1,13 @@
 import {navigatorReportFile,mazeCheckpointFile,mazeMovementReport,mazeResizePlan} from './darknet-navigator-policy.js';
 import {restoreLabyrinthProgress,packLabyrinthProgress,observeLabyrinth,nextLabyrinthMove,labyrinthRadarDue,recordLabyrinthEdge,labyrinthRouteDistance,mazeRecoveryTransition} from './darknet-labyrinth-policy.js';
 import {readMazeLease} from './darknet-development-policy.js';
-const authWorker='darknet-auth.js';
-/** A move is an authenticate(target, direction) call, and its duration scales with the *calling* script's thread
- * count — but this navigator is the largest worker on the host, so a move made in-process costs the full
- * one-thread time. Prefer the thin 2 GB auth worker with every thread the host can spare; when no worker
- * can be started (no free RAM, or the script is absent), fall back to the in-process call instead of
- * stalling the navigator. */
+/** Labyrinth position is tracked per calling script PID (DarknetState.labLocations[pid]): a fresh
+ *  darknet-auth.js worker starts at a random entrance on every call, so a move made by a worker
+ *  reports coordinates that disagree with labreport() from the navigator's PID. The navigator
+ *  already runs with the thread count chosen for authenticate speed, so make maze moves in-process:
+ *  one stable PID for reading position, moving, and finally rooting the maze. */
 export async function threadedMove(ns,target,direction,self,serial){
- const output='/Temp/dnet-move-'+ns.pid+'-'+serial+'.json';
- try{
-  const ram=ns.getScriptRam(authWorker,self);
-  const free=ns.getServerMaxRam(self)-ns.getServerUsedRam(self);
-  const threads=ram>0?Math.min(32,Math.floor(free/ram)):0;
-  const pid=threads>0?ns.exec(authWorker,self,threads,target,direction,output):0;
-  if(!pid){
-   // No worker could be launched: no free RAM, or the worker script is absent on this host.
-   // The in-process call costs one thread's time, but a stalled navigator never finishes.
-   try{return await ns.dnet.authenticate(target,direction);}catch{return null;}
-  }
-  // Bounded by iterations as well as by the clock: a leaked pid must never spin this loop forever, and a
-  // harness with a virtual clock would otherwise wait on real time it never advances.
-  for(let wait=0;wait<9000&&ns.isRunning(pid);wait++)await ns.sleep(20);
-  let result=null;try{result=JSON.parse(ns.read(output)||'null');}catch{}
-  try{ns.rm(output,self);}catch{}
-  // The worker answers a batch; a move is the first (and only) entry's receipt.
-  return result?.success||Number.isFinite(result?.code)?result:null;
- }catch{return null;}
+ try{return await ns.dnet.authenticate(target,direction);}catch{return null;}
 }
 /** A completed maze can leave reward caches on the labyrinth or the navigating host. */
 export async function claimRewardCaches(ns,target,self){
@@ -60,13 +41,13 @@ export async function main(ns){
  const reportFile=navigatorReportFile(self,target),checkpoint=mazeCheckpointFile(target),threads=ns.getRunningScript()?.threads||1;
  let state={},report=null,owned=false,lastPublish=0,lastSaved='',progressAt=0,moves=0,batchMoves=0,batchAt=Date.now(),lastDuration=10000,lastRadar=-Infinity,radarMoves=-Infinity,lastCheckpointAt=0,savedMoves=0,savedEnd=null,phase='waiting',inFlight=false,expectedMs=0,firstPosition=true,recovery={noRoute:0,loop:0};
  const timing={startedAt:Date.now(),coordinationMs:0,actions:{position:{count:0,ms:0},radar:{count:0,ms:0},move:{count:0,ms:0}},radarCells:0};
- let coordinationDepth=0;
+ let coordinationDepth=0; let lastError='',stalls=0;
  const coordinate=async action=>{const outer=coordinationDepth++===0,at=Date.now();try{return await action();}finally{coordinationDepth--;if(outer)timing.coordinationMs+=Math.max(0,Date.now()-at);}};
  let permissionAt=-Infinity,permissionValue=false,leaseAt=-Infinity,leaseValue=null;
  const contextValid=()=>{try{const c=JSON.parse(ns.read('tasks/dnet-cache-context.json'));return c.nodeReset===scope[0]&&c.augReset===scope[1];}catch{return false;}};
  const publishImpl=async(force=false)=>{
   if(!force&&Date.now()-lastPublish<15000)return true;
-  const at=Date.now(),value={version:1,type:'navigator',host:self,pid:ns.pid,target,scope,at,phase,inFlight,expectedMs,progressAt,moves,threads,timing,coords:report?.coords??null,neighbours:ns.dnet.probe()};
+  const at=Date.now(),value={version:1,type:'navigator',host:self,pid:ns.pid,target,scope,at,phase,inFlight,expectedMs,progressAt,moves,threads,timing,coords:report?.coords??null,error:lastError||undefined,stalls,neighbours:ns.dnet.probe()};
   await ns.write(reportFile,JSON.stringify(value),'w');if(!await ns.scp(reportFile,'home',self)){lastPublish=0;return false;}lastPublish=at;return true;
  };
  const publish=force=>coordinate(()=>publishImpl(force));
@@ -93,7 +74,7 @@ export async function main(ns){
  };
  const persist=force=>coordinate(()=>persistImpl(force));
  const call=async(name,action)=>{
-  if(!contextValid()||!await permitted()||!await lease())return null;
+  if(!contextValid()||!await permitted()||!await lease()){lastError='context/permission/lease unavailable';return null;}
   phase=name;inFlight=true;
   try{expectedMs=ns.formulas.dnet.getAuthenticateTime(ns.dnet.getServerDetails(target),threads,ns.getPlayer());}catch{expectedMs=600000;}
   expectedMs=Math.max(1000,Math.min(600000,Number.isFinite(expectedMs)?expectedMs:60000));
@@ -104,7 +85,7 @@ export async function main(ns){
  try{
   await publish(true);
   while(contextValid()){
-   if(!ns.dnet.probe().includes(target))break;
+   if(!ns.dnet.probe().includes(target)){lastError='labyrinth no longer adjacent';stalls=0;break;}
    const details=ns.dnet.getServerDetails(target);
    if(ns.hasRootAccess(target)){
     phase='complete';
@@ -123,7 +104,7 @@ export async function main(ns){
     if(ns.fileExists(checkpoint,'home')){if(!await ns.scp(checkpoint,self,'home')){await ns.sleep(1000);continue;}try{const raw=ns.read(checkpoint);if(raw.length<250000)state=restoreLabyrinthProgress(JSON.parse(raw),scope)||{};}catch{}}
     const saved=packLabyrinthProgress(state,scope);if(saved){const {at,...content}=saved;lastSaved=JSON.stringify(content);}owned=true;
    }
-   if(!report){report=await call('position',()=>ns.dnet.labreport());if(!report?.success||!Array.isArray(report.coords)||report.coords.length!==2||!report.coords.every(Number.isSafeInteger)){report=null;await ns.sleep(1000);continue;}if(firstPosition){state.labEntrance=report.coords.join(',');firstPosition=false;}}
+   if(!report){report=await call('position',()=>ns.dnet.labreport());if(!report?.success||!Array.isArray(report.coords)||report.coords.length!==2||!report.coords.every(Number.isSafeInteger)){stalls++;lastError='position: '+String(report?.message||report?.error||'no usable labreport');if(stalls===1||stalls%15===0)await publish(true);report=null;await ns.sleep(1000);continue;}stalls=0;lastError='';if(firstPosition){state.labEntrance=report.coords.join(',');firstPosition=false;}}
    const geometryBefore=JSON.stringify([state.labMap,state.labEnd]);
    const before=JSON.stringify([state.labMap,[...(state.labVisited||[])],state.labEnd]);
    observeLabyrinth(state,report);
@@ -162,13 +143,13 @@ export async function main(ns){
    // A batch limits dispatched moves, never blocks a move because earlier reads were slow.
    if(batchMoves>=8||Date.now()-batchAt>=Math.max(60000,lastDuration*4)){await persist();await ns.sleep(100);batchMoves=0;batchAt=Date.now();}
    const result=await call('move',()=>threadedMove(ns,target,direction,self,++moveSerial));
-   if(!result){
+   if(!result||(result.success===false&&!result.data)){lastError='move: '+String(result?.message||'no move result');
     // No worker could run the move (no free RAM, or the host changed hands). Retry a few times so a yielding
     // loot helper can clear, then hand the maze back instead of spinning inside a loop that cannot progress.
-    if(++moveFailures>=5){phase='stalled';await publish(true);break;}
+    if(++moveFailures>=5){phase='stalled';await publish(true);break;}if(moveFailures===1||moveFailures%5===0)await publish(true);
     await ns.sleep(500);report=null;continue;
    }
-   moveFailures=0;
+   moveFailures=0;lastError='';
    batchMoves++;
    if(result.success){
     if(typeof result.data==='string'){

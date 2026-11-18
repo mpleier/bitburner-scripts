@@ -3,24 +3,24 @@ import assert from 'node:assert/strict';
 import {threadedMove} from '../darknet-maze.js';
 import {scheduleNavigator} from '../darknet-navigator-policy.js';
 
-test('threadedMove falls back to the in-process API when no auth worker can be started',async()=>{
+// Maze position lives in DarknetState.labLocations[pid]. A fresh auth worker starts at a new
+// random entrance, so every move must be made by the navigator's own PID.
+test('threadedMove authenticates in-process and never spawns a fresh maze worker',async()=>{
  const receipt={code:401,message:'You have moved to 1,1.',data:'###\n#@#\n###'};
  let execCalls=0,authArgs=null;
  const ns={pid:7,getScriptRam:()=>2,getServerMaxRam:()=>10,getServerUsedRam:()=>0,
   exec:()=>{execCalls++;return 0;},
   dnet:{authenticate:async(...args)=>{authArgs=args;return receipt;}}};
  assert.deepEqual(await threadedMove(ns,'lab','north','home',1),receipt);
- assert.equal(execCalls,1);
+ assert.equal(execCalls,0);
  assert.deepEqual(authArgs,['lab','north']);
 });
 
-test('threadedMove falls back when there is no RAM even for one auth worker thread',async()=>{
- const receipt={code:401,message:'You cannot go that way. You are still at 1,1.',data:'###\n#@#\n###'};
+test('threadedMove reports a failed authenticate as null instead of throwing',async()=>{
  let execCalls=0;
- const ns={pid:7,getScriptRam:()=>2,getServerMaxRam:()=>10,getServerUsedRam:()=>10,
-  exec:()=>{execCalls++;return 4;},
-  dnet:{authenticate:async()=>receipt}};
- assert.deepEqual(await threadedMove(ns,'lab','east','home',2),receipt);
+ const ns={pid:7,exec:()=>{execCalls++;return 4;},
+  dnet:{authenticate:async()=>{throw new Error('lost access');}}};
+ assert.equal(await threadedMove(ns,'lab','east','home',2),null);
  assert.equal(execCalls,0);
 });
 

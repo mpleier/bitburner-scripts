@@ -20,8 +20,7 @@ function fixture(clock,pid=43,checkpoint=null){
  const moves=[],reports=[];let x=1;const messages=[];const queue=[];
  const move=x0=>{moves.push(x0.direction);clock.now+=12000;x+=2;return x===5?{success:true,code:200,data:'native-password'}:{success:false,code:401,message:'You have moved to '+x+',1.',data:'###\n @ \n###'};};
  const ns={pid,args:['lab',JSON.stringify(scope)],disableLog(){},getHostname:()=> 'origin',getRunningScript:()=>({threads:1}),read:f=>files.get(f)||'',write:async(f,v)=>files.set(f,v),fileExists:f=>files.has(f),scp:async()=>true,rm:f=>files.delete(f),
-  // A move runs in the thin auth worker now: exec queues the call, sleep drains it, and isRunning reports the
-  // worker as alive until its output file exists. Late binding keeps a test's dnet.authenticate override live.
+  // The navigator calls the native API itself; the harness still accepts a queued call for older scripts.
   isRunning:pid=>pid===5001?queue.length>0:true,
   exec:(_file,_host,_threads,target,direction,output)=>{queue.push(async()=>{const r=await ns.dnet.authenticate(target,direction);files.set(output,JSON.stringify(r??{success:false,code:500}));});return 5001;},
   getScriptRam:()=>2,getServerMaxRam:()=>8,getServerUsedRam:()=>1,
@@ -43,8 +42,9 @@ test('maze completion opens reward caches with the thin opener and never from th
  await claimRewardCaches(self,'lab','origin');assert.deepEqual(opened,[]);
  const source=readFileSync(new URL('../darknet-maze.js',import.meta.url),'utf8');
  assert.doesNotMatch(source,/ns\.dnet\.openCache/);
- // The navigator only calls authenticate itself when no auth worker could be started at all.
- assert.match(source,/if\(!pid\)\{[\s\S]*ns\.dnet\.authenticate/);
+ // The navigator makes every move itself so labreport() and the move share one DarknetState PID.
+ assert.match(source,/export async function threadedMove[\s\S]{0,180}ns\.dnet\.authenticate\(target,direction\)/);
+ assert.doesNotMatch(source,/exec\(authWorker/);
 });
 test('a restarted PID resumes map knowledge but reads its own real entrance position',async()=>{
  const original=Date.now,clock={now:2000000};Date.now=()=>clock.now;
@@ -100,9 +100,8 @@ test('navigator publishes separate native action and coordination timings',async
  try{const f=fixture(clock);const scp=f.ns.scp;f.ns.scp=async(...args)=>{clock.now+=2;return scp(...args);};await navigate(f.ns);
  const r=JSON.parse(f.files.get(navigatorReportFile('origin','lab')));
  assert.equal(r.threads,1);assert.equal(r.timing.actions.position.count,1);assert.equal(r.timing.actions.move.count,2);
- // Moves run in the thin auth worker, so each one costs the native call plus the poll that notices the worker
- // exited (20 ms in this harness); the accounting must keep them out of the position/radar buckets.
- assert.equal(r.timing.actions.position.ms,12000);assert.equal(r.timing.actions.move.ms,24040);assert.equal(r.timing.actions.radar.count,0);
+ // Moves run in the navigator's own PID, so each one costs just the native authenticate call.
+ assert.equal(r.timing.actions.position.ms,12000);assert.equal(r.timing.actions.move.ms,24000);assert.equal(r.timing.actions.radar.count,0);
  assert.ok(r.timing.coordinationMs>0);assert.ok(r.timing.coordinationMs<1000);
  }finally{Date.now=original;}
 });

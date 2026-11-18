@@ -323,7 +323,7 @@ export async function main(ns) {
       const labyrinthPending=unsolvedMazes.length>0||snapshot.surveys.some(r=>r&&r.modelId==='(The Labyrinth)'&&!r.rooted);
       if(labyrinthPending){
        const maze=unsolvedMazes[0];
-       note('labyrinth:priority','TOP PRIORITY labyrinth: '+(maze?maze.target+' on '+maze.host+', '+maze.phase+', '+(maze.moves||0)+' moves':'maze host known, waiting for a navigator')+'.');
+       note('labyrinth:priority','TOP PRIORITY labyrinth: '+(maze?maze.target+' on '+maze.host+', '+maze.phase+', '+(maze.moves||0)+' moves'+(maze.error?'; '+maze.error:'')+(maze.stalls?'; '+maze.stalls+' stalled reads':''):'maze host known, waiting for a navigator')+'.');
        const known=maze?.target||snapshot.surveys.find(r=>r&&r.modelId==='(The Labyrinth)'&&!r.rooted)?.host;
        if(typeof known==='string'&&known)await ns.write('tasks/dnet-labyrinth-target.json',JSON.stringify({schema:1,host:known,at:Date.now(),nodeReset:ns.getResetInfo().lastNodeReset}),'w');
       }

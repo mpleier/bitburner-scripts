@@ -67,11 +67,37 @@ Runtime integration:
 
 ### 2.2 RAM cost — measured, not estimated
 
-`ns.getScriptRam('corporation-manager.js', 'home')` returned **858.9 GB** on the
-live save. `automation-manifest.js` documents the same figure as "~860 GB".
-This is a first-order design constraint: RAM is the sum of the *distinct*
-`ns.corporation` functions the script references, so splitting the controller
-into several concurrently running scripts multiplies that cost. See §4.1.
+All figures below are `ns.getScriptRam(<file>, 'home')` reads on the live save
+(2026-11-17, home max RAM 524,288 GB), not estimates:
+
+| Script | Measured static RAM |
+| --- | --- |
+| `corporation-manager.js` (legacy controller) | **858.9 GB** |
+| `corporation-daemon.js` (this entrypoint) | **677.2 GB** |
+| `corporation-bootstrap-daemon.js` (diagnostic half) | **343.8 GB** |
+| `corporation-optimizer.js` (library, not runnable on its own) | **545.0 GB** |
+| `corporation-config.js` (pure config module) | **1.6 GB** |
+| empty entrypoint (`export async function main(ns) {}`) | **2.2 GB** |
+
+`automation-manifest.js` still documents the legacy controller as "~860 GB" and
+that figure is correct for it. The daemon is **cheaper** than the controller it
+replaces, but it is not cheap: the reservation is ~677 GB, so the RAM preflight
+(§9.3, edge 25) refuses a home that cannot host it.
+
+Two measured facts decide the architecture (§4.2):
+
+- **The analyzer charges the whole import graph.** An entrypoint that only
+  `import`s `corporation-optimizer.js` and never calls it measures 545.6 GB —
+  the same 545 GB the library costs alone. Imported modules are paid by the
+  entrypoint that runs, which is why splitting the controller into several
+  *running* scripts multiplies the cost (§4.1).
+- **The analyzer does charge `api.foo()` where `api = ns.corporation`.** Two
+  probes calling the same six corporation members measured 62.2 GB both
+  directly (`ns.corporation.getDivision(…)`) and through an injected alias
+  (`const api = ns.corporation; api.getDivision(…)`), and the namespace object
+  alone measured 2.2 GB. The earlier "0 GB direct / 331.6 GB worst case" claim
+  was wrong in both directions, and no architecture change is needed for it:
+  the injected calls are paid for.
 
 API RAM costs come from `scripts/api-surface.json` (generated from the connected
 game's definitions):
@@ -254,8 +280,8 @@ status files. If a future board asks for it, the only viable split is
 ### 4.4 The integrated daemon (this repository)
 
 `corporation-daemon.js` is the single entrypoint (spec §11.2). It owns the loop; the two halves
-are libraries called from it in the §4.3 order, so one process pays the ~860 GB
-`ns.corporation` reservation once:
+are libraries called from it in the §4.3 order, so one process pays the corporation reservation
+once — measured **677.2 GB** (§2.2):
 
 ```
 run corporation-daemon.js [--dry-run] [--ticks=N] [--interval=ms] [--quiet]
@@ -265,8 +291,9 @@ One cycle:
 
 1. **Guard** — `config.enabled`, the injected `isAllowed` hook (pause/maintenance/achievement),
    a single instance (`ns.ps`), and peer writers (`autopilot.js`, `corporation-manager.js`,
-   `corporation-bootstrap-daemon.js`). A peer writer makes the cycle *report-only*: state is
-   published, no mutation runs, and buy rates are zeroed first.
+   `corporation-bootstrap-daemon.js`, matched by basename in either `ps` path form). A peer
+   writer makes the cycle *report-only*: state is published and **nothing is written at all** —
+   not a purchase, not a buy rate, because the peer owns the rates too (§5.3 invariant 4).
 2. **Structural** — `runBootstrapExpansionCycle(ns, …)`: creation, unlocks, industries, cities,
    warehouses, seed office, input seeding (spec §6.1). It keeps writing
    `tasks/corporation-bootstrap-status.json`.
@@ -293,10 +320,13 @@ persisted counter in `tasks/corporation-daemon-state.json`, never an unhandled e
 consecutive crashes back the loop off to one cycle per ten minutes (spec §9.3). State is scoped
 to `{nodeReset, augReset, corporation}` and discarded on mismatch (spec §9.4).
 
-RAM: the entrypoint references `ns.corporation` for `getConstants` and `nextUpdate` only (both
-0 GB); the modules receive `ns.corporation` as an injected `api`, so their reads and mutations do
-not add static cost to this script. The RAM preflight (`homeRamVerdict`) adds the running
-script's own reservation back before comparing, because a live process is already part of
+RAM: **677.2 GB**, measured with `ns.getScriptRam` on the live save (§2.2). That number is the
+script plus its whole import graph — the analyzer walks `import`s and charges every corporation
+member referenced anywhere in them, and an injected alias (`const api = ns.corporation;
+api.getDivision(…)`) is charged exactly like a direct call (62.2 GB either way in a six-member
+probe). So the modules' API use is paid for by this entrypoint, and the earlier "0 GB direct"
+reading is retired. The RAM preflight (`homeRamVerdict`) adds the running script's own
+reservation back before comparing, because a live process is already part of
 `getServerUsedRam`.
 
 Decisions taken for the integration (and their reasons):
@@ -308,8 +338,16 @@ Decisions taken for the integration (and their reasons):
 - **Finance stays out.** Investment rounds, IPO, dividends, share issue/sale and buyback are not
   implemented here. The legacy `corporation-manager.js` owns them; the daemon reports the owner
   in `guards.finance`, never calls those six functions, and stands down entirely when the legacy
-  controller is running. `finance.*` config keys are validated and reported as *wanted* but
-  unowned when nothing runs them — the status document does not pretend otherwise.
+  controller is running. The shipped `finance.acceptInvestment` / `payDividends` /
+  `manageShares` defaults are **false** and every other `finance.*` leaf is *reserved* (§8): a
+  save whose owner performs the handover must not find itself committed to investor equity that
+  nothing repurchases (finding N2/R1).
+- **One writer per document.** The structural half no longer writes `tasks/corporation-dry-run.json`
+  when the daemon calls it (`dryRunFile: null`); the integrated plan is the only plan (B6).
+- **Crash backoff is restart-safe.** `crashStreak` is restored from
+  `tasks/corporation-daemon-state.json` and written **on the crash path**, before the sleep, so a
+  crash loop that is restarted does not begin at streak 1 again; a `persistentFailures[]` entry
+  at 5 counts also backs the loop off for ten minutes (B2, §9.3).
 - **`budgets.structuralClaimFraction` (default 0.5)** is the one new leaf: it bounds how much of
   the free cash structural expansion may hold back from discretionary optimisation (§8).
 - **`budgets.recoveryMarginCycles` = 10.** Both branches shipped a default; only the optimiser
@@ -323,69 +361,77 @@ config reporting, on the in-memory game in `tests/corporation-test-game.mjs`.
 
 ### 5.1 States
 
-| State | Meaning | Exits when |
-| --- | --- | --- |
-| `UNAVAILABLE` | API/gate absent, or `disableCorporation`, or creation refused permanently | never (terminal, exit with reason) |
-| `NO_CORP` | No corporation; waiting for eligibility or funds | `hasCorporation()` true |
-| `BOOTSTRAP` | Corporation exists; no division, or Warehouse/Office API missing with <9 staff | core division exists, Warehouse API + Office API owned, first office ≥9 staff |
-| `FOUNDATION` | One division, one city; building the supply chain and research | first division profitable for 3 cycles **or** `Agri` warehouses complete |
-| `EXPANDING` | Adding cities/warehouses/industries | all target cities have offices+warehouses, or next package unaffordable for >30 min (then `FOUNDATION`/`MONETIZING`) |
-| `PRODUCT` | Product division has an in-development or unsold product, or slots empty | a product ≥100% and selling, TA.II owned |
-| `MONETIZING` | Selling materials/products, pricing, exports, AdVerts | revenue > expenses for 10 cycles and pricing ready |
-| `PUBLIC_GROWTH` | Investment rounds available, then IPO | public == true |
-| `MATURE` | Public, profitable, dividends allowed, expansion still running | revenue ≤ expenses for 10 cycles → `RECOVERY`; or reset |
-| `RECOVERY` | Cash or margin emergency; discretionary spending frozen | `funds ≥ 1.5×reserve` and margin ≥ 0 for 10 cycles |
-| `SUSPENDED` | Paused / maintenance / achievement lock / another instance | guard clears |
+The shipped daemon (`corporation-daemon.js`, `buildDaemonStatus`) publishes exactly these states.
+They supersede the six-state economic design (`FOUNDATION`, `MATURE`, `PRODUCT`, `MONETIZING`,
+`PUBLIC_GROWTH`, `EXPANDING`) that an earlier draft of this document specified: that machine was
+never implemented, `corporation-state.js` does not exist, and the economic phases it described are
+already carried by `phase`/`bootstrap`/`growthGoal` in the status document and by the optimiser's
+own `state` (`RUNNING`/`RECOVERY`/`SUSPENDED`/`DISABLED`/`NO_CORP`).
 
-`RECOVERY` and `SUSPENDED` are orthogonal-ish overrides: they are evaluated
-before any money leaves the corporation, and the pre-recovery state is
-remembered so exit returns there.
+| State | Meaning | Entered when | Leaves when |
+| --- | --- | --- | --- |
+| `UNAVAILABLE` | API, SF3/BitNode gate or `disableCorporation` absent | the corporation gate returns `UNAVAILABLE` | never (terminal: the loop exits with the reason) |
+| `NO_CORP` | No corporation; creation is next | `hasCorporation()` false and the gate allows a future attempt | `createCorporation` succeeds in a later cycle |
+| `RUNNING` | One cycle completed: structural phase + optimiser both ran | corporation exists and the optimiser is neither suspended, disabled nor recovering | a guard, a recovery condition or a reset |
+| `RECOVERY` | Cash floor or a negative-margin streak; discretionary spend frozen | `treasuryPolicy.recovering`, or `revenue ≤ expenses` for `budgets.recoveryMarginCycles` (10) | margin positive again (the streak resets) |
+| `SUSPENDED` | Paused, maintenance requested or achievement-locked | `isAllowed()` returns false | the guard clears |
+| `DISABLED` | `config.enabled === false` | the optimiser tick reads the config | config re-enabled |
+| `REPORT_ONLY` | A peer corporation writer owns the save | `ns.ps('home')` lists `autopilot.js`, `corporation-manager.js` or `corporation-bootstrap-daemon.js` | the peer stops |
+| `FAILED` | A phase threw; the cycle is bounded and counted | a structural/optimiser phase raised | the next cycle |
+
+`REPORT_ONLY` and `SUSPENDED` are guards, not economic phases: they are evaluated before any money
+leaves the corporation, and `REPORT_ONLY` performs **no write of any kind** (§5.3 invariant 4).
 
 ### 5.2 Transition rules
 
 ```
-hasCorporation? ──no──> NO_CORP ──(canCreateCorporation Success & funded)──> BOOTSTRAP
-UNAVAILABLE if canCreateCorporation ∈ {NoSf3OrDisabled, DisabledBySoftCap}
-              or bitNodeOptions.disableCorporation   (exit, publish reason)
-canCreateCorporation == UseSeedMoneyOutsideBN3 → NO_CORP (wait for $150b self-fund)
-canCreateCorporation == CorporationExists      → BOOTSTRAP (re-read; corp exists)
-
-BOOTSTRAP      → FOUNDATION : divisions.length > 0 && hasUnlock('Warehouse API') && hasUnlock('Office API')
-                            && every office with a warehouse has size ≥ 9 and numEmployees ≥ 9
-FOUNDATION     → EXPANDING  : lastCycleRevenue > lastCycleExpenses for the core division, 3 consecutive cycles
-                            && every owned city of that division has a warehouse
-EXPANDING      → PRODUCT    : a makesProducts division exists && science multiplier ≥ 1.15
-PRODUCT        → MONETIZING : a product is at developmentProgress 100 in every city of its division
-                            && hasResearched(name,'Market-TA.II')
-MONETIZING     → PUBLIC_GROWTH : revenue > expenses × 1.1 on a 10-cycle moving average && offer.round ≥ 1
-PUBLIC_GROWTH  → MATURE     : public == true
-MATURE         → RECOVERY   : revenue ≤ expenses for 10 consecutive cycles
-any            → RECOVERY   : funds < max(10e6, 1.5 × reserve)  OR  funds < expenses × cycleSeconds × 30
-                            && revenue ≤ expenses
-RECOVERY       → previous   : funds ≥ 1.5 × reserve && margin ≥ 0 for 10 consecutive cycles
-any            → SUSPENDED  : isScriptPaused || maintenanceRequested || !achievementActionAllowed || second instance
+gate == UNAVAILABLE                                  → UNAVAILABLE   (terminal, exit with reason)
+!hasCorporation                                      → NO_CORP       (create, or wait for funds/eligibility)
+hasCorporation && peer writer present                → REPORT_ONLY   (zero writes, status only)
+!isAllowed() (paused / maintenance / achievement lock) → SUSPENDED    (buy rates zeroed)
+config.enabled === false                             → DISABLED
+funds below the floor, or revenue ≤ expenses × recoveryMarginCycles
+                                                     → RECOVERY      (growth/advert/upgrade budgets 0)
+otherwise                                            → RUNNING       (structural + optimiser executed)
+a phase throws                                       → FAILED        (persisted counter, bounded retry)
 ```
 
-Every transition is logged once with `{from, to, reason, at, funds, revenue,
-expenses}` and mirrored into the status file. State must be derivable from the
-live corporation snapshot alone (the persisted `previous` state is a hint, not a
-requirement) so a restart cannot strand the machine.
-
+Precedence is exactly the order above: a peer writer wins over a pause, a pause wins over recovery.
+Every transition is logged once (`corporation state: <state> (<phase>) — <reason>`) and mirrored
+into the status document as `state`/`stateSince`/`stateReason`; the loop also persists `lastState`
+in `tasks/corporation-daemon-state.json` so a restart reports a change only when it happens.
 ### 5.3 Invariants
 
 1. `funds ≥ reserve` after any discretionary action; `reserve` is recomputed from
-   expenses every tick.
-2. Ownership never drops below `minOwnership` (default 0.5) except during
-   `RECOVERY` share issue, which must stay ≥ `minOwnership × totalShares`.
+   expenses every tick, and the structural claim (§4.4 guard 2) is part of it.
+   Property test: `tests/corporation-daemon-fixes.test.js` → *reserve invariant
+   over random snapshots*.
+2. Ownership never drops below `minOwnership` (default 0.5). This daemon does not
+   trade shares at all, so the invariant holds by construction; `minOwnership` is
+   reported in the status document as the floor a future finance module must
+   respect, and `finance.*` is *reserved* until one exists (§8).
 3. No product is discontinued and no division is sold unless the config enables
    it and the evidence gate passes (§6.2).
-4. Buy rates are the only persistent side effect that costs money outside a call;
-   every early return and `atExit` must zero them (`clearCorporationBuyRates`).
+4. **Buy rates are the only persistent side effect that costs money outside a
+   call, and exactly one state may write them:**
+
+   | State | Buy rates |
+   | --- | --- |
+   | `SUSPENDED` | zeroed — the only write a suspended cycle makes (`clearCorporationBuyRates`) |
+   | `REPORT_ONLY` | **untouched.** The peer controller owns them; zeroing them disarmed the controller this daemon defers to (measured: Water 6, Chemicals 3, Real Estate 6, Hardware 4 → 0 on every warehouse). A report-only cycle writes nothing at all |
+   | every other state | owned by this daemon; `atExit` clears them so a crash cannot leave paid rates behind |
+
+   A pause therefore **stops production**: `clearCorporationBuyRates` zeroes the
+   recipe materials too (`corporation-policy.js`), so a suspended division has no
+   inputs until the guard clears. That is the intended reading of "suspended" —
+   it is not a "spend less" mode.
 5. All mutations are preceded by an affordability/legality re-read within the
    same call frame.
-6. Nothing is bought twice from two plans in one tick (`exclusive` claims in
-   `executeCorporationGrowth`, `corporation-policy.js:207-227`).
-
+6. Nothing is bought twice from two plans in one cycle: warehouses **and offices**
+   the structural phase touched are named in `guards.skipWarehouse` /
+   `guards.skipOffice` and skipped by the optimiser tick, because both modules
+   grow them (N1: two `upgradeOfficeSize` calls for the same office were measured
+   in cycles 3/5/6 before the guard).
 ## 6. Modules
 
 Each module: purpose → inputs → actions → guards → telemetry → tests.
@@ -480,15 +526,16 @@ Behavioural decisions taken while implementing this section:
   run next to the existing controller without clobbering `mode/funds/reserve/
   divisions/growthPriority` that dashboards read from
   `tasks/corporation-status.json`.
-- **RAM.** The four files reference four `ns.corporation` members directly
-  (`hasCorporation`, `canCreateCorporation`, `getCorporation`, `nextUpdate`:
-  11.6 GB static) plus 26 members through the injected `api` object, which the
-  game's analyzer cannot see. Worst case, if every one of those 26 were counted,
-  the entrypoint would cost 331.6 GB — still far below the controller's 858.9 GB,
-  and the controller already pays for them because it calls `ns.corporation`
-  directly. The integration card must keep the corporation calls in the
-  controller (or a file it imports statically), not rely on the dynamic
-  `api.foo()` shape to be charged.
+- **RAM.** Measured, not estimated (§2.2): `corporation-daemon.js` costs
+  **677.2 GB**, `corporation-bootstrap-daemon.js` **343.8 GB** (a diagnostic
+  entrypoint, not launched by anything managed), and the legacy controller
+  **858.9 GB**. The analyzer charges the whole import graph and a `const api =
+  ns.corporation` alias exactly like a direct call (62.2 GB either way in a
+  six-member probe), so the modules' alias-shaped calls are paid for by the
+  entrypoint that imports them — no architecture change is needed for the
+  injected `api.foo()` shape. The integration card must keep one running
+  entrypoint: a second concurrently running corporation script would pay its own
+  ~300-680 GB.
 - **Expansion quotes, not partial buys.** An unaffordable package publishes
   `{cost, gap, etaSeconds, longWait, alternatives[{kind:office|storage}]}`; the
   office alternative is quoted read-only because buying office size outside
@@ -855,6 +902,36 @@ Validation rules (implement in `corporation-config.js`, unit-tested):
 - `dryRun: true` ⇒ no mutating API call is allowed; plans are still computed and
   written to `tasks/corporation-dry-run.json`.
 
+**Reserved leaves.** Four knobs were documented and read by nothing, so they are
+now *reserved*: validated and accepted (an existing config keeps loading) but
+reported as `config.ignoredKey` so nobody believes they do something.
+
+| Reserved key | Why it is reserved |
+| --- | --- |
+| `market.priceCeiling` | pricing is bracket-discovered per product/material (`corporation-market.js`); no global ceiling is applied |
+| `market.exportQualityMargin` | the export worthiness rule lives in `corporation-policy.js` with its own 5 % constant (measured, not configurable yet) |
+| `market.throttleProductionOnBacklog` | backlog is handled by buy-rate and boost throttling; `limit*Production` is not called |
+| `bootstrap.expediteStagedExpansion` | expansion is already staged and funded by the structural claim (§4.4 guard 2) |
+| every `finance.*` leaf except `acceptInvestment`/`payDividends`/`manageShares` | no finance module exists (§4.4); those three switches only decide what the status document reports as *wanted* |
+
+`RESERVED_CONFIG_PATHS` in `corporation-config.js` is the single list; the
+shipped `corporation-config.json` omits reserved keys entirely so a default
+install raises no warning, and the daemon publishes warnings in
+`configWarnings[]`.
+
+**Finance defaults (N2).** `acceptInvestment`, `payDividends` and `manageShares`
+ship **`false`**, and `bribeFactions` is `false` as well. Consequence, stated
+plainly: after the documented handover (stop `corporation-manager.js`, run the
+daemon) **nothing owns investment, dividends or share actions** — the status
+document reports `guards.finance.owner: "unowned"` and `shareActions: []`. That
+is deliberate: seed funding hands investors 50 % of the shares and a
+sell-side-only daemon would never repurchase them, so the safe default is to take
+no investor money at all. A user who wants finance automation must keep running
+the legacy controller (which then keeps the daemon in `REPORT_ONLY`) until a
+finance module lands. `corporation.seedFirst: true` is a *creation-time*
+fallback (BN3 seed money) with the same dilution caveat and is documented in the
+README.
+
 Flag mapping (backwards compatible, must keep working):
 
 | Flag | Config path | Default |
@@ -887,6 +964,28 @@ configErrors[], lastActionAt, cyclesManaged
 `automation.status` and any dashboard read this file; keep `mode`, `funds`,
 `reserve`, `divisions`, `growthPriority` unchanged for compatibility
 (`README-AUTOMATION.md:223-225`).
+
+**The daemon publishes its own document** — `tasks/corporation-daemon-status.json`
+(`DAEMON_STATUS_FILE`) — with the same §9.1 key set, `schemaVersion: 2`, plus the
+integration sections `structural`, `optimizer`, `findings[]`, `unsupported[]`,
+`guards` and the last 60 log lines. It writes `tasks/corporation-status.json`
+never, because the legacy controller owns that path (§4.4). The complete key set
+is published on every cycle:
+
+```
+nodeReset, augReset, corporation, ownership, minOwnership, dividendRate,
+estimatedDividendIncome, growthGoal, growthDecisions[], fundingDiagnostics[],
+researchDecisions[], productMetrics{}, productSlotsPerDivision{}, staffingGoals{},
+offices[], upgradeDecisions[], shareActions[], hashMilestone, bootstrap{},
+lastActionAt, findings[]
+```
+
+Keys the daemon cannot support are published as `null`/`[]` **and** named in
+`unsupported[]` with a reason (`estimatedDividendIncome`, `hashMilestone`,
+`shareActions`, and `dividendRate` when the snapshot has no rate). A dashboard can
+therefore tell "zero" from "not measured". `findings` is a bounded (32) list of
+`{kind, label, division, city, reason}` objects, not a count; `optimizer.findings`
+is kept as the count for compatibility.
 
 ### 9.2 State files
 
@@ -944,6 +1043,18 @@ crash cannot leave paid buy rates behind.
 Acceptance: a dry run over one full cycle produces a plan identical to the
 `growthDecisions` of a real run on the same save (compare labels/order).
 
+**Fresh-save limitation.** A save with no corporation has nothing to optimise, so
+the structural planner can only name the creation. The dry run therefore emits
+the creation **and the projected follow-up** (`projectCreationFollowUp`): the
+unlocks, first industry and city it will buy once the corporation exists, marked
+`planned`/`blocked` with `after creation:` details and funded by the seed money
+creation would leave behind. Without that projection the plan is a single line,
+which is useless for planning a handover. Two further consequences are
+documented rather than hidden: the projection cannot know the wallet a real
+`nextUpdate()` will see, and a dry run writes exactly one plan document — the
+structural half is called with `dryRunFile: null` so the integrated plan is not
+immediately overwritten (B6).
+
 ## 10. Edge cases (required behaviour + acceptance test)
 
 | # | Case | Detection | Required behaviour |
@@ -972,7 +1083,7 @@ Acceptance: a dry run over one full cycle produces a plan identical to the
 | 22 | Reset during run | `nodeReset`/`augReset` changed | discard all state, re-derive state, re-enter at the right state; zero buy rates |
 | 23 | Restart / save-reload | fresh process, stale task files | same as 22 within the same reset; no duplicate purchase, no leaked buy rate |
 | 24 | Second instance / pause / maintenance / achievement lock | `ns.ps`, `isScriptPaused`, `maintenanceRequested`, `achievementActionAllowed` | `SUSPENDED`; zero buy rates; exit (second instance) or sleep (pause) |
-| 25 | RAM starvation | `getScriptRam > free home RAM` | fail fast with a message naming required GB (858.9); never partially initialise |
+| 25 | RAM starvation | `getScriptRam > free home RAM` | fail fast with a message naming the measured requirement (677.2 GB for `corporation-daemon.js`, 858.9 GB for the legacy controller); never partially initialise |
 | 26 | Missing market data unlocks | `product.demand`/`competition` undefined | fall back to `MP`/heuristic pricing; never NaN prices |
 | 27 | No hashes / no Singularity | `hacknet` throws, SF4 absent | skip those modules, report `unavailable`, continue |
 | 28 | API throws repeatedly | same label 5× consecutive | announce once, back off 10 min, persist the counter |
@@ -980,7 +1091,6 @@ Acceptance: a dry run over one full cycle produces a plan identical to the
 | 30 | NaN/Infinity anywhere | non-finite input | reject the plan, log, keep the safe default (all policy helpers already return 0/null on non-finite input — keep that rule) |
 
 ## 11. Acceptance criteria
-
 Spec-level (this card):
 
 1. `docs/corp-automation-spec.md` exists and defines every area listed in the
@@ -990,7 +1100,7 @@ Spec-level (this card):
 2. Every edge case in §10 is explicit, with detection, required behaviour, and a
    test hook.
 3. All claims about current behaviour are traceable to a file/line or to a live
-   read documented in §2.3.
+   read documented in §2.3 (§2.2 for RAM, §11.2 for the live smoke).
 4. API claims match the connected game's `NetscriptDefinitions.d.ts` and
    `scripts/api-surface.json`.
 5. A developer with no prior context can implement any module from §6 alone
@@ -998,39 +1108,57 @@ Spec-level (this card):
 
 Implementation-level (for the child cards):
 
-6. State machine: unit tests drive every transition in §5.2 from synthetic
-   snapshots, including `NO_CORP → BOOTSTRAP → FOUNDATION`, `MATURE →
-   RECOVERY → MATURE`, and `UNAVAILABLE` terminal exits.
+6. State machine: unit tests drive every state the shipped daemon can publish
+   (§5.1) from synthetic snapshots — `NO_CORP`, `RUNNING`, `RECOVERY`,
+   `SUSPENDED`, `REPORT_ONLY`, `DISABLED`, `UNAVAILABLE` — and assert the
+   precedence order in §5.2. Test: `tests/corporation-daemon-fixes.test.js` →
+   *every documented daemon state is reachable*. The six-state economic machine
+   named in an earlier draft is withdrawn (§5.1); `corporation-state.js` is not a
+   deliverable.
 7. Guards: a mock API that throws on every mutation produces zero unhandled
    exceptions and a complete `persistentFailures` report.
 8. Reserve invariant: property test over random snapshots — after a tick,
-   `funds ≥ reserve` and no plan with `cost > free` is executed.
+   `funds ≥ reserve` and no plan with `cost > free` is executed. Test:
+   `tests/corporation-daemon-fixes.test.js` → *reserve invariant over random
+   snapshots* (24 random corporation shapes; asserts spend ≤ funds − reserve and
+   never a negative mock balance).
 9. Idempotency: running two consecutive ticks on an unchanged mock snapshot
    performs no second purchase and issues no duplicate `hireAdVert`/`research`.
-10. Buy-rate hygiene: every early return path ends with all boost rates zeroed;
-    `atExit` clears them.
-11. Edge cases 1-30 each have a passing test in `tests/corporation-*.test.js`.
+10. Buy-rate hygiene: `SUSPENDED` zeroes them (including recipe inputs, which is
+    what stops production) and `atExit` clears them; `REPORT_ONLY` writes
+    nothing at all (§5.3 invariant 4).
+11. Edge cases 1-30 each have a passing test in `tests/corporation-*.test.js`,
+    **except the finance edges 14-18**, which are explicitly out of scope: no
+    finance module exists (§4.4), the daemon never calls the six finance
+    functions (asserted per cycle in `tests/corporation-daemon.test.js`), and
+    `docs/corp-automation-spec.md` §13 records them as unowned. Every other edge
+    has a test hook named in §10 or in §11.1/§11.2; the state-machine edges
+    6/9/12/19/27 are covered by the daemon and optimiser suites through their
+    required behaviour rather than one file per edge.
 12. Dry-run produces a plan identical to the real run's decisions on the same
-    snapshot.
+    snapshot; on a fresh save it additionally publishes the projected follow-up
+    (§9.5).
 13. Config: invalid JSON, invalid ranges, and unknown schema versions fall back
-    to defaults with a reported error and never throw.
-14. Telemetry: `tasks/corporation-status.json` validates against the §9.1 key
-    set and keeps the legacy keys (`mode`, `funds`, `reserve`, `divisions`,
-    `growthPriority`).
+    to defaults with a reported error and never throw; reserved leaves report
+    `config.ignoredKey`.
+14. Telemetry: the status document validates against the §9.1 key set (all keys
+    present), keeps the legacy keys (`mode`, `funds`, `reserve`, `divisions`,
+    `growthPriority`), publishes `findings[]` as a bounded list and names
+    unsupported keys in `unsupported[]` (§9.1).
 15. Existing suite stays green: `npm test`, `npm run check:syntax`, and
-    `node scripts/audit-project.js api` (no new unsupported API use).
-16. RAM: `ns.getScriptRam('corporation-manager.js','home')` must not exceed the
-    current 858.9 GB by more than the cost of the new API functions used
-    (`cancelExportMaterial` +20, `limit*Production` +40, `sellDivision` +20,
-    `setMaterialMarketTA1` +20 ⇒ ≈ 959 GB worst case, still within a
-    documented budget; update `scripts/api-surface.json` consumers only if it
-    grows past the daemon/autopilot reservation).
-17. Live smoke: with a real save, one full cycle logs the state, publishes the
-    status document, and takes no forbidden action (verified via Remote API
-    `automation.corpStatus` before/after).
+    `node scripts/audit-project.js all`.
+16. RAM: measured, not estimated. `ns.getScriptRam('corporation-daemon.js',
+    'home')` = **677.2 GB** on the live save (§2.2), below the legacy controller's
+    858.9 GB; the preflight refuses a home that cannot host the measured figure
+    and the four conflicting figures in earlier drafts are replaced by that one
+    table. The analyzer's treatment of injected `api.foo()` calls was measured
+    (charged, like direct calls), so the architecture stands as shipped.
+17. Live smoke: one cycle of the real entrypoint against the connected save, run
+    as part of this card (`--ticks=1`, report-only because `autopilot.js` and
+    `corporation-manager.js` own the save), publishes the status document, takes
+    no forbidden action, and leaves the peer's buy rates untouched (§11.2).
 18. No regression in the `--disable-corporation` path: the controller does not
     start, autopilot's reservation is unchanged.
-
 ### 11.1 Covered by the bootstrap/expansion card
 
 - Criteria 7 (a mock API throwing on every mutation produces zero unhandled
@@ -1081,10 +1209,16 @@ Implementation-level (for the child cards):
 - **Docs.** README §"Corporation automation" and §4.4 document the entrypoint, the
   loop, the guards, the status/state files and the handover rule from
   `corporation-manager.js`.
-- **Live smoke (criterion 17).** A dry-run cycle against the connected save is run
-  as part of this card's verification and recorded in the handoff; a mutating
-  unattended run stays with the save owner, because the daemon is not registered in
-  `automation-manifest.js` and autopilot still launches `corporation-manager.js`.
+- **Live smoke (criterion 17).** Run on the connected save (2026-11-17, Apex Holdings,
+  $623.8m funds, `autopilot.js` and `corporation-manager.js` running) by `exec`-ing
+  `corporation-daemon.js` with `--ticks=1`: the cycle published
+  `tasks/corporation-daemon-status.json` with `state: REPORT_ONLY`,
+  `guards.peers: ["autopilot.js","corporation-manager.js"]`, one skipped action and the full §9.1
+  key set, then exited. Zero writes: the peer's buy rates were unchanged (Water 0.949 after vs
+  0.954 before, the drift being the legacy controller's own). A *planning* dry run needs the peer
+  gone, so it belongs to the documented handover: `stop autopilot.js`, `stop corporation-manager.js`,
+  `run corporation-daemon.js --dry-run --ticks=1`, then `start` both. The daemon is still not in
+  `automation-manifest.js`, and that handover remains manual.
 
 ## 12. Test plan
 
@@ -1114,7 +1248,11 @@ Create:
 1. `docs/corp-automation-spec.md` — this document.
 2. `corporation-controller.js` — tick loop, guards, wiring (or keep
    `corporation-manager.js` as the entrypoint shim).
-3. `corporation-state.js` — state machine, transitions, persistence, status doc.
+3. ~~`corporation-state.js` — state machine, transitions, persistence, status doc.~~
+   **Withdrawn:** the shipped daemon publishes the states in §5.1 from
+   `corporation-daemon.js` (`buildDaemonStatus`) and persists `lastState` in
+   `tasks/corporation-daemon-state.json`; a separate state module would duplicate
+   both.
 4. `corporation-config.js` — schema, defaults, validation, flag merge.
 5. `corporation-bootstrap.js` — creation, unlocks, first division/city. **Done.**
 6. `corporation-expansion.js` — cities, warehouses, industries. **Done.**
@@ -1262,8 +1400,9 @@ amt?=1), hasWarehouse(d, city)`.
 ## Appendix B — Audit evidence (reproducible)
 
 ```bash
-# RAM of the controller (live game)
+# RAM of the controller (live game; the daemon measures 677.2, see §2.2)
 node control.cjs getScriptRam '["corporation-manager.js","home"]'      # → 858.9
+node control.cjs getScriptRam '["corporation-daemon.js","home"]'       # → 677.2
 
 # Current corporation snapshot (live game)
 node control.cjs automation.corpStatus '[]'

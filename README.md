@@ -133,12 +133,15 @@ run corporation-bootstrap-daemon.js            # structural half only (diagnosti
 
 `corporation-manager.js` is still what `autopilot.js` and `daemon.js` launch. Do not run both: the daemon
 detects a peer corporation writer on home (`autopilot.js`, `corporation-manager.js`,
-`corporation-bootstrap-daemon.js`) and switches to a report-only cycle — no purchases, no share or dividend
-actions. To hand the corporation over, stop the legacy manager first (or run
-`run autopilot.js --disable-corporation`).
+`corporation-bootstrap-daemon.js`, matched by basename in either `ps` path form) and switches to a
+report-only cycle — it publishes state and **writes nothing at all**: no purchases, no share or dividend
+actions, and it leaves the peer's `buyMaterial` rates alone (zeroing them would disarm the controller it
+defers to). To hand the corporation over, stop the legacy manager first (or run
+`run autopilot.js --disable-corporation`); finance is then unowned, see *Finance ownership* below.
 
 Called from another daemon, import the cycle instead of starting a second process (one script that touches
-`ns.corporation` is ~860 GB of static RAM):
+`ns.corporation` is **677.2 GB** of static RAM as measured in game, and its import graph is included in
+that figure):
 
 ```js
 import { runCorporationCycle } from './corporation-daemon.js';
@@ -160,7 +163,7 @@ const report = await runCorporationCycle(ns, { dryRun: false });
 
 | Guard | Behaviour |
 | --- | --- |
-| One writer per corporation | A peer corporation controller on home turns the cycle into a report-only pass: state is published, nothing is bought, and investment/dividends/shares stay with the peer. |
+| One writer per corporation | A peer corporation controller on home turns the cycle into a report-only pass: state is published and **nothing is written** — no purchase, no `buyMaterial` rate, and investment/dividends/shares stay with the peer. Zeroing the peer's rates is what an earlier build got wrong: it disarmed the controller it defers to. |
 | Structural before discretionary | A staged city/industry package keeps a claim on free cash (`budgets.structuralClaimFraction`, default 0.5) that the optimiser sees as a reserve floor. Products, adverts and upgrades wait; inputs, staffing and sales do not. A package that is far off (`longWait`) never sets a claim, so optimisation cannot stall forever. |
 | One purchase per cycle | Warehouses the structural phase bought or upgraded are skipped by the optimiser tick, because both would otherwise buy a level in the same cycle. |
 | No finance mutations | The daemon never calls `issueDividends`, `goPublic`, `acceptInvestmentOffer`, `issueNewShares`, `sellShares` or `buyBackShares`; the status document names the owner instead. |
@@ -203,10 +206,35 @@ Everything lives in `corporation-config.json` (see `corporation-config.js` for t
 - `corporation.name`, `corporation.seedFirst`, `corporation.selfFund`
 - `bootstrap.industryChain`, `bootstrap.cities`, `bootstrap.expandAllIndustries`
 - `bootstrap.initialOfficeSize` (9), `bootstrap.setupReserve` (20m), `bootstrap.materialCashFraction` (0.05)
-- `bootstrap.warehouseFullThreshold`, `bootstrap.allowDivisionSale`, `bootstrap.expediteStagedExpansion`
+- `bootstrap.warehouseFullThreshold`, `bootstrap.allowDivisionSale`
 - `budgets.structuralClaimFraction` (0.5), `budgets.recoveryMarginCycles` (10), the rest of the budget ladder
-- `people.*`, `product.*`, `market.*`, `research.*`, `finance.*` — see `docs/corp-optimizer.md` for the defaults
+- `people.*`, `product.*`, `market.*`, `research.*` — see `docs/corp-optimizer.md` for the defaults
 - `dryRun`, `enabled`, `telemetry.debug`, `telemetry.stateFile`
+
+**Reserved keys** — validated, accepted, and reported as `config.ignoredKey` because no code reads them:
+`bootstrap.expediteStagedExpansion`, `market.priceCeiling`, `market.exportQualityMargin`,
+`market.throttleProductionOnBacklog`, and every `finance.*` leaf except `acceptInvestment`,
+`payDividends` and `manageShares`. They are omitted from the shipped `corporation-config.json`, so a
+default install is warning-free; setting one tells you it has no effect instead of pretending.
+
+**Finance ownership.** `finance.acceptInvestment`, `payDividends` and `manageShares` default to
+`false` because this daemon implements no finance (§4.4 of the spec). After the handover described
+above, nothing owns investment rounds, the IPO, dividends or share actions: the status document
+reports `guards.finance.owner: "unowned"`, `shareActions: []` and names the key in `unsupported[]`.
+Keep `corporation-manager.js` running if you want finance automation — it then keeps the daemon in
+report-only mode. `corporation.seedFirst` (creation-time BN3 seed money) still hands investors 50 %
+of the shares and nothing repurchases them; self-fund at $150b if that matters.
+
+**Pause semantics.** `SUSPENDED` zeroes every `buyMaterial` rate, including the industry's recipe
+inputs, so a paused division stops producing instead of slowly draining its warehouse. That is the
+intent, not a bug — the alternative (leaving rates) keeps paying for inputs nobody accounts for.
+
+**Status document.** `tasks/corporation-daemon-status.json` carries the full §9.1 key set, a bounded
+`findings[]` list (32) and `unsupported[]` naming the keys it cannot support (`hashMilestone`,
+`shareActions`, `estimatedDividendIncome`). `tasks/corporation-daemon-state.json` holds the reset
+identity, failure counters and the crash streak. Live smoke (one cycle against the connected save,
+2026-11-17): report-only because `autopilot.js` and `corporation-manager.js` were running, zero
+writes, status published.
 
 Invalid or unknown values fall back to the default and are reported in `configErrors`; an unknown `schemaVersion`
 runs on defaults. Legacy flags still work and override the file: `--dry-run`, `--min-ownership`,

@@ -106,6 +106,162 @@ You may find it useful to set up one or more aliases with the default options yo
 - `alias ascend="run ascend.js --install-augmentations"`
   - A good way to finish your node. I personally prioritize augmentations when resetting, because I have all SF bonuses unlocked, but until you have SF11.3 for aug cost reduction, you may want to use the `--prioritize-home-ram` flag which prioritizes upgrading home RAM as much as possible before buying as many augmentations as possible.
 
+## Corporation automation
+
+`docs/corp-automation-spec.md` is the design of record. Both halves of it are implemented behind **one
+entrypoint**, `corporation-daemon.js`: bootstrap/expansion (structure) and the optimisation loop (people,
+research, products, market, upgrades).
+
+| File | Role |
+| --- | --- |
+| `corporation-daemon.js` | **The entrypoint.** One cycle = guard → structural phase → optimiser phase → status → `nextUpdate()`. |
+| `corporation-bootstrap-daemon.js` | The structural phase: `runBootstrapExpansionCycle(ns)` (one cycle, importable) and a standalone bootstrap-only loop. |
+| `corporation-bootstrap.js` | Creates or adopts a corporation, buys Warehouse/Office/Smart Supply unlocks, creates the first division and city, grows and staffs the seed office, seeds input materials. |
+| `corporation-expansion.js` | Adds cities, warehouses and industries, upgrades warehouses under storage pressure, stages unaffordable packages. |
+| `corporation-optimizer.js` | The optimiser tick: people → research → products → market → upgrades, with the budget ladder and persisted state. |
+| `corporation-people.js`, `corporation-product.js`, `corporation-market.js` | Decision and effect modules the optimiser tick calls (offices/jobs/tea/parties/upgrades, products/research, inputs/boosts/pricing/selling). |
+| `corporation-config.js`, `corporation-config.json` | One schema, one set of defaults, validation and CLI-flag mapping. |
+
+### Running it
+
+```
+run corporation-daemon.js                      # full automation: one cycle per corporation update
+run corporation-daemon.js --dry-run            # plan only, no mutation (writes tasks/corporation-dry-run.json)
+run corporation-daemon.js --ticks=20 --interval=2000
+run corporation-bootstrap-daemon.js            # structural half only (diagnostic / migration)
+```
+
+`corporation-manager.js` is still what `autopilot.js` and `daemon.js` launch. Do not run both: the daemon
+detects a peer corporation writer on home (`autopilot.js`, `corporation-manager.js`,
+`corporation-bootstrap-daemon.js`, matched by basename in either `ps` path form) and switches to a
+report-only cycle — it publishes state and **writes nothing at all**: no purchases, no share or dividend
+actions, and it leaves the peer's `buyMaterial` rates alone (zeroing them would disarm the controller it
+defers to). To hand the corporation over, stop the legacy manager first (or run
+`run autopilot.js --disable-corporation`); finance is then unowned, see *Finance ownership* below.
+
+Called from another daemon, import the cycle instead of starting a second process (one script that touches
+`ns.corporation` is **677.2 GB** of static RAM as measured in game, and its import graph is included in
+that figure):
+
+```js
+import { runCorporationCycle } from './corporation-daemon.js';
+const report = await runCorporationCycle(ns, { dryRun: false });
+```
+
+### One cycle, in order
+
+1. **Guard** — config `enabled`, pause/maintenance hook (`isAllowed`), single instance, peer writer.
+2. **Structural** — bootstrap and expansion: creation, unlocks, industries, cities, warehouses, seed office,
+   input seeding. Every purchase re-reads the live value and re-checks `funds > reserve + cost` first.
+3. **Guards between the halves** — the staged-package cash claim and the touched-warehouse set (below).
+4. **Optimiser** — people → research → product → market → upgrades, inside one budget ladder:
+   `reserve → upkeep → growth → boost`, each budget re-checked per purchase.
+5. **Telemetry** — status document, optimiser state, dry-run plan in dry-run mode.
+6. **Cadence** — `await ns.corporation.nextUpdate()` and never tighter than `--interval`.
+
+### Guards so the halves cannot fight
+
+| Guard | Behaviour |
+| --- | --- |
+| One writer per corporation | A peer corporation controller on home turns the cycle into a report-only pass: state is published and **nothing is written** — no purchase, no `buyMaterial` rate, and investment/dividends/shares stay with the peer. Zeroing the peer's rates is what an earlier build got wrong: it disarmed the controller it defers to. |
+| Structural before discretionary | A staged city/industry package keeps a claim on free cash (`budgets.structuralClaimFraction`, default 0.5) that the optimiser sees as a reserve floor. Products, adverts and upgrades wait; inputs, staffing and sales do not. A package that is far off (`longWait`) never sets a claim, so optimisation cannot stall forever. |
+| One purchase per cycle | Warehouses the structural phase bought or upgraded are skipped by the optimiser tick, because both would otherwise buy a level in the same cycle. |
+| No finance mutations | The daemon never calls `issueDividends`, `goPublic`, `acceptInvestmentOffer`, `issueNewShares`, `sellShares` or `buyBackShares`; the status document names the owner instead. |
+| Bounded retries | Every phase is wrapped. A throwing module becomes a failed cycle with a persisted counter, never an unhandled exception; five consecutive crashes back the loop off to one cycle per ten minutes. |
+| RAM preflight | The daemon refuses to start when home cannot host it, and adds its own reservation back before comparing (a running process is part of `getServerUsedRam`). |
+
+### What it does on a fresh save
+
+1. Tries seed money first (`createCorporation(name, false)`), then self-funding, but only when the wallet covers
+   $150b **plus** `reserve.txt`. BitNode/Source-File gates and `disableCorporation` end the run with a reason
+   instead of looping.
+2. Buys `Warehouse API` → `Office API` → `Smart Supply` in order, each only while free cash covers it.
+3. Creates the first industry from `bootstrap.industryChain` (Agriculture by default) and expands into the first
+   `bootstrap.cities` entry (Sector-12), buying the warehouse in the same step — a city without a warehouse can
+   hold no stock.
+4. Grows that office to `bootstrap.initialOfficeSize` (9) three seats at a time and hires to capacity.
+   The same configured size is the gate for the *next* city, both in the plan and in the
+   pre-purchase re-check, so a lower setting cannot stall expansion.
+5. Seeds inputs: enables Smart Supply, or sets bounded `buyMaterial` rates for the industry's `requiredMaterials`.
+6. Hands over to expansion: further cities (one package per tick, never while an existing office is understaffed),
+   further industries, and warehouse upgrades once a warehouse passes `warehouseFullThreshold`.
+7. In the same cycles, the optimiser staffs and assigns jobs, buys research bundles the research points cover,
+   starts a product only above the 1.15 science gate, sells materials/products (Market-TA.II when researched),
+   buys recipe inputs, boosts and warehouse levels inside their budgets, and levels up the global upgrades when
+   they pay back inside the configured window.
+
+A fresh save with no revenue is cash-limited, not stalled: offices reach `initialOfficeSize` as the
+corporation earns (the in-memory 40-cycle test with seed money only reaches 9/9 on the first division and
+6/6 on the last Tobacco city), and every unaffordable step is published with its gap and ETA.
+
+Every purchase re-reads the live value and re-checks `funds > reserve + cost` immediately before the API call, so
+re-running is a no-op: owned cities, warehouses, unlocks and industries are skipped, and existing buy rates are not
+rewritten. Unaffordable goals are published with the gap, an ETA from current net profit, and cheaper alternatives
+(office increment, warehouse level) rather than partially purchased.
+
+### Configuration
+
+Everything lives in `corporation-config.json` (see `corporation-config.js` for the full validated schema). Highlights:
+
+- `corporation.name`, `corporation.seedFirst`, `corporation.selfFund`
+- `bootstrap.industryChain`, `bootstrap.cities`, `bootstrap.expandAllIndustries`
+- `bootstrap.initialOfficeSize` (9), `bootstrap.setupReserve` (20m), `bootstrap.materialCashFraction` (0.05)
+- `bootstrap.warehouseFullThreshold`, `bootstrap.allowDivisionSale`
+- `budgets.structuralClaimFraction` (0.5), `budgets.recoveryMarginCycles` (10), the rest of the budget ladder
+- `people.*`, `product.*`, `market.*`, `research.*` — see `docs/corp-optimizer.md` for the defaults
+- `dryRun`, `enabled`, `telemetry.debug`, `telemetry.stateFile`
+
+**Reserved keys** — validated, accepted, and reported as `config.ignoredKey` because no code reads them:
+`bootstrap.expediteStagedExpansion`, `market.priceCeiling`, `market.exportQualityMargin`,
+`market.throttleProductionOnBacklog`, and every `finance.*` leaf except `acceptInvestment`,
+`payDividends` and `manageShares`. They are omitted from the shipped `corporation-config.json`, so a
+default install is warning-free; setting one tells you it has no effect instead of pretending.
+
+**Finance ownership.** `finance.acceptInvestment`, `payDividends` and `manageShares` default to
+`false` because this daemon implements no finance (§4.4 of the spec). After the handover described
+above, nothing owns investment rounds, the IPO, dividends or share actions: the status document
+reports `guards.finance.owner: "unowned"`, `shareActions: []` and names the key in `unsupported[]`.
+Keep `corporation-manager.js` running if you want finance automation — it then keeps the daemon in
+report-only mode. `corporation.seedFirst` (creation-time BN3 seed money) still hands investors 50 %
+of the shares and nothing repurchases them; self-fund at $150b if that matters.
+
+**Pause semantics.** `SUSPENDED` zeroes every `buyMaterial` rate, including the industry's recipe
+inputs, so a paused division stops producing instead of slowly draining its warehouse. That is the
+intent, not a bug — the alternative (leaving rates) keeps paying for inputs nobody accounts for.
+
+**Status document.** `tasks/corporation-daemon-status.json` carries the full §9.1 key set, a bounded
+`findings[]` list (32) and `unsupported[]` naming the keys it cannot support (`hashMilestone`,
+`shareActions`, `estimatedDividendIncome`). `tasks/corporation-daemon-state.json` holds the reset
+identity, failure counters and the crash streak. Live smoke (one cycle against the connected save,
+2026-11-17): report-only because `autopilot.js` and `corporation-manager.js` were running, zero
+writes, status published.
+
+Invalid or unknown values fall back to the default and are reported in `configErrors`; an unknown `schemaVersion`
+runs on defaults. Legacy flags still work and override the file: `--dry-run`, `--min-ownership`,
+`--investment-min-ownership`, `--expand-all-industries`, `--manage-shares`, `--bribe-factions`,
+`--development-speed`.
+
+### Telemetry
+
+- Status: `tasks/corporation-daemon-status.json` — the spec §9.1 key set (`state`, `funds`, `reserve`,
+  `divisions`, `mode`, `growthPriority`, `actions`, `persistentFailures`, `configErrors`) plus `structural`,
+  `optimizer`, `guards` and the last 60 log lines. It is separate from the legacy controller's
+  `tasks/corporation-status.json` so the two never overwrite each other.
+- Structural status: `tasks/corporation-bootstrap-status.json` — bootstrap checks, staged packages, cooldowns.
+- Optimiser state: `tasks/corporation-optimizer.json` — research samples, pricing brackets, growth bank,
+  failure counters, scoped to `{nodeReset, augReset, corporation}`.
+- Daemon state: `tasks/corporation-daemon-state.json` — cycles, last state, failure counters, crash streak.
+- Dry-run plan: `tasks/corporation-dry-run.json` — every action that would have run, with its guard.
+- Every action is printed as `label → done|skipped|blocked|failed (detail)`; repeated failures are counted across
+  restarts and announced once at five consecutive failures.
+
+Tests: `tests/corporation-daemon.test.js` (integration: one command, guards, idempotency, dry run, hostile API,
+RAM preflight), `tests/corporation-config.test.js`, `tests/corporation-bootstrap.test.js`,
+`tests/corporation-expansion.test.js`, `tests/corporation-bootstrap-daemon.test.js`,
+`tests/corporation-optimizer*.test.js`, driven by the in-memory game in `tests/corporation-test-game.mjs`
+(unlocks, funds, division caps and API errors enforced like the real game) plus a captured live snapshot in
+`tests/fixtures/corporation-live-snapshot.json` and the deterministic economy in `tests/fixtures/corporation-sim.js`.
+
 ## Config Files
 
 Persistent Custom Configurations (script.js.config.txt files) can be specified to override the default args specified by the "args schema" in each script.

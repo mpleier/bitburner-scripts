@@ -224,6 +224,35 @@ Disable with `--bribe-factions false`. Missing optional access waits gracefully.
 the Remote API's fixed `automation.status` query. Stopping the manager clears its recurring
 recipe and boost purchase orders. Files sync when the game Remote API is connected.
 
+#### Optimisation loop
+
+The product/research/staffing/market half of the controller is now a library tick
+(`corporation-optimizer.js`, documented in `docs/corp-optimizer.md`) that the controller calls once
+per corporation cycle:
+
+- `corporation-config.js` validates `corporation-config.json` at the repo root (invalid fields fall
+  back to defaults, unknown keys warn, legacy flags still win) and computes the reserve/growth/boost
+  budget ladder.
+- `corporation-people.js` sizes and staffs offices, assigns the optimised job mix, buys tea/party
+  from the upkeep budget, picks at most one global upgrade per cycle (return per dollar, capped at
+  20% of cash and 600 cycles of profit) and buys an AdVert only when its estimated payback fits the
+  6-hour horizon.
+- `corporation-product.js` starts a design only above a 1.15 science multiplier, discontinues
+  hopeless development below 1.10, retires products only when explicitly enabled with replacement
+  evidence, and buys research in priority order (laboratory, then TA.I + TA.II as one package) while
+  keeping 80% of the research pool.
+- `corporation-market.js` sells materials/products (TA.II `MP` when owned, additive quality markup or
+  a persisted price bracket otherwise), sizes recipe inputs from observed production with a restart
+  batch if production collapsed, buys boosts inside the budget, zeroes every unused buy rate, and
+  upgrades a warehouse only above 70% pressure and without an output backlog.
+- Recovery mode freezes discretionary spending after a negative-margin streak or when cash falls
+  under the reserve, and continues selling as the only survival action.
+
+`--dry-run` (or `"dryRun": true`) computes the same plan without mutating anything and writes the
+intended actions to `tasks/corporation-dry-run.json`; the optimiser keeps its small persistent state
+in `tasks/corporation-optimizer.json`, scoped to the current corporation, BitNode and augmentation
+reset.
+
 ### Standalone player crimes
 
 `run crime.js` keeps the existing balanced progression from Mug to Homicide, Assassination and Heist

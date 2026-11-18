@@ -1192,3 +1192,17 @@ Native execution checks current price against one percent of current unreserved 
 Cheap-item eligibility now has a separate controller callback, checking the existing planned-ascension restriction without running a marginal production-return forecast. Eligible items below one percent of shrinking unreserved cash receive a cheap-only candidate with no invented return. Shared/category budgets, native threshold checks and the augmentation-readiness guard still decide whether that candidate can actually be bought. Expensive items and bundles keep ordinary return forecasts; callers that do not supply the new callback retain their existing valuation behavior.
 
 If shrinking cash makes a deferred cheap item exceed the threshold, it must acquire a fresh ordinary forecast before entering larger-investment ranking, or be deferred if the time budget is exhausted. Crew-aware refreshes still use the projected crew after purchases. Diagnostics distinguish scanned items, actual return-forecast calls, fast-tracked cheap items, eligibility denials and deferred larger forecasts. This optimizes planning work, not the native purchase price or guaranteed game progression speed.
+
+
+### Corporation optimisation loop
+
+The corporation controller now has a library tick for products, research, staffing, market trading and
+upgrade purchasing (`corporation-optimizer.js`, documented in `docs/corp-optimizer.md`): one snapshot
+per corporation cycle, a configured reserve/growth/boost budget ladder, a recovery state that freezes
+discretionary spending after a negative-margin streak, and per-operation failure counters. Product
+designs are gated on the science multiplier (1.15 start, 1.10 abandon), research buys the laboratory
+and the TA.I + TA.II package before branch research while keeping 80% of the pool, offices are sized
+and staffed from configured cash tiers, warehouses upgrade only above 70% pressure without a
+backlog, and AdVerts need a payback inside the horizon. `--dry-run` writes the intended plan to
+`tasks/corporation-dry-run.json` without mutating anything, and `corporation-config.json` carries the
+thresholds. Bootstrap, city expansion, finance and share actions remain in their own modules.

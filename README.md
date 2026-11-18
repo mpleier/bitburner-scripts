@@ -145,9 +145,15 @@ const report = await runBootstrapExpansionCycle(ns, { dryRun: false });
    `bootstrap.cities` entry (Sector-12), buying the warehouse in the same step — a city without a warehouse can
    hold no stock.
 4. Grows that office to `bootstrap.initialOfficeSize` (9) three seats at a time and hires to capacity.
+   The same configured size is the gate for the *next* city, both in the plan and in the
+   pre-purchase re-check, so a lower setting cannot stall expansion.
 5. Seeds inputs: enables Smart Supply, or sets bounded `buyMaterial` rates for the industry's `requiredMaterials`.
 6. Hands over to expansion: further cities (one package per tick, never while an existing office is understaffed),
    further industries, and warehouse upgrades once a warehouse passes `warehouseFullThreshold`.
+
+A fresh save with no revenue is cash-limited, not stalled: offices reach `initialOfficeSize` as the
+corporation earns (the in-memory 40-cycle test with seed money only reaches 9/9 on the first division and
+6/6 on the last Tobacco city), and every unaffordable step is published with its gap and ETA.
 
 Every purchase re-reads the live value and re-checks `funds > reserve + cost` immediately before the API call, so
 re-running is a no-op: owned cities, warehouses, unlocks and industries are skipped, and existing buy rates are not

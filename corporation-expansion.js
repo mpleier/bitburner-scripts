@@ -8,8 +8,9 @@
  *   2. a warehouse is bought before anything tries to store or sell stock in
  *      that city (spec edge 13),
  *   3. an industry is only created when free cash covers its starting cost plus
- *      the configured setup reserve, and the core division is not still
- *      unstaffed (spec edge 5),
+ *      the configured setup reserve. Product industries additionally wait for the
+ *      bootstrap to finish (a staffed material foundation); a material industry may
+ *      start early when free cash covers twice cost + setup (spec edge 5),
  *   4. a rejected industry expansion (division cap) is retried after
  *      `DIVISION_RETRY_MS`, never in the same tick (spec edge 19).
  *
@@ -66,6 +67,15 @@ export function divisionStaffed(snapshot, division, minSize = 9) {
     const office = snapshot.offices[`${division.name}/${city}`];
     return !!office && office.size >= target && office.numEmployees >= target;
   });
+}
+
+/**
+ * Office size the city-expansion gate waits for (spec §6.1.1). Plan and executor must use
+ * the same value, otherwise a valid `bootstrap.initialOfficeSize` below the default plans a
+ * city every tick while execution refuses it (review round 1, defect 1).
+ */
+export function staffingTarget(config) {
+  return Math.max(1, finite(config?.bootstrap?.initialOfficeSize, 9));
 }
 
 /** Next configured city that this division does not own, in config order. */
@@ -214,7 +224,7 @@ export function expansionDecisions(snapshot, config, options = {}) {
     const city = nextCity(division, config);
     if (!city) continue;
     const complete = divisionComplete(snapshot, division);
-    const minStaff = Math.max(1, finite(config?.bootstrap?.initialOfficeSize, 9));
+    const minStaff = staffingTarget(config);
     const staffed = divisionStaffed(snapshot, division, minStaff);
     const affordable = free > packageCost.total;
     const ready = complete && staffed && affordable && snapshot.unlocks['Warehouse API'] === true;
@@ -445,7 +455,7 @@ export function runExpansion(api, config, options = {}) {
         record(item.label, 'blocked', 'existing cities need warehouses');
         continue;
       }
-      if (!divisionStaffed(live, division)) {
+      if (!divisionStaffed(live, division, staffingTarget(config))) {
         record(item.label, 'blocked', 'existing offices are understaffed');
         continue;
       }

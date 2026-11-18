@@ -333,9 +333,13 @@ Purpose: take `NO_CORP` to a staffed multi-city corporation.
   Tobacco (Tobacco produces products; Agriculture supplies Plants).
   `expand-all-industries` adds any industry whose `producedMaterials` fill a
   `requiredMaterials` gap of an existing division, cheapest first.
-- **Unlocks in order**: `Warehouse API` → `Office API` → `Smart Supply` →
-  (`Export` when a second division needs inputs) → `Market Research - Demand` /
-  `Market Data - Competition` (each capped at 20% of free cash).
+- **Unlocks in order**: `Warehouse API` → `Office API` → `Smart Supply`
+  (each only while free cash covers it; the bootstrap buyer stops there).
+  `Market Research - Demand` / `Market Data - Competition` stay with the market
+  module, and `Export` is *not* bought: inputs are bought per city with
+  `buyMaterial` rates (§6.1.1), so no export route exists to unlock. If a
+  shared-input topology is ever adopted, that path must buy `Export` and add
+  `exportMaterial`/`cancelExportMaterial` routes together.
 - **City expansion**: for each division, for each of the six cities in config
   order, buy the package `officeInitialCost + warehouseInitialCost + 20e6` only
   when (a) every current city of that division already has a warehouse, (b) no
@@ -372,9 +376,12 @@ Contracts the integration card must respect:
 - Decision functions are pure: `corporationGate`, `creationPlan`,
   `bootstrapDecisions`, `bootstrapProgress`, `materialSeedPlan`,
   `expansionDecisions`, `industryCandidates`, `nextCity`, `divisionComplete`,
-  `divisionStaffed`. They take `(snapshot, config, options)` and return
-  decisions `{id, kind, label, cost, priority, state, detail, division, city,
-  industry}` where `state ∈ ready|blocked`.
+  `divisionStaffed`, `staffingTarget`. They take `(snapshot, config, options)` and
+  return decisions `{id, kind, label, cost, priority, state, detail, division, city,
+  industry}` where `state ∈ ready|blocked`. `staffingTarget(config)` is the single
+  source of `bootstrap.initialOfficeSize`, so the planner and the executor's
+  pre-purchase re-check cannot disagree (a hardcoded 9 here disables every city
+  expansion below the default office size).
 - Effect functions take the same `api`: `runBootstrap(api, config, options)` and
   `runExpansion(api, config, options)` with
   `{dryRun, log, now, reserve, context, cooldowns, failures, maxActions}`. They
@@ -418,6 +425,18 @@ Behavioural decisions taken while implementing this section:
   `{cost, gap, etaSeconds, longWait, alternatives[{kind:office|storage}]}`; the
   office alternative is quoted read-only because buying office size outside
   bootstrap belongs to the people module.
+- **Unlocks stop at Smart Supply.** The buyer owns `Warehouse API`, `Office API`
+  and `Smart Supply`; `Export` costs are read for reporting but never purchased,
+  because inputs are bought per city with `buyMaterial` rates instead of export
+  routes (`Market Research - Demand` / `Market Data - Competition` belong to the
+  market module).
+- **RAM preflight is reservation-aware.** `main(ns)` refuses to start only when
+  home cannot host the script at all (`required > getServerMaxRam('home')`) or
+  when the reservation still does not fit after adding this instance's own usage
+  back to free RAM — the running script is already part of
+  `getServerUsedRam`, so comparing `required` against bare free RAM would refuse
+  any home whose *leftover* RAM is smaller than the daemon itself (the same rule
+  as `autopilot.js:1105`).
 
 ### 6.2 Product and research (`corporation-product.js`)
 

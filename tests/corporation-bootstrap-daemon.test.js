@@ -167,6 +167,16 @@ test('main refuses to start without RAM or with a second instance', async () => 
   assert.equal(isDuplicateInstance(duplicate.ns, 'corporation-bootstrap-daemon.js'), true);
 });
 
+test('a home whose free RAM is below the script cost still runs when max RAM hosts it', async () => {
+  // 250 GB of other scripts plus this 350 GB daemon on a 900 GB home: `free` (300 GB) is smaller
+  // than the script, which is not a refusal — the running script already owns its reservation.
+  const tight = createTestGame({ wallet: 1e12, seedFunds: 400e9, args: ['--ticks=3'], scriptRam: 350, maxRam: 900, usedRam: 600 });
+  const result = await main(tight.ns);
+  assert.equal(result.cycles, 3);
+  assert.ok(!tight.calls.logs.some((line) => /stopped: needs/.test(line)), tight.calls.logs.join('\n'));
+  assert.equal(tight.count('createCorporation'), 1);
+});
+
 test('the status document keeps every §9.1 key it owns', () => {
   const game = createTestGame({ existing: true, funds: 1e9 });
   const report = {

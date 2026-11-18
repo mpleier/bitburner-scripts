@@ -350,6 +350,17 @@ export function createTestGame(options = {}) {
     getScriptRam: () => options.scriptRam ?? 60,
     getServerMaxRam: () => options.maxRam ?? 1000,
     getServerUsedRam: () => options.usedRam ?? 100,
+    // A live process is part of `usedRam`; `runningScript: null` models an unresolvable pid.
+    getRunningScript: (pid) => {
+      if (options.runningScript === null) return null;
+      const running = options.runningScript || {};
+      return {
+        filename: running.filename || options.scriptName || 'corporation-bootstrap-daemon.js',
+        pid,
+        threads: running.threads ?? 1,
+        ramUsage: running.ramUsage ?? options.scriptRam ?? 60,
+      };
+    },
     ps: () => options.processes || [{ filename: options.scriptName || 'corporation-bootstrap-daemon.js', pid: 4242 }],
     atExit: (fn) => atExit.push(fn),
   };

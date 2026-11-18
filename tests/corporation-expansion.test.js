@@ -18,10 +18,10 @@ const quiet = () => {};
 
 const FUNDATION_UNLOCKS = ['Warehouse API', 'Office API', 'Smart Supply'];
 
-function snapshotFor(game, overrides = {}) {
+function snapshotFor(game, overrides = {}, activeConfig = config) {
   const reset = game.ns.getResetInfo();
   return {
-    ...readBootstrapSnapshot(game.api, config, {
+    ...readBootstrapSnapshot(game.api, activeConfig, {
       wallet: game.state.wallet,
       playerReserve: 0,
       currentNode: reset.currentNode,
@@ -116,6 +116,32 @@ test('runExpansion expands one city per tick and re-runs as a no-op', () => {
   const rerun = runExpansion(game.api, config, { log: quiet });
   assert.deepEqual(game.mutationsSince(mark), []);
   assert.ok(rerun.actions.every((action) => action.state !== 'done'));
+});
+
+test('a non-default bootstrap.initialOfficeSize gates plan and executor identically', () => {
+  const sized = validateConfig({ bootstrap: { initialOfficeSize: 5 } }).config;
+  const game = foundation({ size: 5, staff: 5 });
+  const plan = expansionDecisions(snapshotFor(game, {}, sized), sized);
+  const city = plan.decisions.find((item) => item.id === 'expansion.city:Agri/Aevum');
+  assert.equal(city?.state, 'ready', 'offices at the configured size satisfy the planner');
+
+  const report = runExpansion(game.api, sized, { log: quiet });
+  const bought = report.actions.find((action) => action.label.includes('Aevum'));
+  assert.equal(
+    bought?.state,
+    'done',
+    report.actions.map((action) => `${action.label}:${action.state}:${action.detail}`).join(' | '),
+  );
+  assert.equal(game.api.hasWarehouse('Agri', 'Aevum'), true);
+  assert.equal(game.count('expandCity'), 2, 'one city from the helper plus the expansion');
+
+  // The new office starts at 3/5, so the *next* city stays blocked: the gate is the configured
+  // size, not a hardcoded 9, and a re-run still mutates nothing.
+  const mark = game.mark();
+  const rerun = runExpansion(game.api, sized, { log: quiet });
+  assert.deepEqual(game.mutationsSince(mark), []);
+  assert.ok(rerun.actions.every((action) => action.state !== 'done'));
+  assert.equal(game.count('expandCity'), 2);
 });
 
 test('the configured industry chain is created once the foundation is staffed', () => {

@@ -112,6 +112,9 @@ export const DEFAULT_CONFIG = {
     inputCashFraction: 0.5,
     officeCashFraction: 0.1,
     recoveryMarginCycles: 10,
+    // Share of free cash the daemon holds back for the next city/industry package, so
+    // discretionary optimisation cannot delay structural expansion (docs §4.4).
+    structuralClaimFraction: 0.5,
   },
   research: { affordableFraction: 0.2, optionalAutomation: false, developmentReserveCycles: 5 },
   telemetry: {
@@ -245,6 +248,7 @@ const SCHEMA = {
   'budgets.inputCashFraction': { kind: 'number', min: 0, max: 1 },
   'budgets.officeCashFraction': { kind: 'number', min: 0, max: 1 },
   'budgets.recoveryMarginCycles': { kind: 'number', min: 1, max: 10000 },
+  'budgets.structuralClaimFraction': { kind: 'number', min: 0, max: 1 },
   'research.affordableFraction': { kind: 'number', min: 0, max: 1 },
   'research.optionalAutomation': { kind: 'boolean' },
   'research.developmentReserveCycles': { kind: 'number', min: 1, max: 100, integer: true },

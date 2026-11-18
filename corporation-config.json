@@ -73,7 +73,8 @@
     "boostCashFraction": 0.2,
     "inputCashFraction": 0.5,
     "officeCashFraction": 0.1,
-    "recoveryMarginCycles": 10
+    "recoveryMarginCycles": 10,
+    "structuralClaimFraction": 0.5
   },
   "research": { "affordableFraction": 0.2, "optionalAutomation": false, "developmentReserveCycles": 5 },
   "telemetry": {

@@ -121,6 +121,42 @@ export function isDuplicateInstance(ns, script = null) {
   return processes.filter((process) => String(process?.filename || '').replace(/^\//, '') === String(name).replace(/^\//, '')).length > 1;
 }
 
+/**
+ * Home-RAM verdict for an entrypoint that is already running (spec edge 25).
+ *
+ * The script's own reservation is part of `getServerUsedRam`, so it is added back before
+ * comparing — exactly as `autopilot.js` does (`max - used + getScriptRam(reservation) >=
+ * needed`). Without that, a home that hosts the daemon comfortably is refused whenever the
+ * *leftover* RAM is smaller than the daemon itself.
+ */
+export function homeRamVerdict(ns, script = null) {
+  const name = script || safeCall(() => ns.getScriptName(), null);
+  const required = finite(safeCall(() => ns.getScriptRam(name, 'home'), 0));
+  const maxRam = finite(safeCall(() => ns.getServerMaxRam('home'), 0), 0);
+  const usedRam = finite(safeCall(() => ns.getServerUsedRam('home'), 0), 0);
+  const ownReservation = Math.max(
+    required,
+    finite(
+      safeCall(() => {
+        const running = typeof ns.getRunningScript === 'function' ? ns.getRunningScript(ns.pid) : null;
+        return running ? finite(running.ramUsage) * Math.max(1, finite(running.threads, 1)) : 0;
+      }, 0),
+    ),
+  );
+  const freeRam = Math.max(0, maxRam - usedRam);
+  const availableRam = freeRam + ownReservation;
+  return {
+    script: name,
+    required,
+    maxRam,
+    usedRam,
+    freeRam,
+    ownReservation,
+    availableRam,
+    ok: !(required > 0 && maxRam > 0 && (required > maxRam || required > availableRam)),
+  };
+}
+
 function writeFile(ns, path, value) {
   return safeCall(() => ns.write(path, JSON.stringify(value), 'w'), null) !== null;
 }
@@ -308,26 +344,9 @@ export async function main(ns) {
     return;
   }
   const script = safeCall(() => ns.getScriptName(), 'corporation-bootstrap-daemon.js');
-  const required = finite(safeCall(() => ns.getScriptRam(script, 'home'), 0));
-  const maxRam = finite(safeCall(() => ns.getServerMaxRam('home'), 0), 0);
-  const usedRam = finite(safeCall(() => ns.getServerUsedRam('home'), 0), 0);
-  // This script is already running, so its own reservation is part of `getServerUsedRam` and is
-  // never part of "free". Add it back before comparing, exactly as autopilot.js does
-  // (`max - used + getScriptRam(reservation) >= needed`); otherwise a home that hosts the daemon
-  // comfortably is refused whenever the *leftover* RAM is smaller than the daemon itself.
-  const ownReservation = Math.max(
-    required,
-    finite(
-      safeCall(() => {
-        const running = typeof ns.getRunningScript === 'function' ? ns.getRunningScript(ns.pid) : null;
-        return running ? finite(running.ramUsage) * Math.max(1, finite(running.threads, 1)) : 0;
-      }, 0),
-    ),
-  );
-  const availableRam = Math.max(0, maxRam - usedRam) + ownReservation;
-  if (required > 0 && maxRam > 0 && (required > maxRam || required > availableRam)) {
-    const freeRam = Math.max(0, maxRam - usedRam);
-    safeCall(() => ns.tprint(`Corporation bootstrap stopped: needs ${required.toFixed(1)} GB, home has ${maxRam.toFixed(1)} GB total (${freeRam.toFixed(1)} GB free, ${ownReservation.toFixed(1)} GB held by this instance).`));
+  const ram = homeRamVerdict(ns, script);
+  if (!ram.ok) {
+    safeCall(() => ns.tprint(`Corporation bootstrap stopped: needs ${ram.required.toFixed(1)} GB, home has ${ram.maxRam.toFixed(1)} GB total (${ram.freeRam.toFixed(1)} GB free, ${ram.ownReservation.toFixed(1)} GB held by this instance).`));
     return;
   }
   if (isDuplicateInstance(ns, script)) {

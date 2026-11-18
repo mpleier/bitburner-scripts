@@ -192,6 +192,9 @@ export function readCorporationSnapshot(api, { catalog = RESEARCH_PRIORITY } = {
  * @param {object} [options.state]        restored optimiser state
  * @param {(path:string, contents:string) => void} [options.write] state writer
  * @param {() => boolean} [options.isAllowed] controller guard (pause, maintenance, achievements)
+ * @param {number} [options.reserveFloor] cash the structural phase has claimed this cycle
+ * @param {string[]|Set<string>} [options.skipWarehouse] `Division/City` keys the structural phase
+ *        already upgraded (or bought) this cycle; upgrading them again would be a duplicate purchase
  */
 export function createCorporationOptimizer({
   api,
@@ -204,8 +207,24 @@ export function createCorporationOptimizer({
   isAllowed = () => true,
   onDecision = null,
   identity = null,
+  reserveFloor = 0,
+  skipWarehouse = null,
 } = {}) {
   let settings = config;
+  let structuralReserve = Math.max(0, num(reserveFloor));
+  const skipWarehouses = new Set(skipWarehouse instanceof Set ? skipWarehouse : Array.isArray(skipWarehouse) ? skipWarehouse : []);
+
+  /**
+   * Per-cycle guards from the daemon. `reserveFloor` is cash a structural purchase has
+   * already claimed (cities/industries); `skipWarehouse` names `Division/City` warehouses the
+   * structural phase touched this cycle, so one cycle never buys the same upgrade twice.
+   */
+  const setCycleGuards = ({ reserveFloor: floor = structuralReserve, skipWarehouse: skip = null } = {}) => {
+    structuralReserve = Math.max(0, num(floor));
+    skipWarehouses.clear();
+    for (const key of skip instanceof Set ? skip : Array.isArray(skip) ? skip : []) skipWarehouses.add(String(key));
+    return { reserveFloor: structuralReserve, skipWarehouse: [...skipWarehouses] };
+  };
   let optimizerState = restoreOptimizerState(state, identity || {});
   if (identity) {
     // Persisted with the state so the next restart can tell "same save" from "new reset" (spec §9.2).
@@ -281,7 +300,7 @@ export function createCorporationOptimizer({
     const marginFreeze = margin <= 0 && optimizerState.marginStreak.negative >= Math.max(1, num(settings.budgets?.recoveryMarginCycles) || 10);
     const recovering = treasury.recovering === true || marginFreeze;
     const ladder = corporationBudgetLadder(info, settings, {
-      growthBank: num(optimizerState.growthBank), cycleSeconds, recovering, developing,
+      growthBank: num(optimizerState.growthBank), cycleSeconds, recovering, developing, reserveFloor: structuralReserve,
     });
     const budgets = {
       growth: ladder.growth,
@@ -541,7 +560,12 @@ export function createCorporationOptimizer({
           quotedCost: safe(() => api.getUpgradeWarehouseCost(division.name, row.city, 1), NaN),
           cash: ladder.funds, reserve: localReserve, budget: remaining('growth'), config: settings, backlog: row.backlog,
         });
-        if (warehouse.ready && !recovering) {
+        const warehouseKey = `${division.name}/${row.city}`;
+        if (skipWarehouses.has(warehouseKey)) {
+          // The structural phase bought or upgraded this warehouse in this same cycle: a second
+          // upgrade here would be a duplicate purchase (spec §5.3 invariant 6).
+          record('warehouse', `Warehouse ${warehouseKey}`, 'blocked', { reason: 'the structural phase already touched this warehouse this cycle' });
+        } else if (warehouse.ready && !recovering) {
           run({
             kind: 'warehouse', label: `Warehouse ${division.name}/${row.city}`, cost: warehouse.cost, budgetKey: 'growth',
             apply: () => applyWarehouseUpgrade(api, warehouse, { allowed, reserve: localReserve }),
@@ -663,16 +687,16 @@ export function createCorporationOptimizer({
     return { state, at, decisions: telemetry.decisions, findings: telemetry.findings, telemetry, snapshot };
   }
 
-  return { tick, configure, getState };
+  return { tick, configure, getState, setCycleGuards };
 }
 
 /**
  * Dry-run over one snapshot without an optimiser instance: returns the full plan so a caller
  * can diff it against a real run (spec §9.5, acceptance 12).
  */
-export function planOnly({ api, config = defaultCorporationConfig(), cycleSeconds = 10, state = null, clock = () => Date.now() } = {}) {
+export function planOnly({ api, config = defaultCorporationConfig(), cycleSeconds = 10, state = null, clock = () => Date.now(), reserveFloor = 0, skipWarehouse = null } = {}) {
   const optimizer = createCorporationOptimizer({
-    api, config: { ...config, dryRun: true }, cycleSeconds, state, clock, isAllowed: () => true,
+    api, config: { ...config, dryRun: true }, cycleSeconds, state, clock, isAllowed: () => true, reserveFloor, skipWarehouse,
   });
   return optimizer.tick();
 }

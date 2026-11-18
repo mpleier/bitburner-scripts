@@ -36,6 +36,40 @@ export const TEST_UNLOCK_COSTS = {
   'Market Data - Competition': 25e9,
 };
 
+/** Level-upgrade base costs (level 0). Representative, not the game's exact curve. */
+export const TEST_UPGRADE_COSTS = {
+  'Smart Factories': 2e9,
+  'Smart Storage': 2e9,
+  'Nuoptimal Nootropic Injector Implants': 2e9,
+  'Speech Processor Implants': 2e9,
+  'Neural Accelerators': 2e9,
+  FocusWires: 2e9,
+  'ABC SalesBots': 2e9,
+  'Project Insight': 2e9,
+  'Wilson Analytics': 4e9,
+};
+
+/** Research point costs; the laboratory is the gate for everything else. */
+export const TEST_RESEARCH_COSTS = {
+  'Hi-Tech R&D Laboratory': 0,
+  'Market-TA.I': 5000,
+  'Market-TA.II': 70000,
+  'Self-Correcting Assemblers': 5000,
+  Drones: 5000,
+  'Drones - Assembly': 15000,
+  'Drones - Transport': 15000,
+  Overclock: 25000,
+  'Sti.mu': 25000,
+  'uPgrade: Fulcrum': 25000,
+  'uPgrade: Capacity.I': 15000,
+  'uPgrade: Capacity.II': 25000,
+  AutoBrew: 15000,
+  AutoPartyManager: 15000,
+  'HRBuddy-Recruitment': 10000,
+  'HRBuddy-Training': 10000,
+  'uPgrade: Dashboard': 10000,
+};
+
 const clone = (value) => (value === undefined ? value : JSON.parse(JSON.stringify(value)));
 const MATERIAL_PRICES = { Water: 50, Chemicals: 200, Plants: 120, Food: 90, 'Real Estate': 1e4, Hardware: 2e4, Robots: 5e5, 'AI Cores': 1e5 };
 const MATERIAL_COEFFICIENTS = { Water: 0.5, Chemicals: 0.2, Plants: 1, Food: 1 };
@@ -74,6 +108,9 @@ export function createTestGame(options = {}) {
     offices: {},
     warehouses: {},
     materials: {},
+    upgrades: {},
+    researched: new Set(options.researched || []),
+    productInfo: {},
     unlocks: new Set(unlocks),
     constants: { ...TEST_CONSTANTS, ...(options.constants || {}) },
   };
@@ -152,7 +189,7 @@ export function createTestGame(options = {}) {
         lastCycleExpenses: d.lastCycleExpenses,
         thisCycleRevenue: 0,
         thisCycleExpenses: 0,
-        numAdVerts: 0,
+        numAdVerts: d.numAdVerts || 0,
       };
     },
     getIndustryData: (industry) => {
@@ -169,7 +206,7 @@ export function createTestGame(options = {}) {
       if (state.divisions[divisionName]) throw new Error(`Division ${divisionName} already exists`);
       if (Object.values(state.divisions).some((d) => d.industry === industry)) throw new Error(`You already have a ${industry} division`);
       requireFunds(data.startingCost);
-      state.divisions[divisionName] = { name: divisionName, industry, cities: [], products: [], researchPoints: 0, lastCycleRevenue: 0, lastCycleExpenses: 0 };
+      state.divisions[divisionName] = { name: divisionName, industry, cities: [], products: [], researchPoints: 0, lastCycleRevenue: 0, lastCycleExpenses: 0, numAdVerts: 0 };
       return true;
     },
     expandCity: (divisionName, city) => {
@@ -290,6 +327,170 @@ export function createTestGame(options = {}) {
       delete state.divisions[divisionName];
       return true;
     },
+
+    // ---- Optimiser surface (people, product, research, market, upgrades) ----------------
+    // The bootstrap/expansion tests never call these; the integrated daemon test needs them so
+    // one cycle can run the optimiser against a game that rejects illegal calls like the real one.
+    getUpgradeLevel: (upgradeName) => state.upgrades[upgradeName] || 0,
+    getUpgradeLevelCost: (upgradeName) => {
+      const base = TEST_UPGRADE_COSTS[upgradeName];
+      if (base === undefined) throw new Error(`Unknown upgrade ${upgradeName}`);
+      return Math.round(base * 1.5 ** (state.upgrades[upgradeName] || 0));
+    },
+    levelUpgrade: (upgradeName) => {
+      record('levelUpgrade', [upgradeName], true);
+      corp();
+      requireFunds(api.getUpgradeLevelCost(upgradeName));
+      state.upgrades[upgradeName] = (state.upgrades[upgradeName] || 0) + 1;
+      return true;
+    },
+    hasResearched: (divisionName, researchName) => state.researched.has(`${divisionName}/${researchName}`),
+    getResearchCost: (divisionName, researchName) => {
+      division(divisionName);
+      const cost = TEST_RESEARCH_COSTS[researchName];
+      if (cost === undefined) throw new Error(`Unknown research ${researchName}`);
+      return cost;
+    },
+    research: (divisionName, researchName) => {
+      record('research', [divisionName, researchName], true);
+      const d = division(divisionName);
+      if (!state.unlocks.has('Office API')) throw new Error('You have not purchased the Office API');
+      if (d.researchPoints < api.getResearchCost(divisionName, researchName)) throw new Error('Not enough research points');
+      d.researchPoints -= api.getResearchCost(divisionName, researchName);
+      state.researched.add(`${divisionName}/${researchName}`);
+      return true;
+    },
+    getHireAdVertCost: (divisionName) => {
+      const d = division(divisionName);
+      return Math.round(1e9 * 2 ** (d.numAdVerts || 0));
+    },
+    hireAdVert: (divisionName) => {
+      record('hireAdVert', [divisionName], true);
+      const d = division(divisionName);
+      requireFunds(api.getHireAdVertCost(divisionName));
+      d.numAdVerts = (d.numAdVerts || 0) + 1;
+      return true;
+    },
+    getProduct: (divisionName, city, productName) => {
+      if (!state.warehouses[`${divisionName}/${city}`]) throw new Error('No warehouse there');
+      const d = division(divisionName);
+      if (!d.products.includes(productName)) throw new Error(`Product ${productName} does not exist`);
+      const info = state.productInfo[`${divisionName}/${city}/${productName}`] || {};
+      return {
+        name: productName,
+        developmentProgress: info.progress ?? 0,
+        stored: info.stored ?? 0,
+        productionAmount: info.production ?? 0,
+        actualSellAmount: info.sold ?? 0,
+        effectiveRating: info.rating ?? 100,
+        rating: info.rating ?? 100,
+        productionCost: 1000,
+        desiredSellPrice: 0,
+        markupLimit: 1,
+      };
+    },
+    makeProduct: (divisionName, city, productName) => {
+      record('makeProduct', [divisionName, city, productName], true);
+      const d = division(divisionName);
+      const industry = TEST_INDUSTRIES[d.industry] || {};
+      if (industry.makesProducts !== true) throw new Error('This industry cannot produce products');
+      if (d.products.includes(productName)) throw new Error('You already have this product');
+      if (d.products.length >= 3) throw new Error('You have reached the maximum number of products');
+      if (!state.warehouses[`${divisionName}/${city}`]) throw new Error('No warehouse there');
+      d.products.push(productName);
+      state.productInfo[`${divisionName}/${city}/${productName}`] = { progress: 0, stored: 0, production: 0, sold: 0, rating: 100 };
+      return true;
+    },
+    discontinueProduct: (divisionName, productName) => {
+      record('discontinueProduct', [divisionName, productName], true);
+      const d = division(divisionName);
+      const index = d.products.indexOf(productName);
+      if (index < 0) throw new Error(`Product ${productName} does not exist`);
+      d.products.splice(index, 1);
+      for (const key of Object.keys(state.productInfo)) if (key.startsWith(`${divisionName}/`) && key.endsWith(`/${productName}`)) delete state.productInfo[key];
+      return true;
+    },
+    sellProduct: (divisionName, city, productName, price, quantity) => {
+      record('sellProduct', [divisionName, city, productName, price, quantity], true);
+      division(divisionName);
+      if (!state.warehouses[`${divisionName}/${city}`]) throw new Error('No warehouse there');
+      return true;
+    },
+    setProductMarketTA2: (divisionName, productName, enabled) => {
+      record('setProductMarketTA2', [divisionName, productName, enabled], true);
+      division(divisionName);
+      return true;
+    },
+    sellMaterial: (divisionName, city, material, price, quantity) => {
+      record('sellMaterial', [divisionName, city, material, price, quantity], true);
+      division(divisionName);
+      if (!state.warehouses[`${divisionName}/${city}`]) throw new Error('No warehouse there');
+      return true;
+    },
+    setMaterialMarketTA2: (divisionName, city, material, enabled) => {
+      record('setMaterialMarketTA2', [divisionName, city, material, enabled], true);
+      division(divisionName);
+      return true;
+    },
+    setSmartSupplyOption: (divisionName, city, option, value) => {
+      record('setSmartSupplyOption', [divisionName, city, option, value], true);
+      if (!state.unlocks.has('Smart Supply')) throw new Error('You have not purchased Smart Supply');
+      return true;
+    },
+    getMaterialData: (material) => ({
+      name: material,
+      marketPrice: MATERIAL_PRICES[material] ?? 100,
+      quality: 1,
+      demand: 1e3,
+      competition: 1e3,
+      size: MATERIAL_COEFFICIENTS[material] ?? 1,
+    }),
+    throwParty: (divisionName, city, costPerEmployee) => {
+      record('throwParty', [divisionName, city, costPerEmployee], true);
+      const office = api.getOffice(divisionName, city);
+      requireFunds(Math.max(1, costPerEmployee) * Math.max(1, office.numEmployees));
+      return true;
+    },
+    buyTea: (divisionName, city) => {
+      record('buyTea', [divisionName, city], true);
+      const office = api.getOffice(divisionName, city);
+      requireFunds((state.constants.teaCostPerEmployee || 500000) * Math.max(1, office.numEmployees));
+      return true;
+    },
+    getInvestmentOffer: () => {
+      if (!state.corporation) throw new Error('You do not have a corporation');
+      return { funds: 1e10, shares: 1e8, round: 1 };
+    },
+    issueDividends: (rate) => {
+      record('issueDividends', [rate], true);
+      corp();
+      return true;
+    },
+    goPublic: (shares) => {
+      record('goPublic', [shares], true);
+      corp().public = true;
+      return true;
+    },
+    acceptInvestmentOffer: () => {
+      record('acceptInvestmentOffer', [], true);
+      corp();
+      return true;
+    },
+    issueNewShares: (shares) => {
+      record('issueNewShares', [shares], true);
+      corp();
+      return true;
+    },
+    sellShares: (shares) => {
+      record('sellShares', [shares], true);
+      corp();
+      return true;
+    },
+    buyBackShares: (shares) => {
+      record('buyBackShares', [shares], true);
+      corp();
+      return true;
+    },
     nextUpdate: async () => undefined,
   };
 
@@ -306,6 +507,26 @@ export function createTestGame(options = {}) {
     'setSmartSupply',
     'buyMaterial',
     'sellDivision',
+    // Optimiser surface (see the api block): recorded so the daemon test can assert that a
+    // cycle never repeats a purchase and never touches finance.
+    'levelUpgrade',
+    'research',
+    'hireAdVert',
+    'makeProduct',
+    'discontinueProduct',
+    'sellProduct',
+    'setProductMarketTA2',
+    'sellMaterial',
+    'setMaterialMarketTA2',
+    'setSmartSupplyOption',
+    'throwParty',
+    'buyTea',
+    'issueDividends',
+    'goPublic',
+    'acceptInvestmentOffer',
+    'issueNewShares',
+    'sellShares',
+    'buyBackShares',
   ];
   // Wrap mutations so only successful calls are recorded as purchases; a rejected call is
   // recorded in `attempts`, which keeps idempotency assertions honest.

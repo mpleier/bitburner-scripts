@@ -251,6 +251,74 @@ status files. If a future board asks for it, the only viable split is
 12. **Persist** — status + state files, then `await nextUpdate()`.
 13. **Failure handling** — per-operation counters, bounded retry, escalation.
 
+### 4.4 The integrated daemon (this repository)
+
+`corporation-daemon.js` is the single entrypoint (spec §11.2). It owns the loop; the two halves
+are libraries called from it in the §4.3 order, so one process pays the ~860 GB
+`ns.corporation` reservation once:
+
+```
+run corporation-daemon.js [--dry-run] [--ticks=N] [--interval=ms] [--quiet]
+```
+
+One cycle:
+
+1. **Guard** — `config.enabled`, the injected `isAllowed` hook (pause/maintenance/achievement),
+   a single instance (`ns.ps`), and peer writers (`autopilot.js`, `corporation-manager.js`,
+   `corporation-bootstrap-daemon.js`). A peer writer makes the cycle *report-only*: state is
+   published, no mutation runs, and buy rates are zeroed first.
+2. **Structural** — `runBootstrapExpansionCycle(ns, …)`: creation, unlocks, industries, cities,
+   warehouses, seed office, input seeding (spec §6.1). It keeps writing
+   `tasks/corporation-bootstrap-status.json`.
+3. **Cross-half guards** — computed between the halves, not inside either one:
+   - *Structural claim*: the next city/industry package that is blocked **only** by funds keeps
+     `min(cost, budgets.structuralClaimFraction × free cash)` of free cash. The optimiser receives
+     it as `reserveFloor`, so its reserve (and therefore every discretionary budget) covers the
+     claim. A `longWait` package (gap > 2× free cash) claims nothing, and operating budgets
+     (inputs, upkeep, boost) are charged from funds above the reserve, so income keeps flowing.
+   - *Touched warehouses*: warehouses bought or upgraded by the structural phase are compared
+     before/after the phase and passed to the optimiser as `skipWarehouse`. Both modules upgrade
+     warehouses under storage pressure; without the guard one cycle would buy two levels.
+4. **Optimiser** — `createCorporationOptimizer({api, config, cycleSeconds, state, write, identity,
+   isAllowed, reserveFloor, skipWarehouse}).tick()`: people → research → product → market →
+   upgrades inside the §7.2 ladder, persisting `telemetry.stateFile`
+   (`tasks/corporation-optimizer.json`) and skipping persistence in dry-run mode.
+5. **Telemetry** — `tasks/corporation-daemon-status.json` (the §9.1 key set plus `structural`,
+   `optimizer`, `guards` and the last 60 log lines), and in dry-run `tasks/corporation-dry-run.json`.
+6. **Cadence** — `await ns.corporation.nextUpdate()`, with `--interval` as a floor so bonus time
+   cannot spin the loop; `NO_CORP` sleeps 60 s instead.
+
+Failure handling: each phase is wrapped; a throwing module becomes a `failed` cycle with a
+persisted counter in `tasks/corporation-daemon-state.json`, never an unhandled exception. Five
+consecutive crashes back the loop off to one cycle per ten minutes (spec §9.3). State is scoped
+to `{nodeReset, augReset, corporation}` and discarded on mismatch (spec §9.4).
+
+RAM: the entrypoint references `ns.corporation` for `getConstants` and `nextUpdate` only (both
+0 GB); the modules receive `ns.corporation` as an injected `api`, so their reads and mutations do
+not add static cost to this script. The RAM preflight (`homeRamVerdict`) adds the running
+script's own reservation back before comparing, because a live process is already part of
+`getServerUsedRam`.
+
+Decisions taken for the integration (and their reasons):
+
+- **Status file names.** The daemon writes `tasks/corporation-daemon-status.json`; the §9.1
+  `tasks/corporation-status.json` stays the legacy controller's. Two writers on one file is the
+  same class of bug as two controllers on one corporation, and the daemon is designed to be
+  started next to an existing save.
+- **Finance stays out.** Investment rounds, IPO, dividends, share issue/sale and buyback are not
+  implemented here. The legacy `corporation-manager.js` owns them; the daemon reports the owner
+  in `guards.finance`, never calls those six functions, and stands down entirely when the legacy
+  controller is running. `finance.*` config keys are validated and reported as *wanted* but
+  unowned when nothing runs them — the status document does not pretend otherwise.
+- **`budgets.structuralClaimFraction` (default 0.5)** is the one new leaf: it bounds how much of
+  the free cash structural expansion may hold back from discretionary optimisation (§8).
+- **`budgets.recoveryMarginCycles` = 10.** Both branches shipped a default; only the optimiser
+  reads it, so the merge keeps 10 and drops the unread 30.
+
+Tests: `tests/corporation-daemon.test.js` covers the one-command start, both cross-half guards,
+peer report-only, suspend, hostile API, dry run, state scoping, `--ticks`, the RAM refusal and
+config reporting, on the in-memory game in `tests/corporation-test-game.mjs`.
+
 ## 5. Lifecycle state machine
 
 ### 5.1 States
@@ -971,6 +1039,39 @@ Implementation-level (for the child cards):
   cards; bootstrap/expansion keep the reserve invariant and expose
   `bootstrapProgress` for the state machine.
 
+### 11.2 Covered by the integration card (`corporation-daemon.js`)
+
+- **One command starts the full automation.** `run corporation-daemon.js` runs the
+  structural phase, then the optimiser, then `nextUpdate()`;
+  `tests/corporation-daemon.test.js` drives it from "no corporation" with `--ticks`
+  and asserts the status document reports `cyclesManaged: 3`.
+- **Modules coordinate without duplicate purchases.** One cycle buys nothing twice
+  (per-operation argument keys), consecutive cycles never buy an owned city,
+  warehouse, unlock or industry, and the optimiser skips warehouses the structural
+  phase touched in the same cycle.
+- **No fight over spending.** A staged city package holds
+  `budgets.structuralClaimFraction` of free cash as a reserve floor; discretionary
+  decisions become `budget-wait` while inputs, staffing and sales still run.
+- **No fight over shares/dividends.** The daemon never calls the six finance
+  functions (asserted over a full cycle), reports `guards.finance.owner`, and turns
+  report-only with zero mutations when a peer controller runs.
+- **Failures are logged and retried safely.** A mock API that throws on every
+  mutation produces a bounded failed cycle with counters and no exception; five
+  consecutive crashes back off to 10 minutes.
+- **No unhandled exceptions.** Every phase call is wrapped
+  (`try/catch` in `runCorporationCycle`, `main` and `atExit`), including a corrupt
+  config and an unreadable state file.
+- **RAM and tick constraints.** The RAM preflight refuses a 5000 GB script on a
+  100 GB home with no mutation and accepts 350 GB on a 900 GB home (600 used);
+  the loop never runs tighter than `--interval` and waits on `nextUpdate()`.
+- **Docs.** README §"Corporation automation" and §4.4 document the entrypoint, the
+  loop, the guards, the status/state files and the handover rule from
+  `corporation-manager.js`.
+- **Live smoke (criterion 17).** A dry-run cycle against the connected save is run
+  as part of this card's verification and recorded in the handoff; a mutating
+  unattended run stays with the save owner, because the daemon is not registered in
+  `automation-manifest.js` and autopilot still launches `corporation-manager.js`.
+
 ## 12. Test plan
 
 - Unit (pure policy): `node --test tests/corporation-*.test.js` — state machine
@@ -1003,26 +1104,33 @@ Create:
 4. `corporation-config.js` — schema, defaults, validation, flag merge.
 5. `corporation-bootstrap.js` — creation, unlocks, first division/city. **Done.**
 6. `corporation-expansion.js` — cities, warehouses, industries. **Done.**
-7. `corporation-product.js` — products, research, science gate.
-8. `corporation-people.js` — offices, jobs, upkeep, upgrades, AdVerts.
+7. `corporation-product.js` — products, research, science gate. **Done.**
+8. `corporation-people.js` — offices, jobs, upkeep, upgrades, AdVerts. **Done.**
 9. `corporation-finance.js` — investment, IPO, dividends, shares, hashes, bribes.
-10. `corporation-market.js` — inputs, boosts, pricing, selling, exports.
+   **Not implemented:** the legacy controller owns finance; see §4.4.
+10. `corporation-market.js` — inputs, boosts, pricing, selling, exports. **Done.**
 11. `corporation-config.json` — default configuration file. **Done.**
 12. `tests/corporation-state.test.js`, `-config.test.js`, `-bootstrap.test.js`,
     `-expansion.test.js`, `-product.test.js`, `-people.test.js`,
     `-finance.test.js`, `-market.test.js`, `-edge-cases.test.js`,
-    `-dry-run.test.js`. **Done:** `-config`, `-bootstrap`, `-expansion` and
-    `-bootstrap-daemon` (plus the shared fake game in
-    `tests/corporation-test-game.mjs` and the live capture in
-    `tests/fixtures/corporation-live-snapshot.json`).
+    `-dry-run.test.js`. **Done:** `-config`, `-bootstrap`, `-expansion`,
+    `-bootstrap-daemon`, `-optimizer*`, `-daemon` (plus the shared fake game in
+    `tests/corporation-test-game.mjs`, the live capture in
+    `tests/fixtures/corporation-live-snapshot.json` and the deterministic economy
+    in `tests/fixtures/corporation-sim.js`).
 13. `corporation-bootstrap-daemon.js` — config-driven bootstrap/expansion
     entrypoint (`runBootstrapExpansionCycle` + `main`). **Done.**
+14. `corporation-daemon.js` — **the single entrypoint** (§4.4): guard, structural
+    phase, cross-half guards, optimiser phase, telemetry, cadence, `main`. **Done.**
+15. `corporation-optimizer.js` — the optimiser tick (§6.2-§6.5, §7). **Done.**
 
 Modify (only as needed):
 
 - `corporation-manager.js` → thin wrapper; keep the filename for `daemon.js:414`,
   `remote-api-command-policy.js:14`, and `automation-manifest.js`.
 - `automation-manifest.js` — only if a second entrypoint is added (not planned).
+  `corporation-daemon.js` is deliberately **not** registered: `autopilot.js` keeps
+  launching `corporation-manager.js`, and the daemon stands down when it sees it.
 - `README-AUTOMATION.md` §"Corporation lifecycle" — document the new flags,
   config file, and state names.
 - `AUTOMATION-EXTENSIONS.md` — add a "Corporation automation spec" pointer.

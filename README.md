@@ -139,6 +139,12 @@ actions, and it leaves the peer's `buyMaterial` rates alone (zeroing them would 
 defers to). To hand the corporation over, stop the legacy manager first (or run
 `run autopilot.js --disable-corporation`); finance is then unowned, see *Finance ownership* below.
 
+The optimiser's immutable-metadata cache (`cacheMetadata`, on by default) applies only to the
+daemon's own optimiser instance. It does not change `corporation-manager.js` reads, and the
+report-only path above returns before the optimiser tick, so the default autopilot launch sees no
+change; the measured scope and the reproducible command are in
+`docs/optimization-implementation-evidence.md`.
+
 Called from another daemon, import the cycle instead of starting a second process (one script that touches
 `ns.corporation` is **677.2 GB** of static RAM as measured in game, and its import graph is included in
 that figure):

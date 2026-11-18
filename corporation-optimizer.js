@@ -88,31 +88,44 @@ const num = value => (Number.isFinite(Number(value)) ? Number(value) : 0);
  * level-based cost model cannot be observed stale by this loop. Mutable state (funds, office,
  * warehouse, products, materials in cities, unlocks, research *ownership*) is always read
  * fresh from the snapshot. See docs/optimization-acceptance-criteria.md M10/M17.
+ *
+ * A failed quote (the API threw) is returned to this tick's caller as `null`/`NaN`, exactly as
+ * the uncached path would, but is NOT stored: the next read re-quotes. Caching a fallback would
+ * turn a transient API failure into a permanent decision drift. Failed quotes are counted in
+ * `failedQuotes` so the condition stays observable.
  */
 export function createCorporationMetadataCache(api) {
   const materials = new Map();
   const research = new Map();
   const upgrades = new Map();
-  const memoize = (map, key, load) => {
-    if (!map.has(key)) map.set(key, load());
-    return map.get(key);
+  let failedQuotes = 0;
+  const memoize = (map, key, load, valid) => {
+    if (map.has(key)) return map.get(key);
+    const value = load();
+    if (valid(value)) map.set(key, value);
+    else failedQuotes++;
+    return value;
   };
   return {
     materialData(name) {
-      return memoize(materials, name, () => safe(() => api.getMaterialData(name), null));
+      return memoize(materials, name, () => safe(() => api.getMaterialData(name), null),
+        value => value !== null && typeof value === 'object');
     },
     researchCost(division, researchName) {
       return memoize(research, `${division}\u0000${researchName}`,
-        () => Number(safe(() => api.getResearchCost(division, researchName), NaN)));
+        () => Number(safe(() => api.getResearchCost(division, researchName), NaN)),
+        Number.isFinite);
     },
     upgradeCost(name, level) {
       return memoize(upgrades, `${name}\u0000${level}`,
-        () => Number(safe(() => api.getUpgradeLevelCost(name), NaN)));
+        () => Number(safe(() => api.getUpgradeLevelCost(name), NaN)),
+        Number.isFinite);
     },
     invalidateResearch(division) {
       const prefix = `${division}\u0000`;
       for (const key of research.keys()) if (key.startsWith(prefix)) research.delete(key);
     },
+    get failedQuotes() { return failedQuotes; },
   };
 }
 

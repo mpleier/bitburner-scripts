@@ -813,6 +813,26 @@ Success for a run: (a) 10-cycle median profit ≥ 2× the pre-change baseline on
 same save, (b) no action ever takes `funds` below `reserve`, (c) ownership ≥
 floor, (d) zero unhandled exceptions in a 4-hour unattended run.
 
+### 7.9 Immutable metadata cache (runtime)
+
+`createCorporationMetadataCache(api)` memoizes three `ns.corporation` reads **per optimiser
+instance and API object**, never across saves:
+
+| Cached read | Key / invalidation |
+| --- | --- |
+| `getMaterialData(name)` | keyed by material name; static within a save |
+| `getResearchCost(division, name)` | keyed by `(division, name)`; invalidated for that division only after a real research purchase |
+| `getUpgradeLevelCost(name)` | keyed by the `(name, level)` pair just read from the snapshot; a level change re-quotes |
+
+Mutable state (funds, office, warehouse, materials/products per city, unlocks, research
+*ownership*) is always read fresh. A failed quote (`null`/`NaN` fallback) is returned for that
+tick, counted in `cache.failedQuotes`, and **not** cached — the next read re-quotes, so a transient
+API throw cannot poison decisions. `createCorporationOptimizer` enables this by default via the
+`cacheMetadata` option; `cacheMetadata: false` is the A/B and incident-rollback switch (it never
+skips a fresh read of mutable state). The measured call-count reduction applies only to a
+persistent daemon optimiser instance; see `docs/optimization-implementation-evidence.md` for the
+instrumented command and the deployment-scope caveat.
+
 ## 8. Configuration schema
 
 File: `corporation-config.json` at the repository root (synced to the game like

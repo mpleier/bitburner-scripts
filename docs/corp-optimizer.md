@@ -76,6 +76,18 @@ immediately before acting: division product list, warehouse level, upgrade level
 size, corporation funds. A plan computed from a stale snapshot therefore cannot spend money it does
 not have, and every `apply*` catches its own errors and returns `{state, reason}` instead of throwing.
 
+### Immutable metadata cache (`cacheMetadata`)
+
+`createCorporationOptimizer` memoizes three immutable reads through
+`createCorporationMetadataCache`, bound to one optimiser instance and one `api` object:
+`getMaterialData(name)` by material name, `getResearchCost(division, name)` by `(division, name)`
+(invalidated for that division after a real research purchase), and `getUpgradeLevelCost(name)` by
+the level just read. Failed quotes are returned but not cached, so a transient API throw is retried
+next tick instead of freezing `null`/`NaN` into the decision path. Everything else in the snapshot
+is still read fresh. `cacheMetadata: false` disables the memo for A/B tests or incident rollback;
+it is documented as a rollback switch in `docs/corp-automation-spec.md` §7.9, and the instrumented
+before/after command and its deployment scope are in `docs/optimization-implementation-evidence.md`.
+
 ## 2. Configuration
 
 `corporation-config.json` at the repository root. Missing file, invalid JSON, invalid value or a

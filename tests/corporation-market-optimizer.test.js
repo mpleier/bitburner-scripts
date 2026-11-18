@@ -39,6 +39,77 @@ test('with Market-TA.II every material and product sells at MP', () => {
   assert.equal(plan.products[0].all, true);
 });
 
+test('the TA.II flag is carried through the plan so the enable calls can be issued', () => {
+  // The price string alone does not opt into TA.II; the flag does. Both must survive planning.
+  const owned = planSales({
+    division: 'Tobacco',
+    divisionInfo: { products: ['Tobacco 1'] },
+    industry: { producedMaterials: ['Drugs'], advertisingFactor: 0.5 },
+    cities: [{
+      city: 'Sector-12', warehouse: warehouse(), office: { employeeProductionByJob: { Business: 4 } },
+      materials: { Drugs: { name: 'Drugs', stored: 100, quality: 1.2, marketPrice: 50, productionAmount: 200 } },
+      products: { 'Tobacco 1': { name: 'Tobacco 1', developmentProgress: 100, effectiveRating: 2, productionCost: 100 } },
+    }],
+    ta2: true, materialData: { Drugs: { baseMarkup: 8 } },
+  });
+  assert.equal(owned.ta2, true, 'the plan reports that TA.II pricing is in use');
+  assert.ok(owned.materials.every(row => row.ta2 === true));
+  assert.ok(owned.products.every(row => row.ta2 === true));
+
+  const without = planSales({
+    division: 'Tobacco', divisionInfo: { products: [] }, industry: { producedMaterials: ['Drugs'] },
+    cities: [{ city: 'Sector-12', warehouse: warehouse(), office: null, materials: { Drugs: { name: 'Drugs', stored: 10, quality: 1, marketPrice: 50 } }, products: {} }],
+    ta2: false, materialData: { Drugs: { baseMarkup: 8 } },
+  });
+  assert.equal(without.ta2, false);
+  assert.ok(without.materials.every(row => row.ta2 === false));
+
+  const empty = planSales({ division: 'Tobacco', ta2: true });
+  assert.equal(empty.ta2, true, 'the early return keeps the flag too');
+});
+
+test('applySales enables TA.II once per order — and never when the technology is not owned', () => {
+  const cities = [{
+    city: 'Sector-12', warehouse: warehouse(), office: { employeeProductionByJob: { Business: 4 } },
+    materials: { Drugs: { name: 'Drugs', stored: 100, quality: 1.2, marketPrice: 50, productionAmount: 200 } },
+    products: {
+      'Tobacco 1': { name: 'Tobacco 1', developmentProgress: 100, effectiveRating: 2, productionCost: 100 },
+      'Tobacco 2': { name: 'Tobacco 2', developmentProgress: 100, effectiveRating: 2, productionCost: 100 },
+    },
+  }];
+  const plan = planSales({
+    division: 'Tobacco', divisionInfo: { products: ['Tobacco 1', 'Tobacco 2'] },
+    industry: { producedMaterials: ['Drugs'], advertisingFactor: 0.5 }, cities,
+    ta2: true, materialData: { Drugs: { baseMarkup: 8 } },
+  });
+
+  const owned = createCorporationSimulation();
+  owned.state.ta2 = true; // Market-TA.II researched
+  for (const name of ['Tobacco 1', 'Tobacco 2']) {
+    owned.state.products.push({ name, developmentProgress: 100, stored: 0, productionAmount: 0, actualSellAmount: 0, desiredSellPrice: 'MP', desiredSellAmount: 'MAX' });
+  }
+  const result = applySales(owned.api, { division: 'Tobacco', ...plan }, {});
+  const productEnables = owned.calls().filter(call => call.fn === 'setProductMarketTA2');
+  const materialEnables = owned.calls().filter(call => call.fn === 'setMaterialMarketTA2');
+  assert.equal(result.state, 'purchased');
+  assert.equal(productEnables.length, plan.products.length, 'one setProductMarketTA2 per product order');
+  assert.equal(materialEnables.length, plan.materials.length, 'one setMaterialMarketTA2 per material order');
+  assert.deepEqual(productEnables.map(call => call.args), [['Tobacco 1', true], ['Tobacco 2', true]]);
+  assert.deepEqual(materialEnables.map(call => call.args), [['Drugs', true]]);
+  assert.equal(result.ta2, 3, 'the applied enable count is reported');
+  assert.deepEqual([...owned.state.ta2Products].sort(), ['Tobacco 1', 'Tobacco 2']);
+
+  const unowned = createCorporationSimulation();
+  applySales(unowned.api, { division: 'Tobacco', ...plan }, {});
+  assert.equal(unowned.callCount('setProductMarketTA2'), 0, 'no enable call without the research');
+  assert.equal(unowned.callCount('setMaterialMarketTA2'), 0);
+
+  const off = createCorporationSimulation();
+  off.state.ta2 = true;
+  applySales(off.api, { division: 'Tobacco', ...plan, ta2: false, materials: plan.materials.map(row => ({ ...row, ta2: false })), products: plan.products.map(row => ({ ...row, ta2: false })) }, {});
+  assert.equal(off.callCount('setProductMarketTA2') + off.callCount('setMaterialMarketTA2'), 0, 'TA.II stays off when the plan says so');
+});
+
 test('without TA.II materials use additive quality markup and products use a price bracket', () => {
   const plan = planSales({
     division: 'Tobacco',

@@ -61,6 +61,60 @@ test('the optimisation loop beats a do-nothing baseline on profit, valuation and
   assert.ok(worst >= 0, 'the reserve invariant holds on every simulated cycle');
 });
 
+test('Market-TA.II is enabled per order, so the researched technology actually prices the sale', () => {
+  const { simulation, metrics } = runOptimised();
+  const calls = simulation.calls();
+  const productEnables = calls.filter(call => call.fn === 'setProductMarketTA2');
+  const materialEnables = calls.filter(call => call.fn === 'setMaterialMarketTA2');
+  assert.ok(productEnables.length > 0, 'setProductMarketTA2 is issued once Market-TA.II is owned');
+  assert.ok(materialEnables.length > 0, 'setMaterialMarketTA2 is issued for produced materials');
+
+  // Every sell order written after the research landed is paired with exactly one enable call.
+  const researchAt = calls.find(call => call.fn === 'research' && call.args[0] === 'Market-TA.II')?.at;
+  assert.equal(typeof researchAt, 'number', 'the run does research Market-TA.II');
+  const productSells = calls.filter(call => call.fn === 'sellProduct' && call.at >= researchAt && call.args[2] === 'MP');
+  const materialSells = calls.filter(call => call.fn === 'sellMaterial' && call.at >= researchAt && call.args[2] === 'MP');
+  assert.equal(productEnables.length, productSells.length, 'one setProductMarketTA2 per MP product sale');
+  assert.equal(materialEnables.length, materialSells.length, 'one setMaterialMarketTA2 per MP material sale');
+  assert.ok(productEnables.every(call => call.args[1] === true), 'the enable call passes `true`');
+
+  // The products the loop sells at MP are the ones flagged as TA.II-priced.
+  const sold = new Set(productSells.map(call => call.args[0]));
+  const end = metrics.at(-1);
+  assert.deepEqual([...end.ta2Enabled.products].sort(), [...sold].sort());
+  assert.ok(end.ta2Enabled.materials.includes('Drugs'));
+  assert.ok(end.profit > 1e6, `profit ${Math.round(end.profit)} relies on TA.II pricing`);
+});
+
+test('the simulation only pays the TA.II price once the flag is set, never for the research alone', () => {
+  const simulation = createCorporationSimulation();
+  simulation.state.ta2 = true; // Market-TA.II researched, not enabled
+  const product = {
+    name: 'Tobacco 1', developmentProgress: 100, rating: 1.5, effectiveRating: 1.5,
+    designInvestment: 1e9, marketingInvestment: 0, productionCost: 100, stored: 1e6,
+    productionAmount: 0, actualSellAmount: 0, desiredSellPrice: 'MP', desiredSellAmount: 'MAX',
+    createdResearch: 0, createdEmployees: 9,
+  };
+  simulation.state.products.push(product);
+  simulation.state.materials.Plants.stored = 0; // isolate product revenue from the Drugs line
+  simulation.advance();
+  const blind = simulation.state.revenue;
+  assert.equal(simulation.state.products[0].desiredSellPrice, 'MP');
+
+  simulation.api.setProductMarketTA2('Tobacco', 'Tobacco 1', true);
+  simulation.state.products[0].stored = 1e6;
+  simulation.state.materials.Plants.stored = 0;
+  simulation.advance();
+  const enabled = simulation.state.revenue - simulation.state.materials.Drugs.actualSellAmount * simulation.state.materials.Drugs.marketPrice;
+  assert.ok(enabled > blind, `TA.II revenue ${Math.round(enabled)} must beat literal market price ${Math.round(blind)}`);
+  assert.ok(Math.abs(enabled / blind - 1.6) < 0.01, 'the model pays the flagged 1.6x optimum');
+
+  // Without the research the enable call is refused, exactly like the game.
+  const unowned = createCorporationSimulation();
+  assert.equal(unowned.api.setProductMarketTA2('Tobacco', 'Tobacco 1', true), false);
+  assert.equal(unowned.state.ta2Products.size, 0);
+});
+
 test('the loop is idempotent: research is bought once and product slots are never overrun', () => {
   const { simulation, optimizer, metrics } = runOptimised();
   const research = simulation.calls().filter(call => call.fn === 'research').map(call => call.args[0]);

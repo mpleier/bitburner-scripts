@@ -37,7 +37,7 @@ const priceState = (pricing, key) => pricing?.[key] || {};
  *
  * @param {object} input
  * @param {Array<{city:string, office:object, materials:object, products:object}>} input.cities
- * @returns {{materials:Array, products:Array, pricing:object, markupCandidates:object}}
+ * @returns {{materials:Array, products:Array, pricing:object, markupCandidates:object, ta2:boolean}}
  */
 export function planSales({
   division,
@@ -52,7 +52,7 @@ export function planSales({
   cycleSeconds = 10,
 } = {}) {
   const materials = [], products = [], nextPricing = { ...pricing }, markupCandidates = {};
-  if (!divisionInfo || !industry) return { materials, products, pricing: nextPricing, markupCandidates };
+  if (!divisionInfo || !industry) return { materials, products, pricing: nextPricing, markupCandidates, ta2 };
   const produced = industry.producedMaterials || [];
   for (const row of cities) {
     if (!row?.warehouse) continue;
@@ -92,21 +92,40 @@ export function planSales({
       products.push({ city: row.city, name, price: `MP*${step.multiplier}`, all: false, ta2: false, multiplier: step.multiplier });
     }
   }
-  return { materials, products, pricing: nextPricing, markupCandidates };
+  return { materials, products, pricing: nextPricing, markupCandidates, ta2 };
 }
 
-/** Apply planned sales; a city without a warehouse is skipped, never thrown at. */
+/**
+ * Apply planned sales; a city without a warehouse is skipped, never thrown at.
+ *
+ * Market-TA.II is a per-material / per-product opt-in flag, not a property of the price string:
+ * `MP` alone sells at literal market price, so the `setMaterialMarketTA2` / `setProductMarketTA2`
+ * enable call is what buys the TA.II optimum (game: `Markets.ts` reads the flag, spec §6.5).
+ */
 export function applySales(api, plan, { allowed = () => true } = {}) {
   if (!plan || !allowed()) return { state: 'blocked', reason: 'Automation is paused', sold: 0 };
   const division = plan.division;
-  let ok = 0, failed = 0;
+  const ta2Enabled = plan.ta2 === true;
+  // Re-read the research before opting a sale into TA.II: the enable call is illegal (the game
+  // throws) unless Market-TA.II is owned, so a stale plan must not be trusted (spec §9.4).
+  let ta2Owned = null;
+  const ownership = () => {
+    if (ta2Owned === null) {
+      try { ta2Owned = typeof api.hasResearched === 'function' ? api.hasResearched(division, 'Market-TA.II') === true : true; }
+      catch { ta2Owned = true; }
+    }
+    return ta2Owned;
+  };
+  let ok = 0, failed = 0, ta2 = 0;
   for (const order of plan.materials || []) {
     try {
       if (!allowed()) break;
       if (api.hasWarehouse(division, order.city) !== true) continue;
       if (api.sellMaterial(division, order.city, order.name, 'MAX', order.price) === false) { failed++; continue; }
       ok++;
-      if (plan.ta2) api.setMaterialMarketTA2(division, order.city, order.name, true);
+      if ((order.ta2 ?? ta2Enabled) && ownership()) {
+        if (api.setMaterialMarketTA2(division, order.city, order.name, true) !== false) ta2++;
+      }
     } catch { failed++; }
   }
   for (const order of plan.products || []) {
@@ -115,10 +134,12 @@ export function applySales(api, plan, { allowed = () => true } = {}) {
       if (api.hasWarehouse(division, order.city) !== true) continue;
       if (api.sellProduct(division, order.city, order.name, 'MAX', order.price, !!order.all) === false) { failed++; continue; }
       ok++;
-      if (plan.ta2) api.setProductMarketTA2(division, order.name, true);
+      if ((order.ta2 ?? ta2Enabled) && ownership()) {
+        if (api.setProductMarketTA2(division, order.name, true) !== false) ta2++;
+      }
     } catch { failed++; }
   }
-  return { state: failed && !ok ? 'rejected' : ok ? 'purchased' : 'no-op', sold: ok, failed };
+  return { state: failed && !ok ? 'rejected' : ok ? 'purchased' : 'no-op', sold: ok, failed, ta2 };
 }
 
 /**

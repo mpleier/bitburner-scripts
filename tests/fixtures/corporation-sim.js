@@ -78,7 +78,11 @@ export function createCorporationSimulation({
     awareness: 50,
     popularity: 20,
     ta1: false,
+    // `ta2` is ownership of the research; the price effect is per-material/per-product and only
+    // arrives through setMaterialMarketTA2 / setProductMarketTA2 (the flag, not the 'MP' string).
     ta2: false,
+    ta2Materials: new Set(),
+    ta2Products: new Set(),
     smartSupply: false,
     upgrades: {},
     revenue: 0,
@@ -249,8 +253,19 @@ export function createCorporationSimulation({
       product.desiredSellPrice = price;
       return true;
     },
-    setProductMarketTA2: () => { record('setProductMarketTA2', []); return true; },
-    setMaterialMarketTA2: () => { record('setMaterialMarketTA2', []); return true; },
+    setProductMarketTA2: (division, product, on) => {
+      record('setProductMarketTA2', [product, on]);
+      // The game throws when Market-TA.II is not researched; model it as a refused call.
+      if (!state.ta2) return false;
+      if (on === false) state.ta2Products.delete(product); else state.ta2Products.add(product);
+      return true;
+    },
+    setMaterialMarketTA2: (division, city, name, on) => {
+      record('setMaterialMarketTA2', [name, on]);
+      if (!state.ta2) return false;
+      if (on === false) state.ta2Materials.delete(name); else state.ta2Materials.add(name);
+      return true;
+    },
     setSmartSupply: (division, city, on) => { record('setSmartSupply', [on]); state.smartSupply = on !== false; return true; },
     setSmartSupplyOption: (division, city, name, option) => { record('setSmartSupplyOption', [name, option]); return true; },
     makeProduct: (division, city, name, design, marketing) => {
@@ -344,10 +359,12 @@ export function createCorporationSimulation({
     plants.stored = Math.max(0, plants.stored - produced);
     drugs.productionAmount = produced;
     drugs.stored += produced;
-    // Sales: demand falls with the markup multiplier; TA.II sells at an optimal price.
+    // Sales: demand falls with the markup multiplier; a TA.II-enabled material/product sells at
+    // the optimal price (the game's Markets.ts multiplier), but only once the flag is set.
+    const TA2_PRICE_MULTIPLIER = 1.6;
     const multiplierOf = (price, marketPrice) => {
       if (typeof price !== 'string') return 1;
-      if (price === 'MP') return state.ta2 ? 1.6 : 1;
+      if (price === 'MP') return 1;
       const star = price.match(/^MP\s*\*\s*(\d+(?:\.\d+)?)$/);
       if (star) return Math.max(1, Number(star[1]));
       const plus = price.match(/^MP\s*\+\s*(\d+(?:\.\d+)?)$/);
@@ -358,8 +375,8 @@ export function createCorporationSimulation({
     state.revenue = 0;
     for (const material of Object.values(state.materials)) {
       if (!(material.stored > 0)) { material.actualSellAmount = 0; continue; }
-      const multiplier = multiplierOf(material.desiredSellPrice, material.marketPrice);
-      const optimal = state.ta2 && material.desiredSellPrice === 'MP';
+      const optimal = state.ta2Materials.has(material.name) && material.desiredSellPrice === 'MP';
+      const multiplier = optimal ? TA2_PRICE_MULTIPLIER : multiplierOf(material.desiredSellPrice, material.marketPrice);
       const demand = 400 * salesBoost / (optimal ? 1 : Math.max(1, multiplier ** 2));
       const sold = Math.min(material.stored, demand);
       material.stored -= sold;
@@ -368,8 +385,8 @@ export function createCorporationSimulation({
     }
     for (const product of state.products) {
       if (product.developmentProgress < 100) { product.actualSellAmount = 0; continue; }
-      const price = multiplierOf(product.desiredSellPrice, 2000);
-      const optimal = state.ta2 && product.desiredSellPrice === 'MP';
+      const optimal = state.ta2Products.has(product.name) && product.desiredSellPrice === 'MP';
+      const price = optimal ? TA2_PRICE_MULTIPLIER : multiplierOf(product.desiredSellPrice, 2000);
       const demand = 120 * salesBoost * (1 + Math.log1p(product.effectiveRating)) / (optimal ? 1 : Math.max(1, price ** 1.5));
       const sold = Math.min(product.stored + product.productionAmount, demand);
       product.stored = Math.max(0, product.stored + product.productionAmount - sold);
@@ -399,6 +416,7 @@ export function createCorporationSimulation({
       valuation: api.getCorporation().valuation,
       researchPoints: state.researchPoints,
       ta2: state.ta2,
+      ta2Enabled: { materials: [...state.ta2Materials], products: [...state.ta2Products] },
       products,
       bestRating: products.reduce((max, product) => Math.max(max, product.effectiveRating || 0), 0),
       officeSize: office().size,

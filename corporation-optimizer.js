@@ -497,7 +497,7 @@ export function createCorporationOptimizer({
           const result = safe(() => applySales(api, { division: division.name, ...market }, { allowed }),
             { state: 'rejected', reason: 'applySales threw' });
           if (result.state === 'rejected') noteFailure(label, result.reason, at);
-          record('sell', label, result.state || 'no-op', { cost: 0, routine: true, orders: result.sold, failed: result.failed });
+          record('sell', label, result.state || 'no-op', { cost: 0, routine: true, orders: result.sold, failed: result.failed, ta2: result.ta2 });
         }
       }
 

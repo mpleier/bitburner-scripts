@@ -207,9 +207,15 @@ observed RP rate. All-research-owned is reported as `complete`; nothing is re-bo
 ### Market (`corporation-market.js`)
 
 - Selling is re-issued every tick (the game does not persist sell orders): materials at
-  `MP + quality/baseMarkup`, or `MAX`/`MP` with `Market-TA.II`; products at a formula price when an
-  inferred markup is known, otherwise `MP × multiplier` from the bracketed `productPriceStep`
+  `MP + quality/baseMarkup`, or `MAX`/`MP` **with** `Market-TA.II`; products at a formula price when
+  an inferred markup is known, otherwise `MP × multiplier` from the bracketed `productPriceStep`
   search. Price state is persisted (`tasks/corporation-optimizer.json` → `pricing`), fixing G9.
+- `Market-TA.II` is an opt-in flag per material and per product, not a property of the price string:
+  `applySales` issues `setMaterialMarketTA2(division, city, material, true)` once per material order
+  and `setProductMarketTA2(division, product, true)` once per product order whenever the division
+  owns the research, and re-reads `hasResearched(division, 'Market-TA.II')` immediately before the
+  first enable call so a stale plan cannot ask for an illegal mutation. A sale at `MP` without the
+  flag sells at literal market price (spec §6.5).
 - A city without a warehouse is skipped, never asked to sell (the API throws there).
 - Inputs: `Smart Supply` → clear the manual rate and prefer `leftovers`; otherwise
   `recipeInputPlan` sized to observed production × `cycleSeconds × 1.1`, scaled into the input
@@ -306,12 +312,20 @@ the optimiser, once doing nothing:
 | --- | --- | --- |
 | products (mature) | 3 (all three slots) | 0 |
 | best product effective rating | 1.82 | — |
-| revenue per cycle | 2.36m | 0 |
-| profit per cycle | +2.35m | −4.1k |
-| cumulative profit | +296.6m | −1.2m |
-| valuation proxy | 83.8b | 50.0b |
-| `Market-TA.II` owned | yes | no |
-| worst reserve margin | +33.2b | +45.0b |
+| revenue per cycle | 2,356,823 | 0 |
+| profit per cycle | +2,344,323 | −4,100 |
+| cumulative profit | +296,592,098 | −1,234,000 |
+| valuation proxy | 83,799,537,282 | 49,998,766,000 |
+| `Market-TA.II` owned | yes (cycle 378) | no |
+| `Market-TA.II` enabled (flag calls) | 66 product + 22 material | 0 |
+| worst reserve margin | +33,152,740,941 | +44,998,889,400 |
+
+`Market-TA.II`'s price effect is modelled the way the game implements it — the flag, not the research
+or the `MP` string, is what pays. The same 400 cycles with both enable calls stubbed to return
+`false` (so the flag never lands) give revenue 1,473,765, profit +1,461,265, cumulative +277,164,805
+and valuation 66,118,933,867: the rows above are worth about +883k revenue per cycle, which is why
+`applySales` issuing the flag is covered by its own test (`applySales enables TA.II once per order…`)
+rather than only by a planner assertion.
 
 The simulation is a model (its mechanics are documented in the fixture), so these numbers show the
 loop is coherent and profitable under a consistent economy, not that the live save will move by the

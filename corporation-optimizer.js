@@ -74,6 +74,48 @@ const safe = (fn, fallback = undefined) => {
 };
 const num = value => (Number.isFinite(Number(value)) ? Number(value) : 0);
 
+/**
+ * Read-through memo for `ns.corporation` metadata that cannot drift within a save.
+ *
+ * Only three reads are cached, and each has a provable invariant:
+ *  - `getMaterialData` returns static material size/markup data,
+ *  - `getResearchCost` returns a static point cost per (division, research),
+ *  - `getUpgradeLevelCost` is a function of the level just read, so the quote is keyed by
+ *    that level and a level change always produces a fresh quote.
+ *
+ * The cache belongs to one optimiser instance and one API object; it is never shared across
+ * saves. Research costs are additionally invalidated after a real purchase (see tick), so a
+ * level-based cost model cannot be observed stale by this loop. Mutable state (funds, office,
+ * warehouse, products, materials in cities, unlocks, research *ownership*) is always read
+ * fresh from the snapshot. See docs/optimization-acceptance-criteria.md M10/M17.
+ */
+export function createCorporationMetadataCache(api) {
+  const materials = new Map();
+  const research = new Map();
+  const upgrades = new Map();
+  const memoize = (map, key, load) => {
+    if (!map.has(key)) map.set(key, load());
+    return map.get(key);
+  };
+  return {
+    materialData(name) {
+      return memoize(materials, name, () => safe(() => api.getMaterialData(name), null));
+    },
+    researchCost(division, researchName) {
+      return memoize(research, `${division}\u0000${researchName}`,
+        () => Number(safe(() => api.getResearchCost(division, researchName), NaN)));
+    },
+    upgradeCost(name, level) {
+      return memoize(upgrades, `${name}\u0000${level}`,
+        () => Number(safe(() => api.getUpgradeLevelCost(name), NaN)));
+    },
+    invalidateResearch(division) {
+      const prefix = `${division}\u0000`;
+      for (const key of research.keys()) if (key.startsWith(prefix)) research.delete(key);
+    },
+  };
+}
+
 /** Fresh persistent optimiser state. Kept small so `tasks/` stays diffable (spec §9.2). */
 export function defaultOptimizerState() {
   return {
@@ -115,7 +157,7 @@ export function restoreOptimizerState(raw, { nodeReset = null, augReset = null, 
  * Read one authoritative snapshot of the corporation.
  * Returns null when there is no corporation (bootstrap owns that state).
  */
-export function readCorporationSnapshot(api, { catalog = RESEARCH_PRIORITY } = {}) {
+export function readCorporationSnapshot(api, { catalog = RESEARCH_PRIORITY, metadata = null } = {}) {
   if (safe(() => api.hasCorporation(), false) !== true) return null;
   const info = safe(() => api.getCorporation(), null);
   if (!info) return null;
@@ -127,9 +169,10 @@ export function readCorporationSnapshot(api, { catalog = RESEARCH_PRIORITY } = {
   };
   const upgrades = {};
   for (const name of UPGRADE_ORDER) {
+    const level = num(safe(() => api.getUpgradeLevel(name), 0));
     upgrades[name] = {
-      level: num(safe(() => api.getUpgradeLevel(name), 0)),
-      cost: Number(safe(() => api.getUpgradeLevelCost(name), NaN)),
+      level,
+      cost: metadata ? metadata.upgradeCost(name, level) : Number(safe(() => api.getUpgradeLevelCost(name), NaN)),
     };
   }
   const materialData = {};
@@ -143,11 +186,17 @@ export function readCorporationSnapshot(api, { catalog = RESEARCH_PRIORITY } = {
     const costs = {};
     for (const research of catalog) {
       if (owned.includes(research)) continue;
-      costs[research] = Number(safe(() => api.getResearchCost(name, research), NaN));
+      costs[research] = metadata
+        ? metadata.researchCost(name, research)
+        : Number(safe(() => api.getResearchCost(name, research), NaN));
     }
     const materialNames = [...new Set([...(industry.producedMaterials || []), ...Object.keys(industry.requiredMaterials || {}), ...boostNames])];
     for (const material of materialNames) {
-      if (!Object.hasOwn(materialData, material)) materialData[material] = safe(() => api.getMaterialData(material), null);
+      if (!Object.hasOwn(materialData, material)) {
+        materialData[material] = metadata
+          ? metadata.materialData(material)
+          : safe(() => api.getMaterialData(material), null);
+      }
     }
     const cities = (division.cities || []).map(city => {
       const office = safe(() => api.getOffice(name, city), null);
@@ -197,6 +246,9 @@ export function readCorporationSnapshot(api, { catalog = RESEARCH_PRIORITY } = {
  *        already upgraded (or bought) this cycle; upgrading them again would be a duplicate purchase
  * @param {string[]|Set<string>} [options.skipOffice] `Division/City` keys whose office the structural
  *        phase already grew this cycle; growing it again would be a second increment (N1)
+ * @param {boolean} [options.cacheMetadata=true] memoize immutable game metadata per instance;
+ *        false is for A/B equivalence tests or incident rollback only (never skips a fresh
+ *        read of mutable state)
  */
 export function createCorporationOptimizer({
   api,
@@ -212,7 +264,10 @@ export function createCorporationOptimizer({
   reserveFloor = 0,
   skipWarehouse = null,
   skipOffice = null,
+  cacheMetadata = true,
 } = {}) {
+  // Bound to this instance/API object so a second save or test can never inherit stale quotes.
+  const metadata = cacheMetadata ? createCorporationMetadataCache(api) : null;
   let settings = config;
   let structuralReserve = Math.max(0, num(reserveFloor));
   const skipWarehouses = new Set(skipWarehouse instanceof Set ? skipWarehouse : Array.isArray(skipWarehouse) ? skipWarehouse : []);
@@ -287,7 +342,7 @@ export function createCorporationOptimizer({
       safe(() => clearCorporationBuyRates(api));
       return finish({ at, state: 'SUSPENDED', reason: 'Automation is paused, in maintenance or achievement-locked' });
     }
-    const snapshot = readCorporationSnapshot(api);
+    const snapshot = readCorporationSnapshot(api, { metadata });
     if (!snapshot) return finish({ at, state: 'NO_CORP', reason: 'No corporation exists; bootstrap owns this state' });
     if (!snapshot.divisions.length) return finish({ at, state: 'BOOTSTRAP', reason: 'Corporation has no divisions yet', snapshot });
     if (!snapshot.unlocks.office) findings.push({ kind: 'blocked', label: 'Office API', reason: 'Office API is not owned; staffing, research and product work are skipped' });
@@ -449,6 +504,7 @@ export function createCorporationOptimizer({
         record('research', label, 'planned', { cost: 0, target: plan.target, package: plan.package });
       } else {
         const result = safe(() => applyResearchPlan(api, plan, { allowed }), { state: 'rejected', reason: 'applyResearchPlan threw' });
+        if (metadata && Array.isArray(result?.purchased) && result.purchased.length) metadata.invalidateResearch(division.name);
         if (result.state === 'rejected' || result.state === 'partial') noteFailure(label, result.reason, at);
         record('research', label, result.state || 'no-op', { cost: 0, package: plan.package, purchased: result.purchased, reason: result.reason });
       }

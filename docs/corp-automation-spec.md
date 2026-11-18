@@ -354,6 +354,71 @@ Purpose: take `NO_CORP` to a staffed multi-city corporation.
 - Telemetry: `bootstrap: {attempts, lastResult, blockedBy}`; every purchase is a
   growth decision with `{label, cost, state, basis}`.
 
+#### 6.1.1 Implementation (bootstrap + expansion, this repository)
+
+Files: `corporation-config.js`, `corporation-bootstrap.js`,
+`corporation-expansion.js`, `corporation-bootstrap-daemon.js`,
+`corporation-config.json` (§13), tests in `tests/corporation-bootstrap*.js`,
+`tests/corporation-expansion*.js`, `tests/corporation-config.test.js`.
+
+Contracts the integration card must respect:
+
+- `readBootstrapSnapshot(api, config, context)` reads one authoritative snapshot
+  through an injected `api` (the `ns.corporation` object) and returns
+  `{gate, corp, divisions, offices, warehouses, warehouseInfo, unlocks,
+  unlockCosts, industryData, constants, wallet, playerReserve, cycleSeconds,
+  errors}`. Keys are `"<Division>/<City>"`. Every read is individually guarded;
+  a failure is recorded in `errors` and the value is `null`.
+- Decision functions are pure: `corporationGate`, `creationPlan`,
+  `bootstrapDecisions`, `bootstrapProgress`, `materialSeedPlan`,
+  `expansionDecisions`, `industryCandidates`, `nextCity`, `divisionComplete`,
+  `divisionStaffed`. They take `(snapshot, config, options)` and return
+  decisions `{id, kind, label, cost, priority, state, detail, division, city,
+  industry}` where `state ∈ ready|blocked`.
+- Effect functions take the same `api`: `runBootstrap(api, config, options)` and
+  `runExpansion(api, config, options)` with
+  `{dryRun, log, now, reserve, context, cooldowns, failures, maxActions}`. They
+  return `{state, actions[{label,state,detail,at}], errors, blockedBy, quotes,
+  cooldowns, funds, reserve, progress}`. `state` is one of
+  `UNAVAILABLE|NO_CORP|BOOTSTRAP|READY|EXPANDING|FAILED`.
+- Entrypoints: `runBootstrapExpansionCycle(ns, options)` (import this from the
+  controller) and `main(ns)` (standalone loop). The cycle writes
+  `tasks/corporation-bootstrap-status.json` and, in dry-run mode,
+  `tasks/corporation-dry-run.json`. It never writes
+  `tasks/corporation-status.json`; that file stays the controller's.
+
+Behavioural decisions taken while implementing this section:
+
+- **Staffing rule.** A city package is only bought when every office of that
+  division already has `bootstrap.initialOfficeSize` (default 9) seats *and*
+  that many employees, i.e. the same "staff existing offices first" rule the old
+  controller encoded as `officesUnderstaffed()`. Without the Office API the
+  check is skipped so expansion still works (edge 9).
+- **Office growth belongs to bootstrap for the seed offices.** `bootstrap` grows
+  every office that has a warehouse up to `initialOfficeSize` in 3-seat steps;
+  `corporation-people.js` owns everything above that. Without this, the
+  staffing rule above would deadlock a fresh save at a 3-seat office.
+- **One division per industry, adopted by industry.** A hand-made division is
+  adopted when its `industry` matches the configured chain instead of creating a
+  duplicate the game would reject.
+- **Status file split.** Bootstrap keeps its own status document so it can be
+  run next to the existing controller without clobbering `mode/funds/reserve/
+  divisions/growthPriority` that dashboards read from
+  `tasks/corporation-status.json`.
+- **RAM.** The four files reference four `ns.corporation` members directly
+  (`hasCorporation`, `canCreateCorporation`, `getCorporation`, `nextUpdate`:
+  11.6 GB static) plus 26 members through the injected `api` object, which the
+  game's analyzer cannot see. Worst case, if every one of those 26 were counted,
+  the entrypoint would cost 331.6 GB — still far below the controller's 858.9 GB,
+  and the controller already pays for them because it calls `ns.corporation`
+  directly. The integration card must keep the corporation calls in the
+  controller (or a file it imports statically), not rely on the dynamic
+  `api.foo()` shape to be charged.
+- **Expansion quotes, not partial buys.** An unaffordable package publishes
+  `{cost, gap, etaSeconds, longWait, alternatives[{kind:office|storage}]}`; the
+  office alternative is quoted read-only because buying office size outside
+  bootstrap belongs to the people module.
+
 ### 6.2 Product and research (`corporation-product.js`)
 
 Purpose: turn research points into saleable product quality and keep research
@@ -632,7 +697,10 @@ falls back to the default and is reported once. CLI flags override the file.
     "expandAllIndustries": false,
     "allowDivisionSale": false,
     "warehouseFullThreshold": 0.7,
-    "expediteStagedExpansion": true
+    "expediteStagedExpansion": true,
+    "initialOfficeSize": 9,
+    "setupReserve": 20000000,
+    "materialCashFraction": 0.05
   },
   "product": {
     "scienceFloor": 1.15,
@@ -862,11 +930,40 @@ Implementation-level (for the child cards):
 18. No regression in the `--disable-corporation` path: the controller does not
     start, autopilot's reservation is unchanged.
 
+### 11.1 Covered by the bootstrap/expansion card
+
+- Criteria 7 (a mock API throwing on every mutation produces zero unhandled
+  exceptions and a failure report), 9 (idempotency), 12 (dry-run parity of the
+  planned actions), 13 (config fallbacks), 14 (status document keys, legacy keys
+  kept) and 15 (`npm test`, `npm run check:syntax`, `audit-project.js api`) are
+  asserted by `tests/corporation-bootstrap*.test.js`,
+  `tests/corporation-expansion.test.js` and
+  `tests/corporation-bootstrap-daemon.test.js`.
+- Edge cases 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 13, 19, 20 (RP gap is only quoted),
+  24, 25, 26, 28, 30 have a dedicated test in those files.
+- Criterion 17 (live smoke) is covered as far as a read-only Remote API allows:
+  `tests/fixtures/corporation-live-snapshot.json` is a real capture of the live
+  corporation and `corporation-expansion.test.js` replays it through the planner
+  (no throw, warehouse first, the $9.02b package staged with its gap, no
+  discretionary industry for a loss-making corporation). A mutating live run is
+  left to the controller card, because the entrypoint is not in the manifest.
+- Criteria 6, 8, 10, 11 (state machine transitions, reserve property test,
+  buy-rate hygiene on every path) belong to the controller and people/product
+  cards; bootstrap/expansion keep the reserve invariant and expose
+  `bootstrapProgress` for the state machine.
+
 ## 12. Test plan
 
 - Unit (pure policy): `node --test tests/corporation-*.test.js` — state machine
   transitions, budget ladder, pricing brackets, research bundles, product slots,
   share/investment rules, config validation.
+- Bootstrap/expansion: `node --test tests/corporation-config.test.js
+  tests/corporation-bootstrap.test.js tests/corporation-expansion.test.js
+  tests/corporation-bootstrap-daemon.test.js` drives the modules against
+  `tests/corporation-test-game.mjs`, an in-memory game that enforces unlocks,
+  funds, warehouses, city uniqueness, office capacity and division caps, from
+  "no corporation" to a multi-city corporation, and replays the captured live
+  snapshot in `tests/fixtures/corporation-live-snapshot.json`.
 - Mock controller: a fake `api` implementing the 61 functions with recorded calls;
   assert ordering, no-mutation-on-failure, idempotency, dry-run parity.
 - Property tests: reserve invariant, NaN handling, monotonic state counters.
@@ -885,17 +982,22 @@ Create:
    `corporation-manager.js` as the entrypoint shim).
 3. `corporation-state.js` — state machine, transitions, persistence, status doc.
 4. `corporation-config.js` — schema, defaults, validation, flag merge.
-5. `corporation-bootstrap.js` — creation, unlocks, first division/city.
-6. `corporation-expansion.js` — cities, warehouses, industries.
+5. `corporation-bootstrap.js` — creation, unlocks, first division/city. **Done.**
+6. `corporation-expansion.js` — cities, warehouses, industries. **Done.**
 7. `corporation-product.js` — products, research, science gate.
 8. `corporation-people.js` — offices, jobs, upkeep, upgrades, AdVerts.
 9. `corporation-finance.js` — investment, IPO, dividends, shares, hashes, bribes.
 10. `corporation-market.js` — inputs, boosts, pricing, selling, exports.
-11. `corporation-config.json` — default configuration file.
+11. `corporation-config.json` — default configuration file. **Done.**
 12. `tests/corporation-state.test.js`, `-config.test.js`, `-bootstrap.test.js`,
     `-expansion.test.js`, `-product.test.js`, `-people.test.js`,
     `-finance.test.js`, `-market.test.js`, `-edge-cases.test.js`,
-    `-dry-run.test.js`.
+    `-dry-run.test.js`. **Done:** `-config`, `-bootstrap`, `-expansion` and
+    `-bootstrap-daemon` (plus the shared fake game in
+    `tests/corporation-test-game.mjs` and the live capture in
+    `tests/fixtures/corporation-live-snapshot.json`).
+13. `corporation-bootstrap-daemon.js` — config-driven bootstrap/expansion
+    entrypoint (`runBootstrapExpansionCycle` + `main`). **Done.**
 
 Modify (only as needed):
 
@@ -923,6 +1025,17 @@ Do not add: new running scripts, new manifest entries, or changes to
    was effectively permanent.
 6. **Legacy flags keep working** and override the config file, so existing
    autopilot invocations are unaffected.
+7. **Bootstrap owns the seed office size** (`bootstrap.initialOfficeSize`,
+   default 9): the staffing-before-expansion guard needs a floor, and the people
+   module owns growth above it. Without a floor on a fresh save the first office
+   is 3 seats and expansion would never unlock.
+8. **Bootstrap keeps its own status file**
+   (`tasks/corporation-bootstrap-status.json`) until the controller lands, so the
+   two can run side by side without fighting over `tasks/corporation-status.json`.
+9. **`bootstrap.setupReserve` (20m) and `bootstrap.materialCashFraction` (0.05)**
+   are new leaves: the first is the setup buffer the old controller hard-coded in
+   the city package, the second bounds what one material-seeding pass may commit
+   to persistent `buyMaterial` rates.
 
 ---
 

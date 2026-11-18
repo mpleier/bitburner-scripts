@@ -106,6 +106,83 @@ You may find it useful to set up one or more aliases with the default options yo
 - `alias ascend="run ascend.js --install-augmentations"`
   - A good way to finish your node. I personally prioritize augmentations when resetting, because I have all SF bonuses unlocked, but until you have SF11.3 for aug cost reduction, you may want to use the `--prioritize-home-ram` flag which prioritizes upgrading home RAM as much as possible before buying as many augmentations as possible.
 
+## Corporation bootstrap and expansion
+
+`docs/corp-automation-spec.md` is the design of record for corporation automation. The bootstrap and expansion
+half of it is implemented as importable modules plus one config-driven entrypoint:
+
+| File | Role |
+| --- | --- |
+| `corporation-config.js` | Schema, defaults, validation, CLI-flag mapping for `corporation-config.json`. |
+| `corporation-bootstrap.js` | Creates or adopts a corporation, buys Warehouse/Office/Smart Supply unlocks, creates the first division and city, grows and staffs the seed office, seeds input materials. |
+| `corporation-expansion.js` | Adds cities, warehouses and industries, upgrades warehouses under storage pressure, stages unaffordable packages. |
+| `corporation-bootstrap-daemon.js` | One-cycle entry (`runBootstrapExpansionCycle(ns)`) and a standalone loop (`main`). |
+| `corporation-config.json` | Default configuration (shipped with the scripts, diffable in git). |
+
+### Running it
+
+```
+run corporation-bootstrap-daemon.js                 # one state per corporation cycle
+run corporation-bootstrap-daemon.js --dry-run       # plan only, no purchase
+run corporation-bootstrap-daemon.js --ticks=20 --interval=2000
+```
+
+Called from a main daemon, import the cycle instead of running a second process (one corporation script is ~860 GB
+of static RAM):
+
+```js
+import { runBootstrapExpansionCycle } from './corporation-bootstrap-daemon.js';
+const report = await runBootstrapExpansionCycle(ns, { dryRun: false });
+```
+
+### What it does on a fresh save
+
+1. Tries seed money first (`createCorporation(name, false)`), then self-funding, but only when the wallet covers
+   $150b **plus** `reserve.txt`. BitNode/Source-File gates and `disableCorporation` end the run with a reason
+   instead of looping.
+2. Buys `Warehouse API` → `Office API` → `Smart Supply` in order, each only while free cash covers it.
+3. Creates the first industry from `bootstrap.industryChain` (Agriculture by default) and expands into the first
+   `bootstrap.cities` entry (Sector-12), buying the warehouse in the same step — a city without a warehouse can
+   hold no stock.
+4. Grows that office to `bootstrap.initialOfficeSize` (9) three seats at a time and hires to capacity.
+5. Seeds inputs: enables Smart Supply, or sets bounded `buyMaterial` rates for the industry's `requiredMaterials`.
+6. Hands over to expansion: further cities (one package per tick, never while an existing office is understaffed),
+   further industries, and warehouse upgrades once a warehouse passes `warehouseFullThreshold`.
+
+Every purchase re-reads the live value and re-checks `funds > reserve + cost` immediately before the API call, so
+re-running is a no-op: owned cities, warehouses, unlocks and industries are skipped, and existing buy rates are not
+rewritten. Unaffordable goals are published with the gap, an ETA from current net profit, and cheaper alternatives
+(office increment, warehouse level) rather than partially purchased.
+
+### Configuration
+
+Everything lives in `corporation-config.json` (see `corporation-config.js` for the full validated schema). Highlights:
+
+- `corporation.name`, `corporation.seedFirst`, `corporation.selfFund`
+- `bootstrap.industryChain`, `bootstrap.cities`, `bootstrap.expandAllIndustries`
+- `bootstrap.initialOfficeSize` (9), `bootstrap.setupReserve` (20m), `bootstrap.materialCashFraction` (0.05)
+- `bootstrap.warehouseFullThreshold`, `bootstrap.allowDivisionSale`, `bootstrap.expediteStagedExpansion`
+- `dryRun`, `enabled`, `telemetry.debug`
+
+Invalid or unknown values fall back to the default and are reported in `configErrors`; an unknown `schemaVersion`
+runs on defaults. Legacy flags still work and override the file: `--dry-run`, `--min-ownership`,
+`--investment-min-ownership`, `--expand-all-industries`, `--manage-shares`, `--bribe-factions`,
+`--development-speed`.
+
+### Telemetry
+
+- Status: `tasks/corporation-bootstrap-status.json` — state, phase, funds, reserve, divisions, blocked reasons,
+  the last 32 actions, bootstrap checks and persistent failures. This is separate from the controller's
+  `tasks/corporation-status.json` so the two never overwrite each other.
+- Dry run plan: `tasks/corporation-dry-run.json` — the actions that would have run, with their guards.
+- Every action is printed as `label → done|skipped|blocked|failed (detail)`; repeated failures are counted across
+  restarts and announced once at five consecutive failures.
+
+Tests: `tests/corporation-config.test.js`, `tests/corporation-bootstrap.test.js`,
+`tests/corporation-expansion.test.js`, `tests/corporation-bootstrap-daemon.test.js`, driven by the in-memory
+game in `tests/corporation-test-game.mjs` (unlocks, funds, division caps and API errors enforced like the real
+game) plus a captured live snapshot in `tests/fixtures/corporation-live-snapshot.json`.
+
 ## Config Files
 
 Persistent Custom Configurations (script.js.config.txt files) can be specified to override the default args specified by the "args schema" in each script.

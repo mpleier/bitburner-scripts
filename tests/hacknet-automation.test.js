@@ -85,6 +85,17 @@ test('hash spender budgets capacity purchases, checks pauses after yields, and c
  assert.match(source,/hashOverflowBuffer\(globalProduction/);
 });
 
+test('a spending status report records the receipt of the action that was purchased',async()=>{
+ const source=await readFile(new URL('../spend-hacknet-hashes.js',import.meta.url),'utf8');
+ // Re-deciding toBuy[0] on every report mislabels cash/contract purchases and can call a
+ // successful purchase 'blocked' when that first action is refused by the policy.
+ assert.doesNotMatch(source,/lastDecision\s*=\s*hashSpendingDecision\(ns,\s*toBuy\[0\]/);
+ assert.match(source,/extra\.cashReceipt\|\|extra\.contractReceipt/);
+ assert.match(source,/if\(receipt\)lastDecision=receipt/);
+ assert.match(source,/if \(receipt\.success\) \{ nextContractAsk = now \+ 5000; return receipt; \}/);
+ assert.match(source,/report\('spending',\{contractReceipt\}\)/);
+});
+
 
 test('invalid hash settings report an error without a startup logging exception',async()=>{
  const source=await readFile(new URL('../spend-hacknet-hashes.js',import.meta.url),'utf8'),messages=[];

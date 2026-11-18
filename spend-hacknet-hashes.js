@@ -46,7 +46,7 @@ export function autocomplete(data, args) {
  * NOTE: This script is written to support multiple concurrent instances running with different arguments. **/
 export async function main(ns) {
     let lastToast = 0, lastStatusAt = 0, lastStatusState = "", lastProduction = 0,lastDecision=null,lastDecisionLog='',lastDecisionAt=0;
-    const report = async (state,extra={}) => { const now=Date.now();if(now-lastStatusAt<5000&&state===lastStatusState)return;lastStatusAt=now;lastStatusState=state;if(state==='spending')lastDecision=hashSpendingDecision(ns,toBuy[0],{...policyOptions,target:spendOnServer});const record={at:now,pid:ns.pid,state:state==="spending"?(extra.cashReceipt?.success?"purchased":lastDecision?.allowed===false?"blocked":"checking"):state,nodeReset:ns.getResetInfo().lastNodeReset,augReset:ns.getResetInfo().lastAugReset,decision:lastDecision,...extra};
+    const report = async (state,extra={}) => { const now=Date.now();if(now-lastStatusAt<5000&&state===lastStatusState)return;lastStatusAt=now;lastStatusState=state;const receipt=extra.cashReceipt||extra.contractReceipt;if(receipt)lastDecision=receipt;const record={at:now,pid:ns.pid,state:state==="spending"?(receipt?.success?"purchased":lastDecision?.allowed===false?"blocked":"checking"):state,nodeReset:ns.getResetInfo().lastNodeReset,augReset:ns.getResetInfo().lastAugReset,decision:lastDecision,...extra};
       await ns.write("tasks/hacknet-hash-status.json",JSON.stringify(record),"w");await ns.write('tasks/hash-worker-status-'+ns.pid+'.json',JSON.stringify(record),'w'); };
  registerAutomation(ns);
     if(isScriptPaused(ns,ns.getScriptName()))return;
@@ -128,7 +128,7 @@ export async function main(ns) {
             maintenanceRequested(ns) || !achievementActionAllowed(ns, 'hashSpending')) return false;
         nextContractAsk = now + 30000;
         const receipt = spendHashesWithPolicy(ns, contractAction, undefined, 1, policyOptions, hashSpendingDecision);
-        if (receipt.success) { nextContractAsk = now + 5000; return true; }
+        if (receipt.success) { nextContractAsk = now + 5000; return receipt; }
         nextContractAsk = now + (/solver|backlog|cash/i.test(String(receipt.reason || '')) ? 300000 : 60000);
         return false;
     };
@@ -232,9 +232,10 @@ export async function main(ns) {
             // No worker ever *asks* for contracts, so the best-value hash sink never fires. Ask whenever
             // this worker's own purchases leave hashes unclaimed; the shared policy still refuses on an
             // unverified solver, a non-empty backlog or a cash opportunity cost it cannot repay.
-            if(!toBuy.includes(contractAction)&&askForContract()){
+            const contractReceipt=!toBuy.includes(contractAction)?askForContract():null;
+            if(contractReceipt){
                 purchasesThisLoop++;
-                await report('spending',{contractReceipt:{action:contractAction,quantity:1}});
+                await report('spending',{contractReceipt});
             }
             currentHashes = lastHashBalance = ns.hacknet.numHashes();
 

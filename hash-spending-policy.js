@@ -5,8 +5,15 @@ export function hashReserveFor(ns,now=Date.now()) {
  try{
   const read=f=>{try{return JSON.parse(ns.read(f));}catch{return null;}};
   const reset=ns.getResetInfo(),corporate=read('tasks/corporation-hash-goal.json'),milestone=corporate?.milestone;
-  const fresh=[1,2].includes(corporate?.schemaVersion)&&corporate.priority===true&&ns.read('remote-control/paused/corporation-manager.js.txt').trim()!=='true'&&corporate.nodeReset===reset.lastNodeReset&&corporate.augReset===reset.lastAugReset&&Number.isFinite(corporate.at)&&corporate.at<=now&&now-corporate.at<45000&&
-   ns.ps('home').some(p=>p.pid===corporate.ownerPid&&p.filename.replace(/^\//,'')==='corporation-manager.js');
+  const processes=ns.ps('home'),alive=pid=>processes.some(p=>p.pid===pid);
+  // Match the inline rule in hashSpendingDecision: an achievement denial of corporation releases the hold.
+  let corporationAllowed=true;
+  for(const [file,active] of [['tasks/achievement-profile.json',true],['tasks/achievement-goals.json',false]]){
+   const p=read(file);
+   if(p?.nodeReset===reset.lastNodeReset&&(active?p.active:p.expiresAt>now&&alive(p.ownerPid))&&p.deniedActions?.includes('corporation'))corporationAllowed=false;
+  }
+  const fresh=corporationAllowed&&[1,2].includes(corporate?.schemaVersion)&&corporate.priority===true&&ns.read('remote-control/paused/corporation-manager.js.txt').trim()!=='true'&&corporate.nodeReset===reset.lastNodeReset&&corporate.augReset===reset.lastAugReset&&Number.isFinite(corporate.at)&&corporate.at<=now&&now-corporate.at<45000&&
+   alive(corporate.ownerPid)&&processes.some(p=>p.pid===corporate.ownerPid&&p.filename.replace(/^\//,'')==='corporation-manager.js');
   const total=Number(milestone?.totalHashes);
   return fresh&&milestone?.staged===true&&Number.isFinite(total)&&total>0?total:0;
  }catch{return 0;}

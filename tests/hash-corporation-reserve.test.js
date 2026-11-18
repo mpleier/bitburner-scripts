@@ -45,6 +45,20 @@ test('a bulk Sell-for-Money cannot be judged one receipt at a time',()=>{
  assert.equal(bulk.cashEquivalent,6000*4*250000);
 });
 
+test('an achievement denial of corporation releases the reserve in both copies of the rule',()=>{
+ const f=staged(),hashes=f.ns.hacknet.numHashes();
+ for(const [file,record] of [
+  ['tasks/achievement-profile.json',{nodeReset:1,active:true,deniedActions:['corporation']}],
+  ['tasks/achievement-goals.json',{nodeReset:1,active:false,expiresAt:f.now+60000,ownerPid:1,deniedActions:['corporation']}]]){
+  const g=staged();g.files[file]=JSON.stringify(record);
+  assert.equal(hashReserveFor(g.ns),0,file);
+  // The spender's inline copy must agree: with no hold, the full pool can back a bulk sale.
+  const d=hashSpendingDecision(g.ns,cash,{quantity:Math.floor(hashes/4)});
+  assert.equal(d.allowed,true,file);
+  assert.notEqual(d.reason,'Reserving hashes for staged corporation funding',file);
+ }
+});
+
 test('the reserve the spender clamps with is the same number the decision refuses on',()=>{
  const f=staged(),reserve=hashReserveFor(f.ns);
  assert.ok(reserve>0);

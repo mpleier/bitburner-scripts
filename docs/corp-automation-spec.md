@@ -798,9 +798,15 @@ falls back to the default and is reported once. CLI flags override the file.
   },
   "people": {
     "officeTargets": { "materials": [3, 9, 15, 20, 30, 45, 60], "products": [30, 60, 80, 100, 120] },
+    "cashTiers": {
+      "materials": [1e9, 1e10, 1e11, 1e12, 5e12, 1e13],
+      "products": [1e12, 1e13, 1e14, 1e15]
+    },
     "teaThreshold": 2,
     "upgradeFraction": 0.2,
-    "storageUpgradeFraction": 0.35
+    "upgradePaybackCycles": 600,
+    "storageUpgradeFraction": 0.35,
+    "starvationTicks": 3
   },
   "finance": {
     "minOwnership": 0.5,
@@ -815,6 +821,8 @@ falls back to the default and is reported once. CLI flags override the file.
   },
   "market": {
     "advertSpendFraction": 0.5,
+    "maxAdVerts": { "materials": 8, "products": 20 },
+    "advertPaybackSeconds": 21600,
     "boostWarehouseFraction": 0.6,
     "exportQualityMargin": 0.05,
     "priceCeiling": 1e6,
@@ -823,10 +831,16 @@ falls back to the default and is reported once. CLI flags override the file.
   "budgets": {
     "reserveFloor": 1e6, "reserveCap": 5e9, "reserveCashFraction": 0.1,
     "reserveExpenseCycles": 2, "growthFraction": 0.25, "developmentGrowthFraction": 0.75,
-    "upkeepCashFraction": 0.02, "boostCashFraction": 0.2, "recoveryMarginCycles": 30
+    "upkeepCashFraction": 0.02, "boostCashFraction": 0.2, "inputCashFraction": 0.5,
+    "officeCashFraction": 0.1, "recoveryMarginCycles": 10, "structuralClaimFraction": 0.5
   },
-  "research": { "affordableFraction": 0.2, "optionalAutomation": false },
-  "telemetry": { "statusFile": "tasks/corporation-status.json", "cadenceMs": 60000, "debug": false }
+  "research": { "affordableFraction": 0.2, "optionalAutomation": false, "developmentReserveCycles": 5 },
+  "telemetry": {
+    "statusFile": "tasks/corporation-status.json",
+    "stateFile": "tasks/corporation-optimizer.json",
+    "cadenceMs": 60000,
+    "debug": false
+  }
 }
 ```
 

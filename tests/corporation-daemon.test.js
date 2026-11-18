@@ -247,6 +247,34 @@ test('main honours --ticks and refuses to start when home RAM cannot host the da
   assert.ok(cramped.calls.logs.some((line) => /needs 5000\.0 GB/.test(line)));
 });
 
+test('a loss-making corporation shaped like the captured live save runs one safe cycle', async () => {
+  // Mirrors tests/fixtures/corporation-live-snapshot.json: Apex Holdings, Agri + Tobacco one city
+  // each, no products, revenue < expenses, ~$1.69b funds. This is the state the shipped save is in.
+  const game = daemonGame({ existing: true, funds: 1692740517, unlocks: ['Warehouse API', 'Office API', 'Smart Supply'] });
+  game.setRevenue(14609.89, 26809.76);
+  for (const [name, industry] of [['Agri', 'Agriculture'], ['Tobacco', 'Tobacco']]) {
+    game.state.divisions[name] = { name, industry, cities: ['Sector-12'], products: [], researchPoints: name === 'Agri' ? 178.7 : 167.5, lastCycleRevenue: 0, lastCycleExpenses: 0, numAdVerts: 0 };
+    game.state.offices[`${name}/Sector-12`] = { city: 'Sector-12', size: 9, numEmployees: 9, avgEnergy: 100, avgMorale: 100 };
+    game.state.warehouses[`${name}/Sector-12`] = { level: 1, city: 'Sector-12', size: 100, sizeUsed: 10, smartSupplyEnabled: false };
+  }
+
+  const mark = game.mark();
+  const report = await runCorporationCycle(game.ns, CYCLE);
+  const fresh = game.mutationsSince(mark);
+
+  assert.deepEqual(report.errors, []);
+  assert.equal(report.state, 'RUNNING');
+  assert.equal(report.divisions.length, 2);
+  assert.ok(report.funds >= report.reserve, 'the reserve invariant survives a cycle');
+  // A loss-making corporation must not buy discretionary industry or advertising with its reserve.
+  assert.equal(fresh.filter((call) => call.operation === 'expandIndustry').length, 0);
+  assert.equal(fresh.filter((call) => call.operation === 'hireAdVert').length, 0);
+  for (const operation of FINANCE_ACTIONS) assert.equal(fresh.filter((call) => call.operation === operation).length, 0);
+  const status = JSON.parse(game.files[DAEMON_STATUS_FILE]);
+  assert.equal(status.divisions.length, 2);
+  assert.ok(status.persistentFailures.length === 0);
+});
+
 test('an unusable config is reported in the status document, not thrown', async () => {
   const game = daemonGame({
     files: { 'corporation-config.json': JSON.stringify({ dryRun: 'yes', mystery: true, bootstrap: { cities: ['Atlantis'] } }) },

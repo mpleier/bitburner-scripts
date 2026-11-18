@@ -297,9 +297,9 @@ an unchanged corporation therefore performs no duplicate purchase (test evidence
 ## 8. Test evidence
 
 ```
-npm test                        # 3942 tests, 0 failures (includes the new files)
-npm run check:syntax            # 661 files
-node scripts/audit-project.js all   # 254 deployable files, 0 problems
+npm test                        # 4018 tests, 0 failures (includes the new files)
+npm run check:syntax            # 669 files
+node scripts/audit-project.js all   # 258 deployable files, 0 problems
 node --test tests/corporation-optimizer-simulation.test.js
 ```
 
@@ -337,6 +337,15 @@ shrink, a settled corporation performs no further purchases, the 400-cycle run r
 failure, and two identical runs produce identical calls (determinism).
 
 ## 9. Integration notes for the single daemon (`t_98440837`)
+
+**Implemented:** `corporation-daemon.js` follows these notes (spec §4.4 of
+`docs/corp-automation-spec.md`). Steps 1-5 are wired; step 6 writes
+`tasks/corporation-daemon-status.json` (the §9.1 key set under a separate name so the legacy
+controller's `tasks/corporation-status.json` is never clobbered); step 7's ordering is enforced
+by the daemon (structural phase, then this tick, and finance is not implemented here — see the
+spec's §4.4 decisions). Two hooks were added for the guards:
+`createCorporationOptimizer({ reserveFloor, skipWarehouse })` and
+`optimizer.setCycleGuards({ reserveFloor, skipWarehouse })`.
 
 1. Load the config once with `loadCorporationConfig`, keep `config.errors`/`report` in the status
    document, and pass `config` into the optimiser; call `optimizer.configure(next)` after a reload.

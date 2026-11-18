@@ -306,7 +306,7 @@ the optimiser, once doing nothing:
 | --- | --- | --- |
 | products (mature) | 3 (all three slots) | 0 |
 | best product effective rating | 1.82 | — |
-| revenue per cycle | 2.35m | 0 |
+| revenue per cycle | 2.36m | 0 |
 | profit per cycle | +2.35m | −4.1k |
 | cumulative profit | +296.6m | −1.2m |
 | valuation proxy | 83.8b | 50.0b |

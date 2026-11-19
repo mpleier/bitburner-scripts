@@ -147,6 +147,9 @@ export function passwordLengthMatches(details, password) {
  * exploit, so the format filter must not discard it before the worker ever tries it. */
 export function passwordFormatMatches(details, password) {
   const value = String(password ?? '');
+  // ZeroLogon reports a numeric format even though the correct PIN is empty.
+  // Without this exception every blank-password solver candidate is discarded.
+  if (value === '' && (isBlankPassword(details) || Number(details?.passwordLength) === 0)) return true;
   const length = Number(details?.passwordLength);
   if (details?.modelId === 'Pr0verFl0' && Number.isInteger(length) && length > 0 && /^■+$/.test(value) && value.length === length * 2) return true;
   switch (details?.passwordFormat) {

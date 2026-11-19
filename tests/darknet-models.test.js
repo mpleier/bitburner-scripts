@@ -46,7 +46,7 @@ test('the feedback branch tries a model-derived password before probing for hint
 
 test('saved passwords are rejected when they cannot match the server format', () => {
   const src = readFileSync(new URL('../darknet-node.js', import.meta.url), 'utf8');
-  assert.match(src, /const formatOk = !password \|\| \(\(\) => \{/);
+  assert.match(src, /const formatOk = !password \|\| passwordFormatMatches\(info, password\);/);
   assert.match(src, /if \(!passwordLengthMatches\(info, password\) \|\| !formatOk\)/);
 });
 
@@ -177,8 +177,13 @@ test('the Pr0verFl0 buffer-overflow mask survives the format filter', () => {
   assert.equal(passwordFormatMatches({...details,passwordFormat:'numeric'},'zxcvbnm'),false);
 });
 
-test('the manager filters candidates through the policy helper, not an inline switch', () => {
-  const source=readFileSync(new URL('../darknet-manager.js',import.meta.url),'utf8');
-  assert.match(source,/const matches = \(value\) => passwordLengthMatches\(details,value\) && passwordFormatMatches\(details,value\);/);
-  assert.doesNotMatch(source,/switch \(details\.passwordFormat\)/);
+test('the manager and node filter candidates through the policy helper, not an inline switch', () => {
+  for (const file of ['../darknet-manager.js', '../darknet-node.js']) {
+    const source=readFileSync(new URL(file,import.meta.url),'utf8');
+    assert.doesNotMatch(source,/switch \([^)]*passwordFormat[^)]*\)/);
+  }
+  const managerSource=readFileSync(new URL('../darknet-manager.js',import.meta.url),'utf8');
+  assert.match(managerSource,/const matches = \(value\) => passwordLengthMatches\(details,value\) && passwordFormatMatches\(details,value\);/);
+  const nodeSource=readFileSync(new URL('../darknet-node.js',import.meta.url),'utf8');
+  assert.match(nodeSource,/passwordFormatMatches\(info, password\)/);
 });

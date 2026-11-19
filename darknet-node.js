@@ -7,7 +7,7 @@ import { surveyFile, stormRequestFile } from './darknet-storm-policy.js';
 import {serviceDarknetAnchor,anchorRequestFile} from './darknet-anchor-policy.js';
 import {mazeLeaseOwned,readMazeLease,mazeLeaseIdentity} from './darknet-development-policy.js';
 /** Runs on authenticated darknet servers, scouts outward, and tries exact-match candidates. */
-import { candidatePasswordTurn, isBlankPassword, solveFeedbackPassword, supportsFeedbackModel, modelCandidates, isStalledScout, dictionaryWords, passwordLengthMatches, passwordHintCandidates, modelUsesPuzzleInput } from './darknet-solvers.js';
+import { candidatePasswordTurn, isBlankPassword, solveFeedbackPassword, supportsFeedbackModel, modelCandidates, isStalledScout, dictionaryWords, passwordLengthMatches, passwordFormatMatches, passwordHintCandidates, modelUsesPuzzleInput } from './darknet-solvers.js';
 import { stockSignalFile, chooseStockPromotion } from './darknet-stock-policy.js';
 import { frontierFile, chooseMigrationTarget } from './darknet-migration-policy.js';
 export function createDarknetProgressReporter(publish, now=()=>Date.now()) {
@@ -180,13 +180,7 @@ export async function main(ns) {
   const candidatesFor = (info, words) => {
     const matches = value => {
       if (!passwordLengthMatches(info,value)) return false;
-      switch (info.passwordFormat) {
-        case "numeric": return /^\d+$/.test(value);
-        case "alphabetic": return /^[a-z]+$/i.test(value);
-        case "alphanumeric": return /^[a-z0-9]+$/i.test(value);
-        case "ASCII": return /^[\x20-\x7e]+$/.test(value);
-        default: return true;
-      }
+      return passwordFormatMatches(info, value);
     };
     // Servers with no password (hint "There is no password", length 0, or the
     // ZeroLogon model) accept the empty string. The length filter below would
@@ -278,14 +272,7 @@ export async function main(ns) {
     return await claimSession(host, password);
   };
 
-  const trySavedPassword = async (host, password, info) => {    const formatOk = !password || (() => {
-      switch (info?.passwordFormat) {
-        case 'numeric': return /^\d+$/.test(password);
-        case 'alphabetic': return /^[a-z]+$/i.test(password);
-        case 'alphanumeric': return /^[a-z0-9]+$/i.test(password);
-        default: return true;
-      }
-    })();
+  const trySavedPassword = async (host, password, info) => {    const formatOk = !password || passwordFormatMatches(info, password);
     if (!passwordLengthMatches(info, password) || !formatOk)
       return {success:false,code:AUTH_FAILURE,message:'Candidate length mismatch'};
     // Native reconnect has no authentication delay. Stationary/story servers retain the normal path.

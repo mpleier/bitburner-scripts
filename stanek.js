@@ -205,6 +205,9 @@ export async function chargeStanekFragments(ns, fragments, host, configuration, 
         // Layout dumps include placeholder/booster entries without a numeric id. Nothing to charge there, and
         // counting them as failures kept every round "unsuccessful" (1000 ms backoff) while real fragments charged.
         if (typeof fragment.id !== 'number') continue;
+        // Keep the status file's `at` fresh while a charge may take minutes, so the autopilot stall
+        // detector (10 min no-progress) does not kill a legitimately slow charge pass.
+        try { await ns.write('tasks/stanek-status.json', JSON.stringify({at:Date.now(),pid:ns.pid,mode:'charging',pending:fragments.length}), 'w'); } catch {}
         const live = (await readFragments(ns)).find(f => f.id === fragment.id && f.x === fragment.x && f.y === fragment.y && f.rotation === fragment.rotation);
         if (!live) { allSuccessful = false; continue; }
         const availableRam = ns.getServerMaxRam(host) - ns.getServerUsedRam(host);
@@ -218,9 +221,14 @@ export async function chargeStanekFragments(ns, fragments, host, configuration, 
         const pid = ns.run(chargeScript, {threads, temporary:true}, live.x, live.y);
         if (!pid) { allSuccessful = false; continue; }
         children.add(pid);
+        let lastHeartbeat = Date.now();
         try { while (ns.isRunning(pid)) {
             automationHeartbeat(ns);
             if (isScriptPaused(ns, ns.getScriptName()) || maintenanceRequested(ns)) { ns.kill(pid); return false; }
+            if (Date.now() - lastHeartbeat >= 5000) {
+                try { await ns.write('tasks/stanek-status.json', JSON.stringify({at:Date.now(),pid:ns.pid,mode:'charging',pending:fragments.length}), 'w'); } catch {}
+                lastHeartbeat = Date.now();
+            }
             await ns.sleep(20);
         } }
         finally { if (!ns.isRunning(pid)) children.delete(pid); }

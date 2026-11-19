@@ -1266,7 +1266,8 @@ export async function main(ns) {
     let dictServerGrowths = (/**@returns{{[serverName: string]: number;}}*/() => undefined)();
 
     /** Gathers up arrays of server data via external request to have the data written to disk.
-     * This data should only need to be gathered once per run, as it never changes
+     * Most of this data never changes; mutable fields (cpuCores, backdoorInstalled, maxRam) are
+     * kept fresh by refreshDynamicServerData.
      * @param {NS} ns */
     async function getStaticServerData(ns) {
         if (verbose) log(ns, `getStaticServerData: ${allHostNames}`);
@@ -1295,6 +1296,26 @@ export async function main(ns) {
         // Min Security / Max Money can be affected by Hashnet purchases, so we should update this occasionally
         dictServerMinSecurityLevels = await getServersDict(ns, 'getServerMinSecurityLevel');
         dictServerMaxMoney = await getServersDict(ns, 'getServerMaxMoney');
+        // CPU cores, backdoor status and max RAM can change mid-run (home core upgrades, external
+        // backdoor scripts, RAM purchases), but the "static" snapshot is otherwise only rebuilt when
+        // a new server is discovered. Keep these fields fresh for quoting and backdoor scheduling.
+        const dictServerCores = await getServersDict(ns, 'getServerCores');
+        const dictServerBackdoors = await getNsDataThroughFile(ns, 'Object.fromEntries(ns.args.map(server => [server, ns.getServer(server).backdoorInstalled]))',
+            '/Temp/daemon-server-backdoors-all.txt', allHostNames);
+        for (const hostName of allHostNames) {
+            const info = dictInitialServerInfos[hostName];
+            if (!info) continue;
+            info.cpuCores = dictServerCores[hostName];
+            info.backdoorInstalled = dictServerBackdoors[hostName];
+            info.maxRam = dictServerMaxRam[hostName];
+        }
+        // Server instances capture their snapshot object at construction; after a new-server discovery
+        // rebuilds dictInitialServerInfos, older instances still hold the previous objects.
+        for (const server of getAllServers()) {
+            server.server.cpuCores = dictServerCores[server.name];
+            server.server.backdoorInstalled = dictServerBackdoors[server.name];
+            server.server.maxRam = dictServerMaxRam[server.name];
+        }
         // Get the information about the relative profitability of each server (affects targetting order)
         const pid = await exec(ns, getFilePath('analyze-hack.js'), null, null, '--all', '--silent');
         await waitForProcessToComplete_Custom(ns, getHomeProcIsAlive(ns), pid);

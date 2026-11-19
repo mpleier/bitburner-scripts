@@ -1526,7 +1526,8 @@ async function tryApplyToCompany(ns, company, role) {
     return typeof result === 'string' && result.length ? result : null;
 }
 
-/** Load every position offered by a company once, with native requirements and stat offsets. */
+/** Load every position offered by a company, with native requirements and stat offsets.
+ * Only complete catalogs are cached; partial results are retried on the next call. */
 async function getCompanyJobCatalog(ns, company) {
     if (companyJobCache.has(company)) return companyJobCache.get(company);
     const safe = company.replace(/[^A-Za-z0-9]+/g, '-');
@@ -1537,12 +1538,14 @@ async function getCompanyJobCatalog(ns, company) {
     } catch { return []; }
     if (!Array.isArray(names)) return [];
     const positions = [];
+    let complete = true;
     for (let i = 0; i < names.length; i++) {
         try {
             const info = await getNsDataThroughFile(ns, 'ns.singularity.getCompanyPositionInfo(ns.args[0], ns.args[1])',
                 `/Temp/company-job-${safe}-${i}.txt`, [company, names[i]]);
             if (info && typeof info.name === 'string') positions.push(info);
-        } catch { /* Skip a position whose metadata is temporarily unavailable. */ }
+            else complete = false; // Unresolved position: don't cache a catalog with a hole in it
+        } catch { complete = false; /* Metadata temporarily unavailable (e.g. RAM contention). */ }
     }
     const byField = new Map();
     for (const info of positions) {
@@ -1554,7 +1557,9 @@ async function getCompanyJobCatalog(ns, company) {
         infos.sort((a, b) => (a.requiredReputation || 0) - (b.requiredReputation || 0) || (a.salary || 0) - (b.salary || 0));
         infos.forEach((info, tier) => catalog.push({ info, field, tier, meta: jobTrackMetadata[field] }));
     }
-    companyJobCache.set(company, catalog);
+    // A partial catalog would hide better positions (and corrupt the next-promotion reputation
+    // target) for the rest of the run, so only cache it when every position resolved.
+    if (complete) companyJobCache.set(company, catalog);
     return catalog;
 }
 

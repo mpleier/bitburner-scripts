@@ -1219,8 +1219,12 @@ export async function main(ns) {
             const strServerIncomeInfo = ns.read('/Temp/analyze-hack.txt');	// HACK: Steal this file that Daemon also relies on
             if (strServerIncomeInfo) {
                 const incomeByServer = JSON.parse(strServerIncomeInfo);
-                dictServerHackReqs ??= await getNsDataThroughFile(ns, 'Object.fromEntries(ns.args.map(server => [server, ns.getServerRequiredHackingLevel(server)]))',
-                    '/Temp/getServerRequiredHackingLevel-all.txt', incomeByServer.map(s => s.hostname));
+                // Required hacking levels are static per server, but newly discovered servers must not be
+                // excluded from hash-boost targeting: fetch only hostnames we haven't cached yet.
+                const missingHackReqs = incomeByServer.map(s => s.hostname).filter(hostname => dictServerHackReqs?.[hostname] === undefined);
+                if (missingHackReqs.length > 0)
+                    dictServerHackReqs = { ...dictServerHackReqs, ...await getNsDataThroughFile(ns, 'Object.fromEntries(ns.args.map(server => [server, ns.getServerRequiredHackingLevel(server)]))',
+                        '/Temp/getServerRequiredHackingLevel-all.txt', missingHackReqs) };
                 const [bestServer, gain] = incomeByServer.filter(s => dictServerHackReqs[s.hostname] <= player.skills.hacking)
                     .reduce(([bestServer, bestIncome], target) => target.gainRate > bestIncome ? [target.hostname, target.gainRate] : [bestServer, bestIncome], [null, -1]);
                 const spendHashesMultThreshold = options['spend-hashes-on-server-hacking-threshold'];

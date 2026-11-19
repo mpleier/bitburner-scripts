@@ -27,7 +27,7 @@ test('bootstrap RAM outranks other categories in the spending plan', () => {
 
 test('autopilot wires the bootstrap target into the plan and its own guard', () => {
   const src = readFileSync(new URL('../autopilot.js', import.meta.url), 'utf8');
-  assert.match(src, /const target=Math\.max\(recoveryTarget\?\?128,bootstrapRamTarget\(ns\)\);if\(maximum>=target\)return;/);
+  assert.match(src, /const target=Math\.max\(recoveryTarget\?\?128,bootstrapRamTarget\(ns\)\);\s*const nextCost=ns\.singularity\.getUpgradeHomeRamCost\(\);\s*const costOk=Number\.isFinite\(nextCost\)&&nextCost>0&&nextCost<=1e10;\s*if\(maximum>=target&&!costOk\)return;/);
   assert.match(src, /signals:\{bottleneck:'ram',essentialHomeRam:\{target\},bootstrapRam:target\}/);
   assert.match(src, /import \{ spendingPlan,adaptiveBudgetSignals,claimSpending,bootstrapRamTarget \} from '\.\/spending-policy\.js';/);
 });

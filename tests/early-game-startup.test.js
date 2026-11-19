@@ -85,8 +85,19 @@ function ramApi(){
   read:f=>files[f]||'',write:(f,s)=>files[f]=s,ps:()=>[{pid:1}],singularity:{getUpgradeHomeRamCost:()=>100,upgradeHomeRam:()=>{money-=100;ram*=2;purchases.push(ram);return true;}}};
  return {ns,files,purchases};
 }
-test('essential RAM worker immediately reaches 128 GB and stops at its target',()=>{
- const a=ramApi();ramWorker(a.ns,1,128,claimSpending,achievementActionAllowed);assert.deepEqual(a.purchases,[64,128]);
+test('essential RAM worker buys until cash runs out, ignoring the old GB target',()=>{
+ const a=ramApi();ramWorker(a.ns,1,128,claimSpending,achievementActionAllowed);
+ // cost=100, budget=1000 -> 10 doublings from 32 GB; the 128 GB target no longer caps it.
+ assert.deepEqual(a.purchases,[64,128,256,512,1024,2048,4096,8192,16384,32768]);
+});
+test('essential RAM worker stops once the next upgrade price exceeds $10B',()=>{
+ let ram=32,money=1e12;const purchases=[];
+ const ns={getPlayer:()=>({money}),getServerMaxRam:()=>ram,isRunning:()=>true,
+  read:f=>f==='reserve.txt'?'0':'',ps:()=>[{pid:1}],
+  singularity:{getUpgradeHomeRamCost:()=>ram*1e8,upgradeHomeRam:()=>{money-=ram*1e8;ram*=2;purchases.push(ram);return true;}}};
+ ramWorker(ns,1,128,()=>true,()=>true);
+ // cost=ram*1e8: 32->3.2e9 and 64->6.4e9 are <=1e10; 128->1.28e10 exceeds it and stops.
+ assert.deepEqual(purchases,[64,128]);
 });
 test('essential RAM upgrades respect wallet reserves, shared allowance and purchase failure',()=>{
  for(const mode of ['reserve','budget','pause','challenge','failure','owner']){

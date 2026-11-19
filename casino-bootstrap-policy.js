@@ -82,14 +82,14 @@ export const seedSleevesSource = String.raw`function seedSleeves(ns,ownerPid,tar
 
 /** Serialized upgrade worker; cash, shared budget and challenge protections are checked per purchase. */
 export const essentialHomeRamSource = String.raw`function essentialHomeRam(ns,ownerPid,target,claim,allowed) {
-    let budget=Math.max(0,ns.getPlayer().money-Math.max(0,Number(ns.read('reserve.txt'))||0))*.5;
+    let budget=Math.max(0,ns.getPlayer().money-Math.max(0,Number(ns.read('reserve.txt'))||0));
     let upgrades=0;
-    while(ns.getServerMaxRam('home')<target){
+    while(true){
         if(!ns.isRunning(ownerPid)||ns.read('remote-control/paused/autopilot.js.txt').trim()==='true'||
             ns.read('remote-control/paused/Tasks/ram-manager.js.txt').trim()==='true'||!allowed(ns,'homeRam')||!allowed(ns,'cashSpending'))break;
         try{const r=JSON.parse(ns.read('tasks/automation-maintenance.json'));if(r.expiresAt>Date.now()&&ns.isRunning(r.ownerPid))break;}catch{}
         const cost=ns.singularity.getUpgradeHomeRamCost();
-        if(!(cost>0)||!Number.isFinite(cost)||cost>budget)break;
+        if(!(cost>0)||!Number.isFinite(cost)||cost>1e10||cost>budget)break;
         if(!claim(ns,'home',cost))break;
         if(!ns.singularity.upgradeHomeRam())break;
         budget-=cost;upgrades++;

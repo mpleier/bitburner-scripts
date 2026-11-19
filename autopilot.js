@@ -1480,7 +1480,10 @@ export async function main(ns) {
         const processes=ns.ps('home'),charging=processes.some(p=>p.filename.replace(/^\//,'')==='stanek.js');
         const disposableCharge=processes.filter(p=>p.filename.replace(/^\//,'')==='Temp/stanek.js.charge.js').reduce((sum,p)=>sum+ns.getScriptRam(p.filename,'home')*p.threads,0);
         const recoveryTarget=charging?startupChargeRamTarget({maximum,used:Math.max(0,ns.getServerUsedRam('home')-disposableCharge),pending,configured:Number(ns.read('home-ram-reserve.txt'))||0}):null;
-        const target=Math.max(recoveryTarget??128,bootstrapRamTarget(ns));if(maximum>=target)return;
+        const target=Math.max(recoveryTarget??128,bootstrapRamTarget(ns));
+        const nextCost=ns.singularity.getUpgradeHomeRamCost();
+        const costOk=Number.isFinite(nextCost)&&nextCost>0&&nextCost<=1e10;
+        if(maximum>=target&&!costOk)return;
         // Bootstrap RAM is exempt from the casino-earnings gate: with no daemon nothing earns at all.
         if(!recoveryTarget&&maximum<128){if(options['disable-casino'])return;const sources=await getPlayerMoneySources(ns);if((sources.sinceInstall.casino||0)<=1e10)return;}
         if(!options['disable-adaptive-spending'])await ns.write('tasks/spending-plan.json',JSON.stringify(spendingPlan({money:player.money,

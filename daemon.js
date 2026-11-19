@@ -1299,7 +1299,8 @@ export async function main(ns) {
         // CPU cores, backdoor status and max RAM can change mid-run (home core upgrades, external
         // backdoor scripts, RAM purchases), but the "static" snapshot is otherwise only rebuilt when
         // a new server is discovered. Keep these fields fresh for quoting and backdoor scheduling.
-        const dictServerCores = await getServersDict(ns, 'getServerCores');
+        const dictServerCores = await getNsDataThroughFile(ns, 'Object.fromEntries(ns.args.map(server => [server, ns.getServer(server).cpuCores]))',
+            '/Temp/daemon-server-cores-all.txt', allHostNames);
         const dictServerBackdoors = await getNsDataThroughFile(ns, 'Object.fromEntries(ns.args.map(server => [server, ns.getServer(server).backdoorInstalled]))',
             '/Temp/daemon-server-backdoors-all.txt', allHostNames);
         for (const hostName of allHostNames) {

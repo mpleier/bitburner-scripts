@@ -135,9 +135,15 @@ export function graftResetBlocked(plan,reset,processes,now=Date.now()) {
 
 /** Exclude archived corporation data without deleting useful history. */
 export function currentCorporationStatus(record,reset,processes,now=Date.now()) {
- if(!record||!Number.isFinite(record.at)||record.at>now||now-record.at>120000||record.at<Math.max(reset.lastNodeReset||0,reset.lastAugReset||0))return null;
+ if(!record||!Number.isFinite(record.at)||record.at>=now||now-record.at>120000||record.at<Math.max(reset.lastNodeReset||0,reset.lastAugReset||0))return null;
  if(record.nodeReset!==undefined&&record.nodeReset!==reset.lastNodeReset||record.augReset!==undefined&&record.augReset!==reset.lastAugReset)return null;
  return processes.some(p=>p.pid===record.pid&&String(p.filename||'').replace(/^\//,'')==='corporation-manager.js')?record:null;
+}
+
+/** A gang is destroyed by Bitnode completion; reject status files left over from another generation. */
+export function currentGangStatus(record,reset,processes,now=Date.now()) {
+ if(!record||record.nodeReset!==reset.lastNodeReset||record.augReset!==reset.lastAugReset||!Number.isFinite(record.at)||record.at>=now||now-record.at>120000||record.at<Math.max(reset.lastNodeReset||0,reset.lastAugReset||0))return null;
+ return processes.some(p=>p.pid===record.pid&&String(p.filename||'').replace(/^\//,'')==='gangs.js')?record:null;
 }
 
 /** Reserve a reachable, useful augmentation bill; far-away targets do not freeze spending. */

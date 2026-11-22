@@ -431,11 +431,11 @@ async function mainLoop(ns) {
         ns.print(`We're in BN10, which means we should add The Covenant to our priority faction list, so you can purchase sleeves and sleeve memory.`);
     }
 
-    // BN15's completion gate is hacking level 2500, which only augmentation multipliers can reach: the
+    // BN13 and BN15 both gate progress on hacking level 2500 (Daedalus entry / Red Pill release),
     // levelling curve is exponential in level/mult, so rep with the factions that sell a hacking
     // multiplier is worth more than any amount of extra hacking exp. Work them like BN10 works the
     // Covenant for sleeves.
-    if (currentBitnode == 15) {
+    if (currentBitnode == 13 || currentBitnode == 15) {
         const hackingMultiplierFactions = ["BitRunners", "Clarke Incorporated", "NWO", "OmniTek Incorporated", "The Covenant"];
         const added = hackingMultiplierFactions.filter(f => !priorityFactions.includes(f));
         if (added.length) {

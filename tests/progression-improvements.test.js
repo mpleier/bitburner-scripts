@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {adaptiveHgwTiming,graftResetBlocked,currentCorporationStatus,augmentationSavingsTarget,routeHashBudget} from '../progression-improvements-policy.js';
+import {adaptiveHgwTiming,graftResetBlocked,currentCorporationStatus,currentGangStatus,augmentationSavingsTarget,routeHashBudget} from '../progression-improvements-policy.js';
 import {spendingPlan} from '../spending-policy.js';
 import {hacknetPayoffLimit} from '../hacknet-policy.js';
 import {renderCommandJob} from '../remote-api-command.js';
@@ -111,4 +111,13 @@ test('sparse traffic with fresh overruns cannot falsely recover and silence is n
  let s=pacing(null,100000);s=pacing(s,130000,100,10);
  s=pacing(s,250000,108,11);assert.equal(s.multiplier,1.5);assert.equal(s.cleanWindows,0);
  s=pacing(s,370000,108,11);assert.equal(s.multiplier,1.5);assert.equal(s.cleanWindows,0);
+});
+
+test('gang snapshots require the current run',()=>{
+ const record={at:1000,pid:9,nodeReset:50,augReset:100,ts:20};
+ const ps=[{pid:9,filename:'gangs.js'}];
+ assert.equal(currentGangStatus(record,reset,ps,3000),record);
+ for(const q of [{...record,at:99},{...record,at:3000},{...record,nodeReset:1},{...record,augReset:1}])assert.equal(currentGangStatus(q,reset,ps,3000),null);
+ assert.equal(currentGangStatus(record,reset,[],3000),null);
+ assert.equal(currentGangStatus(record,reset,ps,260000),null);
 });

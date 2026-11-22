@@ -1113,6 +1113,73 @@ export async function main(ns) {
         }
 
 
+        // Gang startup runs even during bootstrap so a gang lost on Bitnode completion is
+        // re-created as soon as SF2 is unlocked, instead of waiting for bootstrap to finish.
+        const workForFactionsArgs = [
+            "--fast-crimes-only", // Essentially means we do mug until we can do homicide, then stick to homicide
+            "--get-invited-to-every-faction" // Join factions even we have all their augs. Good for having NeuroFlux providers
+        ];
+        // Relay the options to suppress tail windows and ignore bladeburner
+        if (options['no-tail-windows']) workForFactionsArgs.push('--no-tail-windows');
+        if (options['disable-bladeburner']) workForFactionsArgs.push("--no-bladeburner-check")
+        // The following args are ideal when running 'work-for-factions.js' to rush unlocking gangs (earn karma)
+        const rushGangsArgs = workForFactionsArgs.concat(...[ // Everything above, plus...
+            "--crime-focus", // Start off by trying to work for each of the crime factions (generally have combat reqs)
+            "--training-stat-per-multi-threshold", 200, // Be willing to spend more time grinding for stats rather than skipping a faction
+            "--prioritize-invites"]); // Don't actually start working for factions until we've earned as many invites as we think we can
+        if (2 in unlockedSFs && achievementActionAllowed(ns,"gang")) {
+            // Check if we've joined a gang yet. (Never have to check again once we know we're in one)
+            if (!playerInGang) playerInGang = await getNsDataThroughFile(ns, 'ns.gang.inGang()');
+            const forcedGangFaction = 'Speakers for the Dead';
+            let gangType = 'combat';
+            if (!playerInGang && resetInfo.currentNode === 2) {
+                // BN2 starts with gang mechanics unlocked. Always use the selected
+                // combat host rather than grinding karma for a source-file unlock.
+                try {
+                    const invitations = await getNsDataThroughFile(ns, 'ns.singularity.checkFactionInvitations()', '/Temp/gang-host-invitations.txt');
+                    const host = Array.isArray(invitations) && invitations.includes(forcedGangFaction) ? forcedGangFaction : null;
+                    if (host) {
+                        await getNsDataThroughFile(ns, 'ns.singularity.joinFaction(ns.args[0])', '/Temp/gang-host-join.txt', [host]);
+                        playerInGang = await getNsDataThroughFile(ns, 'ns.gang.inGang()');
+                        if (playerInGang) log(ns, `INFO: Joined BN2 ${gangType} gang host "${host}".`, false);
+                    }
+                } catch { /* Invites can be temporarily unavailable; retry next pass. */ }
+            }
+            rushGang = !options['disable-rush-gangs'] && !playerInGang && resetInfo.currentNode !== 2; // BN2 already has gang mechanics; join a host instead of grinding karma.
+            // Detect if a 'work-for-factions.js' instance is running with args that don't match our goal. We aren't too picky,
+            // (so the player can run with custom args), but should have --crime-focus if (and only if) we're still working towards a gang.
+            const wrongWork = findScript('work-for-factions.js', !rushGang ? s => s.args.includes("--crime-focus") :
+                s => !rushGangsArgs.every(a => s.args.includes(a))); // Require all rushGangsArgs if we're not in a gang yet.
+            // If running with the wrong args, kill it so we can start it with the desired args
+            if (wrongWork) await killScript(ns, 'work-for-factions.js', null, wrongWork);
+
+            // Start gangs immediately (even though daemon would eventually start it) since we want any income they provide right away after an ascend
+            // TODO: Consider monitoring gangs territory progress and increasing their budget / decreasing their reserve to help kick-start them
+            const gangArgs = [...(options['fully-fund-gang-equipment'] !== false ? ['--prioritize-all-equipment', 'true'] : []), '--gang-type', gangType, '--gang-faction', forcedGangFaction];
+            const existingGang=findScript('gangs.js');
+            const existingGangType = existingGang?.args?.[existingGang.args.indexOf('--gang-type') + 1];
+            const existingGangFaction = existingGang?.args?.[existingGang.args.indexOf('--gang-faction') + 1];
+            if(existingGang&&!playerInGang&&(existingGangType!==gangType||existingGangFaction!==forcedGangFaction)){
+                if(ns.kill(existingGang.pid))log(ns,`INFO: Restarting gangs.js to select ${forcedGangFaction}.`,false);
+            }
+            if(playerInGang&&existingGang&&options['fully-fund-gang-equipment']!==false&&
+               !(existingGang.args.includes('--prioritize-all-equipment')&&existingGang.args[existingGang.args.indexOf('--prioritize-all-equipment')+1]==='true')){
+                if(ns.kill(existingGang.pid))log(ns,'INFO: Restarting gangs.js with all-equipment funding enabled.',false);
+            }
+            if (!findScript('gangs.js')) launchScriptHelper(ns, 'gangs.js', gangArgs);
+        }
+
+        // Launch work-for-factions if it isn't already running (rules for maybe killing unproductive instances are above)
+        // Native startup readiness replaces the fixed 30-second focus delay.
+        // During bootstrap, allow launching even while casino.js is running when rushing a gang unlock.
+        let daemonReadiness;try{daemonReadiness=JSON.parse(ns.read('tasks/daemon-readiness.json'));}catch{}
+        if ((4 in unlockedSFs) && !findScript('work-for-factions.js') && factionWorkerReady(daemonReadiness,findScript('daemon.js'),resetInfo) &&
+            (rushGang ? (bootstrapOnly || !findScript('casino.js')) : !findScript('casino.js'))) {
+            // If we're trying to rush gangs, run in such a way that we will spend most of our time doing crime, reducing Karma (also okay early income)
+            // NOTE: Default work-for-factions behaviour is to spend hashes on coding contracts, which suits us fine
+            launchScriptHelper(ns, 'work-for-factions.js', rushGang ? rushGangsArgs : workForFactionsArgs);
+        }
+
         if(bootstrapOnly)return;
 
         // Leave RAM for absent priority managers while existing batches drain naturally.
@@ -1267,70 +1334,8 @@ export async function main(ns) {
         if (9 in unlockedSFs && !findScript('spend-hacknet-hashes.js', s => !s.args.includes("--spend-on-server")))
             launchScriptHelper(ns, 'spend-hacknet-hashes.js');
 
-        // Default work for faction args we think are ideal for speed-running BNs
-        const workForFactionsArgs = [
-            "--fast-crimes-only", // Essentially means we do mug until we can do homicide, then stick to homicide
-            "--get-invited-to-every-faction" // Join factions even we have all their augs. Good for having NeuroFlux providers
-        ];
-        // Relay the options to suppress tail windows and ignore bladeburner
-        if (options['no-tail-windows']) workForFactionsArgs.push('--no-tail-windows');
-        if (options['disable-bladeburner']) workForFactionsArgs.push("--no-bladeburner-check")
-        // The following args are ideal when running 'work-for-factions.js' to rush unlocking gangs (earn karma)
-        const rushGangsArgs = workForFactionsArgs.concat(...[ // Everything above, plus...
-            "--crime-focus", // Start off by trying to work for each of the crime factions (generally have combat reqs)
-            "--training-stat-per-multi-threshold", 200, // Be willing to spend more time grinding for stats rather than skipping a faction
-            "--prioritize-invites"]); // Don't actually start working for factions until we've earned as many invites as we think we can
-        // If gangs are unlocked, micro-manage how 'work-for-factions.js' is running by killing off unwanted instances
-        if (2 in unlockedSFs && achievementActionAllowed(ns,"gang")) {
-            // Check if we've joined a gang yet. (Never have to check again once we know we're in one)
-            if (!playerInGang) playerInGang = await getNsDataThroughFile(ns, 'ns.gang.inGang()');
-            const forcedGangFaction = 'Speakers for the Dead';
-            let gangType = 'combat';
-            if (!playerInGang && resetInfo.currentNode === 2) {
-                // BN2 starts with gang mechanics unlocked. Always use the selected
-                // combat host rather than grinding karma for a source-file unlock.
-                try {
-                    const invitations = await getNsDataThroughFile(ns, 'ns.singularity.checkFactionInvitations()', '/Temp/gang-host-invitations.txt');
-                    const host = Array.isArray(invitations) && invitations.includes(forcedGangFaction) ? forcedGangFaction : null;
-                    if (host) {
-                        await getNsDataThroughFile(ns, 'ns.singularity.joinFaction(ns.args[0])', '/Temp/gang-host-join.txt', [host]);
-                        playerInGang = await getNsDataThroughFile(ns, 'ns.gang.inGang()');
-                        if (playerInGang) log(ns, `INFO: Joined BN2 ${gangType} gang host "${host}".`, false);
-                    }
-                } catch { /* Invites can be temporarily unavailable; retry next pass. */ }
-            }
-            rushGang = !options['disable-rush-gangs'] && !playerInGang && resetInfo.currentNode !== 2; // BN2 already has gang mechanics; join a host instead of grinding karma.
-            // Detect if a 'work-for-factions.js' instance is running with args that don't match our goal. We aren't too picky,
-            // (so the player can run with custom args), but should have --crime-focus if (and only if) we're still working towards a gang.
-            const wrongWork = findScript('work-for-factions.js', !rushGang ? s => s.args.includes("--crime-focus") :
-                s => !rushGangsArgs.every(a => s.args.includes(a))); // Require all rushGangsArgs if we're not in a gang yet.
-            // If running with the wrong args, kill it so we can start it with the desired args
-            if (wrongWork) await killScript(ns, 'work-for-factions.js', null, wrongWork);
+        // Gang startup moved earlier so it runs during bootstrap too; see above.
 
-            // Start gangs immediately (even though daemon would eventually start it) since we want any income they provide right away after an ascend
-            // TODO: Consider monitoring gangs territory progress and increasing their budget / decreasing their reserve to help kick-start them
-            const gangArgs = [...(options['fully-fund-gang-equipment'] !== false ? ['--prioritize-all-equipment', 'true'] : []), '--gang-type', gangType, '--gang-faction', forcedGangFaction];
-            const existingGang=findScript('gangs.js');
-            const existingGangType = existingGang?.args?.[existingGang.args.indexOf('--gang-type') + 1];
-            const existingGangFaction = existingGang?.args?.[existingGang.args.indexOf('--gang-faction') + 1];
-            if(existingGang&&!playerInGang&&(existingGangType!==gangType||existingGangFaction!==forcedGangFaction)){
-                if(ns.kill(existingGang.pid))log(ns,`INFO: Restarting gangs.js to select ${forcedGangFaction}.`,false);
-            }
-            if(playerInGang&&existingGang&&options['fully-fund-gang-equipment']!==false&&
-               !(existingGang.args.includes('--prioritize-all-equipment')&&existingGang.args[existingGang.args.indexOf('--prioritize-all-equipment')+1]==='true')){
-                if(ns.kill(existingGang.pid))log(ns,'INFO: Restarting gangs.js with all-equipment funding enabled.',false);
-            }
-            if (!findScript('gangs.js')) launchScriptHelper(ns, 'gangs.js', gangArgs);
-        }
-
-        // Launch work-for-factions if it isn't already running (rules for maybe killing unproductive instances are above)
-        // Native startup readiness replaces the fixed 30-second focus delay.
-        let daemonReadiness;try{daemonReadiness=JSON.parse(ns.read('tasks/daemon-readiness.json'));}catch{}
-        if ((4 in unlockedSFs) && !findScript('work-for-factions.js') && !findScript('casino.js') && factionWorkerReady(daemonReadiness,findScript('daemon.js'),resetInfo)) {
-            // If we're trying to rush gangs, run in such a way that we will spend most of our time doing crime, reducing Karma (also okay early income)
-            // NOTE: Default work-for-factions behaviour is to spend hashes on coding contracts, which suits us fine
-            launchScriptHelper(ns, 'work-for-factions.js', rushGang ? rushGangsArgs : workForFactionsArgs);
-        }
         const provisional=managerStatus.filter(r=>['waiting-for-ram','waiting-for-activity'].includes(r.state)).reduce((sum,r)=>sum+r.ram,0);
         const remaining=startupPendingRam(managerStatus,ns.ps('home'),Math.max(0,pending-provisional));
         await ns.write(ramReserveFile,JSON.stringify({ownerPid:ns.pid,expiresAt:Date.now()+30000,ram:remaining?remaining+8:0}),'w');

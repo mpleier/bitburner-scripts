@@ -108,7 +108,8 @@ test('cache context is propagated and helper RAM contains no native reset lookup
  assert.deepEqual(cacheRewardReset(JSON.stringify({nodeReset:7,augReset:42}),100),{lastNodeReset:7,lastAugReset:42});
  for(const value of ['', '{}', JSON.stringify({nodeReset:42,augReset:7}),JSON.stringify({nodeReset:7,augReset:101})])assert.throws(()=>cacheRewardReset(value,100));
  for(const file of ['darknet-loot.js','darknet-cache.js'])assert.doesNotMatch(readFileSync(new URL('../'+file,import.meta.url),'utf8'),/ns\.getResetInfo/);
- for(const file of ['darknet-manager.js','darknet-node.js'])assert.match(readFileSync(new URL('../'+file,import.meta.url),'utf8'),/tasks\/dnet-cache-context\.json/);
+ assert.match(readFileSync(new URL('../darknet-crack-policy.js',import.meta.url),'utf8'),/tasks\/dnet-cache-context\.json/);
+ for(const file of ['darknet-manager.js','darknet-node.js'])assert.match(readFileSync(new URL('../'+file,import.meta.url),'utf8'),/DARKNET_CODE_FILES/);
 });
 
 test('reward shapes name the fields that made a cache unknown',()=>{
@@ -148,7 +149,7 @@ test('the darknet manager feeds heartbleed logs into the candidate list', async 
   const source=readFileSync(new URL('../darknet-manager.js',import.meta.url),'utf8');
   assert.match(source,/import \{statedPasswordFromLogs\} from '\.\/darknet-feedback\.js';/);
   assert.match(source,/const bleedLogs = new Map\(\);/);
-  assert.match(source,/const stated = statedPasswordFromLogs\(host \? bleedLogs\.get\(host\) : null, details\);/);
+  assert.match(source,/candidatePasswords\(details, words, \{ stated: statedPasswordFromLogs\(host \? bleedLogs\.get\(host\) : null, details\) \}\);/);
   assert.match(source,/bleedLogs\.set\(host, result\.logs\.slice\(-20\)\)/);
   assert.match(source,/candidatesFor\(details, candidates, host\)/);
 });

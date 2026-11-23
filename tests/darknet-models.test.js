@@ -41,7 +41,7 @@ test('the feedback branch tries a model-derived password before probing for hint
   assert.match(src, /const minedDigits = String\(info\.data \?\? ''\)\.replace\(\/\\D\+\/g, ''\);/);
   assert.match(src, /for \(const candidate of preferred\.slice\(0, 4\)\)/);
   assert.match(src, /derived password matched; saved in credential store\./);
-  assert.match(src, /const ordered = wantsDigits \? \[\.\.\.derived, \.\.\.modelCandidates\(info\)\]/);
+  assert.match(readFileSync(new URL('../darknet-crack-policy.js', import.meta.url), 'utf8'), /const ordered = wantsDigits \? \[\.\.\.derived, \.\.\.modelled\] : \[\.\.\.modelled, \.\.\.derived\];/);
 });
 
 test('saved passwords are rejected when they cannot match the server format', () => {
@@ -182,8 +182,8 @@ test('the manager and node filter candidates through the policy helper, not an i
     const source=readFileSync(new URL(file,import.meta.url),'utf8');
     assert.doesNotMatch(source,/switch \([^)]*passwordFormat[^)]*\)/);
   }
-  const managerSource=readFileSync(new URL('../darknet-manager.js',import.meta.url),'utf8');
-  assert.match(managerSource,/const matches = \(value\) => passwordLengthMatches\(details,value\) && passwordFormatMatches\(details,value\);/);
+  const policySource=readFileSync(new URL('../darknet-crack-policy.js',import.meta.url),'utf8');
+  assert.match(policySource,/const matches = value => passwordLengthMatches\(details, value\) && passwordFormatMatches\(details, value\);/);
   const nodeSource=readFileSync(new URL('../darknet-node.js',import.meta.url),'utf8');
   assert.match(nodeSource,/passwordFormatMatches\(info, password\)/);
 });

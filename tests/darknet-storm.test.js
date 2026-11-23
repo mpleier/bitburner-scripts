@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { stormReadiness, planStorm, stormRequestFile, stormResultFile, applyStormReceipt, surveyFile } from '../darknet-storm-policy.js';
+import { DARKNET_CODE_FILES } from '../darknet-crack-policy.js';
 import { main as trigger } from '../darknet-storm.js';
 const now = 10000000;
 function reports() { return [
@@ -100,8 +101,8 @@ test('Missing StormSeed API/Source File fails gracefully',async()=>{
 test('Scouts deploy storm helpers and manager schedules only after complete survey',()=>{
  for(const file of ['darknet-manager.js','darknet-node.js']) {
   const source=readFileSync(new URL('../'+file,import.meta.url),'utf8');
-  assert.match(source,/const codeFiles = \[[^\]]*"darknet-storm-policy\.js"/);
-  assert.match(source,/const codeFiles = \[[^\]]*"darknet-storm\.js"/);
+  for(const file of ['darknet-storm-policy.js','darknet-storm.js'])assert.ok(DARKNET_CODE_FILES.includes(file));
+  assert.match(source,/const codeFiles = DARKNET_CODE_FILES;/);
  }
 });
 

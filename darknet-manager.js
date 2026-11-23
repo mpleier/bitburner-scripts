@@ -1,7 +1,8 @@
 import {coordinateCharismaGoal,charismaTrainingFile} from './darknet-charisma-policy.js';
 import {ramRecoveryFile,ramRecoveryModel,scheduleRamRecovery} from './darknet-ram-policy.js';
-import {readDarknetReports,prioritizeDarknetTargets,darknetDeploymentFile,readDarknetDeployment,createAttemptBudget,darknetDirectlyReachable} from './darknet-throughput-policy.js';
+import {readDarknetReports,prioritizeDarknetTargets,darknetDeploymentFile,readDarknetDeployment,createAttemptBudget,darknetDirectlyReachable,stasisLinkedDetails} from './darknet-throughput-policy.js';
 import {createDarknetCredentials} from './darknet-credentials.js';
+import {AUTH_FAILURE,TIMED_OUT,RETRY_AFTER_MS,DARKNET_CODE_FILES,candidatePasswords} from './darknet-crack-policy.js';
 import {statedPasswordFromLogs} from './darknet-feedback.js';
 import {refreshDarknetScouts,prepareDarknetRollout} from './darknet-rollout.js';
 import {cacheContextFile,rewardSummaryFile,darknetRewardProductivity} from './darknet-reward-policy.js';
@@ -16,7 +17,7 @@ import { surveyPrefix, stormRequestFile, stormStateFile, stormResultFile, applyS
 import {registerAutomation,automationHeartbeat,beginAutomationAction,endAutomationAction,maintenanceRequested} from './runtime-policy.js';
 import { isScriptPaused } from './automation-control.js';
 /** Darknet coordinator. Tries supplied exact-match candidates on discovered servers. */
-import { candidatePasswordTurn, isBlankPassword, solveFeedbackPassword, supportsFeedbackModel, modelCandidates, isStalledScout, dictionaryWords, passwordLengthMatches, passwordFormatMatches } from './darknet-solvers.js';
+import {candidatePasswordTurn,isBlankPassword,solveFeedbackPassword,supportsFeedbackModel,isStalledScout,dictionaryWords,passwordLengthMatches} from './darknet-solvers.js';
 import { frontierFile } from './darknet-migration-policy.js';
 export async function main(ns) {
  registerAutomation(ns);
@@ -39,7 +40,7 @@ export async function main(ns) {
   const stasisFile = "darknet-stasis.js";
   const cacheFile = "darknet-cache.js";
   const watcherFile = "darknet-cache-watch.js";
-  const codeFiles = [nodeFile, lootFile, "darknet-auth.js", "darknet-bleed.js", stasisFile, cacheFile, watcherFile, "darknet-solvers.js", "darknet-throughput-policy.js", "darknet-charisma-policy.js", "darknet-ram-policy.js", "darknet-ram.js", "darknet-credentials.js", "darknet-feedback.js", "darknet-advanced.js", "darknet-labyrinth-policy.js", "darknet-navigator-policy.js", "darknet-maze.js", "darknet-anchor-policy.js", "darknet-development-policy.js", "darknet-dictionaries.js", "darknet-promote.js", "darknet-stock-policy.js", "darknet-migrate.js", "darknet-migration-policy.js", "darknet-storm-policy.js", "darknet-storm.js", "darknet-contract-policy.js", "darknet-reward-policy.js", "tasks/dnet-cache-context.json"];
+  const codeFiles = DARKNET_CODE_FILES;
   let lastHeartbeatPrune = 0;
   // Every ns call is logged by default (scp, probe, getServerMaxRam...), which
   // buried the useful lines. Keep only what this script prints itself.
@@ -70,10 +71,12 @@ export async function main(ns) {
     try { return ns.formatRam(v); } catch {}
     return `${v.toFixed(2)}GB`;
   };
+  // getServerDetails() omits the stasis/backdoor flags; both allow remote exec, so read the live links.
+  const stasisLinked = () => { try { return ns.dnet.getStasisLinkedServers(); } catch { return []; } };
   /** ns.exec on a darknet host needs both a live session and a direct connection. */
   const executionState = (host) => {
     try {
-      const d = ns.dnet.getServerDetails(host);
+      const d = stasisLinkedDetails(ns.dnet.getServerDetails(host), host, stasisLinked());
       if (d?.isOnline === false) return {ready:false,reason:'offline'};
       let directHosts=[];try{directHosts=ns.dnet.probe();}catch{}
       if (!darknetDirectlyReachable(host, d, directHosts)) return {ready:false,reason:'not directly connected'};
@@ -96,28 +99,8 @@ export async function main(ns) {
 
   // Heartbleed log lines can state the password outright; keep them so the solver tries the stated value first.
   const bleedLogs = new Map();
-  const candidatesFor = (details, words, host = null) => {
-    // Length and format checks live in the policy module so a model-specific exemption (the Pr0verFl0
-    // buffer-overflow mask) cannot be filtered out here before the worker ever tries it.
-    const matches = (value) => passwordLengthMatches(details,value) && passwordFormatMatches(details,value);
-    // Servers with no password (hint "There is no password", length 0, or the
-    // ZeroLogon model) accept the empty string. The length filter below would
-    // otherwise discard every candidate and leave nothing to try.
-    if (isBlankPassword(details)) return [""];
-    const clue = typeof details.data === "string" ? details.data.trim() : "";
-    // "Type the numbers to prove you are human": the clue is the password with
-    // other characters mixed in, so the password is the clue's digits alone.
-    const digitsOf = (text) => String(text ?? "").replace(/\D+/g, "");
-    const wantsDigits = details.passwordFormat === "numeric" || /number|digit/i.test(String(details.passwordHint ?? ""));
-    const derived = wantsDigits ? [digitsOf(details.data), digitsOf(details.passwordHint)].filter((x) => x.length > 0) : [];
-    // Very short numeric passwords are cheap to enumerate (at most 999 tries).
-    const counted = details.passwordFormat === "numeric" && details.passwordLength >= 1 && details.passwordLength <= 3
-      ? Array.from({ length: 10 ** details.passwordLength }, (_, n) => String(n).padStart(details.passwordLength, "0"))
-      : [];
-    // A log that states the password outranks every heuristic: it is the server telling us the answer.
-    const stated = statedPasswordFromLogs(host ? bleedLogs.get(host) : null, details);
-    return [...new Set([...(stated ? [stated] : []), ...modelCandidates(details).filter(matches), ...derived.filter(matches), ...(clue && matches(clue) ? [clue] : []), ...words.filter(matches), ...counted])];
-  };
+  const candidatesFor = (details, words, host = null) =>
+    candidatePasswords(details, words, { stated: statedPasswordFromLogs(host ? bleedLogs.get(host) : null, details) });
 
   const reportedHints = new Map(),managerCharismaBlocked=new Map();
   // Cache complete attempt inputs so failed saved credentials are not retried every poll.
@@ -137,9 +120,6 @@ export async function main(ns) {
 
   // Result codes are numeric (DarknetResponseCodeType): 401 = wrong password,
   // 408 = request timed out (password may or may not have been right).
-  const AUTH_FAILURE = 401;
-  const TIMED_OUT = 408;
-  const RETRY_AFTER_MS = 10 * 60_000;
 
   const nativeCall=async(host,kind,action)=>{
     let expectedMs;try{const details=ns.dnet.getServerDetails(host),threads=ns.getRunningScript()?.threads||1,player=ns.getPlayer();expectedMs=kind==='darknet-heartbleed'?ns.formulas.dnet.getHeartbleedTime(details,threads,player):ns.formulas.dnet.getAuthenticateTime(details,threads,player);}catch{}
@@ -182,6 +162,7 @@ export async function main(ns) {
   };
 
   const authenticate = async (host, details, saved, candidates) => {
+    details = stasisLinkedDetails(details, host, stasisLinked());
     if (details.hasSession) return true;
     // Without a direct link the game answers 351 (DirectConnectionRequired) to every candidate, so a host
     // found by a remote survey cannot be cracked from here — its adjacent worker has to do it. Skip instead

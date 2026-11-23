@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { DARKNET_CODE_FILES } from '../darknet-crack-policy.js';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {main as authWorker} from '../darknet-auth.js';
@@ -48,7 +49,7 @@ test('the scout borrows free RAM for threaded calls and never starves the loot h
   assert.match(src, /withLootPaused\(\(\)=>solveFeedbackPassword/);
   assert.match(src, /if \(workerThreads\(authWorker\) >= 4 \|\| workerThreads\(authWorker, helperRam\) < 4\) return fn\(\);/);
   assert.match(src, /ns\.exec\(lootFile, host, loot\.threads \|\| 1\)/);
-  assert.match(src, /"darknet-auth\.js", "darknet-bleed\.js"/);
+  assert.ok(['darknet-auth.js','darknet-bleed.js'].every(entry => DARKNET_CODE_FILES.includes(entry)));
 });
 
 test('the manager prunes stale darknet heartbeats within a bounded per-cycle budget', () => {
@@ -57,5 +58,5 @@ test('the manager prunes stale darknet heartbeats within a bounded per-cycle bud
   assert.match(src, /if \(pruned >= 1500\) break;/);
   assert.match(src, /record\.at > pruneNow - 3600000/);
   assert.match(src, /if \(ns\.rm\(file, 'home'\)\) pruned\+\+;/);
-  assert.match(src, /"darknet-auth\.js", "darknet-bleed\.js"/);
+  assert.ok(['darknet-auth.js','darknet-bleed.js'].every(entry => DARKNET_CODE_FILES.includes(entry)));
 });

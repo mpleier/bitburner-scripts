@@ -320,3 +320,16 @@ Queued TRP installs directly after existing graft, BlackOp, infiltration and ach
 Daedalus work selection also records the marginal player reputation rate, subtracting an idle baseline so sleeve/passive reputation is not counted as a benefit of player work. Infiltration uses its conservative demand floor, measured duration and reliability, and yields when it cannot beat that rate by 25%. Rate evidence expires after ten minutes and is invalidated by reset or material stat/multiplier changes. Manually started infiltrations use the same reward-value comparison while explicit reward overrides remain authoritative.
 
 After TRP is installed, non-NeuroFlux augmentation resets remain possible only when measured WD finish time exceeds both estimated augmentation payback and recovery of lost XP by at least 25%; unknown rates preserve the current run.
+
+## QC pass — 23 November 2026 (Dark Net crack policy, diagnostics move)
+
+Reviewed the uncommitted change set: the shared `darknet-crack-policy.js`, the 55 diagnostics moved to `manual/`, the panel bridge override and the API snapshot provenance.
+
+- `DARKNET_CODE_FILES` replaces two 30-entry deploy literals. Both entrypoints only read it (filter/includes/spread); the array is now frozen so a later `push` from either side fails loudly instead of changing what the other script syncs. The old lists were compared entry by entry and were identical.
+- `candidatePasswords` moved out of `darknet-manager.js` and `darknet-node.js`; both keep a one-line `candidatesFor` wrapper, so call sites and the `statedPasswordFromLogs(host ? bleedLogs.get(host) : null, details)` path are unchanged. No `ns` call entered the new module.
+- Imports left unused by the extraction (the coordinator's `modelCandidates` and `passwordFormatMatches`, the scout's `passwordHintCandidates`) were pruned, so the audit reports no unknown or dangling names.
+- No deployed script still names a moved tool. `darknet-labyrinth-connector.js` runs `dw-ensure-stasis.js` and `dw-probe-neighbours.js`, and both stayed at the root.
+- The generator already rejects a missing input path, so the new `source` field cannot be written as `undefined`.
+- Deployable files: 264 (55 moved out, one policy module added); static RAM audit reports 0 problems.
+
+Checks: `npm run check` passes (738 files parsed, 264 deployable, 0 problems), `node --test tests/` passed 4071 tests, and the targeted `tests/darknet-*.test.js tests/*contract*.test.js` run passed 337. Limit: no live game, so native RAM and the merged candidate ordering are covered by unit tests only.

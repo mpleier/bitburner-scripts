@@ -46,7 +46,7 @@ export async function main(ns){
   const passiveRate=passiveCharismaRate(ledger.sample,sample);ledger.sample=sample;await save();
   if(passiveRate===null){await status('sampling','Measuring passive Charisma XP while idle');return;}
   const quotes=[],universities={'Sector-12':'Rothman University',Aevum:'Summit University',Volhaven:'ZB Institute of Technology'};
-  for(const [city,university]of Object.entries(universities))try{const gains=ns.formulas.work.universityGains({...p,city},'Leadership',university);quotes.push({city,university,rate:5*gains.chaExp*(focus?1:.8),costPerSecond:-5*gains.money,travelCost:city===p.city?0:200000});}catch{}
+  for(const [city,university]of Object.entries(universities))try{const gains=ns.formulas.work.universityGains({...p,city},'Leadership',university);quotes.push({city,university,rate:5*gains.chaExp,costPerSecond:-5*gains.money,travelCost:city===p.city?0:200000});}catch{}
   let remainingXp;try{remainingXp=ns.formulas.skills.calculateExp(goal.target,p.mults.charisma*ns.getBitNodeMultipliers().CharismaLevelMultiplier)-p.exp.charisma;}catch{await status('deferred','Native training formulas unavailable');return;}
   let plan=planCharismaStudy({remainingXp,passiveRate,quotes,secondsUsed:prior.seconds,cashUsed:prior.cash,money:p.money,reserve:Math.max(0,Number(ns.read('reserve.txt'))||0),secondsBudget:studySeconds,cashBudget:studyCash});
   const interruptPlan=canInterrupt?planCharismaInterrupt({remainingXp,passiveRate,quotes,secondsUsed:0,cashUsed:0,money:p.money,reserve:Math.max(0,Number(ns.read('reserve.txt'))||0),maxSeconds:interruptSecondsLeft,maxCash:interruptCashLeft}):null;

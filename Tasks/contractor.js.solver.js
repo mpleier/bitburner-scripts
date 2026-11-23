@@ -52,7 +52,7 @@ export async function main(ns) {
    }
    try {
     counts.attempted++;
-    const reward=ns.codingcontract.attempt(answer,contract.contract,contract.hostname,{returnReward:true});
+    const reward=ns.codingcontract.attempt(answer,contract.contract,contract.hostname);
     if(reward){
      counts.solved++;
      const message=`Solved ${contract.contract} on ${contract.hostname} (${contract.type}). Reward: ${reward}`;

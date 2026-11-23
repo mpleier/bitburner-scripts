@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {isBlankPassword,parsePasswordEntries,modelCandidates,solveFeedbackPassword,solveNilPassword,solveMastermindPassword} from '../darknet-solvers.js';
+import {DARKNET_CODE_FILES} from '../darknet-crack-policy.js';
 import {main as manager} from '../darknet-manager.js';
 import {main as scout} from '../darknet-node.js';
 import {decodeCredentials,credentialBundle} from '../darknet-credentials.js';
@@ -117,7 +118,8 @@ test('home manager and remote scout discover, save and reuse blank passwords',as
   }
 });
 test('both deployment lists include the feedback dependency',()=>{
-  for(const file of ['darknet-manager.js','darknet-node.js'])assert.match(readFileSync(new URL('../'+file,import.meta.url),'utf8'),/const codeFiles = \[[^\]]*"darknet-feedback\.js"/);
+  assert.ok(DARKNET_CODE_FILES.includes('darknet-feedback.js'));
+  for(const file of ['darknet-manager.js','darknet-node.js'])assert.match(readFileSync(new URL('../'+file,import.meta.url),'utf8'),/const codeFiles = DARKNET_CODE_FILES;/);
 });
 
 test('short feedback turns retain progress and solve without duplicate guesses',async()=>{

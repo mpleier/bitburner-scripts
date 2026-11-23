@@ -23,6 +23,6 @@ function collect(name,prefix='',depth=0){
  }
 }
 collect('NS');if(Object.keys(paths).length<100)throw Error('Definitions did not provide a usable NS interface');
-const result={schemaVersion:1,source:'Definitions exported by the connected Bitburner Remote API',sha256:createHash('sha256').update(text).digest('hex'),paths,costs};
+const result={schemaVersion:1,source:process.argv[3]||file,sha256:createHash('sha256').update(text).digest('hex'),paths,costs};
 writeFileSync(resolve('scripts/api-surface.json'),JSON.stringify(result,null,2)+'\n');
 console.log('Generated '+Object.keys(paths).length+' API paths and '+Object.keys(costs).length+' documented RAM costs.');

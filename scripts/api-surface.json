@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "source": "Definitions exported by the connected Bitburner Remote API",
-  "sha256": "bfabb0f495cc89133ba042420f5d6d514c7f068502565e3bc5f90da5e60242ed",
+  "source": "bitburner-official/bitburner-src dev @ 0c65cfb1 src/ScriptEditor/NetscriptDefinitions.d.ts",
+  "sha256": "56017c29405ba53bd45bb55c478e5ee52ee7fd1a1d403c0af5b19abc775667ab",
   "paths": {
     "hacknet": "namespace",
     "hacknet.numNodes": "function",
@@ -86,9 +86,20 @@
     "cloud.getServerNames": "function",
     "cloud.getServerLimit": "function",
     "cloud.getRamLimit": "function",
+    "port": "namespace",
+    "port.getHandle": "function",
+    "port.isFull": "function",
+    "port.isEmpty": "function",
+    "port.peek": "function",
+    "port.read": "function",
+    "port.write": "function",
+    "port.tryWrite": "function",
+    "port.nextWrite": "function",
+    "port.clear": "function",
     "dnet": "namespace",
     "dnet.authenticate": "function",
     "dnet.connectToSession": "function",
+    "dnet.freezeServer": "function",
     "dnet.heartbleed": "function",
     "dnet.openCache": "function",
     "dnet.probe": "function",
@@ -114,6 +125,7 @@
     "format.ram": "function",
     "format.percent": "function",
     "format.time": "function",
+    "format.money": "function",
     "gang": "namespace",
     "gang.createGang": "function",
     "gang.inGang": "function",
@@ -265,6 +277,7 @@
     "formulas.gang": "namespace",
     "formulas.gang.wantedPenalty": "function",
     "formulas.gang.respectGain": "function",
+    "formulas.gang.reputationGain": "function",
     "formulas.gang.wantedLevelGain": "function",
     "formulas.gang.moneyGain": "function",
     "formulas.gang.ascensionPointsGain": "function",
@@ -282,6 +295,7 @@
     "formulas.dnet.getAuthenticateTime": "function",
     "formulas.dnet.getHeartbleedTime": "function",
     "formulas.dnet.getExpectedRamBlockRemoved": "function",
+    "formulas.dnet.getExpectedMigrationCharge": "function",
     "stanek": "namespace",
     "stanek.giftWidth": "function",
     "stanek.giftHeight": "function",
@@ -379,10 +393,17 @@
     "ui.resetStyles": "function",
     "ui.getGameInfo": "function",
     "ui.clearTerminal": "function",
+    "ui.openCodeEditor": "function",
+    "ui.alias": "function",
+    "ui.unalias": "function",
+    "ui.getAllAliases": "function",
+    "ui.renderPage": "function",
+    "ui.createConnectLink": "function",
     "singularity": "namespace",
     "singularity.getSaveData": "function",
     "singularity.exportGame": "function",
     "singularity.exportGameBonus": "function",
+    "singularity.hasExportGameBonus": "function",
     "singularity.universityCourse": "function",
     "singularity.gymWorkout": "function",
     "singularity.travelToCity": "function",
@@ -529,6 +550,8 @@
     "writePort": "function",
     "readPort": "function",
     "getPortHandle": "function",
+    "isFullPort": "function",
+    "isEmptyPort": "function",
     "rm": "function",
     "scriptRunning": "function",
     "scriptKill": "function",
@@ -631,7 +654,7 @@
       "singularityScaled": false
     },
     "hacknet.getHashUpgrades": {
-      "base": 0.5,
+      "base": 0,
       "singularityScaled": false
     },
     "hacknet.getHashUpgradeLevel": {
@@ -878,12 +901,52 @@
       "base": 0.05,
       "singularityScaled": false
     },
+    "port.getHandle": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "port.isFull": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "port.isEmpty": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "port.peek": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "port.read": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "port.write": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "port.tryWrite": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "port.nextWrite": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "port.clear": {
+      "base": 0,
+      "singularityScaled": false
+    },
     "dnet.authenticate": {
       "base": 0.4,
       "singularityScaled": false
     },
     "dnet.connectToSession": {
       "base": 0.05,
+      "singularityScaled": false
+    },
+    "dnet.freezeServer": {
+      "base": 2,
       "singularityScaled": false
     },
     "dnet.heartbleed": {
@@ -975,6 +1038,10 @@
       "singularityScaled": false
     },
     "format.time": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "format.money": {
       "base": 0,
       "singularityScaled": false
     },
@@ -1419,7 +1486,7 @@
       "singularityScaled": false
     },
     "stanek.getFragment": {
-      "base": 5,
+      "base": 2,
       "singularityScaled": false
     },
     "stanek.removeFragment": {
@@ -1755,7 +1822,31 @@
       "singularityScaled": false
     },
     "ui.clearTerminal": {
-      "base": 0.2,
+      "base": 0,
+      "singularityScaled": false
+    },
+    "ui.openCodeEditor": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "ui.alias": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "ui.unalias": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "ui.getAllAliases": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "ui.renderPage": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "ui.createConnectLink": {
+      "base": 5,
       "singularityScaled": false
     },
     "singularity.getSaveData": {
@@ -1767,6 +1858,10 @@
       "singularityScaled": true
     },
     "singularity.exportGameBonus": {
+      "base": 0.5,
+      "singularityScaled": true
+    },
+    "singularity.hasExportGameBonus": {
       "base": 0.5,
       "singularityScaled": true
     },
@@ -1951,7 +2046,7 @@
       "singularityScaled": true
     },
     "singularity.hospitalize": {
-      "base": 0.25,
+      "base": 0.5,
       "singularityScaled": true
     },
     "singularity.softReset": {
@@ -1987,7 +2082,7 @@
       "singularityScaled": true
     },
     "singularity.getDarkwebPrograms": {
-      "base": 1,
+      "base": 0.5,
       "singularityScaled": true
     },
     "singularity.getDarkwebProgramCost": {
@@ -2327,6 +2422,14 @@
       "singularityScaled": false
     },
     "getPortHandle": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "isFullPort": {
+      "base": 0,
+      "singularityScaled": false
+    },
+    "isEmptyPort": {
       "base": 0,
       "singularityScaled": false
     },

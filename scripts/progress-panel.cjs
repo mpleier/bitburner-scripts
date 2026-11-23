@@ -15,7 +15,9 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 
-const BRIDGE = 'C:/Users/mplei/Documents/Codex/bitburner-remote-api';
+// HERMES_BRIDGE points the panel at another checkout or machine; the default is the original listener.
+const DEFAULT_BRIDGE = 'C:/Users/mplei/Documents/Codex/bitburner-remote-api';
+const BRIDGE = process.env.HERMES_BRIDGE || DEFAULT_BRIDGE;
 const OUT_HTML = path.join(__dirname, 'progress-panel.html');
 const HISTORY = path.join(__dirname, 'progress-history.json');
 const HISTORY_CAP = 240;
@@ -353,4 +355,5 @@ const html = `<!doctype html>
 fs.writeFileSync(OUT_HTML, html);
 const problems = Object.entries(data).filter(([, value]) => value && value.ok === false);
 console.log(`panel written: ${OUT_HTML}`);
+console.log(`bridge: ${BRIDGE}`);
 console.log(`samples: ${history.length} · queries ok: ${Object.values(data).filter((v) => v?.ok).length}/${Object.keys(data).length}${problems.length ? ' · failed: ' + problems.map(([k, v]) => `${k} (${v.error})`).join(', ') : ''}`);

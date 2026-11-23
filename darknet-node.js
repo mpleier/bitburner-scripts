@@ -1,13 +1,14 @@
 import {navigatorFile,scheduleNavigator,chooseMazeThreads} from './darknet-navigator-policy.js';
 import {charismaGate} from './darknet-charisma-policy.js';
 import {ramRecoveryFile,ramRecoveryModel,scheduleRamRecovery} from './darknet-ram-policy.js';
-import {prioritizeDarknetTargets,darknetDeploymentFile,readDarknetDeployment,packSolverProgress,restoreSolverProgress,createAttemptBudget,yieldDarknetLoot,readLootYield,clearLootYield,solverProgressFingerprint,darknetDirectlyReachable} from './darknet-throughput-policy.js';
+import {prioritizeDarknetTargets,darknetDeploymentFile,readDarknetDeployment,packSolverProgress,restoreSolverProgress,createAttemptBudget,yieldDarknetLoot,readLootYield,clearLootYield,solverProgressFingerprint,darknetDirectlyReachable,stasisLinkedDetails} from './darknet-throughput-policy.js';
 import {createDarknetCredentials} from './darknet-credentials.js';
+import {AUTH_FAILURE,TIMED_OUT,RETRY_AFTER_MS,DARKNET_CODE_FILES,candidatePasswords} from './darknet-crack-policy.js';
 import { surveyFile, stormRequestFile } from './darknet-storm-policy.js';
 import {serviceDarknetAnchor,anchorRequestFile} from './darknet-anchor-policy.js';
 import {mazeLeaseOwned,readMazeLease,mazeLeaseIdentity} from './darknet-development-policy.js';
 /** Runs on authenticated darknet servers, scouts outward, and tries exact-match candidates. */
-import { candidatePasswordTurn, isBlankPassword, solveFeedbackPassword, supportsFeedbackModel, modelCandidates, isStalledScout, dictionaryWords, passwordLengthMatches, passwordFormatMatches, passwordHintCandidates, modelUsesPuzzleInput } from './darknet-solvers.js';
+import {candidatePasswordTurn,isBlankPassword,solveFeedbackPassword,supportsFeedbackModel,isStalledScout,dictionaryWords,passwordLengthMatches,passwordFormatMatches,modelUsesPuzzleInput} from './darknet-solvers.js';
 import { stockSignalFile, chooseStockPromotion } from './darknet-stock-policy.js';
 import { frontierFile, chooseMigrationTarget } from './darknet-migration-policy.js';
 export function createDarknetProgressReporter(publish, now=()=>Date.now()) {
@@ -29,7 +30,7 @@ export async function main(ns) {
   const watcherFile = "darknet-cache-watch.js";
   const promoteFile = 'darknet-promote.js';
   const migrateFile = 'darknet-migrate.js';
-  const codeFiles = [nodeFile, lootFile, "darknet-auth.js", "darknet-bleed.js", stasisFile, cacheFile, "darknet-cache-watch.js", "darknet-solvers.js", "darknet-throughput-policy.js", "darknet-charisma-policy.js", "darknet-ram-policy.js", "darknet-ram.js", "darknet-credentials.js", "darknet-feedback.js", "darknet-advanced.js", "darknet-labyrinth-policy.js", "darknet-navigator-policy.js", "darknet-maze.js", "darknet-anchor-policy.js", "darknet-development-policy.js", "darknet-dictionaries.js", promoteFile, "darknet-stock-policy.js", migrateFile, "darknet-migration-policy.js", "darknet-storm-policy.js", "darknet-storm.js", "darknet-contract-policy.js", "darknet-reward-policy.js", "tasks/dnet-cache-context.json"];
+  const codeFiles = DARKNET_CODE_FILES;
   let lastMigration = 0;
   let lastLootResize = Date.now();
   const reportedHints = new Map();
@@ -177,41 +178,18 @@ export async function main(ns) {
     finally { await reportProgress(); }
   };
   const readCandidates = () => [...new Set(ns.read(candidateFile).split(/\r?\n/).map(x => x.trim()).filter(x => x && !x.startsWith("#")))];
-  const candidatesFor = (info, words) => {
-    const matches = value => {
-      if (!passwordLengthMatches(info,value)) return false;
-      return passwordFormatMatches(info, value);
-    };
-    // Servers with no password (hint "There is no password", length 0, or the
-    // ZeroLogon model) accept the empty string. The length filter below would
-    // otherwise discard every candidate and leave nothing to try.
-    if (isBlankPassword(info)) return [""];
-    const clue = typeof info.data === "string" ? info.data.trim() : "";
-    // "Type the numbers to prove you are human": the clue is the password with
-    // other characters mixed in, so the password is the clue's digits alone.
-    // Tried first, even if the length differs, since it is a single guess.
-    const digitsOf = (text) => String(text ?? "").replace(/\D+/g, "");
-    const wantsDigits = info.passwordFormat === "numeric" || /number|digit/i.test(String(info.passwordHint ?? ""));
-    const derived = wantsDigits ? [digitsOf(info.data), digitsOf(info.passwordHint)].filter((x) => x.length > 0) : [];
-    // Very short numeric passwords are cheap to enumerate (at most 999 tries).
-    const counted = info.passwordFormat === "numeric" && info.passwordLength >= 1 && info.passwordLength <= 3
-      ? Array.from({ length: 10 ** info.passwordLength }, (_, n) => String(n).padStart(info.passwordLength, "0"))
-      : [];
-    // Digits mined from the hint/data are the deterministic answer for "type the numbers" hosts,
-    // so they lead the list instead of trailing the model's own guess.
-    const ordered = wantsDigits ? [...derived, ...modelCandidates(info)] : [...modelCandidates(info), ...derived];
-    return [...new Set([...ordered.filter(matches), ...passwordHintCandidates(info).filter(matches),
-      ...(clue && matches(clue) ? [clue] : []), ...words.filter(matches), ...counted])];
-  };
+  const candidatesFor = (info, words) => candidatePasswords(info, words);
   // v3 renamed ns.formatRam -> ns.format.ram; use whichever exists.
   const fmtRam = (v) => {
     try { if (ns.format && typeof ns.format.ram === "function") return ns.format.ram(v); } catch {}
     try { return ns.formatRam(v); } catch {}
     return `${Number(v).toFixed(2)}GB`;
   };
+  // getServerDetails() omits the stasis/backdoor flags; both allow remote exec, so read the live links.
+  const stasisLinked = () => { try { return ns.dnet.getStasisLinkedServers(); } catch { return []; } };
   const executionState = (host) => {
     try {
-      const d = ns.dnet.getServerDetails(host);
+      const d = stasisLinkedDetails(ns.dnet.getServerDetails(host), host, stasisLinked());
       if (d?.isOnline === false) return {ready:false,reason:'offline'};
       let directHosts=[];try{directHosts=ns.dnet.probe();}catch{}
       if (!darknetDirectlyReachable(host, d, directHosts)) return {ready:false,reason:'not directly connected'};
@@ -221,9 +199,6 @@ export async function main(ns) {
   };
   // Result codes are numeric (DarknetResponseCodeType): 401 = wrong password,
   // 408 = request timed out (password may or may not have been right).
-  const AUTH_FAILURE = 401;
-  const TIMED_OUT = 408;
-  const RETRY_AFTER_MS = 10 * 60_000;
   // The caller already holds fresh server details for this host; re-fetching them per attempt costs
   // a native round trip on every guess, so reuse the known snapshot whenever it is available.
   const tryPassword = async (host, password, known) => {

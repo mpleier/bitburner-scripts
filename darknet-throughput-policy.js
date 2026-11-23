@@ -38,6 +38,12 @@ export function darknetDirectlyReachable(host, details, neighbours) {
  if (details?.hasStasisLink === true || details?.backdoorInstalled === true) return true;
  return Array.isArray(neighbours) && neighbours.includes(host);
 }
+/** `ns.dnet.getServerDetails()` omits the stasis/backdoor flags, but the game sets backdoorInstalled with
+ *  every stasis link and both allow remote exec, so callers merge the live stasis list into the details. */
+export function stasisLinkedDetails(details, host, stasisLinked = []) {
+ if (!details || !Array.isArray(stasisLinked) || !stasisLinked.includes(host)) return details;
+ return {...details, hasStasisLink: true};
+}
 /** Keep rotation within each priority class; native sessions deploy immediately.
  *  Locked targets with shorter passwords crack faster, so order them first while
  *  preserving rotation for unknown/equal lengths. */

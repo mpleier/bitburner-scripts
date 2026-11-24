@@ -27,7 +27,7 @@ Files that must reach the game:
    prints one row per neighbour with `hasSession`, `online`, `free`, `root`). Cross-check against
    `ns.dnet.getStasisLinkedServers()`: a stasis-linked host must now pass the manager's `executionState`
    gate. If it is still skipped, send the exact `no direct connection` / `session check` log line.
-4. **Candidate merge.** Over ~10 minutes, report `tasks/dnet-reports.json` per host: attempts, solved,
+4. **Candidate merge.** Over ~10 minutes, report each host's `tasks/dnet-solver-<host>.json`: attempts, solved,
    and any increase in 401/408 responses. Watch specifically for a host whose answer only appears in
    its hint (the manager now tries those) and for numeric-clue hosts (digits now lead).
 5. **RAM.** `ps` for `darkweb` and the manager host; report scout/manager threads and any

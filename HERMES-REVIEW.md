@@ -70,8 +70,9 @@ the merged candidate ordering still need a run in Bitburner.
 ## Checks only the game can answer
 
 1. **Stasis fix.** On a stasis-linked host: does `ns.dnet.getStasisLinkedServers()` list it, and does
-   `manual/dw-exec-test.js <host>` succeed where the manager previously said `not directly connected`?
-2. **Merged candidates.** After the first rotation, does `tasks/dnet-reports.json` show more solved
+   `manual/dw-exec-test.js` report a session and free RAM for it, where the manager previously said
+   `not directly connected`?
+2. **Merged candidates.** After the first rotation, do the per-host `tasks/dnet-solver-<host>.json` files show more solved
    hosts (hint-only and numeric-clue puzzles in particular), and any host that now burns attempts it
    did not before?
 3. **RAM.** The panel showed 1,867 / 2,048 GB with 0 waiting; is the darknet scout still placed?

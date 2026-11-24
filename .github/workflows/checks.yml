@@ -1,0 +1,36 @@
+name: checks
+
+# main is pulled straight into a live save by git-pull.js, so a broken script reaches the game
+# before anyone notices. Run the same checks locally required: syntax + audit, then the tests.
+on:
+  push:
+    branches: [ "main" ]
+
+  pull_request:
+    branches: [ "main" ]
+
+  workflow_dispatch:
+
+jobs:
+  checks:
+    name: syntax, audit and tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install
+        run: npm ci --no-audit --no-fund
+
+      - name: Syntax and audit
+        run: npm run check
+
+      - name: Tests
+        run: npm test
